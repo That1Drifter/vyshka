@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.4 (2026-08-16)
+**Status:** draft 0.5 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -843,11 +843,20 @@ Two black-box suites accompany this document:
 - **Hub conformance** runs against any hub URL and answers "is this hub compliant?".
 - **Plugin conformance** is a mock hub that drives a candidate plugin through enrollment,
   manifest publish, action round-trips (including a forced re-delivery to verify dedup), a
-  simulated network outage (to verify buffering), and a schema-invalid dispatch (which
+  simulated network outage (to verify buffering), a forced session change with envelopes
+  still unacked (to verify renumbering, section 9.1), and a schema-invalid dispatch (which
   must never crash the game server).
 
 An implementation that passes its suite is compliant; reading reference-implementation
 source is never required.
+
+The session-change case deserves its own mention, because it is the one rule a plugin
+author is most likely to get wrong by doing the obvious thing. Everything else about
+retransmission says "resend exactly what you sent"; this one case says the opposite about
+`seq` alone. A plugin that replays its buffer verbatim after reconnecting will strand every
+envelope in it above a gap the new session can never close, and the symptom appears only
+after a game server restarts with traffic still in flight, which is precisely when nobody
+is watching.
 
 ---
 

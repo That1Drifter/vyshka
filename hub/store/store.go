@@ -82,11 +82,11 @@ func resolveDSN(dsn string) (driver, target string, err error) {
 		return "sqlite", DefaultSQLitePath, nil
 	case strings.HasPrefix(dsn, "sqlite://"):
 		return "sqlite", strings.TrimPrefix(dsn, "sqlite://"), nil
-	// Adding Postgres is not only a driver swap. The envelope queries in
-	// envelopes.go read a session's sequence state and write it back in a later
-	// statement of the same transaction, and today nothing but the single
-	// SQLite connection stops two polls from interleaving there. On a real pool
-	// those reads MUST take a row lock (`SELECT ... FOR UPDATE` in
+	// Adding Postgres is not only a driver swap (issue #20). The envelope
+	// queries in envelopes.go read a session's sequence state and write it back
+	// in a later statement of the same transaction, and today nothing but the
+	// single SQLite connection stops two polls from interleaving there. On a
+	// real pool those reads MUST take a row lock (`SELECT ... FOR UPDATE` in
 	// liveSessionSeq), or the hub starts reporting acks it has already exceeded
 	// and double-counting the envelopes behind them.
 	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):

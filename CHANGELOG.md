@@ -119,6 +119,19 @@ point if needed.
 
 ### Changed
 
+- 2026-08-16: `spec/protocol.md` draft 0.5 makes the plugin conformance suite grade a forced
+  session change with envelopes still unacked, and says why that case gets its own mention:
+  every other retransmission rule says "resend exactly what you sent", while this one says the
+  opposite about `seq` alone. A plugin that replays its ring buffer verbatim after reconnecting
+  strands the whole buffer above a gap the new session can never close, and the symptom only
+  appears after a game server restarts with traffic in flight. The obligation is recorded
+  against the two issues that will implement and grade it (#9, #14), because the rule is
+  currently graded only against a fake plugin the same commit wrote.
+- 2026-08-16: the Postgres row-lock requirement is tracked as issue #20 rather than left as a
+  code comment. Adding Postgres is not a driver swap: the single SQLite connection is what
+  serializes the read-modify-write on per-session sequence state, so a real pool needs
+  `SELECT ... FOR UPDATE` in `liveSessionSeq` or it reintroduces the concurrent-poll ack
+  defects fixed above.
 - 2026-08-16: `spec/protocol.md` closes a hole in the sequencing design: retransmission
   across a session change was not implementable. Section 9.1 required retransmitting
   unchanged, including `seq`, while sequence spaces restart at 1 per session, so an envelope
