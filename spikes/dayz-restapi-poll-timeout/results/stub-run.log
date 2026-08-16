@@ -1,0 +1,37 @@
+2026/08/15 20:16:21.720055 stub listening on 127.0.0.1:8099
+2026/08/15 20:16:32.337800 [req 001] >> arrive GET /hold?ms=3000 from 127.0.0.1:49991 ua="Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.26100; en-US) PowerShell/7.5.5" len=0
+2026/08/15 20:16:35.338058 [req 001] -> body written after 3.000s
+2026/08/15 20:16:35.338058 [req 001] == complete after 3.000s
+2026/08/15 20:21:28.858985 [req 002] >> arrive GET /hold?ms=5000 from 127.0.0.1:62487 ua="" len=0
+2026/08/15 20:21:33.859608 [req 002] -> body written after 5.001s
+2026/08/15 20:21:33.859608 [req 002] == complete after 5.001s
+2026/08/15 20:21:38.106325 [req 003] >> arrive GET /hold?ms=9000 from 127.0.0.1:62509 ua="" len=0
+2026/08/15 20:21:47.106861 [req 003] -> body written after 9.001s
+2026/08/15 20:21:47.106861 [req 003] == complete after 9.001s
+2026/08/15 20:21:51.363488 [req 004] >> arrive GET /hold?ms=12000 from 127.0.0.1:62525 ua="" len=0
+2026/08/15 20:22:01.355581 [req 004] !! client gone after 9.992s (waiting 12s)
+2026/08/15 20:22:05.614339 [req 005] >> arrive GET /hold?ms=25000 from 127.0.0.1:58965 ua="" len=0
+2026/08/15 20:22:15.605750 [req 005] !! client gone after 9.992s (waiting 25s)
+2026/08/15 20:22:19.851760 [req 006] >> arrive GET /headers?ms=25000 from 127.0.0.1:58982 ua="" len=0
+2026/08/15 20:22:19.851760 [req 006] -> headers flushed at 0.000s
+2026/08/15 20:22:29.854651 [req 006] !! client gone after 10.003s (waiting 25s)
+2026/08/15 20:22:34.115838 [req 007] >> arrive GET /drip?ms=30000&every=4000 from 127.0.0.1:59002 ua="" len=0
+2026/08/15 20:22:34.115838 [req 007] -> headers flushed at 0.000s
+2026/08/15 20:22:38.116651 [req 007] -> chunk at 4.001s
+2026/08/15 20:22:42.117015 [req 007] -> chunk at 8.001s
+2026/08/15 20:22:44.109306 [req 007] !! client gone after 9.994s (waiting 4s)
+2026/08/15 20:22:48.367868 [req 008] >> arrive GET /hold?ms=25000 from 127.0.0.1:59028 ua="" len=0
+2026/08/15 20:22:58.350088 [req 008] !! client gone after 9.982s (waiting 25s)
+2026/08/15 20:23:02.607414 [req 009] >> arrive GET /hold?ms=25000 from 127.0.0.1:56802 ua="" len=0
+2026/08/15 20:23:27.607357 [req 009] -> body written after 25.000s
+2026/08/15 20:23:27.607357 [req 009] == complete after 25.000s
+2026/08/15 20:23:31.868942 [req 010] >> arrive GET /hold?ms=35000 from 127.0.0.1:56867 ua="" len=0
+2026/08/15 20:24:01.848696 [req 010] !! client gone after 29.980s (waiting 35s)
+2026/08/15 20:24:06.095315 [req 011] >> arrive GET /hold?ms=60000 from 127.0.0.1:56531 ua="" len=0
+2026/08/15 20:25:06.094477 [req 011] -> body written after 60.000s
+2026/08/15 20:25:06.094477 [req 011] == complete after 60.000s
+2026/08/15 20:25:10.369553 [req 012] >> arrive GET /hold?ms=25000 from 127.0.0.1:53606 ua="" len=0
+2026/08/15 20:25:35.369655 [req 012] -> body written after 25.000s
+2026/08/15 20:25:35.369655 [req 012] == complete after 25.000s
+2026/08/15 20:25:39.617398 [req 013] >> arrive GET /hold?ms=5000 from 127.0.0.1:62207 ua="" len=0
+2026/08/15 20:25:42.610765 [req 013] !! client gone after 2.993s (waiting 5s)
