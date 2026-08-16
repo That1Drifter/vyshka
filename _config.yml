@@ -4,6 +4,7 @@ url: https://that1drifter.github.io
 baseurl: /vyshka
 
 remote_theme: just-the-docs/just-the-docs
+color_scheme: dark
 plugins:
   - jekyll-remote-theme
 
