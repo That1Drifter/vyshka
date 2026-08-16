@@ -43,6 +43,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 	// SQLite tolerates exactly one writer. Keeping the pool at one connection
 	// trades a little throughput for never seeing SQLITE_BUSY.
+	//
+	// It has since become load-bearing for correctness, not just for locking:
+	// the per-session sequence state in envelopes.go is read and written across
+	// separate statements inside a transaction, and a single connection is what
+	// serializes those. Raising this without adding row locks reintroduces the
+	// concurrent-poll defects those functions document. See resolveDSN.
 	if driver == "sqlite" {
 		db.SetMaxOpenConns(1)
 	}
@@ -76,6 +82,13 @@ func resolveDSN(dsn string) (driver, target string, err error) {
 		return "sqlite", DefaultSQLitePath, nil
 	case strings.HasPrefix(dsn, "sqlite://"):
 		return "sqlite", strings.TrimPrefix(dsn, "sqlite://"), nil
+	// Adding Postgres is not only a driver swap. The envelope queries in
+	// envelopes.go read a session's sequence state and write it back in a later
+	// statement of the same transaction, and today nothing but the single
+	// SQLite connection stops two polls from interleaving there. On a real pool
+	// those reads MUST take a row lock (`SELECT ... FOR UPDATE` in
+	// liveSessionSeq), or the hub starts reporting acks it has already exceeded
+	// and double-counting the envelopes behind them.
 	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
 		return "", "", fmt.Errorf("postgres support is not implemented yet; unset DATABASE_URL to use SQLite")
 	case strings.Contains(dsn, "://"):

@@ -29,6 +29,9 @@ const (
 	codeCredentialsRevoked         = "credentials_revoked"
 	codeSessionInvalid             = "session_invalid"
 	codeProtocolVersionUnsupported = "protocol_version_unsupported"
+	codeEnvelopeInvalid            = "envelope_invalid"
+	codeAckOutOfRange              = "ack_out_of_range"
+	codeOutboundQueueFull          = "outbound_queue_full"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the
@@ -51,6 +54,14 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorResponse{Error: errorDetail{Code: code, Message: message}})
 }
 
+// writeErrorDetails is writeError for the codes that can point at the part of
+// the request they mean, such as the one envelope in a batch that was malformed.
+func writeErrorDetails(w http.ResponseWriter, status int, code, message string, details map[string]any) {
+	writeJSON(w, status, errorResponse{
+		Error: errorDetail{Code: code, Message: message, Details: details},
+	})
+}
+
 // writeInternalError hides the cause from the client and puts it in the log,
 // where it belongs.
 func (s *Server) writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
@@ -68,6 +79,20 @@ func (s *Server) writeInternalError(w http.ResponseWriter, r *http.Request, err 
 // protocol guarantee (spec section 2.1), so a newer plugin sending a field this
 // hub has never heard of must still work.
 func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return s.decodeBody(w, r, dst, false)
+}
+
+// decodeOptionalJSON is decodeJSON for endpoints where sending nothing is a
+// meaningful request: an idle poll, or a token reissue with no TTL to override.
+// An absent body leaves dst at its zero value.
+func (s *Server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.ContentLength == 0 {
+		return true
+	}
+	return s.decodeBody(w, r, dst, true)
+}
+
+func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, dst any, allowEmpty bool) bool {
 	if contentType := r.Header.Get("Content-Type"); contentType != "" {
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err != nil || mediaType != "application/json" {
@@ -86,6 +111,9 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) boo
 			writeError(w, http.StatusRequestEntityTooLarge, codePayloadTooLarge,
 				fmt.Sprintf("request body exceeds %d bytes", maxRequestBody))
 		case errors.Is(err, io.EOF):
+			if allowEmpty {
+				return true
+			}
 			writeError(w, http.StatusBadRequest, codeBadRequest, "request body is empty")
 		default:
 			writeError(w, http.StatusBadRequest, codeBadRequest,

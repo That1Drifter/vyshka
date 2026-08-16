@@ -1,19 +1,23 @@
 openapi: 3.1.0
 info:
   title: Vyshka Plugin API
-  version: 0.3.0
+  version: 0.4.0
   summary: Game-server-facing API of the Vyshka hub.
   description: |
     The plugin half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
-    covers only the endpoints implemented so far (spec sections 5.2 and 5.3).
-    The long-poll endpoint arrives with the envelope slice.
+    covers only the endpoints implemented so far (spec sections 3.1.2, 5.2 and
+    5.3).
 
     Three credentials, each with one job: a one-time enrollment token bootstraps
     a record into a permanent server secret, and the secret buys short-lived
     session tokens. Enroll and session authenticate through the request body,
     because they are what a plugin has before it has a bearer token; every other
     Plugin API call uses `Authorization: Bearer <sessionToken>`.
+
+    Once a session exists, the plugin lives in `POST /plugin/v1/poll`: it keeps
+    one request in flight at all times, and the hub answers it the moment there
+    is anything to say.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -27,6 +31,8 @@ tags:
     description: Turning an enrollment token into credentials.
   - name: session
     description: Turning credentials into a session.
+  - name: transport
+    description: The envelope exchange that carries everything else.
 
 paths:
   /plugin/v1/enroll:
@@ -169,6 +175,103 @@ paths:
               schema: { $ref: "#/components/schemas/Session" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
+  /plugin/v1/poll:
+    post:
+      tags: [transport]
+      operationId: poll
+      summary: Exchange envelopes with the hub over a held request.
+      description: |
+        One request carries both directions. The plugin reports the highest
+        contiguous hub -> plugin `seq` it has durably processed and sends
+        whatever it has; the hub applies both, then answers with everything
+        queued for the plugin.
+
+        The hub holds the request up to the session's `pollTimeoutSeconds` and
+        answers early as soon as anything is queued. An empty batch is the
+        normal answer to a hold that expired with nothing to send, and the
+        plugin re-polls immediately either way.
+
+        A plugin must set its own HTTP response timeout to the effective
+        `pollTimeoutSeconds` plus 5 seconds (spec section 3.1.1). An aborted
+        poll loses nothing: sequence numbers and acks make the next one recover
+        whatever was undelivered.
+      security:
+        - sessionToken: []
+      requestBody:
+        required: false
+        description: An empty body, or `{}`, is a valid idle poll.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ack:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                  description: |
+                    Highest contiguous hub -> plugin `seq` durably processed.
+                    Cumulative: acking N acks everything at or below N. 0 acks
+                    nothing.
+                envelopes:
+                  type: array
+                  maxItems: 500
+                  description: |
+                    Envelopes the plugin is sending, in ascending `seq` order. A
+                    hub accepts at least 200 per request.
+                  items: { $ref: "#/components/schemas/PluginEnvelope" }
+            example:
+              ack: 4181
+              envelopes:
+                - v: 1
+                  id: 01J5QN...
+                  type: event.batch
+                  seq: 918
+                  ts: "2026-08-16T18:00:00Z"
+                  body: {}
+      responses:
+        "200":
+          description: |
+            Envelopes for the plugin, possibly none. Answered no later than the
+            session's `pollTimeoutSeconds`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [envelopes, ack, pollTimeoutSeconds, sessionExpiresAt]
+                properties:
+                  envelopes:
+                    type: array
+                    description: |
+                      Ascending by `seq`. Always present; an empty batch is `[]`,
+                      never `null`. Anything above the plugin's ack is repeated
+                      here unchanged until it is acked.
+                    items: { $ref: "#/components/schemas/HubEnvelope" }
+                  ack:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      Highest contiguous plugin -> hub `seq` the hub has durably
+                      processed. The plugin drops its buffer up to this.
+                  pollTimeoutSeconds:
+                    type: integer
+                    minimum: 5
+                    maximum: 60
+                  sessionExpiresAt: { type: string, format: date-time }
+        "400":
+          description: |
+            An inbound envelope is missing `id`, `type` or `seq`, carries a
+            `seq` below 1, exceeds a length limit, or declares an unsupported
+            envelope version, including an explicit `0` (`envelope_invalid`,
+            with `details.index` naming the offending envelope); `ack` is above
+            the highest `seq` the hub has sent (`ack_out_of_range`); or the
+            batch is too large (`bad_request`). A rejected poll applies nothing
+            at all, including its `ack`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+
 components:
   securitySchemes:
     sessionToken:
@@ -177,6 +280,72 @@ components:
       description: The session token from `POST /plugin/v1/session`.
 
   schemas:
+    Envelope:
+      type: object
+      description: |
+        The framed message unit (spec section 4), in the receiver's view: it
+        lists only what a receiver may refuse an envelope for, so it is safe to
+        use as an admission filter. `ts` is absent from `required` on purpose;
+        a receiver that rejected an envelope over `ts` alone would violate
+        section 4. `PluginEnvelope` and `HubEnvelope` add the per-direction
+        sender obligations. `spec/envelopes.schema.json` is the standalone
+        version; this is inlined so the document resolves on its own.
+      required: [id, type, seq]
+      properties:
+        v:
+          type: integer
+          minimum: 1
+          default: 1
+          description: |
+            Envelope version. Absent from a plugin means the session's
+            negotiated `envelopeVersion`; an explicit `0` is not absence and is
+            rejected like any other unknown version.
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            Opaque, unique per message, stable across retransmissions.
+            Receivers must not parse it. ULID recommended, not required.
+        type:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            Namespaced message type. Unknown values are acked and ignored,
+            never fatal.
+        seq:
+          type: integer
+          minimum: 1
+          description: |
+            Per-session, per-direction sequence number, starting at 1
+            (spec section 9.1).
+        ts:
+          type: string
+          format: date-time
+          description: |
+            When the message was created, not when it was last sent. Senders
+            must emit it; a receiver substitutes its own receipt time rather
+            than reject an envelope over `ts` alone (spec section 4).
+        body:
+          type: object
+          additionalProperties: true
+          description: Type-specific payload. Receivers must ignore unknown fields.
+
+    PluginEnvelope:
+      description: |
+        What a plugin must emit. `ts` is required of the sender even though a
+        receiver must not reject an envelope over it; `v` stays optional.
+      allOf: [{ $ref: "#/components/schemas/Envelope" }]
+      required: [id, type, seq, ts]
+
+    HubEnvelope:
+      description: |
+        What a hub must emit. A hub stamps `v` on everything it sends, so
+        unlike a plugin it may not omit it.
+      allOf: [{ $ref: "#/components/schemas/Envelope" }]
+      required: [id, type, seq, ts, v]
+
     PluginDescriptor:
       type: object
       description: What the plugin says about itself. Advisory; the hub never routes on it.

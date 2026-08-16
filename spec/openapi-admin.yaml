@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.3.0
+  version: 0.4.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
-    covers only the endpoints implemented so far (spec section 5.1).
+    covers only the endpoints implemented so far (spec sections 5.1 and 5.5).
 
     Authentication is a bearer token. Until scoped tokens land (spec section
     10), a hub accepts a single bootstrap admin token that carries the `admin`
@@ -25,6 +25,8 @@ security:
 tags:
   - name: servers
     description: Game server records, enrollment tokens, and credentials.
+  - name: envelopes
+    description: Putting work on a server's queue.
 
 paths:
   /api/v1/servers:
@@ -158,6 +160,73 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/servers/{serverId}/envelopes:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    post:
+      tags: [envelopes]
+      operationId: queueEnvelope
+      summary: Queue one envelope for a server.
+      description: |
+        The transport-level primitive. Everything the hub models itself (action
+        dispatch) is queued the same way, through an endpoint that validates
+        what it is queueing, so this one refuses the types those endpoints own.
+
+        Queueing does not need a live session: an envelope queued while the game
+        server is down is delivered on its next session, renumbered into that
+        session's sequence space (spec section 9.2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  description: |
+                    Namespaced message type, non-empty after trimming. Types a
+                    dedicated endpoint owns (`action.*`) are refused here with
+                    `conflict`.
+                body:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+            example:
+              type: example-mod.reload
+              body: { modules: [loot] }
+      responses:
+        "202":
+          description: |
+            Queued. The hub assigned an `id` and a `ts`; the `seq` is assigned
+            on delivery, because sequence numbers belong to a session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [envelope]
+                properties:
+                  envelope:
+                    type: object
+                    required: [id, type, ts]
+                    properties:
+                      id: { type: string }
+                      type: { type: string }
+                      ts: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The type belongs to a dedicated endpoint (`conflict`), or the
+            server's queue is at its bound (`outbound_queue_full`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     adminToken:
@@ -178,7 +247,8 @@ components:
     ServerRecord:
       type: object
       description: A game server as the Admin API sees it. Never carries a credential.
-      required: [id, name, game, createdAt, credentialState]
+      required:
+        [id, name, game, createdAt, credentialState, lastSeenAt, pendingEnvelopeCount]
       properties:
         id: { type: string }
         name: { type: string }
@@ -193,7 +263,13 @@ components:
           enum: [none, active, revoked]
         lastSeenAt:
           oneOf: [{ type: string, format: date-time }, { type: "null" }]
-          description: When the plugin last authenticated.
+          description: When the plugin last authenticated or polled.
+        pendingEnvelopeCount:
+          type: integer
+          minimum: 0
+          description: |
+            Envelopes queued for this server and not yet acked. The operator's
+            view of a link that has stopped draining (spec section 9.4).
         plugin:
           oneOf: [{ $ref: "#/components/schemas/PluginDescriptor" }, { type: "null" }]
         session:

@@ -26,7 +26,8 @@ func main() {
 	url := flag.String("url", "http://127.0.0.1:8080", "base URL of the hub under test")
 	adminToken := flag.String("admin-token", os.Getenv("VYSHKA_ADMIN_TOKEN"),
 		"admin token of the hub under test (env VYSHKA_ADMIN_TOKEN)")
-	timeout := flag.Duration("timeout", 10*time.Second, "per-request timeout")
+	timeout := flag.Duration("timeout", 10*time.Second, "per-request timeout for everything but a long-poll")
+	checkTimeout := flag.Duration("check-timeout", 90*time.Second, "budget for one check, which may hold several long-polls")
 	wait := flag.Duration("wait", 0, "wait up to this long for the hub to become reachable before running checks")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
 	flag.Parse()
@@ -41,8 +42,13 @@ func main() {
 
 	baseURL := strings.TrimRight(*url, "/")
 	env := Env{
-		BaseURL:    baseURL,
-		Client:     &http.Client{Timeout: *timeout},
+		BaseURL: baseURL,
+		Client:  &http.Client{Timeout: *timeout},
+		// A poll is meant to be held. Its client waits out the longest timeout
+		// the protocol lets a hub negotiate, plus the margin a plugin must also
+		// leave (spec section 3.1.1), so a held request is never mistaken for a
+		// hung one.
+		PollClient: &http.Client{Timeout: maxPollTimeout + 5*time.Second},
 		AdminToken: *adminToken,
 	}
 
@@ -54,7 +60,7 @@ func main() {
 		}
 	}
 
-	results := runChecks(ctx, env, *timeout)
+	results := runChecks(ctx, env, *checkTimeout)
 
 	failed := 0
 	for _, result := range results {
@@ -103,11 +109,11 @@ type Result struct {
 	DurationMs int64  `json:"durationMs"`
 }
 
-func runChecks(ctx context.Context, env Env, timeout time.Duration) []Result {
+func runChecks(ctx context.Context, env Env, budget time.Duration) []Result {
 	results := make([]Result, 0, len(checks))
 	for _, check := range checks {
 		start := time.Now()
-		checkCtx, cancel := context.WithTimeout(ctx, timeout)
+		checkCtx, cancel := context.WithTimeout(ctx, budget)
 		err := check.Run(checkCtx, env)
 		cancel()
 

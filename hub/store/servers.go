@@ -74,7 +74,8 @@ type PluginInfo struct {
 	Transports []string
 }
 
-// Session is one live (or ended) plugin session.
+// Session is one live (or ended) plugin session, including the per-direction
+// sequence state that dies with it (spec section 9.1).
 type Session struct {
 	ID                 string
 	ServerID           string
@@ -84,6 +85,14 @@ type Session struct {
 	EndReason          string
 	ProtocolVersion    int
 	PollTimeoutSeconds int
+	// OutboundSeq is the highest seq the hub has assigned to this session, and
+	// OutboundAck the highest the plugin has acked.
+	OutboundSeq int64
+	OutboundAck int64
+	// InboundAck is the highest contiguous seq the hub has durably processed
+	// from the plugin; InboundCount is how many envelopes that took.
+	InboundAck   int64
+	InboundCount int64
 }
 
 // Live reports whether a session may still authenticate calls at now.
@@ -130,6 +139,10 @@ func scanTime(column sql.NullString) (*time.Time, error) {
 
 const serverColumns = `id, name, game, created_at, secret_hash, enrolled_at, revoked_at,
 	plugin_name, plugin_version, transports, last_seen_at`
+
+const sessionColumns = `id, server_id, created_at, expires_at, ended_at, end_reason,
+	protocol_version, poll_timeout_seconds, outbound_seq, outbound_ack,
+	inbound_ack, inbound_count`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -487,9 +500,7 @@ func (s *Store) StartSession(ctx context.Context, request NewSession) (Session, 
 // callers cannot tell those apart from outside.
 func (s *Store) SessionByToken(ctx context.Context, tokenHash string) (Session, Server, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, server_id, created_at, expires_at, ended_at, end_reason,
-		        protocol_version, poll_timeout_seconds
-		   FROM sessions WHERE token_hash = ?`, tokenHash)
+		`SELECT `+sessionColumns+` FROM sessions WHERE token_hash = ?`, tokenHash)
 
 	session, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -512,8 +523,7 @@ func (s *Store) SessionByToken(ctx context.Context, tokenHash string) (Session, 
 // LiveSession returns the server's current session, or nil when it has none.
 func (s *Store) LiveSession(ctx context.Context, serverID string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, server_id, created_at, expires_at, ended_at, end_reason,
-		        protocol_version, poll_timeout_seconds
+		`SELECT `+sessionColumns+`
 		   FROM sessions
 		  WHERE server_id = ? AND ended_at IS NULL AND expires_at > ?
 		  ORDER BY created_at DESC LIMIT 1`,
@@ -537,6 +547,7 @@ func scanSession(row rowScanner) (Session, error) {
 	)
 	if err := row.Scan(&session.ID, &session.ServerID, &createdAt, &expiresAt,
 		&endedAt, &session.EndReason, &session.ProtocolVersion, &session.PollTimeoutSeconds,
+		&session.OutboundSeq, &session.OutboundAck, &session.InboundAck, &session.InboundCount,
 	); err != nil {
 		return Session{}, err
 	}
