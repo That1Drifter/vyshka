@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.9 (2026-08-16)
+**Status:** draft 0.10 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -991,6 +991,10 @@ section 8.1 observable rather than aspirational.
 `limit`, or `cursor` is `bad_request` (400); a hub MUST NOT silently ignore a filter it
 could not parse, because the answer would then look like a real, narrower feed.
 
+A token narrowed by an `events:read:{pattern}` scope reads this endpoint through the
+intersection rules of section 10.3: an absent `type` is narrowed to what the token may see,
+and an explicit term the grant does not cover is `forbidden` (403).
+
 ## 9. Delivery guarantees
 
 ### 9.1 Sequence numbers and acks
@@ -1083,24 +1087,221 @@ Nothing may be dropped without a visible counter incrementing.
 
 ## 10. Admin API authorization and audit
 
-Admin tokens carry explicit scopes:
+### 10.1 Scopes
+
+Every Admin API credential is a bearer token carrying an explicit set of scopes. A scope is
+`resource:verb`, optionally narrowed by a third `:pattern` field:
 
 ```
-servers:read
-events:read
-events:read:example-mod.*        // namespace-filtered
-actions:dispatch                 // everything (dangerous, UIs SHOULD warn)
-actions:dispatch:core.player.*   // pattern over action codes
-actions:dispatch:example-mod.heal
-kv:rw:example-mod
-webhooks:manage
-admin                            // token management, server enrollment
+servers:read                     server records, sessions, and manifests
+events:read                      every event type
+events:read:example-mod.*        one namespace of event types
+actions:read                     every action record
+actions:read:example-mod.heal    one action code
+actions:dispatch                 dispatch anything (dangerous, UIs SHOULD warn)
+actions:dispatch:core.player.*   one namespace of action codes
+kv:rw:example-mod                one KV namespace
+webhooks:manage                  webhook configuration
+admin                            everything, including token management and server enrollment
 ```
 
-A hub MUST enforce scopes on every Admin API call and MUST record every Admin API mutation
-(action dispatched, token created, webhook changed, KV write) in an audit log with token
-id, source IP, timestamp, and payload digest. `GET /api/v1/audit` requires the `admin`
-scope. The audit log is not optional and not a plugin.
+Resources and verbs are a **closed set**. A hub MUST refuse a scope it does not define, at
+mint time, rather than storing it: a token minted from a typo would grant nothing, and its
+holder would find that out later from a request failing for a reason nothing reports.
+
+A `pattern` is one of:
+
+- `*`, or an omitted third field: every value.
+- `{prefix}.*`: values under that prefix, where the separating `.` belongs to the prefix, so
+  `example-mod.*` matches `example-mod.heal` and not `example-modular.heal`.
+- An exact value.
+
+Patterns draw on the identifier alphabet of section 8.1 (letters, digits, `_`, `-`, with `.`
+as the separator). A `*` anywhere other than as the whole pattern or as a trailing `.*` is
+not a glob this protocol defines, and MUST be refused rather than read as a literal.
+
+Two implications are normative, and neither runs in reverse:
+
+- **`admin` implies every other scope.** It already carries token management, which can mint
+  any other scope, so withholding anything from it would be bookkeeping rather than a
+  safeguard.
+- **`actions:dispatch:{pattern}` implies `actions:read:{pattern}`.** A token that could start
+  a job but never learn what became of it would be unusable on its own.
+
+Scopes are **installation-wide**, not per-server: this grammar narrows by action code, event
+type, and KV namespace, and has no term that names a server. A token holding
+`events:read:example-mod.*` reads that namespace on every server the hub knows. Operators who
+need one credential per server need one hub per server until a future draft adds a server
+dimension; a hub MUST NOT invent one, because a client that assumed a narrowing this document
+does not define would be relying on behavior another hub is free not to have.
+
+### 10.2 Enforcement
+
+A hub MUST enforce scopes on every Admin API call. Where the scope needed depends on a value
+in the request, the check MUST run against that value:
+
+| Surface | Scope |
+|---|---|
+| `GET /api/v1/servers`, `GET /api/v1/servers/{id}`, `GET .../manifest` | `servers:read` |
+| `POST /api/v1/servers`, `POST .../enrollment-token`, `DELETE .../credentials` | `admin` |
+| `POST /api/v1/servers/{id}/envelopes` | `admin` |
+| `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |
+| `GET /api/v1/actions/{actionId}` | `actions:read:{the action's code}` |
+| `GET /api/v1/servers/{id}/events` | `events:read`, intersected per section 10.3 |
+| `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
+
+The raw envelope endpoint of section 5.5 requires `admin` because no narrower scope in the
+grammar describes it: it is an unvalidated write channel to the game server, and granting it
+to anything weaker would let a scoped token route around the validation the modelled
+endpoints perform.
+
+Refusal is `403 forbidden` (section 2.2), never a silent success or an empty result. A hub
+serving more than one trust boundary MAY answer `404` instead, to avoid confirming that an
+object exists; the reference hub does not, because it is one operator's installation and
+hiding a route from a credential that has already authenticated costs more in debugging than
+it buys.
+
+Ordering matters, in three places that are easy to get wrong:
+
+- The dispatch check MUST run **before** the manifest is consulted, so that the difference
+  between `forbidden` and `unknown_action` cannot be used to enumerate a manifest the token
+  may not read.
+- An idempotency key is client-chosen and scoped only to a server (section 7), so the action
+  it names MAY carry a different `code` than the request presenting it. A hub MUST therefore
+  authorize the retry against **both** codes: the one in the request, and the one on the
+  action it is about to return. Checking only the request's code lets a token present a key
+  somebody else bound and receive the id and state of an action it could never have
+  dispatched. Where the two differ and the token does not hold both, the answer is
+  `forbidden`.
+- Authorizing a read MUST NOT itself change state. Hubs that expire actions lazily on read
+  (section 7) MUST establish the scope before applying that expiry, or a token with no grant
+  over an action can drive its terminal state through a route that is not even audited.
+
+A hub MUST NOT mint a token carrying a scope its minter does not itself hold.
+
+Object ids in this protocol are unguessable (section 2.1), so a hub answering `404` before it
+has established scope is not treated as a disclosure: it confirms an id the caller already
+had rather than letting one be found. A hub MUST NOT rely on that for anything an operator
+chose, such as an action `code` or an event type, which are guessable by construction.
+
+### 10.3 Reading a narrowed feed
+
+`events:read:{pattern}` does not only gate the event query of section 8.5; it shapes the
+answer.
+
+- A request carrying **no** `type` filter MUST be answered with the union of the token's
+  granted patterns, not with the whole feed. The caller asked for what it may see.
+- A request carrying an explicit `type` term the grant does not **cover** MUST be refused
+  with `forbidden`. Narrowing an explicit filter instead would answer it with a feed that
+  looks complete and is not, and nothing in the response would say otherwise.
+
+Covering is not matching. A grant of `example-mod.heal` matches that one value but does not
+cover a request for `example-mod.*`, which spans values the grant says nothing about. A grant
+of `core.*` covers a request for `core.player.*`; the reverse does not hold.
+
+A `type` term the hub cannot parse at all stays `bad_request`, not `forbidden`: a caller
+debugging a typo must not be sent looking at its scopes.
+
+### 10.4 Token management (Admin API)
+
+`POST /api/v1/tokens` mints a token:
+
+```json
+{ "name": "panel", "scopes": ["servers:read", "events:read:example-mod.*"],
+  "expiresInSeconds": 2592000 }
+```
+
+```json
+{ "token": { "id": "01J...", "name": "panel",
+             "scopes": ["servers:read", "events:read:example-mod.*"],
+             "createdAt": "2026-08-16T12:00:00.000Z", "createdBy": "01J...",
+             "expiresAt": "2026-09-15T12:00:00.000Z", "revokedAt": null },
+  "secret": "vya_..." }
+```
+
+`scopes` is REQUIRED and MUST NOT be empty. `expiresInSeconds` is OPTIONAL; absent or zero
+mints a token that does not expire on its own, and a hub MAY clamp a very short request up to
+a floor (reference floor: 60 s). The `secret` is returned in this response and MUST NOT be
+retrievable afterwards: a hub stores a digest, not the token.
+
+`GET /api/v1/tokens` lists token records, newest first, revoked and expired ones included:
+an operator auditing access needs to see what used to exist. No response other than the mint
+may carry a secret.
+
+`DELETE /api/v1/tokens/{tokenId}` revokes a token and answers `204`. Revocation MUST take
+effect on the next request. The record itself MUST survive, so that the audit log's
+references to it keep resolving; revoking an already revoked token is idempotent and MUST NOT
+move the recorded revocation time.
+
+### 10.5 The audit log
+
+A hub MUST record every **authenticated** Admin API mutation, whether it succeeded or was
+refused, in an append-only log. A mutation is any request whose method is not `GET` or
+`HEAD`. Reads are not recorded: burying the changes under a panel's polling would defeat the
+purpose of the log.
+
+Requests that never authenticated are deliberately **not** audited. An unauthenticated caller
+could otherwise fill the log an operator depends on, turning the audit trail into a denial of
+service against itself. Hubs SHOULD report those refusals through ordinary logging instead.
+A request that reached no handler at all, such as a wrong method against a known path
+(`method_not_allowed`), is not a mutation attempt and need not be recorded either: nothing was
+authorized, and nothing could have happened.
+
+Each record MUST carry:
+
+| Field | Meaning |
+|---|---|
+| `at` | when the hub answered, RFC 3339 |
+| `tokenId` | the credential's id; empty for a bootstrap credential (section 10.6) |
+| `tokenName` | its name **as it was at the time**, so the record survives renaming and deletion |
+| `method`, `path` | the request line |
+| `status` | the HTTP status the hub answered with |
+| `sourceIp` | the peer address of the connection |
+| `payloadDigest` | SHA-256 of the request body, empty when there was none |
+
+A record MAY also carry a `serverId` and a `detail` object naming what the mutation was: the
+action code and resulting id for a dispatch, the granted scopes for a mint. A hub SHOULD
+record `serverId` for a mutation that names or creates a server even when the route's path
+does not, or the entry an operator most wants in a per-server view, the call that created the
+server, is the one missing from it. `sourceIp` MUST be the peer address of the connection and
+MUST NOT be taken from a forwarded header, which is whatever the client typed.
+
+`payloadDigest` MUST cover the whole body or be empty. A hub that caps request size MUST NOT
+record a digest of the truncated prefix it read: two oversized bodies routinely share a
+prefix, and a field that looks like a body digest while colliding for bodies that differ is
+worse than no field at all. Nothing was accepted from such a request in any case.
+
+An authenticated token can grow the log by repeating mutations it is not allowed to perform,
+since refusals are recorded. That is the intended trade, and the lever against it is
+revocation rather than silence: a hub MUST bound retention, and MAY rate-limit
+(`rate_limited`, section 2.2). What a hub MUST NOT do is stop recording refusals, which are
+the entries this log exists for.
+
+Nothing in the Admin API may update or delete an individual audit record. Retention is hub
+configuration rather than protocol, and a hub MUST NOT let it be unbounded in practice; the
+reference hub keeps records for 365 days and prunes on the same maintenance loop as
+section 8.4.
+
+`GET /api/v1/audit` requires `admin` and answers a page of the log, newest first, with the
+same opaque-cursor pagination as section 8.5. It accepts `tokenId`, `serverId`, `since`
+(inclusive), `until` (exclusive), `limit`, and `cursor`. The audit log is not optional and
+not a plugin.
+
+### 10.6 Bootstrap credentials
+
+A hub MAY accept one **configured** bootstrap credential carrying `admin`, so that a fresh
+installation has a way in and an operator who has revoked every token has a way back. The
+reference hub reads it from `VYSHKA_ADMIN_TOKEN` or `-admin-token`.
+
+A hub that **generates** a bootstrap credential when none is configured MUST confine that to
+first run: it MUST NOT generate one while it already holds a usable minted token. A hub
+minting a fresh superuser credential on every boot would make its own token management
+decorative, because revocation would not survive a restart and anyone who could read the logs
+would hold permanent access.
+
+A bootstrap credential has no token record. It therefore cannot be revoked through the API,
+and its audit records carry an empty `tokenId` alongside a `tokenName` that says what it is.
+It is retired by removing it from the hub's configuration and restarting.
 
 ## 11. Webhooks
 

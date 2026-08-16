@@ -2759,6 +2759,451 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "admin.tokens.lifecycle",
+		Title:   "A minted token authenticates until it is revoked, and its secret is returned once",
+		Section: "10",
+		Run: func(ctx context.Context, env Env) error {
+			minted, err := env.mintToken(ctx, "conformance: reader", "servers:read")
+			if err != nil {
+				return err
+			}
+			if minted.Token.RevokedAt != nil {
+				return fmt.Errorf("a freshly minted token reports revokedAt %q", *minted.Token.RevokedAt)
+			}
+
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/servers",
+				minted.Secret, nil, http.StatusOK, nil); err != nil {
+				return fmt.Errorf("a live token was refused its own scope: %w", err)
+			}
+
+			// The list must never carry the secret back: a hub that could show
+			// it again would be storing it, not a digest of it.
+			listed, err := env.listTokens(ctx)
+			if err != nil {
+				return err
+			}
+			found := false
+			for _, record := range listed {
+				if record.ID == minted.Token.ID {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("the minted token %s is missing from the token list", minted.Token.ID)
+			}
+			encoded, err := json.Marshal(listed)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(encoded), minted.Secret) {
+				return fmt.Errorf("the token list leaked a token secret")
+			}
+
+			if err := env.expect(ctx, http.MethodDelete, "/api/v1/tokens/"+minted.Token.ID,
+				env.AdminToken, nil, http.StatusNoContent, nil); err != nil {
+				return err
+			}
+			if err := env.expectError(ctx, http.MethodGet, "/api/v1/servers", minted.Secret,
+				nil, http.StatusUnauthorized, "unauthorized"); err != nil {
+				return fmt.Errorf("a revoked token still authenticates: %w", err)
+			}
+
+			// The record survives revocation, so the audit log's references to
+			// it keep resolving after the credential is gone.
+			listed, err = env.listTokens(ctx)
+			if err != nil {
+				return err
+			}
+			for _, record := range listed {
+				if record.ID != minted.Token.ID {
+					continue
+				}
+				if record.RevokedAt == nil {
+					return fmt.Errorf("the revoked token %s is listed without a revokedAt", record.ID)
+				}
+				return nil
+			}
+			return fmt.Errorf("the revoked token %s vanished from the list; "+
+				"the record must outlive the credential", minted.Token.ID)
+		},
+	},
+	{
+		ID:      "admin.tokens.scopeEnforced",
+		Title:   "A token scoped to one action code can dispatch that code and reach nothing else",
+		Section: "10",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: scoped dispatch", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			minted, err := env.mintToken(ctx, "conformance: heal only",
+				"actions:dispatch:example-mod.heal")
+			if err != nil {
+				return err
+			}
+
+			var accepted struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, "/api/v1/servers/"+serverID+"/actions",
+				minted.Secret, map[string]any{
+					"code":   "example-mod.heal",
+					"params": map[string]any{"amount": 25},
+				}, http.StatusAccepted, &accepted); err != nil {
+				return fmt.Errorf("the granted code was refused: %w", err)
+			}
+
+			// Dispatching implies reading back what was dispatched, or every
+			// narrowly scoped token would be useless on its own.
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/actions/"+accepted.ActionID,
+				minted.Secret, nil, http.StatusOK, nil); err != nil {
+				return fmt.Errorf("a dispatcher cannot read back its own action: %w", err)
+			}
+
+			actions := "/api/v1/servers/" + serverID + "/actions"
+			for _, one := range []struct {
+				code string
+				why  string
+			}{
+				{"example-mod.wipe", "another code in the same namespace"},
+				{"core.player.kick", "a code in another namespace"},
+				{"example-modular.heal", "a code whose namespace merely starts the same"},
+			} {
+				if err := env.refused(ctx, http.MethodPost, actions, minted.Secret,
+					map[string]any{"code": one.code}, one.why); err != nil {
+					return err
+				}
+			}
+
+			// Every other Admin API surface is closed to it, including the one
+			// that would let it grant itself more.
+			for _, one := range []struct {
+				method string
+				path   string
+				body   any
+				why    string
+			}{
+				{http.MethodGet, "/api/v1/servers", nil, "listing servers"},
+				{http.MethodGet, "/api/v1/servers/" + serverID, nil, "reading a server"},
+				{http.MethodGet, "/api/v1/servers/" + serverID + "/events", nil, "reading telemetry"},
+				{http.MethodGet, "/api/v1/servers/" + serverID + "/manifest", nil, "reading the manifest"},
+				{http.MethodGet, "/api/v1/tokens", nil, "listing tokens"},
+				{http.MethodGet, "/api/v1/audit", nil, "reading the audit log"},
+				{http.MethodPost, "/api/v1/servers/" + serverID + "/envelopes",
+					map[string]any{"type": unknownType()}, "queueing a raw envelope"},
+				{http.MethodPost, "/api/v1/tokens",
+					map[string]any{"name": "escalation", "scopes": []string{"admin"}},
+					"minting itself a wider token"},
+			} {
+				if err := env.refused(ctx, one.method, one.path, minted.Secret, one.body, one.why); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.tokens.idempotencyKeyIsNotAnOracle",
+		Title:   "Replaying an idempotency key cannot return an action the token could not dispatch",
+		Section: "10.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: idempotency scope", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1,
+				map[string]any{"code": "example-mod.heal", "name": "Heal", "namespace": "example-mod"},
+				map[string]any{"code": "example-mod.wipe", "name": "Wipe", "namespace": "example-mod"},
+			)); err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+			actions := "/api/v1/servers/" + serverID + "/actions"
+
+			// The operator binds a key to a code the narrow token may not run.
+			privileged, _, err := env.dispatchAction(ctx, serverID, map[string]any{
+				"code": "example-mod.wipe", "idempotencyKey": "conformance-shared-key",
+			})
+			if err != nil {
+				return err
+			}
+
+			minted, err := env.mintToken(ctx, "conformance: heal only, idempotent",
+				"actions:dispatch:example-mod.heal")
+			if err != nil {
+				return err
+			}
+
+			// An idempotency key is client-chosen and keyed only on the server,
+			// so the action it names may carry a code the presenting token
+			// cannot dispatch. Authorizing only the code in the request would
+			// hand that action's id and state straight back.
+			resp, body, err := env.do(ctx, http.MethodPost, actions, minted.Secret, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 1},
+				"idempotencyKey": "conformance-shared-key",
+			})
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				if strings.Contains(string(body), privileged) {
+					return fmt.Errorf("replaying another token's idempotency key returned the "+
+						"out-of-scope action %s (status %d, body %q); the retry must be "+
+						"authorized against the returned action's own code",
+						privileged, resp.StatusCode, truncate(body))
+				}
+				return fmt.Errorf("replaying another token's idempotency key answered %d, want 403 "+
+					"(body %q)", resp.StatusCode, truncate(body))
+			}
+			if err := assertErrorCode(http.MethodPost, actions, body, "forbidden"); err != nil {
+				return err
+			}
+
+			// The contract still holds for a key the token bound itself.
+			var first struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, actions, minted.Secret, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 2},
+				"idempotencyKey": "conformance-own-key",
+			}, http.StatusAccepted, &first); err != nil {
+				return err
+			}
+			var replay struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, actions, minted.Secret, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 2},
+				"idempotencyKey": "conformance-own-key",
+			}, http.StatusAccepted, &replay); err != nil {
+				return err
+			}
+			if replay.ActionID != first.ActionID {
+				return fmt.Errorf("a token replaying its own key got action %s, want the original %s: "+
+					"the scope check must not break the section 7 retry contract",
+					replay.ActionID, first.ActionID)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.tokens.grammarEnforced",
+		Title:   "A scope the hub does not define is refused at mint, not stored",
+		Section: "10",
+		Run: func(ctx context.Context, env Env) error {
+			// A typo that minted a token granting nothing would be discovered
+			// later, by a request failing for reasons the operator cannot see.
+			for _, one := range []struct {
+				body map[string]any
+				why  string
+			}{
+				{map[string]any{"name": "typo", "scopes": []string{"event:read"}},
+					"a misspelled resource"},
+				{map[string]any{"name": "typo", "scopes": []string{"servers:write"}},
+					"a verb the grammar does not define"},
+				{map[string]any{"name": "typo", "scopes": []string{"servers:read:s-1"}},
+					"a pattern on a pair that takes none"},
+				{map[string]any{"name": "typo", "scopes": []string{"events:read:"}},
+					"a trailing colon, which is a narrowing the operator meant to write"},
+				{map[string]any{"name": "empty", "scopes": []string{}},
+					"an empty scope list, which could do nothing"},
+				{map[string]any{"scopes": []string{"servers:read"}},
+					"no name"},
+			} {
+				if err := env.expectError(ctx, http.MethodPost, "/api/v1/tokens", env.AdminToken,
+					one.body, http.StatusBadRequest, "bad_request"); err != nil {
+					return fmt.Errorf("%s must be refused at mint: %w", one.why, err)
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.tokens.eventScopeNarrowsFeed",
+		Title:   "A namespace-scoped read narrows the feed and refuses a filter it does not cover",
+		Section: "10",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: scoped feed", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+			if _, err := plugin.sendEvents(ctx,
+				map[string]any{"t": "core.player.death"},
+				map[string]any{"t": "core.player.chat"},
+				map[string]any{"t": "example-mod.raid.started"},
+				map[string]any{"t": "example-mod.raid.ended"},
+			); err != nil {
+				return err
+			}
+
+			minted, err := env.mintToken(ctx, "conformance: raid watcher",
+				"events:read:example-mod.*")
+			if err != nil {
+				return err
+			}
+			path := "/api/v1/servers/" + serverID + "/events"
+
+			// No filter means "what this token may see", not "everything".
+			var page eventPage
+			if err := env.expect(ctx, http.MethodGet, path, minted.Secret,
+				nil, http.StatusOK, &page); err != nil {
+				return err
+			}
+			if len(page.Events) != 2 {
+				return fmt.Errorf("an unfiltered read returned %d events (%v), want only the 2 "+
+					"in the granted namespace", len(page.Events), page.eventTypes())
+			}
+			for _, event := range page.Events {
+				if !strings.HasPrefix(event.Type, "example-mod.") {
+					return fmt.Errorf("an unfiltered read leaked %q, outside the grant", event.Type)
+				}
+			}
+
+			// A filter inside the grant is answered as usual.
+			for _, filter := range []string{"example-mod.*", "example-mod.raid.*", "example-mod.raid.started"} {
+				if err := env.expect(ctx, http.MethodGet,
+					path+"?type="+url.QueryEscape(filter), minted.Secret,
+					nil, http.StatusOK, nil); err != nil {
+					return fmt.Errorf("filter %q inside the grant was refused: %w", filter, err)
+				}
+			}
+
+			// A filter reaching outside it is refused rather than narrowed: a
+			// narrowed answer to an explicit question looks exactly like a
+			// complete one. That includes a set only partly covered.
+			for _, filter := range []string{"*", "core.*", "core.player.death", "example-modular.*"} {
+				if err := env.refused(ctx, http.MethodGet, path+"?type="+url.QueryEscape(filter),
+					minted.Secret, nil, "filter "+filter+" outside the grant"); err != nil {
+					return err
+				}
+			}
+			if err := env.refused(ctx, http.MethodGet,
+				path+"?type=example-mod.*&type=core.*", minted.Secret, nil,
+				"a filter set the grant only partly covers"); err != nil {
+				return err
+			}
+
+			// A malformed pattern is still the bad request it always was, so a
+			// caller debugging a typo is not sent looking at their scopes.
+			return env.expectError(ctx, http.MethodGet, path+"?type=not%20a%20type",
+				minted.Secret, nil, http.StatusBadRequest, "bad_request")
+		},
+	},
+	{
+		ID:      "admin.audit.recordsMutations",
+		Title:   "Every authenticated mutation is audited with its token, payload digest, and outcome",
+		Section: "10",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: audit", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			minted, err := env.mintToken(ctx, "conformance: audited dispatcher",
+				"actions:dispatch:example-mod.heal")
+			if err != nil {
+				return err
+			}
+			actions := "/api/v1/servers/" + serverID + "/actions"
+
+			var accepted struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, actions, minted.Secret, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+			}, http.StatusAccepted, &accepted); err != nil {
+				return err
+			}
+			// A refusal is a thing an operator reads this log to find, so it is
+			// recorded too.
+			if err := env.refused(ctx, http.MethodPost, actions, minted.Secret,
+				map[string]any{"code": "example-mod.wipe"}, "a dispatch outside the grant"); err != nil {
+				return err
+			}
+			// Reads are not mutations and must not bury the changes.
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/actions/"+accepted.ActionID,
+				minted.Secret, nil, http.StatusOK, nil); err != nil {
+				return err
+			}
+
+			page, err := env.auditRecords(ctx, url.Values{"tokenId": {minted.Token.ID}})
+			if err != nil {
+				return err
+			}
+			if len(page.Records) != 2 {
+				return fmt.Errorf("the log holds %d records for this token, want the accepted "+
+					"dispatch and the refused one, and no read", len(page.Records))
+			}
+
+			var accepted202 *auditRecord
+			var refused403 *auditRecord
+			for i := range page.Records {
+				switch page.Records[i].Status {
+				case http.StatusAccepted:
+					accepted202 = &page.Records[i]
+				case http.StatusForbidden:
+					refused403 = &page.Records[i]
+				}
+			}
+			if accepted202 == nil || refused403 == nil {
+				return fmt.Errorf("the log does not hold one 202 and one 403 for this token: %+v",
+					page.Records)
+			}
+
+			for _, one := range []struct {
+				got  string
+				want string
+				what string
+			}{
+				{accepted202.Method, http.MethodPost, "method"},
+				{accepted202.Path, actions, "path"},
+				{accepted202.TokenID, minted.Token.ID, "token id"},
+				{accepted202.TokenName, "conformance: audited dispatcher", "token name"},
+				{accepted202.ServerID, serverID, "server id"},
+			} {
+				if one.got != one.want {
+					return fmt.Errorf("the audited %s is %q, want %q", one.what, one.got, one.want)
+				}
+			}
+			if accepted202.SourceIP == "" {
+				return fmt.Errorf("the audit record carries no source IP")
+			}
+			if accepted202.PayloadDigest == "" {
+				return fmt.Errorf("the audit record of a request with a body carries no payload digest")
+			}
+			if accepted202.At == "" {
+				return fmt.Errorf("the audit record carries no timestamp")
+			}
+			if accepted202.PayloadDigest == refused403.PayloadDigest {
+				return fmt.Errorf("two different request bodies produced the same payload digest %q",
+					accepted202.PayloadDigest)
+			}
+
+			var detail struct {
+				Code     string `json:"code"`
+				ActionID string `json:"actionId"`
+			}
+			if err := json.Unmarshal(accepted202.Detail, &detail); err != nil {
+				return fmt.Errorf("decode audit detail %q: %w", truncate(accepted202.Detail), err)
+			}
+			if detail.Code != "example-mod.heal" || detail.ActionID != accepted.ActionID {
+				return fmt.Errorf("the audited dispatch names code %q and action %q, want %q and %q",
+					detail.Code, detail.ActionID, "example-mod.heal", accepted.ActionID)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "compat.unknownFields",
 		Title:   "Unknown request fields are tolerated, not rejected",
 		Section: "2.1",

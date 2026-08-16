@@ -1,17 +1,19 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.8.0
+  version: 0.9.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.5, 7, and 8.5).
+    6.5, 7, 8.5, and 10).
 
-    Authentication is a bearer token. Until scoped tokens land (spec section
-    10), a hub accepts a single bootstrap admin token that carries the `admin`
-    scope.
+    Authentication is a bearer token carrying explicit scopes (spec section
+    10). The scope each endpoint requires is stated in its description; where
+    it depends on a value in the request, such as the action code being
+    dispatched, the hub checks that value rather than the route alone. A hub
+    MAY also accept one bootstrap token carrying `admin`.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -32,6 +34,10 @@ tags:
     description: Dispatching tracked jobs and reading their lifecycle.
   - name: events
     description: Reading the telemetry a plugin has pushed.
+  - name: tokens
+    description: Minting, listing, and revoking scoped Admin API credentials.
+  - name: audit
+    description: Reading the record of every authenticated mutation.
 
 paths:
   /api/v1/servers:
@@ -265,6 +271,11 @@ paths:
         schema, so schema-invalid input never reaches the game server (spec
         section 7). A retry with the same `idempotencyKey` returns the
         original actionId instead of double-queueing.
+
+        Requires `actions:dispatch` covering the requested `code`. That check
+        runs before both the manifest lookup and the idempotency lookup, so
+        neither can be used to learn about an action the token may not
+        dispatch (spec section 10.2).
       requestBody:
         required: true
         content:
@@ -328,6 +339,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
@@ -343,6 +355,9 @@ paths:
       tags: [actions]
       operationId: getAction
       summary: Read one action's full lifecycle record.
+      description: |
+        Requires `actions:read` covering the action's own code, which
+        `actions:dispatch` over the same pattern implies (spec section 10.1).
       parameters:
         - name: actionId
           in: path
@@ -356,6 +371,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ActionRecord" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/servers/{serverId}/events:
@@ -410,13 +426,189 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: One page of the feed.
+          description: |
+            One page of the feed. A token narrowed by an
+            `events:read:{pattern}` scope sees only what that scope covers:
+            an absent `type` is narrowed to the grant rather than answered
+            with the whole feed (spec section 10.3).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/EventPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            An explicit `type` term the token's `events:read` grant does not
+            cover. Refused rather than narrowed, because a narrowed answer to
+            an explicit filter looks exactly like a complete one.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tokens:
+    get:
+      tags: [tokens]
+      operationId: listTokens
+      summary: List Admin API token records, newest first.
+      description: |
+        Requires `admin`. Revoked and expired records are included: an
+        operator auditing access needs to see what used to exist. No response
+        other than the mint ever carries a secret.
+      responses:
+        "200":
+          description: Every token record this hub knows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminTokenRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [tokens]
+      operationId: createToken
+      summary: Mint a scoped Admin API token.
+      description: |
+        Requires `admin`. The secret is returned in this response and is not
+        retrievable afterwards: the hub stores only a digest of it. A hub MUST
+        NOT mint a token carrying a scope its minter does not itself hold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Operator-facing label, recorded on every audit entry this token writes.
+                scopes:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  items: { $ref: "#/components/schemas/Scope" }
+                  description: |
+                    Grants, in the closed grammar of spec section 10.1. A scope
+                    the hub does not define is refused here rather than stored.
+                expiresInSeconds:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    Absent or zero mints a token that does not expire on its
+                    own. A hub MAY clamp a very short request up to a floor
+                    (reference floor: 60).
+            example:
+              name: panel
+              scopes: ["servers:read", "events:read:example-mod.*"]
+              expiresInSeconds: 2592000
+      responses:
+        "201":
+          description: The token record and its secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, secret]
+                properties:
+                  token: { $ref: "#/components/schemas/AdminTokenRecord" }
+                  secret:
+                    type: string
+                    description: Returned here and nowhere else, ever.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/tokens/{tokenId}:
+    delete:
+      tags: [tokens]
+      operationId: revokeToken
+      summary: Revoke a token.
+      description: |
+        Requires `admin`. Revocation takes effect on the next request. The
+        record survives, so the audit log's references to it keep resolving;
+        revoking twice is idempotent and does not move the recorded time.
+
+        A bootstrap credential has no record and so cannot be revoked here. It
+        is retired by removing it from the hub's configuration and restarting.
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/audit:
+    get:
+      tags: [audit]
+      operationId: listAudit
+      summary: Read the audit log, newest first.
+      description: |
+        Requires `admin`: the log names every credential and everything each
+        one changed, so a token that could read it could map the whole
+        installation. Every authenticated mutation appears here, successful or
+        refused; reads do not (spec section 10.5).
+      parameters:
+        - name: tokenId
+          in: query
+          required: false
+          description: Only entries written by this credential.
+          schema: { type: string }
+        - name: serverId
+          in: query
+          required: false
+          description: Only entries against this server.
+          schema: { type: string }
+        - name: since
+          in: query
+          required: false
+          description: Inclusive lower bound on `at`.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          required: false
+          description: Exclusive upper bound on `at`.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the hub's cap rather than refused.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          description: An opaque nextCursor from a previous page. Never parse or construct one.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of the log.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
 components:
   securitySchemes:
@@ -590,6 +782,91 @@ components:
             Opaque position to resume from. Absent on the last page, which is
             how a client knows to stop without fetching an empty one.
 
+    Scope:
+      type: string
+      maxLength: 160
+      description: |
+        One grant, `resource:verb` with an optional `:pattern` third field
+        (spec section 10.1). Resources and verbs are a closed set; a pattern is
+        `*`, a `{prefix}.*` namespace pattern, or an exact value.
+      pattern: "^(admin|servers:read|webhooks:manage|(events:read|actions:read|actions:dispatch|kv:rw)(:(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?))?)$"
+      example: "events:read:example-mod.*"
+
+    AdminTokenRecord:
+      type: object
+      description: An Admin API credential as the API reports it. Never carries the secret.
+      required: [id, name, scopes, createdAt, expiresAt, revokedAt]
+      properties:
+        id: { type: string }
+        name:
+          type: string
+          description: Operator-facing label, copied onto every audit entry this token writes.
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+        createdAt: { type: string, format: date-time }
+        createdBy:
+          type: string
+          description: |
+            Id of the token that minted this one. Absent when a bootstrap
+            credential did, since that has no record of its own.
+        expiresAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: Null when the token does not expire on its own.
+        revokedAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: Null while the token is live. The record outlives revocation.
+
+    AuditRecord:
+      type: object
+      description: One authenticated mutation (spec section 10.5).
+      required: [id, at, tokenId, tokenName, method, path, status, sourceIp, payloadDigest, detail]
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        tokenId:
+          type: string
+          description: Empty for a bootstrap credential, which has no token record.
+        tokenName:
+          type: string
+          description: |
+            What the credential was called at the time, so the entry stays
+            readable after the token is renamed or deleted.
+        method: { type: string }
+        path: { type: string }
+        status:
+          type: integer
+          description: The HTTP status the hub answered with. Refusals are recorded too.
+        sourceIp:
+          type: string
+          description: |
+            Peer address of the connection. Never taken from a forwarded
+            header, which is whatever the client typed.
+        payloadDigest:
+          type: string
+          description: SHA-256 of the request body in lowercase hex, empty when there was none.
+        serverId:
+          type: string
+          description: Present when the mutation named or created a server.
+        detail:
+          type: object
+          additionalProperties: true
+          description: |
+            What the mutation was, per route: the action code and resulting id
+            for a dispatch, the granted scopes for a mint.
+
+    AuditPage:
+      type: object
+      required: [records]
+      properties:
+        records:
+          type: array
+          items: { $ref: "#/components/schemas/AuditRecord" }
+          description: Newest first, by `at`.
+        nextCursor:
+          type: string
+          description: Opaque position to resume from. Absent on the last page.
+
     Error:
       type: object
       required: [error]
@@ -615,7 +892,15 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: Missing or invalid admin token.
+      description: Missing, unknown, revoked, or expired admin token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        A valid credential without the scope this call needs (spec section
+        10.2). Distinct from 401 on purpose: the caller authenticated, and
+        retrying with the same token will not help.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

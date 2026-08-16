@@ -17,11 +17,11 @@ protocol is game-agnostic by design.
 The project is **spec-first**: the [protocol specification](spec/protocol.html) and its
 conformance suites are the product; the hub and plugins are reference implementations.
 
-**Status:** early implementation. The protocol is at draft 0.8. The hub runs today with
+**Status:** early implementation. The protocol is at draft 0.10. The hub runs today with
 enrollment, sessions, the envelope exchange over long-poll, manifest publish with
-schema-subset validation, the full action lifecycle (dispatch, execute, observe, expire), and
-telemetry ingest with a queryable event feed, graded by forty-eight black-box conformance
-checks in CI. State snapshots come next.
+schema-subset validation, the full action lifecycle (dispatch, execute, observe, expire),
+telemetry ingest with a queryable event feed, and scoped Admin API tokens with an audit log,
+graded by fifty-five black-box conformance checks in CI. State snapshots come next.
 
 ## Start here
 

@@ -387,19 +387,19 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	parameters := r.URL.Query()
 
-	filters, ok := parseEventTypeFilters(w, parameters["type"])
+	filters, ok := s.eventFilters(w, r, parameters["type"])
 	if !ok {
 		return
 	}
-	since, ok := parseEventTime(w, parameters.Get("since"), "since")
+	since, ok := parseTimeParam(w, parameters.Get("since"), "since")
 	if !ok {
 		return
 	}
-	until, ok := parseEventTime(w, parameters.Get("until"), "until")
+	until, ok := parseTimeParam(w, parameters.Get("until"), "until")
 	if !ok {
 		return
 	}
-	limit, ok := parseEventLimit(w, parameters.Get("limit"))
+	limit, ok := parseLimitParam(w, parameters.Get("limit"), defaultEventPageSize, maxEventPageSize)
 	if !ok {
 		return
 	}
@@ -443,6 +443,51 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// eventFilters resolves what the caller may read from what it asked for, which
+// is where an `events:read:{pattern}` scope stops being a gate and starts
+// shaping the answer (spec section 10).
+//
+// The two cases are deliberately different. An explicit `type` term the token
+// does not fully cover is refused, because silently narrowing an explicit
+// question answers it with a feed that looks complete and is not. A request
+// with no `type` at all is narrowed to the grant instead, because there the
+// caller asked for "what I can see" and that is what it gets.
+func (s *Server) eventFilters(w http.ResponseWriter, r *http.Request, requested []string) ([]store.EventTypeFilter, bool) {
+	filters, ok := parseEventTypeFilters(w, requested)
+	if !ok {
+		return nil, false
+	}
+
+	caller := principalFrom(r.Context())
+	if len(requested) > 0 {
+		// Coverage is checked after parsing so that a malformed pattern is
+		// still answered as the bad request it is, rather than as a denial that
+		// would send the operator looking at their scopes.
+		for _, value := range requested {
+			pattern := strings.TrimSpace(value)
+			if !caller.covers(resourceEvents, verbRead, pattern) {
+				writeError(w, http.StatusForbidden, codeForbidden,
+					"this token does not carry a scope covering events:read:"+pattern)
+				return nil, false
+			}
+		}
+		return filters, true
+	}
+
+	// patternsFor is empty exactly when the grant is unnarrowed, because the
+	// route gate has already established that some events:read grant exists.
+	granted := caller.patternsFor(resourceEvents, verbRead)
+	narrowed := make([]store.EventTypeFilter, 0, len(granted))
+	for _, pattern := range granted {
+		if prefix, isPrefix := strings.CutSuffix(pattern, ".*"); isPrefix {
+			narrowed = append(narrowed, store.EventTypeFilter{Prefix: prefix + "."})
+			continue
+		}
+		narrowed = append(narrowed, store.EventTypeFilter{Exact: pattern})
+	}
+	return narrowed, true
 }
 
 // parseEventTypeFilters turns the repeated `type` parameter into query terms.
@@ -500,35 +545,9 @@ func parseEventTypeFilters(w http.ResponseWriter, values []string) ([]store.Even
 	return filters, true
 }
 
-func parseEventTime(w http.ResponseWriter, value, name string) (time.Time, bool) {
-	if value == "" {
-		return time.Time{}, true
-	}
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, name+" must be an RFC 3339 timestamp")
-		return time.Time{}, false
-	}
-	return parsed.UTC(), true
-}
-
-func parseEventLimit(w http.ResponseWriter, value string) (int, bool) {
-	if value == "" {
-		return defaultEventPageSize, true
-	}
-	limit, err := strconv.Atoi(value)
-	if err != nil || limit < 1 {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "limit must be a positive integer")
-		return 0, false
-	}
-	// Clamped rather than refused: a client asking for more than a page holds
-	// wants as much as it can get, and the cursor gives it the rest.
-	return min(limit, maxEventPageSize), true
-}
-
-// eventCursorLayout must render exactly what envelopeTimestamp does, because a
+// cursorLayout must render exactly what envelopeTimestamp does, because a
 // cursor is compared against stored timestamps as a string.
-const eventCursorLayout = "2006-01-02T15:04:05.000Z"
+const cursorLayout = "2006-01-02T15:04:05.000Z"
 
 // The cursor is opaque by contract (spec section 2.1), so its encoding may
 // change; what it must never be is an offset a caller could do arithmetic on,
@@ -556,7 +575,7 @@ func parseEventCursor(w http.ResponseWriter, value string) (store.EventCursor, b
 	if !found || eventID == "" {
 		return refuse()
 	}
-	parsed, err := time.Parse(eventCursorLayout, occurredAt)
+	parsed, err := time.Parse(cursorLayout, occurredAt)
 	if err != nil {
 		return refuse()
 	}
