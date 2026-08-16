@@ -41,6 +41,9 @@ technical quality.
 - Open an issue to discuss protocol changes before writing them up; envelope-level changes
   in particular need consensus.
 - Keep PRs focused: one design concern per PR.
+- Update `CHANGELOG.md` in the same PR as any notable change (new or removed files,
+  protocol edits, decisions). Entries are dated (YYYY-MM-DD) under **Unreleased**; typo
+  and wording fixes do not need entries.
 - Once code exists, plugin and hub changes must keep their conformance suites green.
 
 ## License
