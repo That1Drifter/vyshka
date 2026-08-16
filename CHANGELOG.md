@@ -12,6 +12,34 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: the envelope exchange over long-poll, the transport every later capability
+  rides on. `POST /plugin/v1/poll` carries both directions in one request: it applies the
+  plugin's ack and ingests its envelopes, then holds up to the negotiated `pollTimeout` and
+  flushes the moment anything is queued. Sequence numbers are per session and per direction,
+  starting at 1; acks are cumulative and monotonic; unacked envelopes are retransmitted
+  unchanged; envelopes above a gap are discarded rather than reordered; unknown types are
+  acked and ignored. The hub -> plugin queue is per server, so an envelope queued while the
+  game server is down survives and is renumbered into its next session. A held poll is
+  answered `401 session_invalid` the moment its session is revoked or superseded, rather
+  than being left to expire. `POST /api/v1/servers/{serverId}/envelopes` queues one envelope
+  (Admin API), refusing the types a dedicated endpoint owns so it can never route around
+  their validation, and server records now report `pendingEnvelopeCount`. Migration
+  `0003_envelopes.sql` adds `outbound_envelopes` and the per-session sequence columns.
+- 2026-08-16: `spec/envelopes.schema.json`, the machine-readable envelope and poll exchange
+  (JSON Schema draft 2020-12). CI now resolves its refs alongside the two OpenAPI documents
+  and rejects any ref that leaves its document.
+- 2026-08-16: the conformance suite's fake plugin (`conformance/hub/plugin.go`): a minimal
+  correct plugin that enrolls, opens a session, and tracks both directions' sequence state,
+  reused by every later slice rather than rewritten per check. Twelve new hub conformance
+  checks (twenty-nine total) covering poll authentication, the idle hold, delivery framing,
+  early flush, retransmission, cumulative and monotonic acks, out-of-range acks, contiguous
+  inbound acks with gaps and duplicates, malformed envelopes, queue durability across
+  sessions, revocation during a held poll, and queue-endpoint validation. The runner splits
+  `-timeout` (per request) from the new `-check-timeout` (per check) and gives long-polls
+  their own patient client.
+- 2026-08-16: `scripts/demo-poll.sh`, a curl walkthrough of the envelope exchange: a poll
+  held open, an envelope queued mid-hold and flushed at once, retransmission without an ack,
+  the ack retiring it, and the sequence rules in the other direction.
 - 2026-08-16: server enrollment and sessions, the first implemented protocol surface. The
   Admin API creates server records with one-time enrollment tokens
   (`POST /api/v1/servers`), lists and reads them, reissues a token
@@ -66,6 +94,16 @@ point if needed.
 
 ### Changed
 
+- 2026-08-16: `spec/protocol.md` draft 0.4 makes the transport normative. New section 3.1.2
+  specifies the poll request and response shapes and their error codes (`envelope_invalid`,
+  `ack_out_of_range`). Section 4 pins which envelope fields are required in which direction
+  and what a missing `v` means. Section 5.5 defines the Admin API envelope queue, and
+  section 5.1 gains `pendingEnvelopeCount` on the server record. Section 9 grows from three
+  bullets into the sequencing rules both sides implement: 9.1 sequence numbers and acks, 9.2
+  hub to plugin, 9.3 plugin to hub, 9.4 blocked-state honesty.
+- 2026-08-16: `README.md` and the Pages landing page now describe what actually runs. The
+  landing page had been left claiming draft 0.1 and no runnable code since before the
+  enrollment slice landed.
 - 2026-08-16: `spec/protocol.md` draft 0.3 makes enrollment and sessions normative rather
   than descriptive. New section 2.1 (HTTP conventions: JSON, opaque tokens, unknown fields
   tolerated) and 2.2 (the error envelope, with a table of general codes). Section 5 now

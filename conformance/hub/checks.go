@@ -28,6 +28,10 @@ type Check struct {
 type Env struct {
 	BaseURL string
 	Client  *http.Client
+	// PollClient is Client with a timeout long enough to let a hub hold a poll
+	// for the longest interval the protocol allows. A held request is correct
+	// behavior, so it must not look like a hang.
+	PollClient *http.Client
 	// AdminToken is the hub's bootstrap Admin API credential. The suite cannot
 	// grade enrollment without one, so the runner refuses to start without it.
 	AdminToken string
@@ -41,6 +45,10 @@ func (e Env) get(ctx context.Context, path string) (*http.Response, []byte, erro
 // do issues one request. body is marshalled as JSON when non-nil; bearer is
 // sent as an Authorization header when non-empty.
 func (e Env) do(ctx context.Context, method, path, bearer string, body any) (*http.Response, []byte, error) {
+	return e.doWith(e.Client, ctx, method, path, bearer, body)
+}
+
+func (e Env) doWith(client *http.Client, ctx context.Context, method, path, bearer string, body any) (*http.Response, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -61,7 +69,7 @@ func (e Env) do(ctx context.Context, method, path, bearer string, body any) (*ht
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 
-	resp, err := e.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -93,9 +101,41 @@ func (e Env) expect(ctx context.Context, method, path, bearer string, body any, 
 	return nil
 }
 
+// expectPoll issues one long-poll, which needs the patient client.
+func (e Env) expectPoll(ctx context.Context, sessionToken string, body any, wantStatus int, out any) error {
+	const path = "/plugin/v1/poll"
+	resp, responseBody, err := e.doWith(e.PollClient, ctx, http.MethodPost, path, sessionToken, body)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	if resp.StatusCode != wantStatus {
+		return fmt.Errorf("POST %s: want status %d, got %d, body %q",
+			path, wantStatus, resp.StatusCode, truncate(responseBody))
+	}
+	if out != nil {
+		if err := json.Unmarshal(responseBody, out); err != nil {
+			return fmt.Errorf("POST %s: decode body %q: %w", path, truncate(responseBody), err)
+		}
+	}
+	return nil
+}
+
+// expectPollError asserts a poll fails with a given status and protocol code.
+func (e Env) expectPollError(ctx context.Context, sessionToken string, body any, wantStatus int, wantCode string) error {
+	const path = "/plugin/v1/poll"
+	resp, responseBody, err := e.doWith(e.PollClient, ctx, http.MethodPost, path, sessionToken, body)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	if resp.StatusCode != wantStatus {
+		return fmt.Errorf("POST %s: want status %d, got %d, body %q",
+			path, wantStatus, resp.StatusCode, truncate(responseBody))
+	}
+	return assertErrorCode(http.MethodPost, path, responseBody, wantCode)
+}
+
 // expectError asserts a failed request answers with the protocol error envelope
-// and the expected code (spec section 2.2). wantCode may be empty to accept any
-// code, which is how checks assert the shape without over-fitting the code.
+// and the expected code (spec section 2.2).
 func (e Env) expectError(ctx context.Context, method, path, bearer string, body any, wantStatus int, wantCode string) error {
 	resp, responseBody, err := e.do(ctx, method, path, bearer, body)
 	if err != nil {
@@ -105,7 +145,13 @@ func (e Env) expectError(ctx context.Context, method, path, bearer string, body 
 		return fmt.Errorf("%s %s: want status %d, got %d, body %q",
 			method, path, wantStatus, resp.StatusCode, truncate(responseBody))
 	}
+	return assertErrorCode(method, path, responseBody, wantCode)
+}
 
+// assertErrorCode checks a failure body against the protocol error envelope.
+// wantCode may be empty to accept any code, which is how a check asserts the
+// shape without over-fitting to one hub's choice of code.
+func assertErrorCode(method, path string, responseBody []byte, wantCode string) error {
 	var failure struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -130,13 +176,14 @@ func (e Env) expectError(ctx context.Context, method, path, bearer string, body 
 // this suite grades.
 
 type serverRecord struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Game            string  `json:"game"`
-	CreatedAt       string  `json:"createdAt"`
-	CredentialState string  `json:"credentialState"`
-	LastSeenAt      *string `json:"lastSeenAt"`
-	Session         *struct {
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	Game                 string  `json:"game"`
+	CreatedAt            string  `json:"createdAt"`
+	CredentialState      string  `json:"credentialState"`
+	LastSeenAt           *string `json:"lastSeenAt"`
+	PendingEnvelopeCount int     `json:"pendingEnvelopeCount"`
+	Session              *struct {
 		ID                 string `json:"id"`
 		ExpiresAt          string `json:"expiresAt"`
 		PollTimeoutSeconds int    `json:"pollTimeoutSeconds"`
@@ -692,6 +739,495 @@ var checks = []Check{
 			}
 			return env.expectError(ctx, http.MethodGet, "/plugin/v1/session", env.AdminToken,
 				nil, http.StatusUnauthorized, "session_invalid")
+		},
+	},
+	{
+		ID:      "plugin.poll.auth",
+		Title:   "POST /plugin/v1/poll requires a live session token",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			for _, bearer := range []string{"", "vyt_conformance-not-a-session-token"} {
+				if err := env.expectPollError(ctx, bearer, pollRequest{},
+					http.StatusUnauthorized, "session_invalid"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.idleHold",
+		Title:   "An idle poll is held to the negotiated timeout and answers an empty batch",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: idle poll", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			started := time.Now()
+			response, err := plugin.pollAndAck(ctx)
+			if err != nil {
+				return err
+			}
+			held := time.Since(started)
+
+			if len(response.Envelopes) != 0 {
+				return fmt.Errorf("an idle poll answered with %d envelopes", len(response.Envelopes))
+			}
+			if response.PollTimeoutSeconds != shortPollTimeoutSeconds {
+				return fmt.Errorf("pollTimeoutSeconds = %d, want the negotiated %d",
+					response.PollTimeoutSeconds, shortPollTimeoutSeconds)
+			}
+			if _, err := time.Parse(time.RFC3339, response.SessionExpiresAt); err != nil {
+				return fmt.Errorf("sessionExpiresAt %q is not RFC 3339: %w",
+					response.SessionExpiresAt, err)
+			}
+
+			negotiated := time.Duration(shortPollTimeoutSeconds) * time.Second
+			if held < negotiated/2 {
+				return fmt.Errorf("the hub answered an idle poll after %s; it must hold up to %s",
+					held, negotiated)
+			}
+			if held > negotiated+5*time.Second {
+				return fmt.Errorf("the hub held for %s, past the %s it negotiated", held, negotiated)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.deliver",
+		Title:   "A queued envelope reaches the plugin, framed per spec section 4",
+		Section: "4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: delivery", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			envelopeType := unknownType()
+			queuedID, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, envelopeType,
+				map[string]any{"marker": "conformance"})
+			if err != nil {
+				return err
+			}
+
+			response, err := plugin.pollAndAck(ctx)
+			if err != nil {
+				return err
+			}
+			if len(response.Envelopes) != 1 {
+				return fmt.Errorf("got %d envelopes, want the one that was queued", len(response.Envelopes))
+			}
+
+			delivered := response.Envelopes[0]
+			if delivered.ID != queuedID {
+				return fmt.Errorf("envelope id = %q, want the queued %q", delivered.ID, queuedID)
+			}
+			if delivered.Type != envelopeType {
+				return fmt.Errorf("type = %q, want %q", delivered.Type, envelopeType)
+			}
+			if delivered.Seq != 1 {
+				return fmt.Errorf("seq = %d on the first envelope of a session, want 1", delivered.Seq)
+			}
+			if delivered.V < 1 {
+				return fmt.Errorf("v = %d, want the envelope version the session negotiated", delivered.V)
+			}
+			var body struct {
+				Marker string `json:"marker"`
+			}
+			if err := json.Unmarshal(delivered.Body, &body); err != nil {
+				return fmt.Errorf("decode envelope body %q: %w", truncate(delivered.Body), err)
+			}
+			if body.Marker != "conformance" {
+				return fmt.Errorf("the envelope body did not survive the round trip: %q",
+					truncate(delivered.Body))
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.earlyFlush",
+		Title:   "An envelope queued during a held poll is delivered without waiting the hold out",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			// A long hold, so that answering promptly cannot be confused with
+			// the hold simply expiring.
+			plugin, err := env.newFakePlugin(ctx, "conformance: early flush", 25)
+			if err != nil {
+				return err
+			}
+
+			held := plugin.pollInBackground(ctx, pollRequest{})
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+
+			result := <-held
+			if result.Err != nil {
+				return result.Err
+			}
+			if len(result.Response.Envelopes) != 1 {
+				return fmt.Errorf("the held poll answered with %d envelopes, want the one queued mid-hold",
+					len(result.Response.Envelopes))
+			}
+			if result.Elapsed > 5*time.Second {
+				return fmt.Errorf("the hub took %s to flush an envelope queued during a 25 s hold; it must respond as soon as messages are queued",
+					result.Elapsed)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.retransmit",
+		Title:   "An unacked envelope is delivered again on the next poll, unchanged",
+		Section: "9.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: retransmit", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+
+			// Deliberately never acking, so the same envelope must come back.
+			first, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if len(first.Envelopes) != 1 {
+				return fmt.Errorf("the first poll got %d envelopes, want 1", len(first.Envelopes))
+			}
+			second, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if len(second.Envelopes) != 1 {
+				return fmt.Errorf("the second poll got %d envelopes; an unacked envelope must be retransmitted",
+					len(second.Envelopes))
+			}
+			// A retransmission that differs cannot be deduplicated, so the
+			// identifying fields must survive it untouched.
+			sent, resent := first.Envelopes[0], second.Envelopes[0]
+			switch {
+			case sent.ID != resent.ID:
+				return fmt.Errorf("the retransmission changed id: %q then %q", sent.ID, resent.ID)
+			case sent.Seq != resent.Seq:
+				return fmt.Errorf("the retransmission changed seq: %d then %d", sent.Seq, resent.Seq)
+			case sent.TS != resent.TS:
+				return fmt.Errorf("the retransmission changed ts: %q then %q", sent.TS, resent.TS)
+			case sent.Type != resent.Type:
+				return fmt.Errorf("the retransmission changed type: %q then %q", sent.Type, resent.Type)
+			}
+
+			// Acked, so only what was queued afterwards is left to send.
+			acked := second.Envelopes[0]
+			nextID, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil)
+			if err != nil {
+				return err
+			}
+			third, err := plugin.poll(ctx, pollRequest{Ack: acked.Seq})
+			if err != nil {
+				return err
+			}
+			if len(third.Envelopes) != 1 || third.Envelopes[0].ID != nextID {
+				return fmt.Errorf("after acking seq %d, got %+v, want only the newly queued envelope",
+					acked.Seq, third.Envelopes)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.ackContiguous",
+		Title:   "Acks are cumulative and monotonic in the hub -> plugin direction",
+		Section: "9.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: cumulative acks", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			for range 3 {
+				if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+					return err
+				}
+			}
+
+			first, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if len(first.Envelopes) != 3 {
+				return fmt.Errorf("got %d envelopes, want the 3 that were queued", len(first.Envelopes))
+			}
+			for i, delivered := range first.Envelopes {
+				if delivered.Seq != int64(i+1) {
+					return fmt.Errorf("envelope %d has seq %d, want %d: a session numbers from 1, contiguously",
+						i, delivered.Seq, i+1)
+				}
+			}
+
+			// Acking 2 acks 1 as well, and leaves 3 outstanding.
+			second, err := plugin.poll(ctx, pollRequest{Ack: 2})
+			if err != nil {
+				return err
+			}
+			if len(second.Envelopes) != 1 || second.Envelopes[0].Seq != 3 {
+				return fmt.Errorf("after acking 2, got %+v, want only seq 3: an ack covers everything below it",
+					second.Envelopes)
+			}
+
+			// A stale ack must not resurrect what a higher one already retired.
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			third, err := plugin.poll(ctx, pollRequest{Ack: 3})
+			if err != nil {
+				return err
+			}
+			if len(third.Envelopes) != 1 || third.Envelopes[0].Seq != 4 {
+				return fmt.Errorf("after acking 3, got %+v, want only the newly queued seq 4", third.Envelopes)
+			}
+			fourth, err := plugin.poll(ctx, pollRequest{Ack: 1})
+			if err != nil {
+				return err
+			}
+			if len(fourth.Envelopes) != 1 || fourth.Envelopes[0].Seq != 4 {
+				return fmt.Errorf("a stale ack of 1 produced %+v, want only the still-unacked seq 4; acks are monotonic",
+					fourth.Envelopes)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.ackOutOfRange",
+		Title:   "An ack above what the hub has sent is refused",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: ack out of range", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			return plugin.pollExpectingError(ctx, pollRequest{Ack: 9999},
+				http.StatusBadRequest, "ack_out_of_range")
+		},
+	},
+	{
+		ID:      "plugin.poll.inbound",
+		Title:   "The hub acks the highest contiguous seq the plugin sends",
+		Section: "9.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: inbound acks", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			// One envelope queued per poll, so no poll in this check is held:
+			// grading the ack should not cost a hold each time.
+			nudge := func() error {
+				_, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil)
+				return err
+			}
+
+			if err := nudge(); err != nil {
+				return err
+			}
+			first, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{
+				plugin.nextOutbound(unknownType(), nil),
+				plugin.nextOutbound(unknownType(), nil),
+			}})
+			if err != nil {
+				return err
+			}
+			if first.Ack != 2 {
+				return fmt.Errorf("ack = %d after two envelopes, want 2", first.Ack)
+			}
+
+			// An envelope above a gap must not move the ack.
+			gapped := plugin.nextOutbound(unknownType(), nil)
+			gapped.Seq = 9
+			if err := nudge(); err != nil {
+				return err
+			}
+			afterGap, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{gapped}})
+			if err != nil {
+				return err
+			}
+			if afterGap.Ack != 2 {
+				return fmt.Errorf("ack = %d after an envelope above a gap, want it to stay at 2",
+					afterGap.Ack)
+			}
+
+			// A duplicate is acked again and is never an error.
+			duplicate := plugin.nextOutbound(unknownType(), nil)
+			duplicate.Seq = 1
+			next := plugin.nextOutbound(unknownType(), nil)
+			next.Seq = 3
+			if err := nudge(); err != nil {
+				return err
+			}
+			afterDuplicate, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{duplicate, next}})
+			if err != nil {
+				return err
+			}
+			if afterDuplicate.Ack != 3 {
+				return fmt.Errorf("ack = %d after a duplicate followed by the next envelope, want 3",
+					afterDuplicate.Ack)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.envelopeInvalid",
+		Title:   "A malformed inbound envelope is refused, naming what was wrong",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: malformed envelopes", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			noType := plugin.nextOutbound("", nil)
+			noID := plugin.nextOutbound(unknownType(), nil)
+			noID.ID = ""
+			badSeq := plugin.nextOutbound(unknownType(), nil)
+			badSeq.Seq = 0
+			futureVersion := plugin.nextOutbound(unknownType(), nil)
+			futureVersion.V = 99
+
+			for _, malformed := range []envelope{noType, noID, badSeq, futureVersion} {
+				if err := plugin.pollExpectingError(ctx, pollRequest{Envelopes: []envelope{malformed}},
+					http.StatusBadRequest, "envelope_invalid"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.queueOutlivesSession",
+		Title:   "An envelope queued with no session survives, and is renumbered into the next one",
+		Section: "9.2",
+		Run: func(ctx context.Context, env Env) error {
+			enrolled, created, err := env.newEnrolled(ctx, "conformance: queue outlives session")
+			if err != nil {
+				return err
+			}
+
+			// Queued while nothing is connected: durability, not delivery.
+			queuedID, err := env.queueEnvelope(ctx, created.Server.ID, unknownType(), nil)
+			if err != nil {
+				return err
+			}
+			var record serverRecord
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/servers/"+created.Server.ID,
+				env.AdminToken, nil, http.StatusOK, &record); err != nil {
+				return err
+			}
+			if record.PendingEnvelopeCount != 1 {
+				return fmt.Errorf("pendingEnvelopeCount = %d with one envelope queued, want 1",
+					record.PendingEnvelopeCount)
+			}
+
+			session, err := env.startSession(ctx, enrolled, shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			plugin := &fakePlugin{env: env, Creds: enrolled, Server: created, Session: session}
+
+			first, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if len(first.Envelopes) != 1 || first.Envelopes[0].ID != queuedID {
+				return fmt.Errorf("the first poll of a new session got %+v, want the envelope queued before it existed",
+					first.Envelopes)
+			}
+			if first.Envelopes[0].Seq != 1 {
+				return fmt.Errorf("seq = %d, want 1: each session numbers from the start",
+					first.Envelopes[0].Seq)
+			}
+
+			// A second session must renumber what the first never acked.
+			if err := plugin.reconnect(ctx, shortPollTimeoutSeconds); err != nil {
+				return err
+			}
+			second, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if len(second.Envelopes) != 1 || second.Envelopes[0].ID != queuedID {
+				return fmt.Errorf("the second session got %+v, want the still-unacked envelope",
+					second.Envelopes)
+			}
+			if second.Envelopes[0].Seq != 1 {
+				return fmt.Errorf("seq = %d in a fresh session, want 1: sequence state is per session",
+					second.Envelopes[0].Seq)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.revokedDuringHold",
+		Title:   "Revoking credentials answers a held poll at once, not at the end of the hold",
+		Section: "5.4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: revoked mid-hold", 25)
+			if err != nil {
+				return err
+			}
+
+			failed := make(chan error, 1)
+			started := time.Now()
+			go func() {
+				failed <- env.expectPollError(ctx, plugin.Session.SessionToken, pollRequest{},
+					http.StatusUnauthorized, "session_invalid")
+			}()
+			time.Sleep(250 * time.Millisecond)
+
+			if err := env.expect(ctx, http.MethodDelete,
+				"/api/v1/servers/"+plugin.Server.Server.ID+"/credentials", env.AdminToken,
+				nil, http.StatusNoContent, nil); err != nil {
+				return err
+			}
+
+			if err := <-failed; err != nil {
+				return err
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				return fmt.Errorf("the held poll took %s to answer 401 after revocation; it must not be left to expire",
+					elapsed)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.envelopes.queue",
+		Title:   "POST /api/v1/servers/{serverId}/envelopes validates what it queues",
+		Section: "5.5",
+		Run: func(ctx context.Context, env Env) error {
+			created, err := env.newServer(ctx, "conformance: queue validation")
+			if err != nil {
+				return err
+			}
+			path := "/api/v1/servers/" + created.Server.ID + "/envelopes"
+
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
+				map[string]any{"body": map[string]any{}}, http.StatusBadRequest, "bad_request"); err != nil {
+				return err
+			}
+			// The raw queue must not become a way around the endpoint that
+			// validates action payloads.
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
+				map[string]any{"type": "action.dispatch"}, http.StatusConflict, "conflict"); err != nil {
+				return err
+			}
+			if err := env.expectError(ctx, http.MethodPost,
+				"/api/v1/servers/conformance-no-such-server/envelopes", env.AdminToken,
+				map[string]any{"type": unknownType()}, http.StatusNotFound, "not_found"); err != nil {
+				return err
+			}
+			return env.expectError(ctx, http.MethodPost, path, "",
+				map[string]any{"type": unknownType()}, http.StatusUnauthorized, "unauthorized")
 		},
 	},
 	{

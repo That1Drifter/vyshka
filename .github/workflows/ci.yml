@@ -51,13 +51,20 @@ jobs:
           trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
           go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
 
-      - name: Validate the OpenAPI documents
+      - name: Validate the spec documents
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 - <<'PY'
-          import sys, yaml
-          for path in ("spec/openapi-admin.yaml", "spec/openapi-plugin.yaml"):
-              document = yaml.safe_load(open(path, encoding="utf-8"))
+          import json, sys, yaml
+
+          def load(path):
+              if path.endswith(".json"):
+                  return json.load(open(path, encoding="utf-8"))
+              return yaml.safe_load(open(path, encoding="utf-8"))
+
+          for path in ("spec/openapi-admin.yaml", "spec/openapi-plugin.yaml",
+                       "spec/envelopes.schema.json"):
+              document = load(path)
               refs = []
               def walk(node):
                   if isinstance(node, dict):
@@ -68,6 +75,8 @@ jobs:
                           walk(item)
               walk(document)
               for ref in sorted(set(refs)):
+                  if not ref.startswith("#"):
+                      sys.exit(f"{path}: $ref {ref} leaves the document; keep every ref local")
                   target = document
                   for part in ref.lstrip("#/").split("/"):
                       if part not in target:

@@ -77,6 +77,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enrolling replaces the secret and ends every session derived from the old
+	// one, so any poll held on those sessions has to stop holding.
+	s.waiters.notify(server.ID)
+
 	s.log.Info("server enrolled",
 		"serverId", server.ID, "game", server.Game,
 		"plugin", request.Plugin.Name, "pluginVersion", request.Plugin.Version)
@@ -171,6 +175,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, r, err)
 		return
 	}
+
+	// The previous session was just superseded; its held poll must learn that
+	// now rather than at the end of its hold.
+	s.waiters.notify(server.ID)
 
 	s.log.Info("session started",
 		"serverId", server.ID, "sessionId", session.ID,

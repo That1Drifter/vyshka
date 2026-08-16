@@ -10,17 +10,21 @@ game-agnostic from day one.
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.3), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.4), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
-machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml) and
-[`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml).
+machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
+[`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml), and
+[`spec/envelopes.schema.json`](spec/envelopes.schema.json).
 
 What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
-implements the first protocol surface, enrollment and sessions. An operator can register a
-game server, a plugin can trade its one-time enrollment token for permanent credentials and
-those credentials for a session, and revoking a server kills its session immediately. Seventeen
-conformance checks grade all of it in CI. Long-poll envelopes, manifests, and actions come next.
+implements the first two protocol surfaces. An operator can register a game server, a plugin
+can trade its one-time enrollment token for permanent credentials and those credentials for a
+session, and revoking a server kills its session immediately. On top of that sits the
+transport: a plugin holds a long-poll, the hub flushes queued envelopes into it the moment
+they arrive, and per-direction sequence numbers with cumulative acks make delivery
+at-least-once both ways. Twenty-nine conformance checks grade all of it in CI. Manifests and
+the action lifecycle come next.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -34,10 +38,11 @@ and `-log-level`. With no admin token configured the hub mints one at boot and l
 keeps first run to a single command; set the flag to keep it stable across restarts. Logs are
 structured JSON on stdout.
 
-To watch the whole enrollment flow in curl:
+To watch the protocol flows in curl:
 
 ```
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-enrollment.sh
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-poll.sh
 ```
 
 ## Why

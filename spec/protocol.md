@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.3 (2026-08-16)
+**Status:** draft 0.4 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -162,6 +162,67 @@ therefore the contract that keeps the hub's response ahead of the plugin's own d
 > value from 3 s to 120 s. A 25 s hold is reliable there once the plugin raises its own read
 > timeout, which is why 25 s stays the default and 60 s is the ceiling a hub must honor.
 
+#### 3.1.2 The poll exchange
+
+One poll carries both directions at once: what the plugin has to say, and what the hub has
+been holding for it.
+
+```
+POST /plugin/v1/poll
+Authorization: Bearer <sessionToken>
+{
+  "ack": 4181,
+  "envelopes": [
+    { "v": 1, "id": "01J5QN...", "type": "event.batch", "seq": 918, "ts": "...", "body": { } }
+  ]
+}
+
+-> 200 OK
+{
+  "envelopes": [
+    { "v": 1, "id": "01J5QK...", "type": "action.dispatch", "seq": 4182, "ts": "...", "body": { } }
+  ],
+  "ack": 918,
+  "pollTimeoutSeconds": 25,
+  "sessionExpiresAt": "2026-08-16T19:00:00Z"
+}
+```
+
+Both request fields are OPTIONAL: `{}` is a valid idle poll, and so is a poll that only
+acks or only sends.
+
+| Field | Direction | Meaning |
+|---|---|---|
+| `ack` (request) | plugin -> hub | Highest contiguous hub -> plugin `seq` the plugin has durably processed. `0`, or absent, acks nothing. |
+| `envelopes` (request) | plugin -> hub | Envelopes the plugin is sending, in ascending `seq` order. |
+| `envelopes` (response) | hub -> plugin | Envelopes queued for the plugin, in ascending `seq` order. Always present; an empty batch is `[]`, never `null`. |
+| `ack` (response) | hub -> plugin | Highest contiguous plugin -> hub `seq` the hub has durably processed. |
+| `pollTimeoutSeconds` | hub -> plugin | The effective hold time for this session, repeated so a plugin never has to cache it. |
+| `sessionExpiresAt` | hub -> plugin | When the session token stops working, so the plugin can renew before a poll fails. |
+
+Rules:
+
+- A hub MUST answer with `200` and an empty `envelopes` array when the hold expires with
+  nothing queued. An empty batch is a normal answer, not an error.
+- A hub MUST answer immediately, without holding, whenever any unacked envelope is already
+  queued for the session.
+- A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it
+  begins to hold, so that a poll which only acks takes effect at once rather than at the
+  end of the hold.
+- A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops
+  being live (superseded, revoked, or expired) rather than letting the hold run to term.
+- A hub MUST accept at least 200 envelopes in one poll request. It MAY cap the batch above
+  that, and MUST reject anything over its cap with `bad_request` rather than truncate it
+  silently: a plugin that believes an envelope was delivered will never resend it.
+- A hub MUST update the server record's `lastSeenAt` on every poll.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `session_invalid` | 401 | The session token is expired, unknown, or superseded (section 5.3) |
+| `envelope_invalid` | 400 | An inbound envelope is missing `id` or `type`, carries a `seq` that is absent or below 1, or declares an envelope version the hub does not speak (section 4). `details.index` names its position in the batch, and `details.seq` the envelope itself when it has one |
+| `ack_out_of_range` | 400 | `ack` is above the highest `seq` the hub has sent on this session |
+| `bad_request` | 400 | The batch exceeds the hub's envelope limit, or the body is malformed |
+
 ### 3.2 Upgrade: WebSocket (optional)
 
 A hub SHOULD additionally offer `GET /plugin/v1/ws` (WebSocket), carrying the same
@@ -194,14 +255,32 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 | Field | Type | Rules |
 |---|---|---|
 | `v` | integer | Envelope version. Bumps only on envelope-breaking changes. |
-| `id` | string | ULID, unique per message. |
+| `id` | string | ULID, unique per message and stable across retransmissions. |
 | `type` | string | Namespaced message type (`action.dispatch`, `event.batch`, ...). |
-| `seq` | integer | Per-session, per-direction monotonic sequence number (section 9). |
-| `ts` | string | RFC 3339 UTC timestamp. |
+| `seq` | integer | Per-session, per-direction monotonic sequence number, starting at 1 (section 9). |
+| `ts` | string | RFC 3339 UTC timestamp of when the message was created, not of when it was last sent. |
 | `body` | object | Type-specific payload. |
+
+`id`, `type`, `seq` and `ts` are REQUIRED on every envelope a sender emits. `v` is REQUIRED
+from the hub and OPTIONAL from a plugin, where its absence means the version the session
+negotiated as `envelopeVersion`.
+
+Receivers enforce that unevenly, on purpose:
+
+- A receiver MUST reject an envelope missing `id`, `type` or `seq`, or declaring a version
+  it does not speak. Without those it cannot deduplicate, route, order, or parse the
+  message, and guessing would be worse than refusing.
+- A receiver MUST NOT reject an envelope over `ts` alone. When `ts` is missing or
+  unparseable it MUST substitute its own receipt time wherever it records one. Some game
+  engines have no trustworthy clock, and losing a batch of real events to a wrong clock
+  costs more than an approximate timestamp does.
 
 Receivers MUST ack the highest contiguous `seq` they have durably processed; senders MUST
 retransmit anything above the ack. Unknown `type` values MUST be acked and ignored.
+
+A machine-readable schema for the envelope and the poll exchange is
+`spec/envelopes.schema.json`. It is a companion to this section, not a replacement for it:
+where the two disagree, this document wins.
 
 ## 5. Enrollment and sessions
 
@@ -251,6 +330,7 @@ Authorization: Bearer <admin token>
     "revokedAt": null,
     "credentialState": "none",
     "lastSeenAt": null,
+    "pendingEnvelopeCount": 0,
     "plugin": null,
     "session": null
   },
@@ -268,6 +348,8 @@ Authorization: Bearer <admin token>
   MUST report the effective expiry in `expiresAt`.
 - `credentialState` is `none` before enrollment, `active` once enrolled, `revoked` after
   revocation.
+- `pendingEnvelopeCount` is how many envelopes are queued for the server and not yet acked
+  (section 9.4).
 - `session` is `null` when no live session exists, otherwise
   `{ "id": ..., "expiresAt": ..., "pollTimeoutSeconds": ... }`.
 
@@ -279,6 +361,7 @@ Supporting endpoints, all requiring the `admin` scope:
 | `GET /api/v1/servers/{serverId}` | One server record |
 | `POST /api/v1/servers/{serverId}/enrollment-token` | `201` with a fresh one-time token; any unused earlier token for that server MUST be invalidated |
 | `DELETE /api/v1/servers/{serverId}/credentials` | `204`; revokes the server secret and kills its sessions (section 5.4) |
+| `POST /api/v1/servers/{serverId}/envelopes` | `202`; queues one envelope for the server (section 5.5) |
 
 ### 5.2 Enrollment (Plugin API)
 
@@ -375,6 +458,37 @@ boundary: the current session is invalidated at once, and a long-poll already he
 MUST be answered with `401 session_invalid` rather than being left to expire. The plugin
 then enters `buffering` (section 9) and retries its session, which fails with
 `credentials_revoked` until the operator issues a fresh enrollment token.
+
+### 5.5 Queueing an envelope (Admin API)
+
+```
+POST /api/v1/servers/{serverId}/envelopes
+Authorization: Bearer <admin token>
+{ "type": "example-mod.reload", "body": { "modules": ["loot"] } }
+
+-> 202 Accepted
+{ "envelope": { "id": "01J5QK...", "type": "example-mod.reload", "ts": "2026-08-16T18:00:00Z" } }
+```
+
+This is the transport-level primitive: it puts one envelope on the server's queue and
+returns. Everything the hub itself models (action dispatch, section 7) is defined in terms
+of the same queue, with its own endpoint and its own validation.
+
+- `type` is REQUIRED and MUST be non-empty. `body` is OPTIONAL and defaults to `{}`.
+- The hub assigns `id` and `ts`. It does not assign `seq` here: sequence numbers belong to
+  a session, and an envelope may be queued while no session exists (section 9.2). The
+  response therefore carries no `seq`.
+- A hub MUST reject a `type` it models with a dedicated endpoint (`action.*`) with
+  `conflict`, so that this endpoint can never be used to route around the validation that
+  endpoint performs.
+- Queueing does not require a live session, and MUST NOT fail because the server has none.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | `type` is missing, empty, or too long |
+| `conflict` | 409 | `type` is reserved for an endpoint that validates it |
+| `not_found` | 404 | No such server |
+| `outbound_queue_full` | 409 | The server's queue is at its bound (section 9.2) |
 
 ## 6. Registration: the manifest
 
@@ -561,19 +675,62 @@ protocol.
 
 ## 9. Delivery guarantees
 
-- **Plugin -> hub:** the plugin MUST persist an outbound ring buffer (file-backed where the
-  engine allows, memory otherwise; reference default 5 000 envelopes) and MUST NOT drop an
-  envelope until the hub has acked its `seq`. A game-server crash loses at most the
-  unflushed tail; a hub restart loses nothing, because acks are only sent after durable
-  writes.
-- **Hub -> plugin:** queued actions are durable, survive hub restarts, and are re-delivered
-  until acked or expired. Re-delivery plus `actionId` gives at-least-once delivery with
-  plugin-side dedup: the plugin MUST keep a small LRU of executed action ids and MUST NOT
-  execute the same `actionId` twice.
-- **Blocked-state honesty:** the plugin SHOULD expose its link state in-game
-  (`connected | degraded | buffering`), and the hub MUST expose the mirror (`lastSeenAt`,
-  a `bufferedEventCount` estimate) on the server record. Nothing may be dropped without a
-  visible counter incrementing.
+### 9.1 Sequence numbers and acks
+
+Each direction of each session has its own sequence space. Both work the same way, so a
+plugin and a hub implement one mechanism twice rather than two mechanisms once.
+
+- A sender assigns `seq` values that start at **1** for each new session and increase by
+  one per envelope. Sequence state is per session, which is why a hub holds at most one
+  live session per server (section 5.3): a restarted game server never inherits the
+  ambiguous sequence state of its own previous session.
+- A receiver tracks the highest `seq` it has durably processed **with no gap below it**,
+  and reports that number as its ack. Acking N acks everything at or below N; there are no
+  selective or negative acks.
+- A receiver MUST process envelopes in ascending `seq` order and MUST NOT advance its ack
+  past a gap. An envelope above a gap MAY be discarded; the sender's retransmission rule
+  recovers it.
+- A receiver MUST treat an envelope at or below its ack as a duplicate: acknowledged again,
+  processed no further, and never an error. This is what makes at-least-once delivery safe
+  to build on.
+- Acks are monotonic. A receiver MUST NOT lower an ack it has already reported, and a
+  sender MUST ignore an ack below the one it has already recorded.
+- A sender MUST retransmit every envelope above the receiver's ack, unchanged: same `id`,
+  same `seq`, same `ts`, same `body`. Only then can the receiver deduplicate.
+- Unknown `type` values are ordinary traffic for this purpose: they advance the ack like
+  anything else (section 4), because a receiver that stalled its ack on a message it did
+  not understand would block every later message behind it.
+
+### 9.2 Hub -> plugin
+
+- Queued envelopes are durable. They survive a hub restart, and they survive the session
+  they were queued in: an envelope queued while no plugin is connected MUST be delivered on
+  the next session, renumbered into that session's sequence space.
+- The hub re-delivers until acked or expired. Re-delivery plus `actionId` gives
+  at-least-once delivery with plugin-side dedup: the plugin MUST keep a small LRU of
+  executed action ids and MUST NOT execute the same `actionId` twice.
+- A plugin SHOULD ack on the poll that follows a delivery. A plugin that never acks will be
+  handed the same envelopes on every poll, which is correct behavior on the hub's part and
+  a bug on the plugin's.
+- A hub MUST bound its per-server queue (reference default 5 000 envelopes) and MUST refuse
+  new work with `outbound_queue_full` when the bound is reached, rather than discarding
+  envelopes it has already accepted.
+
+### 9.3 Plugin -> hub
+
+- The plugin MUST persist an outbound ring buffer (file-backed where the engine allows,
+  memory otherwise; reference default 5 000 envelopes) and MUST NOT drop an envelope until
+  the hub has acked its `seq`. A game-server crash loses at most the unflushed tail; a hub
+  restart loses nothing, because acks are only sent after durable writes.
+- A hub MUST NOT ack an envelope it has not durably processed. Answering a poll is not an
+  ack: the number in the response body is.
+
+### 9.4 Blocked-state honesty
+
+The plugin SHOULD expose its link state in-game (`connected | degraded | buffering`), and
+the hub MUST expose the mirror on the server record: `lastSeenAt`, and
+`pendingEnvelopeCount`, the number of envelopes queued for the server and not yet acked.
+Nothing may be dropped without a visible counter incrementing.
 
 ## 10. Admin API authorization and audit
 

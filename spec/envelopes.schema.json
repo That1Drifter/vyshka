@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vyshka.dev/spec/envelopes.schema.json",
+  "title": "Vyshka envelopes and the poll exchange",
+  "description": "Machine-readable companion to spec/protocol.md sections 3.1.2, 4 and 9. The prose document is normative: where the two disagree, the prose wins. This document defines no root constraint of its own: it is a library of definitions, referenced as `envelopes.schema.json#/$defs/envelope` and so on, because the three shapes here travel in different places and validating them against a single root would only be a way to accept all three everywhere.",
+  "$defs": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Per-session, per-direction sequence number. Starts at 1 and increases by one per envelope."
+    },
+    "ack": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Highest contiguous seq the sender of this field has durably processed. 0 acks nothing."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 with a UTC offset. The time the message was created, not the time it was last sent. A receiver substitutes its own receipt time rather than reject an envelope whose ts is missing or unparseable."
+    },
+    "envelope": {
+      "type": "object",
+      "title": "Envelope",
+      "description": "The framed message unit exchanged between plugin and hub, in both directions and over both transports.",
+      "comment": "A sender must emit all of id, type, seq and ts. A receiver refuses an envelope missing id, type or seq, but never refuses one over ts alone: it substitutes its own receipt time. This schema states the sender's obligation.",
+      "required": ["id", "type", "seq", "ts"],
+      "properties": {
+        "v": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Envelope version. Required from the hub, optional from a plugin, where absence means the session's negotiated envelopeVersion. Bumps only on envelope-breaking changes."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Unique per message and stable across retransmissions. ULID in this protocol's own implementations."
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Namespaced message type. Unknown values are acked and ignored, never fatal."
+        },
+        "seq": { "$ref": "#/$defs/seq" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "body": {
+          "type": "object",
+          "default": {},
+          "description": "Type-specific payload. Body-level evolution is additive: receivers must ignore unknown fields."
+        }
+      },
+      "additionalProperties": true
+    },
+    "pollRequest": {
+      "type": "object",
+      "title": "Poll request",
+      "description": "Body of POST /plugin/v1/poll. Every field is optional: {} is a valid idle poll.",
+      "properties": {
+        "ack": { "$ref": "#/$defs/ack" },
+        "envelopes": {
+          "type": "array",
+          "description": "Envelopes the plugin is sending, in ascending seq order. A hub accepts at least 200 per request.",
+          "items": { "$ref": "#/$defs/envelope" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "pollResponse": {
+      "type": "object",
+      "title": "Poll response",
+      "description": "Body of a 200 answer to POST /plugin/v1/poll.",
+      "required": ["envelopes", "ack", "pollTimeoutSeconds", "sessionExpiresAt"],
+      "properties": {
+        "envelopes": {
+          "type": "array",
+          "description": "Envelopes queued for the plugin, in ascending seq order. Always present; an empty batch is [], never null.",
+          "items": { "$ref": "#/$defs/envelope" }
+        },
+        "ack": { "$ref": "#/$defs/ack" },
+        "pollTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 60,
+          "description": "Effective hold time for this session, repeated so a plugin never has to cache it."
+        },
+        "sessionExpiresAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

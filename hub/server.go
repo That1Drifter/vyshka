@@ -72,8 +72,10 @@ type Server struct {
 	// adminTokenHash is the digest of the bootstrap admin token; the token
 	// itself is never held in memory after boot.
 	adminTokenHash string
-	handler        http.Handler
-	started        time.Time
+	// waiters wakes held long-polls when something changes for their server.
+	waiters *waiters
+	handler http.Handler
+	started time.Time
 }
 
 // New opens the store, runs migrations, and builds the HTTP handler. The caller
@@ -117,6 +119,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		log:            cfg.Logger,
 		store:          st,
 		adminTokenHash: token.Hash(adminToken),
+		waiters:        newWaiters(),
 		started:        time.Now(),
 	}
 	s.handler = s.routes()
@@ -155,6 +158,10 @@ func (s *Server) routes() http.Handler {
 		s.requireAdmin(s.handleRevokeCredentials))
 	mux.HandleFunc("/api/v1/servers/{serverId}/credentials", methodNotAllowed("DELETE"))
 
+	mux.HandleFunc("POST /api/v1/servers/{serverId}/envelopes",
+		s.requireAdmin(s.handleQueueEnvelope))
+	mux.HandleFunc("/api/v1/servers/{serverId}/envelopes", methodNotAllowed("POST"))
+
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
 	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)
@@ -163,6 +170,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /plugin/v1/session", s.handleCreateSession)
 	mux.HandleFunc("GET /plugin/v1/session", s.handleGetSession)
 	mux.HandleFunc("/plugin/v1/session", methodNotAllowed("GET", "POST"))
+
+	// The transport heartbeat (spec section 3.1.2).
+	mux.HandleFunc("POST /plugin/v1/poll", s.handlePoll)
+	mux.HandleFunc("/plugin/v1/poll", methodNotAllowed("POST"))
 
 	mux.HandleFunc("/", s.handleNotFound)
 

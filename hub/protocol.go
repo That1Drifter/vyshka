@@ -64,16 +64,19 @@ func normalizeGame(game string) string {
 // serverView is the Admin API representation of a server record. It never
 // carries a credential: the hub stores only digests and cannot reveal one.
 type serverView struct {
-	ID              string       `json:"id"`
-	Name            string       `json:"name"`
-	Game            string       `json:"game"`
-	CreatedAt       time.Time    `json:"createdAt"`
-	EnrolledAt      *time.Time   `json:"enrolledAt"`
-	RevokedAt       *time.Time   `json:"revokedAt"`
-	CredentialState string       `json:"credentialState"`
-	LastSeenAt      *time.Time   `json:"lastSeenAt"`
-	Plugin          *pluginView  `json:"plugin"`
-	Session         *sessionView `json:"session"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Game            string     `json:"game"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	EnrolledAt      *time.Time `json:"enrolledAt"`
+	RevokedAt       *time.Time `json:"revokedAt"`
+	CredentialState string     `json:"credentialState"`
+	LastSeenAt      *time.Time `json:"lastSeenAt"`
+	// PendingEnvelopeCount is how much work is queued for this server and not
+	// yet acked: the operator's view of a link that has stopped draining.
+	PendingEnvelopeCount int          `json:"pendingEnvelopeCount"`
+	Plugin               *pluginView  `json:"plugin"`
+	Session              *sessionView `json:"session"`
 }
 
 type pluginView struct {
@@ -88,16 +91,17 @@ type sessionView struct {
 	PollTimeoutSeconds int       `json:"pollTimeoutSeconds"`
 }
 
-func newServerView(server store.Server, session *store.Session) serverView {
+func newServerView(server store.Server, session *store.Session, pendingEnvelopes int) serverView {
 	view := serverView{
-		ID:              server.ID,
-		Name:            server.Name,
-		Game:            server.Game,
-		CreatedAt:       server.CreatedAt,
-		EnrolledAt:      server.EnrolledAt,
-		RevokedAt:       server.RevokedAt,
-		CredentialState: server.CredentialState(),
-		LastSeenAt:      server.LastSeenAt,
+		ID:                   server.ID,
+		Name:                 server.Name,
+		Game:                 server.Game,
+		CreatedAt:            server.CreatedAt,
+		EnrolledAt:           server.EnrolledAt,
+		RevokedAt:            server.RevokedAt,
+		CredentialState:      server.CredentialState(),
+		LastSeenAt:           server.LastSeenAt,
+		PendingEnvelopeCount: pendingEnvelopes,
 	}
 	if server.PluginName != "" || server.PluginVersion != "" || len(server.Transports) > 0 {
 		view.Plugin = &pluginView{
