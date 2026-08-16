@@ -1,0 +1,70 @@
+# Vyshka
+
+*Vyshka (вышка): Russian for "watchtower". The hub that watches the server and relays what it sees.*
+
+Vyshka is an open source, self-hosted integration hub for game servers: a single-binary
+backend (the hub) that connects in-game plugins to a public admin API for remote actions,
+telemetry, live state, webhooks, and per-mod storage. DayZ is the first supported game;
+Arma Reforger is the explicit second target, and the protocol is designed to be
+game-agnostic from day one.
+
+## Status: design phase
+
+There is no runnable code yet. The project is currently a protocol design spec (draft 0.3).
+The spec and its conformance suites are the primary product; the hub and plugins are
+reference implementations of it. The spec will be published in this repository as
+`spec/protocol.md` alongside machine-readable OpenAPI and JSON Schema artifacts.
+
+## Why
+
+Server admins who want remote actions, live maps, and event feeds today mostly rely on
+hosted third-party services: an account with someone else, per-seat billing, and an opaque
+pipeline between the game server and the tools. Vyshka's goals are the opposite:
+
+- **Self-hosted, single binary.** `./vyshka-hub` with embedded SQLite is the whole install
+  story. Postgres via `DATABASE_URL` for those who need it. No account with anyone, no
+  phone-home.
+- **Spec-first.** A published protocol plus black-box conformance suites, so anyone can
+  write a plugin for any game without reading hub source.
+- **Everything is a tracked job.** Actions have observable lifecycles
+  (queued, delivered, running, completed/failed/expired), delivery is at-least-once in both
+  directions, and nothing is dropped without a counter incrementing somewhere visible.
+- **Least privilege by default.** Scoped admin tokens down to per-action granularity, and a
+  built-in audit log.
+
+## Architecture
+
+```
++------------------+        Plugin API         +-----------+       Admin API        +----------------+
+| Game server      |  <== long-poll / WS ==>   |  Vyshka   |  <== REST + webhooks ==| Admin tools,   |
+|  + Vyshka        |                           |    hub    |                        | bots, panel,   |
+|    plugin (mod)  |                           | (1 binary)|                        | Discord bridge |
++------------------+                           +-----------+                        +----------------+
+                                                    |
+                                              SQLite / Postgres
+```
+
+Three components: a Go **hub**, per-game **plugins** speaking a game-agnostic Plugin API
+(HTTP long-poll baseline, optional WebSocket upgrade), and an optional embedded web
+**panel** that is a thin client over the Admin API. Plugin API and Admin API are separate
+auth realms.
+
+## Roadmap
+
+| Milestone | Deliverable |
+|---|---|
+| M0 | Spec, envelope schemas, OpenAPI; conformance suites run against stubs |
+| M1 | Hub core: enrollment, sessions, long-poll, manifests, action lifecycle, SQLite |
+| M2 | DayZ plugin |
+| M3 | Telemetry, state snapshots, webhooks, KV store |
+| M4 | Scoped tokens, audit log, panel v1 |
+| M5 | Custom contexts, Arma Reforger plugin, `--auto-tls` |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Note the clean-room provenance policy there before
+touching anything protocol- or plugin-related.
+
+## License
+
+[Apache-2.0](LICENSE).
