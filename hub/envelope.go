@@ -41,14 +41,20 @@ type envelope struct {
 // not speak and must be refused. A plain int collapses the two and quietly
 // accepts the second.
 //
-// `ts` is a string rather than a time.Time so that a clock a game engine got
-// wrong costs one ignored field instead of a rejected batch of real events.
+// `ts` is raw, and deliberately neither a time.Time nor a string. Section 4
+// forbids rejecting an envelope over `ts` alone, and any typed field breaks that
+// at the decoder before a rule of ours ever runs: one `"ts": 1755367200` in a
+// poll would fail the whole request body's unmarshal and cost every envelope
+// travelling with it. Worse, a sender must retransmit unacked envelopes
+// unchanged (section 9.1), so it would come back on every poll and wedge the
+// session until the plugin itself was fixed. Anything that comes to read this
+// field must go through a tolerant accessor, as eventTimestamp does for events.
 type inboundEnvelope struct {
 	V    *int            `json:"v"`
 	ID   string          `json:"id"`
 	Type string          `json:"type"`
 	Seq  int64           `json:"seq"`
-	TS   string          `json:"ts"`
+	TS   json.RawMessage `json:"ts"`
 	Body json.RawMessage `json:"body"`
 }
 

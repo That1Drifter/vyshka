@@ -12,6 +12,51 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: telemetry event ingest and query (spec section 8), the first surface that runs
+  plugin to operator rather than the other way. A plugin pushes `event.batch` envelopes over
+  the existing transport; core `core.*` events and mod-defined `{namespace}.{name}` events
+  share one channel, one append-only table, and one query, so nothing in the hub can
+  privilege a core event over a custom one. Undeclared custom events are stored like any
+  other (section 6.3). Events land in the same transaction as the inbound ack that covers
+  them, which makes ingest idempotent through the section 9.1 sequence machinery alone: a
+  retransmitted batch is stored once, with no per-event identity. An event whose `ts` is
+  absent, unparseable, or implausibly far ahead of the hub's clock takes receipt time
+  instead, and both clocks are reported side by side rather than reconciled. A batch over
+  200 events, or carrying an event whose type is outside the `{namespace}.{name}` grammar or
+  whose `data` is not an object or exceeds 16 KiB, is refused whole and answered with a
+  queued `event.reject`; the poll still succeeds and the envelope is still acked, as with
+  `manifest.reject`. Operators read the feed at
+  `GET /api/v1/servers/{serverId}/events` with repeatable `type` patterns (exact,
+  `{namespace}.*`, or `*`, ORed), a half-open `since`/`until` window, and opaque cursor
+  pagination ordered on `(occurredAt, id)` so events sharing a millisecond can neither repeat
+  nor go missing. Retention is per type pattern (reference defaults: 30 days, 90 for
+  `core.player.chat`), stamped at ingest and counted from receipt, with a bounded prune pass
+  on the hub's maintenance loop. Protocol draft 0.8 makes the batch shape, the type grammar,
+  the timestamp substitution, whole-batch rejection, and the query endpoint normative
+  (sections 8.1, 8.4, and the new 8.5); `spec/events.schema.json` is the machine-readable
+  companion, validated in CI, and `spec/openapi-admin.yaml` 0.8.0 covers the query. Five new
+  hub conformance checks (forty-eight total) grade a core and a custom event coming back
+  through one filter, whole-batch rejection with its notice, filtering and pagination,
+  retransmission storing once, and one server's telemetry staying out of another's feed.
+  Migration `0006_events.sql` adds the `events` table. `scripts/demo-events.sh` walks the
+  whole exchange in curl. The raw queue endpoint now refuses `event.*` alongside `manifest.*`
+  and `action.*`, so a forged `event.reject` cannot be queued as the hub's own word.
+  Hardened under adversarial review before landing: an event's `ts` is decoded as raw JSON
+  rather than a string, so one wrongly typed timestamp costs that timestamp instead of
+  failing the whole body's decode and every good event in the batch (graded by the ingest
+  check, which now sends an unparseable, a numeric, and a null `ts`); the per-poll event
+  budget is charged inside the ingest transaction against the envelopes actually being
+  accepted, so retransmitted batches, which store nothing, can no longer push a new batch
+  over the line and lose its events; `event.reject` notices are capped per poll (draft 0.8
+  permits the cap and requires the suppression be recorded), because a poll may carry 500
+  refusable batches and each notice is a queue insert inside the store's single-connection
+  transaction; a negative `EventPruneInterval` no longer panics `time.NewTicker` moments
+  after a successful boot; `PruneEvents` clamps a non-positive bound rather than letting
+  SQLite read it as no bound at all; query bounds finer than a millisecond round to the
+  stored resolution instead of truncating, which had let an inclusive `since` admit an event
+  below it; and an empty `type=` is refused rather than read as the catch-all, which had
+  answered an unset filter with the whole feed.
+
 - 2026-08-16: the action lifecycle end to end (spec section 7), the core tracer bullet.
   `POST /api/v1/servers/{serverId}/actions` validates a dispatch against the server's stored
   manifest before anything is queued (undeclared code: `unknown_action`; schema faults:
@@ -151,6 +196,34 @@ point if needed.
 
 ### Fixed
 
+- 2026-08-16: an envelope whose `ts` was the wrong JSON type wedged the session. The inbound
+  `ts` was decoded into a string field, so `"ts": 1755367200` failed the whole poll body at
+  `encoding/json`, before any rule of the hub's own ran: `400 bad_request`, nothing in the
+  poll processed, including the good envelopes travelling with it. Because a sender must
+  retransmit unacked envelopes unchanged (section 9.1), the same envelope came back on every
+  poll and the ack never advanced, so a plugin with a wrong clock type could not recover
+  without being redeployed. The field is now raw and read tolerantly, the way the event `ts`
+  already was: absent, null, and wrong-type all mean "no usable timestamp" and receipt time
+  stands in. Section 4 now says plainly that a wrongly typed `ts` is unparseable for this
+  purpose, and in `spec/envelopes.schema.json` the receiver-view `envelope` no longer
+  constrains `ts` to a string at all, since that definition is advertised as safe to use as
+  an admission filter; `hubEnvelope` and `pluginEnvelope` carry the constraint, which is
+  where the sender's obligation belongs. `plugin.poll.inboundTolerance` grades it. Found by
+  adversarial review of the event ingest slice; the defect predates it.
+- 2026-08-16: one poll could queue an unbounded number of `manifest.reject` notices. A poll
+  may legally carry 500 envelopes, so a plugin looping on a manifest it kept failing to fix
+  bought up to 500 queue inserts inside the store's single transaction and filled its own
+  outbound queue with complaints about its own bug, until that server could no longer be
+  dispatched an action. Rejection notices now share one per-poll budget across every notice
+  kind (`maxNoticesPerPoll`, 20), replacing the event-only cap; the refusals themselves are
+  unaffected and the suppressed count reaches the hub's log. Section 6.4 carries the same
+  permission clause section 8.1 had, including the requirement that suppression be recorded
+  where an operator can see it, and both sections now state the cap as an exception to their
+  "the rejection MUST NOT be silent" rule rather than leaving the two paragraphs to
+  contradict each other. `plugin.manifest.rejectStorm` grades what every hub owes whether or
+  not it caps: a poll made entirely of refusals succeeds, real notices come back naming
+  envelopes the plugin actually sent, and no refusal is answered with more than one notice.
+  Found by adversarial review of the event ingest slice; the defect predates it.
 - 2026-08-16: a superseded session could take delivery of envelopes belonging to its
   successor. A poll authenticates and only then reaches the store; in that window a
   restarting game server could open a new session, and the stale poll would renumber

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vyshka.dev/spec/events.schema.json",
+  "title": "Vyshka telemetry envelope bodies",
+  "description": "Machine-readable companion to spec/protocol.md section 8.1. The prose document is normative: where the two disagree, the prose wins. Like the other schema documents this is a library of definitions with no root constraint: reference `#/$defs/eventBatch` for the plugin -> hub body and `#/$defs/eventReject` for the hub -> plugin refusal.",
+  "$defs": {
+    "eventType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$",
+      "description": "A {namespace}.{name} type: two or more non-empty segments of letters, digits, _ and -, separated by dots. Core types are the `core.*` list of section 8.1; everything else is a custom event and is stored, routed, and retained identically."
+    },
+    "event": {
+      "type": "object",
+      "title": "one event",
+      "required": ["t"],
+      "properties": {
+        "t": { "$ref": "#/$defs/eventType" },
+        "ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened on the game server. Optional. This is what a plugin MUST send, but it is not what a hub may insist on receiving: a hub substitutes its own receipt time when ts is absent, unparseable, of the wrong JSON type, or implausibly far in the future, and never refuses an event over it alone. A hub that enforced this constraint would lose a batch of real events to one bad clock."
+        },
+        "data": {
+          "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],
+          "description": "Type-specific payload, bounded by the hub (reference cap 16 KiB, measured on the raw bytes of the serialized value). Absent and null both read as an empty object."
+        }
+      },
+      "additionalProperties": true
+    },
+    "eventBatch": {
+      "type": "object",
+      "title": "event.batch body",
+      "description": "Plugin -> hub. A batch is accepted or refused whole: a hub that refuses one stores none of its events, because the ack is per envelope and there is no per-event receipt a plugin could reconcile a partial accept against.",
+      "required": ["events"],
+      "properties": {
+        "events": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/$defs/event" },
+          "description": "Up to 200 events. An empty array is a plugin flushing nothing: legal, and it stores nothing."
+        }
+      },
+      "additionalProperties": true
+    },
+    "eventReject": {
+      "type": "object",
+      "title": "event.reject body",
+      "description": "Hub -> plugin, queued when a batch was refused. Envelope-level success: the refused envelope is still acked, the session stays up, and the plugin must not treat this as a transport error. The events it names are gone, and this notice is the visible counter section 9.4 requires.",
+      "required": ["envelopeId", "errors"],
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The id of the event.batch envelope this rejection answers."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "message"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "A path into the rejected body, such as events[3].t. Empty when the fault is the body as a whole."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable, never parsed."
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Bounded by the hub (reference cap 20 entries); a batch wrong in more ways than that is wrong enough to fix iteratively."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

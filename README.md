@@ -10,14 +10,15 @@ game-agnostic from day one.
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.7), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.8), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
 [`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml),
 [`spec/envelopes.schema.json`](spec/envelopes.schema.json),
-[`spec/manifest.schema.json`](spec/manifest.schema.json), and
-[`spec/actions.schema.json`](spec/actions.schema.json).
+[`spec/manifest.schema.json`](spec/manifest.schema.json),
+[`spec/actions.schema.json`](spec/actions.schema.json), and
+[`spec/events.schema.json`](spec/events.schema.json).
 
 What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
 implements the first four protocol surfaces. An operator can register a game server, a plugin
@@ -32,8 +33,11 @@ and serves the result to operators at `GET /api/v1/servers/{id}/manifest`. And o
 manifest sits the core tracer bullet, the action lifecycle: an operator dispatches an action
 (validated against the manifest schema before anything is queued), the plugin executes it and
 reports, and every state of `queued -> delivered -> running -> completed/failed/expired` is
-observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Forty-three
-conformance checks grade all of it in CI. Telemetry ingest comes next.
+observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Telemetry
+runs the other way on the same transport: a plugin pushes `event.batch` envelopes, core and
+mod-defined events land in one append-only store with per-type retention, and operators query
+them at `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Forty-eight
+conformance checks grade all of it in CI. State snapshots come next.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -54,6 +58,7 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-enrollment.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-poll.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-manifest.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-action.sh
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-events.sh
 ```
 
 ## Why

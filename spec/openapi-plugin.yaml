@@ -228,7 +228,13 @@ paths:
                   type: event.batch
                   seq: 918
                   ts: "2026-08-16T18:00:00Z"
-                  body: {}
+                  body:
+                    events:
+                      - t: core.player.death
+                        ts: "2026-08-16T17:59:58Z"
+                        data: { weapon: M4A1, distance: 312.5 }
+                      - t: example-mod.raid.started
+                        data: { territoryId: t-19, attackers: 4 }
       responses:
         "200":
           description: |

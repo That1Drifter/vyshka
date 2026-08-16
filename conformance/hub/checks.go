@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -847,7 +848,7 @@ var checks = []Check{
 	},
 	{
 		ID:      "plugin.poll.inboundTolerance",
-		Title:   "An omitted v and an unparseable ts are tolerated, an explicit v of 0 is not",
+		Title:   "An omitted v and a ts the hub cannot use are tolerated, an explicit v of 0 is not",
 		Section: "4",
 		Run: func(ctx context.Context, env Env) error {
 			plugin, err := env.newFakePlugin(ctx, "conformance: inbound tolerance", shortPollTimeoutSeconds)
@@ -888,6 +889,34 @@ var checks = []Check{
 			if tolerated.Ack != badTimestamp.Seq {
 				return fmt.Errorf("ack = %d after an unparseable ts, want %d; a receiver must not reject an envelope over ts alone",
 					tolerated.Ack, badTimestamp.Seq)
+			}
+
+			// A ts of the wrong JSON type is unparseable in the same sense, and
+			// a hub that typed the field against a string would fail the whole
+			// request at its decoder: one bad field costs every envelope in the
+			// poll, and since a sender retransmits unacked envelopes unchanged
+			// (section 9.1) it costs them again on every poll after that.
+			good := plugin.nextOutbound(unknownType(), nil)
+			mixed := []map[string]any{rawEnvelope(good, good.TS)}
+			for _, ts := range []any{1755367200, true, map[string]any{"at": "now"}, nil, []any{}} {
+				mixed = append(mixed, rawEnvelope(plugin.nextOutbound(unknownType(), nil), ts))
+			}
+			// An absent ts is the same case with the field left out entirely.
+			absent := rawEnvelope(plugin.nextOutbound(unknownType(), nil), nil)
+			delete(absent, "ts")
+			mixed = append(mixed, absent)
+
+			if err := nudge(); err != nil {
+				return err
+			}
+			var wrongTypes pollResponse
+			if err := env.expectPoll(ctx, plugin.Session.SessionToken,
+				map[string]any{"envelopes": mixed}, http.StatusOK, &wrongTypes); err != nil {
+				return fmt.Errorf("%w; section 4 forbids refusing an envelope over ts alone, and a ts of the wrong JSON type is unparseable for that purpose", err)
+			}
+			if wrongTypes.Ack != plugin.outboundSeq {
+				return fmt.Errorf("ack = %d after a poll carrying ts values of the wrong JSON type, want %d; a receiver substitutes its own receipt time rather than lose the envelope or the batch it travelled in",
+					wrongTypes.Ack, plugin.outboundSeq)
 			}
 
 			// An explicit zero is not an absence: it names no version at all.
@@ -1808,6 +1837,101 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "plugin.manifest.rejectStorm",
+		Title:   "A poll of many invalid manifests is refused without failing, fabricating, or amplifying",
+		Section: "6.4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: manifest reject storm", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			// Refused on the revision alone, so each body stays small: what is
+			// graded here is what a poll full of refusals costs, not the
+			// validator. Whether a hub caps how many notices it queues is its
+			// own call (section 6.4 says MAY), so the cap itself is not graded;
+			// what every hub owes is that the poll succeeds, that at least one
+			// real rejection comes back, and that no refusal is answered with
+			// more than one notice. 200 is the batch size every hub must accept
+			// (section 3.1.2).
+			const invalid = 200
+			storm := make([]envelope, 0, invalid)
+			sent := make(map[string]bool, invalid)
+			for range invalid {
+				published := plugin.nextOutbound("manifest.publish", map[string]any{"manifestRevision": 0})
+				storm = append(storm, published)
+				sent[published.ID] = true
+			}
+
+			response, err := plugin.pollAndAck(ctx, storm...)
+			if err != nil {
+				return fmt.Errorf("the poll carrying %d invalid manifests failed; a rejected manifest is envelope-level success: %w",
+					invalid, err)
+			}
+			if response.Ack != plugin.outboundSeq {
+				return fmt.Errorf("ack = %d after %d invalid manifests, want %d; every one of them is durably processed and acked",
+					response.Ack, invalid, plugin.outboundSeq)
+			}
+
+			rejects := 0
+			count := func(batch []envelope) (int, error) {
+				found := 0
+				for _, one := range batch {
+					if one.Type != "manifest.reject" {
+						continue
+					}
+					found++
+					var reject struct {
+						EnvelopeID string `json:"envelopeId"`
+					}
+					if err := json.Unmarshal(one.Body, &reject); err != nil {
+						return found, fmt.Errorf("decode manifest.reject body %q: %w", truncate(one.Body), err)
+					}
+					// A hub that suppresses notices under a cap of its own still
+					// owes the plugin real ones: every notice that does arrive
+					// must name an envelope this plugin actually sent.
+					if !sent[reject.EnvelopeID] {
+						return found, fmt.Errorf("manifest.reject names envelope %q, which this plugin never sent",
+							reject.EnvelopeID)
+					}
+				}
+				return found, nil
+			}
+
+			// Drain until a poll brings no more rejections. The bound is one
+			// poll per refusal plus one, because a hub may answer with as few
+			// envelopes per response as it likes (section 9.2).
+			found, err := count(response.Envelopes)
+			if err != nil {
+				return err
+			}
+			rejects += found
+			for attempt := 0; attempt <= invalid && found > 0; attempt++ {
+				next, err := plugin.pollAndAck(ctx)
+				if err != nil {
+					return err
+				}
+				if found, err = count(next.Envelopes); err != nil {
+					return err
+				}
+				rejects += found
+			}
+
+			if rejects == 0 {
+				return fmt.Errorf("no manifest.reject arrived for %d invalid manifests; a rejection must not be silent",
+					invalid)
+			}
+			if rejects > invalid {
+				return fmt.Errorf("%d manifest.reject envelopes for %d invalid manifests; one refusal owes at most one notice",
+					rejects, invalid)
+			}
+			// The session survives a poll made entirely of refusals, which is
+			// the point of rejection being envelope-level success.
+			return env.expect(ctx, http.MethodGet, "/plugin/v1/session", plugin.Session.SessionToken,
+				nil, http.StatusOK, nil)
+		},
+	},
+	{
 		ID:      "admin.manifest.read",
 		Title:   "GET /api/v1/servers/{serverId}/manifest answers 404 until a manifest is accepted",
 		Section: "6.5",
@@ -2205,6 +2329,431 @@ var checks = []Check{
 			}
 			if record.State != "expired" {
 				return fmt.Errorf("state = %q after a late result, want it held at expired", record.State)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.events.ingest",
+		Title:   "A core event and a custom event are stored and queried identically",
+		Section: "8.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: event ingest", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			// The custom event is deliberately never declared in a manifest:
+			// section 6.3 requires a hub to take undeclared custom events, and
+			// this check would pass vacuously if it declared one first.
+			occurred := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+			if _, err := plugin.sendEvents(ctx,
+				map[string]any{
+					"t":    "core.player.death",
+					"ts":   occurred.Format(time.RFC3339),
+					"data": map[string]any{"weapon": "M4A1", "distance": 312.5},
+				},
+				map[string]any{
+					"t":    "example-mod.raid.started",
+					"data": map[string]any{"territoryId": "t-19", "attackers": 4},
+				},
+			); err != nil {
+				return err
+			}
+
+			page, err := env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 2 {
+				return fmt.Errorf("the feed holds %v, want both the core and the custom event",
+					page.eventTypes())
+			}
+
+			byType := map[string]eventRecord{}
+			for _, one := range page.Events {
+				byType[one.Type] = one
+				if one.ServerID != serverID {
+					return fmt.Errorf("event %s carries serverId %q, want %q", one.ID, one.ServerID, serverID)
+				}
+				if one.ID == "" {
+					return fmt.Errorf("event of type %q carries no id", one.Type)
+				}
+				for name, stamp := range map[string]string{
+					"occurredAt": one.OccurredAt, "receivedAt": one.ReceivedAt,
+				} {
+					parsed, err := time.Parse(time.RFC3339, stamp)
+					if err != nil {
+						return fmt.Errorf("event %s has %s %q, which is not RFC 3339", one.ID, name, stamp)
+					}
+					if _, offset := parsed.Zone(); offset != 0 {
+						return fmt.Errorf("event %s has %s %q; section 2.1 requires a UTC offset",
+							one.ID, name, stamp)
+					}
+				}
+			}
+
+			death, found := byType["core.player.death"]
+			if !found {
+				return fmt.Errorf("the core event is missing from the feed, which holds %v", page.eventTypes())
+			}
+			stamped, err := time.Parse(time.RFC3339, death.OccurredAt)
+			if err != nil || !stamped.Equal(occurred) {
+				return fmt.Errorf("core.player.death occurredAt = %q, want the %s the plugin sent",
+					death.OccurredAt, occurred.Format(time.RFC3339))
+			}
+
+			raid, found := byType["example-mod.raid.started"]
+			if !found {
+				return fmt.Errorf("the custom event is missing from the feed, which holds %v; "+
+					"section 8.1 forbids privileging core events", page.eventTypes())
+			}
+			var payload struct {
+				TerritoryID string `json:"territoryId"`
+				Attackers   int    `json:"attackers"`
+			}
+			if err := json.Unmarshal(raid.Data, &payload); err != nil {
+				return fmt.Errorf("decode custom event data %q: %w", truncate(raid.Data), err)
+			}
+			if payload.TerritoryID != "t-19" || payload.Attackers != 4 {
+				return fmt.Errorf("custom event data = %q, want the payload the plugin sent",
+					truncate(raid.Data))
+			}
+
+			// An event whose clock the hub cannot use still lands, with a time
+			// the hub stood in for it. Section 8.1 forbids losing an event over
+			// `ts` alone, and the wrongly typed cases are the ones that catch a
+			// hub which typed the field in its decoder: there, one bad `ts`
+			// fails the whole body and takes every good event with it.
+			if _, err := plugin.sendEvents(ctx,
+				map[string]any{"t": "core.server.start"},
+				map[string]any{"t": "core.server.stop", "ts": "not a timestamp"},
+				map[string]any{"t": "core.vehicle.spawn", "ts": 1755367200},
+				map[string]any{"t": "core.vehicle.destroy", "ts": nil},
+			); err != nil {
+				return fmt.Errorf("a batch carrying unusable timestamps failed the poll, "+
+					"but section 8.1 forbids refusing an event over ts alone: %w", err)
+			}
+			for _, clockless := range []string{
+				"core.server.start", "core.server.stop",
+				"core.vehicle.spawn", "core.vehicle.destroy",
+			} {
+				page, err = env.events(ctx, serverID, url.Values{"type": {clockless}})
+				if err != nil {
+					return err
+				}
+				if len(page.Events) != 1 {
+					return fmt.Errorf("an event whose ts the hub cannot use (%s) matched %v, "+
+						"want it stored anyway with a substituted time", clockless, page.eventTypes())
+				}
+				if _, err := time.Parse(time.RFC3339, page.Events[0].OccurredAt); err != nil {
+					return fmt.Errorf("%s has a substituted occurredAt of %q, want the hub's receipt time",
+						clockless, page.Events[0].OccurredAt)
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.events.oversizedBatch",
+		Title:   "An oversized event batch is refused whole, acked, and answered with event.reject",
+		Section: "8.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: oversized batch", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			oversized := make([]map[string]any, 0, 201)
+			for range 201 {
+				oversized = append(oversized, map[string]any{"t": "core.player.damage"})
+			}
+			batch := plugin.nextOutbound("event.batch", eventBatch(oversized...))
+
+			// Rejection is envelope-level success: the poll answers 200 and the
+			// envelope is acked, because its durable effect is nothing.
+			response, err := plugin.send(ctx, batch)
+			if err != nil {
+				return fmt.Errorf("an oversized batch failed the poll, "+
+					"but section 8.1 makes rejection envelope-level success: %w", err)
+			}
+			if response.Ack < batch.Seq {
+				return fmt.Errorf("ack = %d after a rejected batch, want at least %d: "+
+					"a rejected envelope is still acked", response.Ack, batch.Seq)
+			}
+
+			page, err := env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 0 {
+				return fmt.Errorf("the feed holds %d events after a refused batch, want none: "+
+					"refusal is whole-batch", len(page.Events))
+			}
+
+			// And the refusal is not silent. A hub may answer it on the same
+			// poll or on a later one; both are compliant.
+			var notices []envelope
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "event.reject" {
+					notices = append(notices, delivered)
+				}
+			}
+			if len(notices) == 0 {
+				if notices, err = plugin.awaitEnvelope(ctx, "event.reject", 3); err != nil {
+					return fmt.Errorf("%w; section 8.1 requires a queued event.reject", err)
+				}
+			}
+			if len(notices) != 1 {
+				return fmt.Errorf("got %d event.reject envelopes, want exactly 1", len(notices))
+			}
+			var notice struct {
+				EnvelopeID string `json:"envelopeId"`
+				Errors     []struct {
+					Path    string `json:"path"`
+					Message string `json:"message"`
+				} `json:"errors"`
+			}
+			if err := json.Unmarshal(notices[0].Body, &notice); err != nil {
+				return fmt.Errorf("decode event.reject body %q: %w", truncate(notices[0].Body), err)
+			}
+			if notice.EnvelopeID != batch.ID {
+				return fmt.Errorf("event.reject names envelope %q, want the refused %q",
+					notice.EnvelopeID, batch.ID)
+			}
+			if len(notice.Errors) == 0 || notice.Errors[0].Message == "" {
+				return fmt.Errorf("event.reject carried no usable faults: %+v", notice.Errors)
+			}
+
+			// A batch with one bad event goes the same way, and the session is
+			// still usable afterwards: neither refusal is fatal.
+			malformed := plugin.nextOutbound("event.batch", eventBatch(
+				map[string]any{"t": "core.player.death"},
+				map[string]any{"t": "no-namespace"},
+			))
+			if _, err := plugin.send(ctx, malformed); err != nil {
+				return fmt.Errorf("a batch with one malformed event failed the poll: %w", err)
+			}
+			page, err = env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 0 {
+				return fmt.Errorf("the feed holds %v after a batch with one bad event, want none",
+					page.eventTypes())
+			}
+
+			// The session survived both, which is the point.
+			if _, err := plugin.sendEvents(ctx, map[string]any{"t": "core.server.fps"}); err != nil {
+				return fmt.Errorf("the session was unusable after two rejections: %w", err)
+			}
+			page, err = env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 1 {
+				return fmt.Errorf("the feed holds %v, want the one good event that followed the rejections",
+					page.eventTypes())
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.events.queryAndPaginate",
+		Title:   "The feed filters by type pattern and paginates without skipping or repeating",
+		Section: "8.5",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: event query", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+			events := make([]map[string]any, 0, 8)
+			for i := range 5 {
+				events = append(events, map[string]any{
+					"t":  "core.player.death",
+					"ts": base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+				})
+			}
+			for i := range 3 {
+				events = append(events, map[string]any{
+					"t":  "example-mod.raid.started",
+					"ts": base.Add(time.Duration(10+i) * time.Second).Format(time.RFC3339),
+				})
+			}
+			if _, err := plugin.sendEvents(ctx, events...); err != nil {
+				return err
+			}
+
+			filters := []struct {
+				values url.Values
+				want   int
+				why    string
+			}{
+				{url.Values{"type": {"example-mod.*"}}, 3, "a namespace pattern"},
+				{url.Values{"type": {"core.player.death"}}, 5, "an exact type"},
+				{url.Values{"type": {"core.*"}}, 5, "a shorter namespace pattern"},
+				{url.Values{"type": {"core.player.*", "example-mod.*"}}, 8,
+					"repeated terms, which must be ORed so one query spans core and custom events"},
+				{url.Values{"type": {"*"}}, 8, "the catch-all"},
+				{url.Values{"since": {base.Format(time.RFC3339)},
+					"until": {base.Add(3 * time.Second).Format(time.RFC3339)}}, 3,
+					"a half-open window: since inclusive, until exclusive"},
+			}
+			for _, filter := range filters {
+				page, err := env.events(ctx, serverID, filter.values)
+				if err != nil {
+					return err
+				}
+				if len(page.Events) != filter.want {
+					return fmt.Errorf("%s (%v) matched %d events, want %d",
+						filter.why, filter.values, len(page.Events), filter.want)
+				}
+			}
+
+			// Pagination walks the whole feed exactly once. All eight events
+			// were ingested in one batch, so several share a receipt instant:
+			// a hub ordering on a timestamp alone fails here, which is the
+			// point of the check.
+			seen := map[string]int{}
+			parameters := url.Values{"limit": {"3"}}
+			pages := 0
+			for range 10 {
+				page, err := env.events(ctx, serverID, parameters)
+				if err != nil {
+					return err
+				}
+				pages++
+				for _, one := range page.Events {
+					seen[one.ID]++
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				if len(page.Events) == 0 {
+					return fmt.Errorf("page %d was empty but carried a nextCursor; "+
+						"the cursor must be absent on the last page", pages)
+				}
+				parameters.Set("cursor", page.NextCursor)
+			}
+			if len(seen) != 8 {
+				return fmt.Errorf("pagination saw %d distinct events over %d pages, want 8",
+					len(seen), pages)
+			}
+			for eventID, count := range seen {
+				if count != 1 {
+					return fmt.Errorf("event %s came back on %d pages; a cursor must not repeat a row",
+						eventID, count)
+				}
+			}
+
+			// Unparseable filters are refused rather than ignored: an ignored
+			// filter answers with a feed that looks real and is not.
+			path := "/api/v1/servers/" + serverID + "/events"
+			for name, query := range map[string]string{
+				"type":   "?type=not%20a%20type",
+				"since":  "?since=yesterday",
+				"limit":  "?limit=0",
+				"cursor": "?cursor=not-a-cursor",
+			} {
+				if err := env.expectError(ctx, http.MethodGet, path+query, env.AdminToken,
+					nil, http.StatusBadRequest, "bad_request"); err != nil {
+					return fmt.Errorf("an unparseable %s must be refused, not ignored: %w", name, err)
+				}
+			}
+			return env.expectError(ctx, http.MethodGet,
+				"/api/v1/servers/does-not-exist/events", env.AdminToken,
+				nil, http.StatusNotFound, "not_found")
+		},
+	},
+	{
+		ID:      "plugin.events.duplicate",
+		Title:   "A retransmitted event.batch is stored once",
+		Section: "9.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: event dedup", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			// A plugin that never sees its ack resends the same envelope: same
+			// id, same seq, same body (section 9.1). Ingest is idempotent
+			// because delivery is.
+			batch := plugin.nextOutbound("event.batch", eventBatch(
+				map[string]any{"t": "core.player.connect", "data": map[string]any{"slot": 1}},
+			))
+			for attempt := range 3 {
+				if _, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{batch}}); err != nil {
+					return fmt.Errorf("retransmission %d: %w", attempt+1, err)
+				}
+			}
+
+			page, err := env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 1 {
+				return fmt.Errorf("the feed holds %d copies of one retransmitted event, want 1",
+					len(page.Events))
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.events.isolation",
+		Title:   "One server's telemetry never appears in another's feed",
+		Section: "8.5",
+		Run: func(ctx context.Context, env Env) error {
+			mine, err := env.newFakePlugin(ctx, "conformance: events mine", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			theirs, err := env.newFakePlugin(ctx, "conformance: events theirs", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			if _, err := mine.sendEvents(ctx, map[string]any{
+				"t": "core.player.death", "data": map[string]any{"whose": "mine"},
+			}); err != nil {
+				return err
+			}
+			if _, err := theirs.sendEvents(ctx, map[string]any{
+				"t": "core.player.death", "data": map[string]any{"whose": "theirs"},
+			}); err != nil {
+				return err
+			}
+
+			for _, one := range []struct {
+				serverID string
+				want     string
+			}{
+				{mine.Server.Server.ID, "mine"},
+				{theirs.Server.Server.ID, "theirs"},
+			} {
+				page, err := env.events(ctx, one.serverID, nil)
+				if err != nil {
+					return err
+				}
+				if len(page.Events) != 1 {
+					return fmt.Errorf("server %s sees %d events, want only the one it sent",
+						one.serverID, len(page.Events))
+				}
+				var payload struct {
+					Whose string `json:"whose"`
+				}
+				if err := json.Unmarshal(page.Events[0].Data, &payload); err != nil {
+					return fmt.Errorf("decode event data %q: %w", truncate(page.Events[0].Data), err)
+				}
+				if payload.Whose != one.want {
+					return fmt.Errorf("server %s sees telemetry marked %q, want %q",
+						one.serverID, payload.Whose, one.want)
+				}
 			}
 			return nil
 		},

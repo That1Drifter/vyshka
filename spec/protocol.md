@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.7 (2026-08-16)
+**Status:** draft 0.9 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -288,7 +288,14 @@ Receivers enforce the rest unevenly, on purpose:
 - A receiver MUST NOT reject an envelope over `ts` alone. When `ts` is missing or
   unparseable it MUST substitute its own receipt time wherever it records one. Some game
   engines have no trustworthy clock, and losing a batch of real events to a wrong clock
-  costs more than an approximate timestamp does.
+  costs more than an approximate timestamp does. A `ts` of the wrong JSON type (a number,
+  a boolean, an object, an array, `null`) is unparseable in exactly that sense, not a
+  framing error: an implementation that decodes the field into a string-typed variable
+  MUST still accept those, because failing the request at its decoder refuses the envelope
+  over `ts` alone before any rule of the implementation's own gets to run. It also refuses
+  the envelopes travelling with it, and since a sender MUST retransmit unacked envelopes
+  unchanged (section 9.1) it goes on refusing them, which wedges the session rather than
+  costing one poll.
 
 Receivers MUST ack the highest contiguous `seq` they have durably processed; senders MUST
 retransmit anything above the ack. Unknown `type` values MUST be acked and ignored.
@@ -620,7 +627,8 @@ poll or end the session over a manifest it rejected, and a rejected manifest MUS
 touch the stored one.
 
 The rejection MUST NOT be silent: the hub MUST queue a `manifest.reject` envelope
-(hub -> plugin) unless the server's outbound queue is at its bound (section 9.2), carrying
+(hub -> plugin) unless the server's outbound queue is at its bound (section 9.2) or the
+per-poll notice cap below has been spent, carrying
 the `id` of the refused envelope, the refused `manifestRevision` when it was readable, and
 `errors`, a list of `{ path, message }` faults into the rejected body:
 
@@ -637,6 +645,15 @@ the `id` of the refused envelope, the refused `manifestRevision` when it was rea
   }
 }
 ```
+
+A hub MAY bound how many `manifest.reject` envelopes it queues for a single poll
+(reference cap: 20), because a poll may legally carry hundreds of publishes and a plugin
+looping on a manifest it keeps failing to fix would otherwise fill its own outbound queue
+with notices about its own bug, until nothing could be dispatched to that server at all. A
+hub that suppresses a notice under this cap MUST record the suppression where the operator
+can see it. The rejections themselves are unaffected: what is capped is how many of them
+are narrated. The bound MAY be a single budget shared with the `event.reject` cap of
+section 8.1, since what it protects is the outbound queue rather than either notice kind.
 
 The stored revision advances only on acceptance, so a corrected manifest MAY be
 republished at the very revision that was just rejected. A plugin SHOULD surface a
@@ -810,15 +827,91 @@ buffer and flush every 2 s or at 200 events, whichever comes first.
 }
 ```
 
+| Field | Type | Rules |
+|---|---|---|
+| `events` | array | REQUIRED. MAY be empty, which stores nothing and is not an error. |
+| `t` | string | REQUIRED. The event type (below). |
+| `ts` | string | OPTIONAL. RFC 3339, when the event happened on the game server. |
+| `data` | object | OPTIONAL. Type-specific payload; absent and `null` both read as `{}`. |
+
+**Event types** are `{namespace}.{name}`: two or more non-empty segments separated by `.`,
+drawn from ASCII letters, digits, `_` and `-`, and at most 128 characters in total. A hub
+MUST refuse an event whose `t` is outside that grammar. The grammar is enforced rather than
+merely recommended because this string is what the `events:read:{namespace}.*` scopes of
+section 10 and the webhook filters of section 11 match on: a type with no namespace could
+not be granted or filtered by namespace at all, and one carrying `*` or whitespace would
+make those patterns ambiguous.
+
 **Core event types** (`core.*`, normative; every plugin SHOULD emit what its game
 supports): `player.connect`, `player.disconnect`, `player.death`, `player.damage`,
 `player.chat`, `player.kick`, `player.ban`, `vehicle.spawn`, `vehicle.destroy`,
 `object.placed`, `item.interact`, `server.start`, `server.fps` (periodic performance
 sample), `server.stop`.
 
-**Custom events** are any type of the form `{namespace}.{name}`. Same channel, same
-storage, same webhook fan-out; hubs MUST NOT privilege core events over custom events in
-routing or retention capability.
+**Custom events** are any other type of the same form. Same channel, same storage, same
+webhook fan-out; hubs MUST NOT privilege core events over custom events in routing or
+retention capability. A custom event MUST be accepted whether or not the manifest declared
+it (section 6.3).
+
+**Timestamps.** A hub MUST NOT refuse an event over `ts` alone; when `ts` is absent or
+unparseable it MUST substitute its own receipt time, exactly as section 4 requires for the
+envelope. A hub MAY also substitute receipt time for a `ts` implausibly far ahead of its own
+clock (reference allowance: one hour). That bound is not mere tolerance: an event stamped a
+year ahead would pin itself to the top of every operator's feed until it was pruned, and
+nobody can fix another machine's clock retroactively. A hub MUST record the substituted
+value where it records an event's time, and SHOULD keep receipt time alongside it, so an
+operator chasing a discrepancy can see the two clocks apart.
+
+**Rejection.** A hub MUST refuse a batch that carries more than 200 events, or any event
+whose `t` is outside the grammar, whose `data` is not an object, or whose `data` exceeds the
+hub's documented size limit (reference cap: 16 KiB per event). A hub MAY additionally bound
+how many events one poll may carry across all of its batches (reference cap: 1 000) and
+refuse the batches past that bound.
+
+Refusal is whole-batch: a refused `event.batch` MUST store none of its events. Partial
+acceptance would leave the plugin unable to tell which of its events landed, because the ack
+is per envelope and this protocol has no per-event receipt; it would face the same choice a
+whole rejection gives it, minus the certainty.
+
+Like a rejected manifest (section 6.4), a rejected batch is envelope-level success: the
+envelope is acked, the session stays up, the other envelopes in the poll are unaffected, and
+a hub MUST NOT fail the poll over it. The rejection MUST NOT be silent either: unless the
+server's outbound queue is at its bound (section 9.2) or the per-poll notice cap below has
+been spent, the hub MUST queue an `event.reject`
+envelope carrying the `id` of the refused envelope and `errors`, a list of
+`{ path, message }` faults into the rejected body:
+
+```json
+{
+  "type": "event.reject",
+  "body": {
+    "envelopeId": "01J5QM...",
+    "errors": [
+      { "path": "events[3].t",
+        "message": "t must be a {namespace}.{name} type" }
+    ]
+  }
+}
+```
+
+A plugin SHOULD surface an `event.reject` where the operator will see it and MUST NOT treat
+one as a transport error. The events it names are gone; the notice is the visible counter
+that section 9.4 requires before anything is dropped.
+
+A hub MAY bound how many `event.reject` envelopes it queues for a single poll (reference cap:
+20), because a poll may legally carry hundreds of batches and a plugin refusing every one of
+them would otherwise fill its own outbound queue with notices about its own bug. A hub that
+suppresses a notice under this cap MUST record the suppression where the operator can see it.
+The refusals themselves are unaffected: what is capped is how many of them are narrated. The
+bound MAY be a single budget shared with the `manifest.reject` cap of section 6.4.
+
+**Duplicates** need no special handling here. A retransmitted `event.batch` is a duplicate
+like any other envelope (section 9.1): acked again, processed no further, and therefore
+stored exactly once. Ingest is idempotent because delivery is, not because events carry
+identity of their own.
+
+A machine-readable schema for both bodies is `spec/events.schema.json`, a companion to this
+section rather than a replacement for it: where the two disagree, this document wins.
 
 ### 8.2 Player identity
 
@@ -846,7 +939,57 @@ history window; these feed the live map.
 
 Events land in an append-only store with per-type retention (reference defaults: 30 days,
 `core.player.chat` 90 days, snapshots 24 h). Retention values are hub configuration, not
-protocol.
+protocol: a hub is conformant whatever it keeps, and no client may assume an event is still
+readable.
+
+Two implementation notes the reference hub follows, neither of them binding. Retention is
+counted from receipt rather than from `ts`, so a game server with a wrong clock cannot talk
+its own telemetry into instant deletion or into immortality. And each event is stamped with
+the deadline its type resolved to when it landed, rather than having its deadline re-derived
+on every pass, so that changing the configuration governs what arrives next instead of
+destroying history the moment a typo is saved.
+
+### 8.5 Reading events (Admin API)
+
+```
+GET /api/v1/servers/{serverId}/events?type=core.player.*&since=...&limit=100
+
+-> 200 OK
+{
+  "events": [
+    { "id": "01J5QK...", "serverId": "01J5Q...", "type": "core.player.death",
+      "occurredAt": "2026-08-16T18:00:00.000Z", "receivedAt": "2026-08-16T18:00:01.000Z",
+      "data": { } }
+  ],
+  "nextCursor": "..."
+}
+```
+
+Events come back newest first, by `occurredAt`.
+
+| Parameter | Rules |
+|---|---|
+| `type` | Repeatable. An exact event type, a `{namespace}.*` pattern, or `*`. Terms are ORed; absent means every type. |
+| `since` | RFC 3339, inclusive, on `occurredAt`. |
+| `until` | RFC 3339, exclusive, on `occurredAt`. |
+| `limit` | Page size. The hub bounds it (reference default 100, cap 500) and clamps rather than refusing. |
+| `cursor` | An opaque `nextCursor` from a previous page. |
+
+`nextCursor` is absent on the last page, which is how a client knows to stop without
+fetching an empty one. It is opaque per section 2.1: clients MUST NOT parse it or derive
+one. A hub MUST NOT return the same event on two pages of one walk, nor skip one that was
+present when the walk began, which means ordering by a timestamp alone is not enough:
+several events can share a millisecond, so the order MUST be total. A cursor whose event has
+since been pruned MUST still resume correctly, because a cursor names a position rather than
+a row.
+
+The same query returns core and custom events, and one `type` term may name either. Nothing
+about this endpoint distinguishes them; that is what makes the routing requirement of
+section 8.1 observable rather than aspirational.
+
+`not_found` (404) covers an unknown server. An unparseable `type`, `since`, `until`,
+`limit`, or `cursor` is `bad_request` (400); a hub MUST NOT silently ignore a filter it
+could not parse, because the answer would then look like a real, narrower feed.
 
 ## 9. Delivery guarantees
 

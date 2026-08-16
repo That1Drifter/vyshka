@@ -16,6 +16,21 @@ import (
 // grows a second process one day.
 const pollBackstop = time.Second
 
+// maxNoticesPerPoll caps how many rejection notices one poll may queue, across
+// every notice kind together (spec sections 6.4 and 8.1).
+//
+// A poll may legally carry 500 envelopes, and every refusable one owes the
+// plugin a notice. Uncapped, a plugin looping on traffic it keeps getting wrong
+// buys 500 queue inserts inside the store's transaction, which on SQLite's
+// single connection is the whole hub's critical section, and fills its own
+// outbound queue with complaints about its own bug until that server can no
+// longer be dispatched an action. The first notices name real envelopes, which
+// is what a plugin author needs to fix it; the rest reach the hub's log as a
+// count. The budget is shared rather than one per kind because what it protects
+// is the queue, not either notice type, and a poll wrong in two ways at once
+// should not cost twice as much as one wrong in a single way.
+const maxNoticesPerPoll = 20
+
 // maxHeldPollsPerSession bounds how many polls one session may park at once.
 // It is an implementation limit rather than a protocol rule: a poll over the
 // ceiling is answered at once instead of held, which the protocol allows at any
@@ -88,13 +103,14 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Then the plugin's envelopes. The hub models manifest.publish, action.ack,
-	// and action.result on the inbound path; every other accepted envelope
-	// takes the forward-compatibility path of spec section 4: acked and
-	// ignored. Bodies are validated up front because validity depends only on
-	// content, while which envelopes are newly accepted is only known inside
+	// action.result, and event.batch on the inbound path; every other accepted
+	// envelope takes the forward-compatibility path of spec section 4: acked
+	// and ignored. Bodies are validated up front because validity depends only
+	// on content, while which envelopes are newly accepted is only known inside
 	// the transaction.
 	manifests := prepareManifests(request.Envelopes)
 	actions := prepareActions(request.Envelopes)
+	events := s.prepareEvents(request.Envelopes, time.Now().UTC())
 
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
@@ -102,17 +118,37 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// rejection notices ride the same transaction: acking an envelope promises
 	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
-	var unusableActionBodies int
+	var unusableActionBodies, rejectedManifests, refusedEventBatches, suppressedNotices int
 	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
 		unusableActionBodies = 0
+		rejectedManifests = 0
+		refusedEventBatches = 0
+		suppressedNotices = 0
+		// The event budget is charged here rather than during validation, so
+		// that only envelopes actually being accepted spend it: a poll carrying
+		// retransmitted batches alongside new ones must not lose the new ones
+		// to duplicates that store nothing.
+		eventBudget := maxEventsPerPoll
 		application := store.InboundApplication{Ack: batch.Ack, Accepted: len(batch.Accepted)}
+		// Every refusal below owes the plugin a notice, but only so many of them
+		// are narrated: see maxNoticesPerPoll for why one poll cannot be allowed
+		// to mint an unbounded number. Suppression counts rather than refuses,
+		// because the refusal itself stands either way.
+		queueNotice := func(notice store.Notice) {
+			if len(application.Notices) >= maxNoticesPerPoll {
+				suppressedNotices++
+				return
+			}
+			application.Notices = append(application.Notices, notice)
+		}
 		for _, index := range batch.Accepted {
 			if prepared, isManifest := manifests[index]; isManifest {
 				if prepared.publish != nil {
 					application.Manifests = append(application.Manifests, *prepared.publish)
 				} else {
-					application.Notices = append(application.Notices, prepared.reject)
+					rejectedManifests++
+					queueNotice(prepared.reject)
 				}
 				continue
 			}
@@ -124,6 +160,22 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 					application.ActionResults = append(application.ActionResults, *prepared.result)
 				default:
 					unusableActionBodies++
+				}
+				continue
+			}
+			if prepared, isEvents := events[index]; isEvents {
+				refuse := func(notice store.Notice) {
+					refusedEventBatches++
+					queueNotice(notice)
+				}
+				switch {
+				case prepared.reject != nil:
+					refuse(*prepared.reject)
+				case len(prepared.events) > eventBudget:
+					refuse(newEventBudgetReject(request.Envelopes[index].ID))
+				default:
+					eventBudget -= len(prepared.events)
+					application.Events = append(application.Events, prepared.events...)
 				}
 			}
 		}
@@ -146,11 +198,32 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 			"manifestsApplied", applied.ManifestsApplied,
 			"rejectsQueued", applied.NoticesQueued,
 			"actionsStarted", applied.ActionsStarted,
-			"actionsFinished", applied.ActionsFinished)
+			"actionsFinished", applied.ActionsFinished,
+			"eventsStored", applied.EventsStored)
 	}
 	if unusableActionBodies > 0 {
 		s.log.Warn("poll carried action envelopes with unusable bodies; acked and ignored",
 			"serverId", server.ID, "sessionId", session.ID, "count", unusableActionBodies)
+	}
+	if rejectedManifests > 0 {
+		s.log.Warn("poll carried manifests this hub rejected",
+			"serverId", server.ID, "sessionId", session.ID, "count", rejectedManifests)
+	}
+	if refusedEventBatches > 0 {
+		s.log.Warn("poll carried event batches this hub refused",
+			"serverId", server.ID, "sessionId", session.ID,
+			"batches", refusedEventBatches, "eventBudget", maxEventsPerPoll)
+	}
+	if suppressedNotices > 0 {
+		// The notices the plugin will not receive, so the count survives
+		// somewhere even when the cap swallows the envelopes naming them. What
+		// was queued is read back from the store rather than assumed to be the
+		// cap: a queue at its bound (spec section 9.2) drops notices the cap
+		// let through, and a log that reported the cap would be reporting a
+		// number nobody delivered.
+		s.log.Warn("poll owed more rejection notices than one poll may queue; the rest were suppressed",
+			"serverId", server.ID, "sessionId", session.ID, "cap", maxNoticesPerPoll,
+			"queued", applied.NoticesQueued, "suppressed", suppressedNotices)
 	}
 	if applied.NoticesQueued > 0 {
 		// A rejection notice is ordinary queued work: wake anything else this
