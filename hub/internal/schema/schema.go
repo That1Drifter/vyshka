@@ -22,6 +22,14 @@ import (
 // validation recurse without limit.
 const maxDepth = 32
 
+// maxExactNumber is 2^53, the largest magnitude at which float64, the type
+// every JSON number here passes through, still represents integers exactly.
+// A bound or enum constant beyond it would be enforced against a rounded
+// value: `{"minimum": 9007199254740993}` would admit 9007199254740992, and the
+// schema's author would never know. Rejecting the constant at publish keeps
+// "the hub enforces what it accepted" true.
+const maxExactNumber = float64(1 << 53)
+
 // Fault names one thing wrong with a schema or an instance. Path is a dotted
 // JSON path into whichever document the fault is about ("" for its root).
 type Fault struct {
@@ -113,6 +121,12 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 				*faults = append(*faults, Fault{Path: child, Message: "enum must be a non-empty array"})
 				continue
 			}
+			for i, member := range values {
+				if number, isNumber := member.(float64); isNumber && !exact(number) {
+					*faults = append(*faults, Fault{Path: child + "[" + strconv.Itoa(i) + "]",
+						Message: "numbers beyond 2^53 in magnitude cannot be compared exactly"})
+				}
+			}
 			compiled.enum = values
 		case "required":
 			names, ok := value.([]any)
@@ -173,7 +187,23 @@ func compileBound(value any, path string, faults *[]Fault) *float64 {
 		*faults = append(*faults, Fault{Path: path, Message: "numeric bounds must be numbers"})
 		return nil
 	}
+	if !exact(number) {
+		*faults = append(*faults, Fault{Path: path,
+			Message: "numbers beyond 2^53 in magnitude cannot be enforced exactly"})
+		return nil
+	}
 	return &number
+}
+
+// exact reports whether a number survived the trip through float64 exactly:
+// either it is fractional by intent, or it is an integer strictly within
+// ±2^53. The bound itself is excluded because 2^53 and 2^53+1 parse to the
+// same float, so a value of exactly 2^53 cannot prove what was written.
+func exact(number float64) bool {
+	if number != math.Trunc(number) {
+		return true
+	}
+	return number > -maxExactNumber && number < maxExactNumber
 }
 
 // Validate checks an instance against the compiled schema and returns every

@@ -66,6 +66,10 @@ func TestCompileRejectsMalformedSchemas(t *testing.T) {
 		"boundString":    `{"minimum": "one"}`,
 		"widgetObject":   `{"x-vyshka-widget": {"kind": "itemlist"}}`,
 		"itemsBoolean":   `{"items": true}`,
+		// Constants beyond 2^53 would be enforced against a rounded float64:
+		// {"minimum": 9007199254740993} would admit 9007199254740992.
+		"hugeBound": `{"minimum": 9007199254740993}`,
+		"hugeEnum":  `{"enum": [9007199254740993]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, faults := Compile(json.RawMessage(raw)); len(faults) == 0 {

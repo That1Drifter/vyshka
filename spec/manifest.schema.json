@@ -17,7 +17,7 @@
     "paramsSchema": {
       "type": "object",
       "title": "Section 6.1 schema subset",
-      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement.",
+      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
       "properties": {
         "type": {
           "type": "string",
@@ -107,7 +107,7 @@
     "manifestPublish": {
       "type": "object",
       "title": "manifest.publish body",
-      "description": "Body of the manifest.publish envelope (section 6). Sent at session start and at any later moment; a runtime republish costs one message, not a server restart.",
+      "description": "Body of the manifest.publish envelope (section 6). Sent at session start and at any later moment; a runtime republish costs one message, not a server restart. A JSON null where an optional field could appear reads as the field being absent (section 6.4); length limits count Unicode code points.",
       "required": ["manifestRevision"],
       "properties": {
         "game": {
@@ -126,7 +126,8 @@
         "manifestRevision": {
           "type": "integer",
           "minimum": 1,
-          "description": "Plugin-owned and monotonic. A higher revision replaces the stored manifest; an equal or lower one is ignored. Advances only on acceptance, so a corrected manifest may be republished at a revision that was rejected."
+          "maximum": 9007199254740991,
+          "description": "Plugin-owned and monotonic, within [1, 2^53). A higher revision replaces the stored manifest; an equal or lower one is ignored. Advances only on acceptance, so a corrected manifest may be republished at a revision that was rejected."
         },
         "actions": {
           "type": "array",

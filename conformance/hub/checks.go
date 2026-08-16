@@ -1562,7 +1562,7 @@ var checks = []Check{
 			// The raw queue must not become a way around the endpoints that
 			// validate hub-modelled types, or a way to forge a message the
 			// plugin would take as the hub's own word.
-			for _, reserved := range []string{"action.dispatch", "manifest.reject"} {
+			for _, reserved := range []string{"action.dispatch", "manifest.publish", "manifest.reject"} {
 				if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
 					map[string]any{"type": reserved}, http.StatusConflict, "conflict"); err != nil {
 					return err
@@ -1665,8 +1665,18 @@ var checks = []Check{
 			}
 			// So is an equal one, whatever its content says.
 			equal := manifestBody(2, map[string]any{"code": "example-mod.other"})
-			if _, err := plugin.publishManifest(ctx, equal); err != nil {
+			ignored, err := plugin.publishManifest(ctx, equal)
+			if err != nil {
 				return err
+			}
+			// Ignoring a valid stale revision means exactly that: no
+			// manifest.reject, which is the answer to an *invalid* manifest.
+			for _, response := range []pollResponse{lower, ignored} {
+				for _, delivered := range response.Envelopes {
+					if delivered.Type == "manifest.reject" {
+						return fmt.Errorf("a valid stale revision was answered with manifest.reject; section 6.1 says it is ignored")
+					}
+				}
 			}
 
 			record, err = env.storedManifest(ctx, plugin.Server.Server.ID)
@@ -1741,8 +1751,9 @@ var checks = []Check{
 				return fmt.Errorf("got %d manifest.reject envelopes, want exactly 1", len(rejects))
 			}
 			var reject struct {
-				EnvelopeID string `json:"envelopeId"`
-				Errors     []struct {
+				EnvelopeID       string `json:"envelopeId"`
+				ManifestRevision *int64 `json:"manifestRevision"`
+				Errors           []struct {
 					Path    string `json:"path"`
 					Message string `json:"message"`
 				} `json:"errors"`
@@ -1754,8 +1765,17 @@ var checks = []Check{
 				return fmt.Errorf("manifest.reject names envelope %q, want the rejected %q",
 					reject.EnvelopeID, published.ID)
 			}
+			if reject.ManifestRevision == nil || *reject.ManifestRevision != 2 {
+				return fmt.Errorf("manifest.reject carries manifestRevision %v, want the readable 2",
+					reject.ManifestRevision)
+			}
 			if len(reject.Errors) == 0 {
 				return fmt.Errorf("manifest.reject carried no errors; it must name what was wrong")
+			}
+			for i, fault := range reject.Errors {
+				if fault.Message == "" {
+					return fmt.Errorf("manifest.reject error %d carries no message", i)
+				}
 			}
 
 			// The stored manifest is untouched and the session still works.

@@ -135,18 +135,23 @@ func (s *Store) PendingEnvelopeCount(ctx context.Context, serverID string) (int,
 // that is the retransmission rule of spec section 9.1, and it is what makes an
 // interrupted poll cost nothing.
 //
-// It returns the batch and the session's sequence high-water mark after
-// numbering, so the caller can keep its own copy of the session in step.
-func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, error) {
+// It returns the batch, the session's outbound sequence high-water mark after
+// numbering, and the committed inbound ack. The inbound ack rides along because
+// a poll that held for seconds must report the ack as committed *now*, not the
+// value it ingested before the hold: another poll may have advanced it in
+// between, and an ack the hub has already reported must never be lowered
+// (section 9.1).
+func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("begin next outbound: %w", err)
+		return nil, 0, 0, fmt.Errorf("begin next outbound: %w", err)
 	}
 	defer tx.Rollback()
 
-	var outboundSeq int64
-	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq", &outboundSeq); err != nil {
-		return nil, 0, err
+	var outboundSeq, inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, inbound_ack",
+		&outboundSeq, &inboundAck); err != nil {
+		return nil, 0, 0, err
 	}
 
 	rows, err := tx.QueryContext(ctx,
@@ -156,7 +161,7 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		  ORDER BY created_at, id
 		  LIMIT ?`, serverID, limit)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read outbound envelopes: %w", err)
+		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
 
 	type pending struct {
@@ -175,12 +180,12 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		if err := rows.Scan(&row.envelope.ID, &row.envelope.Type, &body, &createdAt,
 			&sessionOf, &seq); err != nil {
 			rows.Close()
-			return nil, 0, fmt.Errorf("scan outbound envelope: %w", err)
+			return nil, 0, 0, fmt.Errorf("scan outbound envelope: %w", err)
 		}
 		row.envelope.Body = json.RawMessage(body)
 		if row.envelope.CreatedAt, err = parseTime(createdAt); err != nil {
 			rows.Close()
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		// A seq from an earlier session means nothing here: sequence spaces are
 		// per session, so the envelope is renumbered into this one.
@@ -192,12 +197,12 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, 0, fmt.Errorf("read outbound envelopes: %w", err)
+		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
 	rows.Close()
 
 	if len(batch) == 0 {
-		return nil, outboundSeq, tx.Commit()
+		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
 
 	sentAt := formatTime(time.Now().UTC())
@@ -210,25 +215,25 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,
 		); err != nil {
-			return nil, 0, fmt.Errorf("number outbound envelope: %w", err)
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET outbound_seq = ? WHERE id = ?`, outboundSeq, sessionID,
 	); err != nil {
-		return nil, 0, fmt.Errorf("record outbound sequence: %w", err)
+		return nil, 0, 0, fmt.Errorf("record outbound sequence: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, 0, fmt.Errorf("commit next outbound: %w", err)
+		return nil, 0, 0, fmt.Errorf("commit next outbound: %w", err)
 	}
 
 	envelopes := make([]OutboundEnvelope, len(batch))
 	for i := range batch {
 		envelopes[i] = batch[i].envelope
 	}
-	return envelopes, outboundSeq, nil
+	return envelopes, outboundSeq, inboundAck, nil
 }
 
 // AckOutbound applies the plugin's ack: everything at or below it is delivered

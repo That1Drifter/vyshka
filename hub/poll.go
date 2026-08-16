@@ -149,6 +149,11 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 // holdPoll answers as soon as there is anything to send, and otherwise holds the
 // request until the negotiated timeout, the session's expiry, or the session
 // being ended out from under it.
+//
+// The ack it reports is refreshed from committed state on every database read,
+// never left at the value this request ingested: a concurrent poll may commit a
+// higher ack and be answered while this one is still held, and an ack the hub
+// has reported must never be lowered by a later response (spec section 9.1).
 func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64) {
 	pollTimeout := clampPollTimeout(time.Duration(session.PollTimeoutSeconds) * time.Second)
 	deadline := time.Now().Add(pollTimeout)
@@ -181,7 +186,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		// select still wakes this poll instead of waiting for the backstop.
 		signal, release := s.waiters.wait(session.ServerID)
 
-		queued, _, err := s.store.NextOutbound(r.Context(), session.ID, session.ServerID, maxOutboundBatch)
+		queued, _, committedAck, err := s.store.NextOutbound(r.Context(), session.ID, session.ServerID, maxOutboundBatch)
 		if err != nil {
 			release()
 			if errors.Is(err, store.ErrNotFound) {
@@ -191,6 +196,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			s.writeInternalError(w, r, err)
 			return
 		}
+		inboundAck = max(inboundAck, committedAck)
 		if len(queued) > 0 {
 			release()
 			envelopes := make([]envelope, len(queued))
@@ -240,6 +246,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			s.rejectSession(w, "the credentials behind this session were revoked")
 			return
 		}
+		inboundAck = max(inboundAck, refreshed.InboundAck)
 		session = refreshed
 	}
 }

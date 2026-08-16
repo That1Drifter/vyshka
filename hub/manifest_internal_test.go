@@ -20,6 +20,10 @@ func TestValidateManifest(t *testing.T) {
 				"payload": {"type": "object"}}]}`,
 		"unknownTopLevelField": `{"manifestRevision": 1, "fieldFromALaterDraft": true}`,
 		"nullParams":           `{"manifestRevision": 1, "actions": [{"code": "m.x", "params": null}]}`,
+		// Length limits count code points, not bytes: 100 two-byte runes fit
+		// a 128-character cap.
+		"multibyteCode": `{"manifestRevision": 1, "actions": [{"code": "` +
+			strings.Repeat("é", 100) + `"}]}`,
 	}
 	for name, body := range valid {
 		t.Run("valid/"+name, func(t *testing.T) {
@@ -54,6 +58,9 @@ func TestValidateManifest(t *testing.T) {
 			"contexts": [{"id": "t"}, {"id": "t"}]}`, "contexts[1].id"},
 		"longCode": {`{"manifestRevision": 1,
 			"actions": [{"code": "` + strings.Repeat("x", 129) + `"}]}`, "code"},
+		"hugeRevision":    {`{"manifestRevision": 9007199254740993}`, "2^53"},
+		"gameWrongType":   {`{"manifestRevision": 1, "game": []}`, "shape"},
+		"pluginWrongType": {`{"manifestRevision": 1, "plugin": "x"}`, "shape"},
 	}
 	for name, tc := range invalid {
 		t.Run("invalid/"+name, func(t *testing.T) {
@@ -90,11 +97,62 @@ func TestNewManifestRejectCapsAndNames(t *testing.T) {
 	if err := json.Unmarshal(notice.Body, &decoded); err != nil {
 		t.Fatalf("decode notice: %v", err)
 	}
-	if decoded.EnvelopeID != "envelope-9" || decoded.ManifestRevision != 9 {
-		t.Errorf("notice names %q revision %d, want envelope-9 revision 9",
+	if decoded.EnvelopeID != "envelope-9" ||
+		decoded.ManifestRevision == nil || *decoded.ManifestRevision != 9 {
+		t.Errorf("notice names %q revision %v, want envelope-9 revision 9",
 			decoded.EnvelopeID, decoded.ManifestRevision)
 	}
 	if len(decoded.Errors) != maxManifestFaults {
 		t.Errorf("notice carries %d errors, want the cap of %d", len(decoded.Errors), maxManifestFaults)
+	}
+}
+
+// A count over its cap is one fault, not one per item: the per-item pass is
+// skipped, so an oversized manifest cannot buy CPU with a single publish.
+func TestValidateManifestBailsOnOversizedCounts(t *testing.T) {
+	actions := make([]string, 0, maxManifestActions+1)
+	for range maxManifestActions + 1 {
+		actions = append(actions, `{"name": "no code"}`)
+	}
+	_, faults := validateManifest(json.RawMessage(
+		`{"manifestRevision": 1, "actions": [` + strings.Join(actions, ",") + `]}`))
+	if len(faults) != 1 {
+		t.Fatalf("got %d faults for an over-cap action list, want the one count fault", len(faults))
+	}
+	if !strings.Contains(faults[0].Message, "at most") {
+		t.Errorf("fault %q does not name the cap", faults[0])
+	}
+}
+
+// A readable but invalid revision (0, negative) is echoed in the rejection
+// rather than clamped or omitted; an unreadable one is omitted.
+func TestNewManifestRejectEchoesReadableRevisions(t *testing.T) {
+	for raw, want := range map[string]int64{
+		`{"manifestRevision": 0}`:  0,
+		`{"manifestRevision": -3}`: -3,
+	} {
+		_, faults := validateManifest(json.RawMessage(raw))
+		if len(faults) == 0 {
+			t.Fatalf("validateManifest(%s) accepted an invalid revision", raw)
+		}
+		var decoded manifestRejectBody
+		if err := json.Unmarshal(newManifestReject("e", json.RawMessage(raw), faults).Body, &decoded); err != nil {
+			t.Fatalf("decode notice: %v", err)
+		}
+		if decoded.ManifestRevision == nil || *decoded.ManifestRevision != want {
+			t.Errorf("notice for %s carries revision %v, want the readable %d",
+				raw, decoded.ManifestRevision, want)
+		}
+	}
+
+	unreadable := json.RawMessage(`{"manifestRevision": "seven"}`)
+	_, faults := validateManifest(unreadable)
+	var decoded manifestRejectBody
+	if err := json.Unmarshal(newManifestReject("e", unreadable, faults).Body, &decoded); err != nil {
+		t.Fatalf("decode notice: %v", err)
+	}
+	if decoded.ManifestRevision != nil {
+		t.Errorf("notice carries revision %d for an unreadable one, want it omitted",
+			*decoded.ManifestRevision)
 	}
 }

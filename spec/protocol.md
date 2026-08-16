@@ -551,11 +551,15 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
 - `params` is a **JSON Schema subset** (draft 2020-12): `object`/`array`/scalar types,
   `enum`, `required`, numeric bounds, `default`. The vendor keyword `x-vyshka-widget`
   hints an admin UI widget (`itemlist`, `vector`, `player`, `webhook`) without
-  constraining the data model.
+  constraining the data model. Integer constants in a schema (bounds and `enum` members)
+  MUST lie strictly within ±2^53: every JSON toolchain in this ecosystem passes numbers
+  through IEEE doubles somewhere, and a constant that rounds on the way would be enforced
+  against a value its author never wrote, so hubs reject what they cannot compare exactly.
 - The hub MUST validate dispatch payloads against the schema **before** queueing, so
   schema-invalid input never reaches the game server.
 - `danger` is `none | warning | destructive`, advisory, for UI confirmation prompts.
-- `manifestRevision` is plugin-owned, an integer of 1 or above, and monotonic. The hub
+- `manifestRevision` is plugin-owned, an integer in `[1, 2^53)` (the same exactness bound
+  as schema constants), and monotonic. The hub
   replaces its stored manifest when it receives a higher revision and MUST ignore an equal
   or lower one, whatever its content: at-least-once delivery means the same publish can
   arrive twice, and an equal revision that changed content is a plugin bug the hub must not
@@ -599,8 +603,15 @@ rule, deliberately: the hub validates dispatch payloads against these schemas be
 reach the game server, so a keyword it accepted but did not enforce (`pattern`, say) would
 wave through exactly the input the mod author wrote the schema to exclude, with the mod
 trusting a guarantee nobody was providing. A manifest is also rejected when
-`manifestRevision` is missing or below 1, an action `code` is missing or duplicated, or a
-declared field exceeds the hub's length limits.
+`manifestRevision` is missing or outside `[1, 2^53)`, an action `code` is missing or
+duplicated, or a declared field exceeds the hub's length limits (counted in Unicode code
+points, the unit `maxLength` means in the companion schema). A JSON `null` where an
+OPTIONAL field could appear reads as the field being absent, never as a type error.
+
+Validation runs before the revision comparison: an invalid manifest is answered with
+`manifest.reject` whatever its revision says, including one equal to or below the stored
+revision. The revision rule of section 6.1 orders *valid* manifests; a rejection touches
+nothing, so answering it can contradict nothing.
 
 Rejection is envelope-level success. The envelope is acked like any other (section 9.3:
 the durably committed effect is that the stored manifest did not change), the session
@@ -630,9 +641,14 @@ the `id` of the refused envelope, the refused `manifestRevision` when it was rea
 The stored revision advances only on acceptance, so a corrected manifest MAY be
 republished at the very revision that was just rejected. A plugin SHOULD surface a
 `manifest.reject` where the server operator will see it (a log line at least) and MUST NOT
-treat one as a transport error. A retransmitted `manifest.publish` is a duplicate like any
-other (section 9.1): acked again, processed no further, and answered with no second
-rejection.
+treat one as a transport error.
+
+Within a session, a retransmitted `manifest.publish` is a duplicate like any other
+(section 9.1): acked again, processed no further, and answered with no second rejection.
+Across a session change the receiver cannot tell a renumbered republication from a new
+publish, because `seq` is the one field renumbering changes and `seq` is what duplicate
+detection runs on, so a hub MAY answer it with another `manifest.reject`. The notice is
+at-least-once like everything else here; a plugin that cares deduplicates on `envelopeId`.
 
 ### 6.5 Reading the manifest (Admin API)
 

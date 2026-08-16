@@ -71,13 +71,13 @@ func TestEnvelopeOperationsRefuseASupersededSession(t *testing.T) {
 	}
 
 	// The stale session numbers the envelope, then a restart supersedes it.
-	if _, _, err := st.NextOutbound(ctx, stale.ID, serverID, 10); err != nil {
+	if _, _, _, err := st.NextOutbound(ctx, stale.ID, serverID, 10); err != nil {
 		t.Fatalf("next outbound on a live session: %v", err)
 	}
 	fresh := startSession(t, st, serverID, "fresh-token-hash")
 
 	t.Run("NextOutbound", func(t *testing.T) {
-		if _, _, err := st.NextOutbound(ctx, stale.ID, serverID, 10); !errors.Is(err, store.ErrNotFound) {
+		if _, _, _, err := st.NextOutbound(ctx, stale.ID, serverID, 10); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("err = %v, want ErrNotFound", err)
 		}
 	})
@@ -97,7 +97,7 @@ func TestEnvelopeOperationsRefuseASupersededSession(t *testing.T) {
 
 	// The live session must still hold the envelope, renumbered from 1, and its
 	// ack must retire it for good.
-	envelopes, _, err := st.NextOutbound(ctx, fresh.ID, serverID, 10)
+	envelopes, _, _, err := st.NextOutbound(ctx, fresh.ID, serverID, 10)
 	if err != nil {
 		t.Fatalf("next outbound on the live session: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestQueueEnvelopeRefusesNewWorkAtTheBound(t *testing.T) {
 
 	// Acking frees room again: the bound counts unacked work, not history.
 	session := startSession(t, st, serverID, "token-hash")
-	if _, _, err := st.NextOutbound(ctx, session.ID, serverID, 10); err != nil {
+	if _, _, _, err := st.NextOutbound(ctx, session.ID, serverID, 10); err != nil {
 		t.Fatalf("next outbound: %v", err)
 	}
 	if err := st.AckOutbound(ctx, session.ID, 1); err != nil {
@@ -278,7 +278,7 @@ func TestSequenceStateResetsWithTheSession(t *testing.T) {
 			t.Fatalf("queue envelope: %v", err)
 		}
 	}
-	envelopes, high, err := st.NextOutbound(ctx, first.ID, serverID, 10)
+	envelopes, high, _, err := st.NextOutbound(ctx, first.ID, serverID, 10)
 	if err != nil {
 		t.Fatalf("next outbound: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSequenceStateResetsWithTheSession(t *testing.T) {
 	}
 
 	second := startSession(t, st, serverID, "second-token-hash")
-	envelopes, _, err = st.NextOutbound(ctx, second.ID, serverID, 10)
+	envelopes, _, _, err = st.NextOutbound(ctx, second.ID, serverID, 10)
 	if err != nil {
 		t.Fatalf("next outbound on the second session: %v", err)
 	}
