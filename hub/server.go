@@ -72,8 +72,10 @@ type Server struct {
 	// adminTokenHash is the digest of the bootstrap admin token; the token
 	// itself is never held in memory after boot.
 	adminTokenHash string
-	// waiters wakes held long-polls when something changes for their server.
+	// waiters wakes held long-polls when something changes for their server,
+	// and holds bounds how many of them one session may park at once.
 	waiters *waiters
+	holds   *holds
 	handler http.Handler
 	started time.Time
 }
@@ -120,6 +122,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		store:          st,
 		adminTokenHash: token.Hash(adminToken),
 		waiters:        newWaiters(),
+		holds:          newHolds(),
 		started:        time.Now(),
 	}
 	s.handler = s.routes()

@@ -185,10 +185,12 @@ paths:
               properties:
                 type:
                   type: string
+                  minLength: 1
                   maxLength: 128
                   description: |
-                    Namespaced message type. Types a dedicated endpoint owns
-                    (`action.*`) are refused here with `conflict`.
+                    Namespaced message type, non-empty after trimming. Types a
+                    dedicated endpoint owns (`action.*`) are refused here with
+                    `conflict`.
                 body:
                   type: object
                   additionalProperties: true
@@ -245,7 +247,8 @@ components:
     ServerRecord:
       type: object
       description: A game server as the Admin API sees it. Never carries a credential.
-      required: [id, name, game, createdAt, credentialState, pendingEnvelopeCount]
+      required:
+        [id, name, game, createdAt, credentialState, lastSeenAt, pendingEnvelopeCount]
       properties:
         id: { type: string }
         name: { type: string }

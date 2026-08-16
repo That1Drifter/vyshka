@@ -3,6 +3,8 @@ package hub_test
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -438,6 +440,183 @@ func TestRevocationBreaksAHeldPoll(t *testing.T) {
 	// (spec section 5.4).
 	if elapsed > 3*time.Second {
 		t.Errorf("the held poll took %s to notice the revocation", elapsed)
+	}
+}
+
+// Regression: two polls in flight at once used to classify their batches
+// against the ack each had captured at authentication time, so the hub could
+// report an ack it had already exceeded. Section 9.1 forbids lowering a
+// reported ack, and the counter behind it must not double-count either.
+func TestConcurrentPollsNeverLowerTheReportedAck(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "concurrent inbound acks")
+
+	inbound := func(seq int64) map[string]any {
+		return map[string]any{
+			"v": 1, "id": "concurrent-" + strconv.FormatInt(seq, 10),
+			"type": "test.concurrent", "seq": seq,
+			"ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{},
+		}
+	}
+
+	// Both polls carry queued work so neither is held and both race on ingest.
+	queueEnvelope(t, server, created.Server.ID, "test.nudge", nil)
+	queueEnvelope(t, server, created.Server.ID, "test.nudge", nil)
+
+	// Acks are recorded in the order the responses actually landed, because that
+	// is the order the plugin sees them in and the order monotonicity is a claim
+	// about. Slot order says nothing.
+	var (
+		mu       sync.Mutex
+		reported []int64
+		wg       sync.WaitGroup
+	)
+	start := make(chan struct{})
+
+	for slot, seqs := range [][]int64{{1, 2}, {1}} {
+		wg.Add(1)
+		go func(slot int, seqs []int64) {
+			defer wg.Done()
+			envelopes := make([]map[string]any, 0, len(seqs))
+			for _, seq := range seqs {
+				envelopes = append(envelopes, inbound(seq))
+			}
+			<-start
+			var result pollResult
+			status := call(t, server, http.MethodPost, "/plugin/v1/poll", live.SessionToken,
+				map[string]any{"envelopes": envelopes}, &result)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if status != http.StatusOK {
+				t.Errorf("poll %d: status = %d, want 200", slot, status)
+			}
+			reported = append(reported, result.Ack)
+		}(slot, seqs)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, ack := range reported {
+		// Zero is the signature of the old defect: a poll classifying against a
+		// snapshot taken before the other poll committed anything.
+		if ack < 1 || ack > 2 {
+			t.Errorf("response %d reported ack %d, want 1 or 2", i, ack)
+		}
+		if i > 0 && ack < reported[i-1] {
+			t.Errorf("reported acks went %d then %d: an ack the hub gave out was lowered",
+				reported[i-1], ack)
+		}
+	}
+
+	// The settled ack must be exactly 2, reached by two distinct envelopes.
+	settled := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{})
+	if settled.Ack != 2 {
+		t.Errorf("settled ack = %d, want 2", settled.Ack)
+	}
+}
+
+// Regression: a poll that authenticated before its session was superseded used
+// to reach the store anyway, renumbering envelopes into a dead session and
+// voiding the ack the live session had already sent.
+func TestSupersededSessionCannotTakeDelivery(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+
+	created := createServer(t, server, "superseded delivery", "test-game")
+	credentials := enroll(t, server, created.Enrollment.Token, "test-game")
+	stale := startSession(t, server, credentials, 5)
+	fresh := startSession(t, server, credentials, 5)
+
+	queueEnvelope(t, server, created.Server.ID, "test.contested", nil)
+
+	// The superseded token must not be served, however plausible it looks.
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/poll", stale.SessionToken,
+		map[string]any{}, http.StatusUnauthorized); code != "session_invalid" {
+		t.Errorf("stale session: error code = %q, want session_invalid", code)
+	}
+
+	// The live session still gets the envelope, at seq 1, and its ack sticks.
+	delivered := poll(t, server, fresh.SessionToken, map[string]any{})
+	if len(delivered.Envelopes) != 1 || delivered.Envelopes[0].Seq != 1 {
+		t.Fatalf("live session got %+v, want one envelope at seq 1", delivered.Envelopes)
+	}
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/poll", stale.SessionToken,
+		map[string]any{"ack": 1}, http.StatusUnauthorized); code != "session_invalid" {
+		t.Errorf("stale session ack: error code = %q, want session_invalid", code)
+	}
+
+	queueEnvelope(t, server, created.Server.ID, "test.after", nil)
+	after := poll(t, server, fresh.SessionToken, map[string]any{"ack": 1})
+	if len(after.Envelopes) != 1 || after.Envelopes[0].Seq != 2 {
+		t.Fatalf("after acking seq 1, got %+v, want only the new envelope at seq 2",
+			after.Envelopes)
+	}
+}
+
+// An explicit "v": 0 is not an absent v: it names a version no hub speaks.
+func TestPollRejectsExplicitZeroEnvelopeVersion(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "explicit zero version")
+
+	envelope := map[string]any{
+		"v": 0, "id": "zero-version", "type": "test.thing", "seq": 1,
+		"ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{},
+	}
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/poll", live.SessionToken,
+		map[string]any{"envelopes": []map[string]any{envelope}},
+		http.StatusBadRequest); code != "envelope_invalid" {
+		t.Errorf(`"v": 0: error code = %q, want envelope_invalid`, code)
+	}
+
+	// An omitted v, by contrast, means the negotiated version and is accepted.
+	delete(envelope, "v")
+	result := pollNow(t, server, created.Server.ID, live.SessionToken,
+		map[string]any{"envelopes": []map[string]any{envelope}})
+	if result.Ack != 1 {
+		t.Errorf("ack = %d after an envelope with no v, want 1: absent means negotiated", result.Ack)
+	}
+}
+
+// A ts the hub cannot parse must never cost the batch (spec section 4).
+func TestPollAcceptsAnUnparseableTimestamp(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "bad timestamp")
+
+	result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{{
+			"v": 1, "id": "bad-ts", "type": "test.thing", "seq": 1,
+			"ts": "last tuesday", "body": map[string]any{},
+		}},
+	})
+	if result.Ack != 1 {
+		t.Errorf("ack = %d, want 1: a receiver must not reject an envelope over ts alone", result.Ack)
+	}
+}
+
+func TestPollUpdatesLastSeenAt(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "last seen")
+
+	record := func() string {
+		var view struct {
+			LastSeenAt string `json:"lastSeenAt"`
+		}
+		call(t, server, http.MethodGet, "/api/v1/servers/"+created.Server.ID,
+			testAdminToken, nil, &view)
+		return view.LastSeenAt
+	}
+
+	atSession := record()
+	time.Sleep(10 * time.Millisecond)
+	pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{})
+
+	if afterPoll := record(); afterPoll == atSession {
+		t.Errorf("lastSeenAt is still %q after a poll; it must move on every poll", afterPoll)
 	}
 }
 

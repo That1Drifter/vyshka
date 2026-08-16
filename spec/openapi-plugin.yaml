@@ -219,7 +219,7 @@ paths:
                   description: |
                     Envelopes the plugin is sending, in ascending `seq` order. A
                     hub accepts at least 200 per request.
-                  items: { $ref: "#/components/schemas/Envelope" }
+                  items: { $ref: "#/components/schemas/PluginEnvelope" }
             example:
               ack: 4181
               envelopes:
@@ -246,7 +246,7 @@ paths:
                       Ascending by `seq`. Always present; an empty batch is `[]`,
                       never `null`. Anything above the plugin's ack is repeated
                       here unchanged until it is acked.
-                    items: { $ref: "#/components/schemas/Envelope" }
+                    items: { $ref: "#/components/schemas/HubEnvelope" }
                   ack:
                     type: integer
                     minimum: 0
@@ -260,11 +260,13 @@ paths:
                   sessionExpiresAt: { type: string, format: date-time }
         "400":
           description: |
-            An inbound envelope is missing `type` or `seq`, carries a `seq`
-            below 1, or declares an unsupported envelope version
-            (`envelope_invalid`); `ack` is above the highest `seq` the hub has
-            sent (`ack_out_of_range`); or the batch is too large
-            (`bad_request`).
+            An inbound envelope is missing `id`, `type` or `seq`, carries a
+            `seq` below 1, exceeds a length limit, or declares an unsupported
+            envelope version, including an explicit `0` (`envelope_invalid`,
+            with `details.index` naming the offending envelope); `ack` is above
+            the highest `seq` the hub has sent (`ack_out_of_range`); or the
+            batch is too large (`bad_request`). A rejected poll applies nothing
+            at all, including its `ack`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -281,24 +283,33 @@ components:
     Envelope:
       type: object
       description: |
-        The framed message unit exchanged in both directions (spec section 4).
-        `spec/envelopes.schema.json` is the standalone JSON Schema; this is the
-        same shape, inlined so that this document resolves on its own.
-      required: [id, type, seq, ts]
+        The framed message unit (spec section 4), in the receiver's view: it
+        lists only what a receiver may refuse an envelope for, so it is safe to
+        use as an admission filter. `ts` is absent from `required` on purpose;
+        a receiver that rejected an envelope over `ts` alone would violate
+        section 4. `PluginEnvelope` and `HubEnvelope` add the per-direction
+        sender obligations. `spec/envelopes.schema.json` is the standalone
+        version; this is inlined so the document resolves on its own.
+      required: [id, type, seq]
       properties:
         v:
           type: integer
           minimum: 1
           default: 1
           description: |
-            Envelope version. Required from the hub, optional from a plugin,
-            where absence means the session's negotiated `envelopeVersion`.
+            Envelope version. Absent from a plugin means the session's
+            negotiated `envelopeVersion`; an explicit `0` is not absence and is
+            rejected like any other unknown version.
         id:
           type: string
+          minLength: 1
           maxLength: 128
-          description: Unique per message and stable across retransmissions; a ULID here.
+          description: |
+            Opaque, unique per message, stable across retransmissions.
+            Receivers must not parse it. ULID recommended, not required.
         type:
           type: string
+          minLength: 1
           maxLength: 128
           description: |
             Namespaced message type. Unknown values are acked and ignored,
@@ -320,6 +331,20 @@ components:
           type: object
           additionalProperties: true
           description: Type-specific payload. Receivers must ignore unknown fields.
+
+    PluginEnvelope:
+      description: |
+        What a plugin must emit. `ts` is required of the sender even though a
+        receiver must not reject an envelope over it; `v` stays optional.
+      allOf: [{ $ref: "#/components/schemas/Envelope" }]
+      required: [id, type, seq, ts]
+
+    HubEnvelope:
+      description: |
+        What a hub must emit. A hub stamps `v` on everything it sends, so
+        unlike a plugin it may not omit it.
+      allOf: [{ $ref: "#/components/schemas/Envelope" }]
+      required: [id, type, seq, ts, v]
 
     PluginDescriptor:
       type: object

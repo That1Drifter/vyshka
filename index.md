@@ -18,7 +18,7 @@ The project is **spec-first**: the [protocol specification](spec/protocol.html) 
 conformance suites are the product; the hub and plugins are reference implementations.
 
 **Status:** early implementation. The protocol is at draft 0.4. The hub runs today with
-enrollment, sessions, and the envelope exchange over long-poll, graded by twenty-nine
+enrollment, sessions, and the envelope exchange over long-poll, graded by thirty-three
 black-box conformance checks in CI. Manifests and the action lifecycle come next.
 
 ## Start here

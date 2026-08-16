@@ -92,8 +92,68 @@ point if needed.
   SECURITY, CODE_OF_CONDUCT.
 - 2026-08-15: repository initialized on branch `main`.
 
+### Fixed
+
+- 2026-08-16: a superseded session could take delivery of envelopes belonging to its
+  successor. A poll authenticates and only then reaches the store; in that window a
+  restarting game server could open a new session, and the stale poll would renumber
+  envelopes into the dead session, stealing them from the live one and voiding an ack the
+  live session had already sent. Every envelope operation now resolves its session through
+  a liveness predicate, so a dead session is indistinguishable from no session and the poll
+  gets `401 session_invalid`. Graded by a store-level test, because the window is not
+  reachable from outside the HTTP layer.
+- 2026-08-16: two polls in flight at once could make the hub report an inbound ack lower
+  than one it had already reported, which section 9.1 forbids, and double-count the
+  envelopes behind it. Each poll classified its batch against the ack it captured at
+  authentication. `RecordInbound` is replaced by `AdvanceInbound`, which runs the
+  classification inside the transaction against committed state and returns the ack that is
+  now durable.
+- 2026-08-16: an explicit `"v": 0` on an inbound envelope was accepted as though `v` had
+  been omitted. Absence means the negotiated version; zero names a version no implementation
+  speaks. The hub now tells them apart, and the envelope types are split by direction, since
+  the hub's and the plugin's obligations for `v` and `ts` are not the same.
+- 2026-08-16: one session could park unboundedly many held polls, each costing a goroutine
+  and a database read per backstop tick against SQLite's single connection. Polls past a
+  ceiling of four per session are answered immediately instead of held, which the protocol
+  permits at any time. This is an implementation limit, not a protocol rule.
+
 ### Changed
 
+- 2026-08-16: `spec/protocol.md` closes a hole in the sequencing design: retransmission
+  across a session change was not implementable. Section 9.1 required retransmitting
+  unchanged, including `seq`, while sequence spaces restart at 1 per session, so an envelope
+  left unacked when a session ended could be neither resent, nor renumbered, nor dropped.
+  The unchanged rule is now scoped to within a session, and renumbering across a session
+  change is normative in both directions, keeping `id`, `type`, `ts` and `body` so that
+  deduplication still works. Section 9.2 extends the same rule to envelopes delivered but
+  never acked, not only those queued while disconnected.
+- 2026-08-16: `spec/protocol.md` resolves four ambiguities that would have let two good-faith
+  implementers build incompatible hubs: envelope order is taken as received and never
+  reordered; an absent `v` and a `v` of `0` are different; `durably processed` is defined,
+  and explicitly does not mean an external side effect finished; and a poll rejected for a
+  malformed envelope applies nothing at all, including its `ack`, which must otherwise be
+  applied before the envelopes.
+- 2026-08-16: envelope `id` is now opaque with ULID RECOMMENDED, rather than normatively a
+  ULID. Requiring a ULID encoder inside every game engine bought nothing: deduplication only
+  needs equality, and the conformance suite's own fake plugin could not satisfy the stricter
+  rule it was grading. Length floors for `id` and `type` are stated so that a prose-only
+  implementer knows what "too long" means.
+- 2026-08-16: `spec/envelopes.schema.json` and `spec/openapi-plugin.yaml` split the envelope
+  into a receiver view plus per-direction sender views. The shared definition required `ts`,
+  so anyone generating a request validator from it would have rejected envelopes the spec
+  says a receiver must accept. `lastSeenAt` joins `pendingEnvelopeCount` as required on the
+  Admin API server record, since section 9.4 obliges a hub to expose both.
+- 2026-08-16: four hub conformance checks (thirty-three total) covering `lastSeenAt` on every
+  poll, inbound tolerance of an omitted `v` and an unparseable `ts` against rejection of an
+  explicit `v` of `0`, the 200-envelope batch floor with refusal rather than truncation above
+  the cap, and a held poll answered at once when a new session supersedes it. Existing checks
+  were tightened where they would have passed against a violating hub: the idle hold bound no
+  longer allows nearly double the negotiated timeout, retransmission compares the body,
+  `envelope_invalid` must name the offending envelope by index and apply nothing, delivery of
+  already-queued work must not be held, and `pendingEnvelopeCount` is graded across the whole
+  lifecycle rather than at queue time. `plugin.poll.queueOutlivesSession` was renamed: it
+  grades survival across a session change, not the hub restart its old name implied, which a
+  black-box suite cannot perform.
 - 2026-08-16: `spec/protocol.md` draft 0.4 makes the transport normative. New section 3.1.2
   specifies the poll request and response shapes and their error codes (`envelope_invalid`,
   `ack_out_of_range`). Section 4 pins which envelope fields are required in which direction

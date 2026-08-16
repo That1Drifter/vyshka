@@ -789,8 +789,195 @@ var checks = []Check{
 				return fmt.Errorf("the hub answered an idle poll after %s; it must hold up to %s",
 					held, negotiated)
 			}
-			if held > negotiated+5*time.Second {
-				return fmt.Errorf("the hub held for %s, past the %s it negotiated", held, negotiated)
+			// "No later than the effective pollTimeout" is a MUST, so the
+			// allowance here is for network and scheduling jitter only.
+			if held > negotiated+2*time.Second {
+				return fmt.Errorf("the hub held for %s, past the %s it negotiated; a response is due no later than the effective pollTimeout",
+					held, negotiated)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.lastSeen",
+		Title:   "Every poll moves the server record's lastSeenAt",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: last seen", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			lastSeen := func() (string, error) {
+				var record serverRecord
+				if err := env.expect(ctx, http.MethodGet,
+					"/api/v1/servers/"+plugin.Server.Server.ID, env.AdminToken,
+					nil, http.StatusOK, &record); err != nil {
+					return "", err
+				}
+				if record.LastSeenAt == nil || *record.LastSeenAt == "" {
+					return "", fmt.Errorf("lastSeenAt is null after a session started")
+				}
+				return *record.LastSeenAt, nil
+			}
+
+			atSession, err := lastSeen()
+			if err != nil {
+				return err
+			}
+
+			// A poll that is answered at once, so the check does not spend a
+			// hold proving a timestamp moved.
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			if _, err := plugin.pollAndAck(ctx); err != nil {
+				return err
+			}
+
+			afterPoll, err := lastSeen()
+			if err != nil {
+				return err
+			}
+			if afterPoll == atSession {
+				return fmt.Errorf("lastSeenAt is still %q after a poll; a hub must update it on every poll",
+					afterPoll)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.poll.inboundTolerance",
+		Title:   "An omitted v and an unparseable ts are tolerated, an explicit v of 0 is not",
+		Section: "4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: inbound tolerance", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			// Each poll carries queued work so none of them is held.
+			nudge := func() error {
+				_, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil)
+				return err
+			}
+
+			// An absent v means the negotiated envelope version.
+			noVersion := plugin.nextOutbound(unknownType(), nil)
+			noVersion.V = 0 // omitempty drops it from the request body entirely
+			if err := nudge(); err != nil {
+				return err
+			}
+			accepted, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{noVersion}})
+			if err != nil {
+				return err
+			}
+			if accepted.Ack != noVersion.Seq {
+				return fmt.Errorf("ack = %d after an envelope with no v, want %d; absence means the negotiated version",
+					accepted.Ack, noVersion.Seq)
+			}
+
+			// A clock a game engine got wrong must not cost the batch.
+			badTimestamp := plugin.nextOutbound(unknownType(), nil)
+			badTimestamp.TS = "not a timestamp at all"
+			if err := nudge(); err != nil {
+				return err
+			}
+			tolerated, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{badTimestamp}})
+			if err != nil {
+				return err
+			}
+			if tolerated.Ack != badTimestamp.Seq {
+				return fmt.Errorf("ack = %d after an unparseable ts, want %d; a receiver must not reject an envelope over ts alone",
+					tolerated.Ack, badTimestamp.Seq)
+			}
+
+			// An explicit zero is not an absence: it names no version at all.
+			explicitZero := plugin.nextOutbound(unknownType(), nil)
+			return env.expectPollError(ctx, plugin.Session.SessionToken,
+				map[string]any{"envelopes": []map[string]any{{
+					"v": 0, "id": explicitZero.ID, "type": explicitZero.Type,
+					"seq": explicitZero.Seq, "ts": explicitZero.TS, "body": map[string]any{},
+				}}}, http.StatusBadRequest, "envelope_invalid")
+		},
+	},
+	{
+		ID:      "plugin.poll.batchLimit",
+		Title:   "A 200-envelope batch is accepted and an over-cap batch is refused, not truncated",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: batch limit", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			// The floor every hub must accept.
+			batch := make([]envelope, 0, 200)
+			for range 200 {
+				batch = append(batch, plugin.nextOutbound(unknownType(), nil))
+			}
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			accepted, err := plugin.poll(ctx, pollRequest{Envelopes: batch})
+			if err != nil {
+				return err
+			}
+			if accepted.Ack != 200 {
+				return fmt.Errorf("ack = %d after a 200-envelope batch, want 200; a hub must accept at least 200 per poll",
+					accepted.Ack)
+			}
+
+			// Past whatever cap the hub chose, it must refuse rather than
+			// silently keep part of the batch: a plugin that believes an
+			// envelope landed will never send it again.
+			oversized := make([]envelope, 0, 5001)
+			for range 5001 {
+				oversized = append(oversized, plugin.nextOutbound(unknownType(), nil))
+			}
+			resp, body, err := env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll",
+				plugin.Session.SessionToken, pollRequest{Envelopes: oversized})
+			if err != nil {
+				return fmt.Errorf("POST /plugin/v1/poll with 5001 envelopes: %w", err)
+			}
+			if resp.StatusCode == http.StatusOK {
+				return fmt.Errorf("a 5001-envelope batch was answered 200; a hub must refuse a batch over its cap rather than truncate it")
+			}
+			if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
+				return fmt.Errorf("a 5001-envelope batch got status %d, want 400 or 413 (body %q)",
+					resp.StatusCode, truncate(body))
+			}
+			return assertErrorCode(http.MethodPost, "/plugin/v1/poll", body, "")
+		},
+	},
+	{
+		ID:      "plugin.poll.supersededDuringHold",
+		Title:   "A new session answers the previous session's held poll at once",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: superseded mid-hold", 25)
+			if err != nil {
+				return err
+			}
+			stale := plugin.Session.SessionToken
+
+			failed := make(chan error, 1)
+			started := time.Now()
+			go func() {
+				failed <- env.expectPollError(ctx, stale, pollRequest{},
+					http.StatusUnauthorized, "session_invalid")
+			}()
+			time.Sleep(250 * time.Millisecond)
+
+			// The game server restarts and opens a fresh session.
+			if err := plugin.reconnect(ctx, shortPollTimeoutSeconds); err != nil {
+				return err
+			}
+
+			if err := <-failed; err != nil {
+				return err
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				return fmt.Errorf("the superseded poll took %s to answer 401; a held poll must not outlive its session",
+					elapsed)
 			}
 			return nil
 		},
@@ -812,9 +999,15 @@ var checks = []Check{
 				return err
 			}
 
+			started := time.Now()
 			response, err := plugin.pollAndAck(ctx)
 			if err != nil {
 				return err
+			}
+			// Work was already queued, so there was nothing to hold for.
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				return fmt.Errorf("the hub held for %s with an envelope already queued; it must answer at once when work is waiting",
+					elapsed)
 			}
 			if len(response.Envelopes) != 1 {
 				return fmt.Errorf("got %d envelopes, want the one that was queued", len(response.Envelopes))
@@ -887,7 +1080,8 @@ var checks = []Check{
 			if err != nil {
 				return err
 			}
-			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(),
+				map[string]any{"marker": "unchanged across retransmission"}); err != nil {
 				return err
 			}
 
@@ -919,6 +1113,9 @@ var checks = []Check{
 				return fmt.Errorf("the retransmission changed ts: %q then %q", sent.TS, resent.TS)
 			case sent.Type != resent.Type:
 				return fmt.Errorf("the retransmission changed type: %q then %q", sent.Type, resent.Type)
+			case !bytes.Equal(bytes.TrimSpace(sent.Body), bytes.TrimSpace(resent.Body)):
+				return fmt.Errorf("the retransmission changed body: %q then %q",
+					truncate(sent.Body), truncate(resent.Body))
 			}
 
 			// Acked, so only what was queued afterwards is left to send.
@@ -1100,12 +1297,56 @@ var checks = []Check{
 					return err
 				}
 			}
+
+			// The error must name which envelope of the batch was wrong, or a
+			// plugin sending 200 at a time cannot act on it.
+			good := plugin.nextOutbound(unknownType(), nil)
+			_, body, err := env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll",
+				plugin.Session.SessionToken,
+				pollRequest{Envelopes: []envelope{good, futureVersion}})
+			if err != nil {
+				return err
+			}
+			var failure struct {
+				Error struct {
+					Details map[string]any `json:"details"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(body, &failure); err != nil {
+				return fmt.Errorf("decode error body %q: %w", truncate(body), err)
+			}
+			index, ok := failure.Error.Details["index"]
+			if !ok {
+				return fmt.Errorf("envelope_invalid carried no details.index; it must name the offending envelope (body %q)",
+					truncate(body))
+			}
+			if asFloat, isNumber := index.(float64); !isNumber || int(asFloat) != 1 {
+				return fmt.Errorf("details.index = %v, want 1: the second envelope was the malformed one", index)
+			}
+
+			// A rejected poll must change nothing, so the valid envelope that
+			// travelled beside the malformed one is still unacked.
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			settled, err := plugin.poll(ctx, pollRequest{})
+			if err != nil {
+				return err
+			}
+			if settled.Ack != 0 {
+				return fmt.Errorf("ack = %d, want 0: a poll rejected for a malformed envelope must apply nothing at all",
+					settled.Ack)
+			}
 			return nil
 		},
 	},
 	{
+		// This grades survival across a session change, not across a hub
+		// restart. A black-box suite cannot restart the implementation under
+		// test, so the durability half of section 9.2 stays ungraded here and
+		// the name says so rather than implying more than it proves.
 		ID:      "plugin.poll.queueOutlivesSession",
-		Title:   "An envelope queued with no session survives, and is renumbered into the next one",
+		Title:   "An unacked envelope survives a session change and is renumbered into the next one",
 		Section: "9.2",
 		Run: func(ctx context.Context, env Env) error {
 			enrolled, created, err := env.newEnrolled(ctx, "conformance: queue outlives session")
@@ -1162,6 +1403,33 @@ var checks = []Check{
 			if second.Envelopes[0].Seq != 1 {
 				return fmt.Errorf("seq = %d in a fresh session, want 1: sequence state is per session",
 					second.Envelopes[0].Seq)
+			}
+
+			// The counter an operator watches must follow the whole lifecycle,
+			// not just the moment of queueing: still 1 while it is outstanding,
+			// 0 once acked.
+			pending := func() (int, error) {
+				var record serverRecord
+				if err := env.expect(ctx, http.MethodGet, "/api/v1/servers/"+created.Server.ID,
+					env.AdminToken, nil, http.StatusOK, &record); err != nil {
+					return 0, err
+				}
+				return record.PendingEnvelopeCount, nil
+			}
+			if outstanding, err := pending(); err != nil {
+				return err
+			} else if outstanding != 1 {
+				return fmt.Errorf("pendingEnvelopeCount = %d while an envelope is delivered but unacked, want 1",
+					outstanding)
+			}
+
+			if _, err := plugin.poll(ctx, pollRequest{Ack: second.Envelopes[0].Seq}); err != nil {
+				return err
+			}
+			if outstanding, err := pending(); err != nil {
+				return err
+			} else if outstanding != 0 {
+				return fmt.Errorf("pendingEnvelopeCount = %d after the ack, want 0", outstanding)
 			}
 			return nil
 		},

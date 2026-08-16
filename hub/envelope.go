@@ -19,13 +19,32 @@ const (
 	maxEnvelopeID       = 128
 )
 
-// envelope is the wire form of spec section 4, used in both directions.
-//
-// `ts` is carried as a string rather than a time.Time so that a clock a game
-// engine got wrong costs one ignored field instead of a rejected poll: the hub
-// stamps its own receipt time when the field is missing or unparseable.
+// The envelope of spec section 4 is split by direction, because its rules are
+// not symmetric: the hub MUST stamp `v` on what it sends, while a plugin MAY
+// omit it, and a receiver must tolerate a `ts` it cannot parse even though a
+// sender must always emit one. One shared struct cannot express either rule.
+
+// envelope is what the hub sends.
 type envelope struct {
 	V    int             `json:"v"`
+	ID   string          `json:"id"`
+	Type string          `json:"type"`
+	Seq  int64           `json:"seq"`
+	TS   string          `json:"ts"`
+	Body json.RawMessage `json:"body"`
+}
+
+// inboundEnvelope is what a plugin sends.
+//
+// `v` is a pointer because absent and zero are different answers: absent means
+// the version the session negotiated, while `"v": 0` is a version this hub does
+// not speak and must be refused. A plain int collapses the two and quietly
+// accepts the second.
+//
+// `ts` is a string rather than a time.Time so that a clock a game engine got
+// wrong costs one ignored field instead of a rejected batch of real events.
+type inboundEnvelope struct {
+	V    *int            `json:"v"`
 	ID   string          `json:"id"`
 	Type string          `json:"type"`
 	Seq  int64           `json:"seq"`
@@ -75,15 +94,15 @@ func (f envelopeFault) details() map[string]any {
 // validateInbound checks the envelope framing a hub must be able to rely on.
 // Anything beyond framing is the business of whatever handles the type, and
 // unknown types are not an error at all: they are acked and ignored.
-func validateInbound(index int, e envelope) *envelopeFault {
+func validateInbound(index int, e inboundEnvelope) *envelopeFault {
 	fault := func(format string, args ...any) *envelopeFault {
 		return &envelopeFault{Index: index, Seq: e.Seq, Message: fmt.Sprintf(format, args...)}
 	}
 
 	switch {
-	case e.V != 0 && e.V != EnvelopeVersion:
+	case e.V != nil && *e.V != EnvelopeVersion:
 		return fault("envelope version %d is not supported; this hub speaks version %d",
-			e.V, EnvelopeVersion)
+			*e.V, EnvelopeVersion)
 	case e.ID == "":
 		return fault("id is required")
 	case len(e.ID) > maxEnvelopeID:
@@ -102,7 +121,7 @@ func validateInbound(index int, e envelope) *envelopeFault {
 type inboundBatch struct {
 	// Ack is the highest contiguous seq after applying the batch.
 	Ack      int64
-	Accepted []envelope
+	Accepted []inboundEnvelope
 	// Duplicate counts envelopes at or below the ack: already processed, acked
 	// again, never an error. Gapped counts envelopes above a gap, which are
 	// discarded and will come back on retransmission.
@@ -113,7 +132,11 @@ type inboundBatch struct {
 // classifyInbound applies a batch to a contiguous ack (spec section 9.1). It is
 // deliberately a pure function of the ack and the batch: every ordering rule the
 // protocol has in the plugin -> hub direction lives here and nowhere else.
-func classifyInbound(ack int64, envelopes []envelope) inboundBatch {
+//
+// Envelopes are taken in the order they arrived, never reordered. A receiver
+// that sorted first would ack a batch its sender sent out of order, and two
+// hubs would then disagree about what a given poll acked.
+func classifyInbound(ack int64, envelopes []inboundEnvelope) inboundBatch {
 	batch := inboundBatch{Ack: ack}
 	for _, e := range envelopes {
 		switch {

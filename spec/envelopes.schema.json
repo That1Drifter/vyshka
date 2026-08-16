@@ -22,21 +22,20 @@
     "envelope": {
       "type": "object",
       "title": "Envelope",
-      "description": "The framed message unit exchanged between plugin and hub, in both directions and over both transports.",
-      "comment": "A sender must emit all of id, type, seq and ts. A receiver refuses an envelope missing id, type or seq, but never refuses one over ts alone: it substitutes its own receipt time. This schema states the sender's obligation.",
-      "required": ["id", "type", "seq", "ts"],
+      "description": "The framed message unit exchanged between plugin and hub. This is the RECEIVER's view: it lists only what a receiver may refuse an envelope for. It is deliberately safe to use as an admission filter, which is why `ts` is not required here even though section 4 obliges every sender to emit one; a receiver that rejected an envelope over `ts` would violate section 4. For the stricter per-direction sender obligations, use hubEnvelope and pluginEnvelope.",
+      "required": ["id", "type", "seq"],
       "properties": {
         "v": {
           "type": "integer",
           "minimum": 1,
           "default": 1,
-          "description": "Envelope version. Required from the hub, optional from a plugin, where absence means the session's negotiated envelopeVersion. Bumps only on envelope-breaking changes."
+          "description": "Envelope version. Absent from a plugin means the session's negotiated envelopeVersion; an explicit 0 is not absence and must be rejected. Bumps only on envelope-breaking changes."
         },
         "id": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "description": "Unique per message and stable across retransmissions. ULID in this protocol's own implementations."
+          "description": "Opaque, unique per message, stable across retransmissions. Receivers must not parse it. ULID recommended, not required."
         },
         "type": {
           "type": "string",
@@ -54,6 +53,18 @@
       },
       "additionalProperties": true
     },
+    "hubEnvelope": {
+      "title": "Envelope sent by a hub",
+      "description": "What a hub must emit. A hub stamps `v` on everything it sends, so unlike a plugin it may not omit it.",
+      "allOf": [{ "$ref": "#/$defs/envelope" }],
+      "required": ["id", "type", "seq", "ts", "v"]
+    },
+    "pluginEnvelope": {
+      "title": "Envelope sent by a plugin",
+      "description": "What a plugin must emit. `v` is optional, meaning the session's negotiated envelopeVersion. `ts` is required of the sender even though the receiver must not reject over it.",
+      "allOf": [{ "$ref": "#/$defs/envelope" }],
+      "required": ["id", "type", "seq", "ts"]
+    },
     "pollRequest": {
       "type": "object",
       "title": "Poll request",
@@ -63,7 +74,7 @@
         "envelopes": {
           "type": "array",
           "description": "Envelopes the plugin is sending, in ascending seq order. A hub accepts at least 200 per request.",
-          "items": { "$ref": "#/$defs/envelope" }
+          "items": { "$ref": "#/$defs/pluginEnvelope" }
         }
       },
       "additionalProperties": true
@@ -77,7 +88,7 @@
         "envelopes": {
           "type": "array",
           "description": "Envelopes queued for the plugin, in ascending seq order. Always present; an empty batch is [], never null.",
-          "items": { "$ref": "#/$defs/envelope" }
+          "items": { "$ref": "#/$defs/hubEnvelope" }
         },
         "ack": { "$ref": "#/$defs/ack" },
         "pollTimeoutSeconds": {

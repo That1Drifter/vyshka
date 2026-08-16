@@ -31,7 +31,11 @@ const (
 // shared with the hub, so that a change in the reference implementation shows up
 // as a suite failure rather than as a silently redefined contract.
 type envelope struct {
-	V    int             `json:"v"`
+	// V omits itself when zero so a check can send an envelope with no `v` at
+	// all, which is a plugin's right and means the negotiated version. An
+	// explicit `"v": 0` is a different thing entirely and must be refused, so
+	// checks that want it build the body by hand.
+	V    int             `json:"v,omitempty"`
 	ID   string          `json:"id"`
 	Type string          `json:"type"`
 	Seq  int64           `json:"seq"`
@@ -39,8 +43,11 @@ type envelope struct {
 	Body json.RawMessage `json:"body"`
 }
 
+// pollRequest omits both fields when they are zero, so that the suite actually
+// exercises the rule that every field is optional and `{}` is a valid idle poll.
+// Always sending `"ack": 0` would leave that untested.
 type pollRequest struct {
-	Ack       int64      `json:"ack"`
+	Ack       int64      `json:"ack,omitempty"`
 	Envelopes []envelope `json:"envelopes,omitempty"`
 }
 
@@ -122,6 +129,16 @@ func (p *fakePlugin) nextOutbound(envelopeType string, body any) envelope {
 	}
 }
 
+// renumber rewrites an envelope into a new session's sequence space, which is
+// what a plugin must do with anything still unacked when its session ends
+// (spec section 9.1). Everything a receiver deduplicates on is preserved; only
+// `seq` moves, because only `seq` belonged to the old session.
+func (p *fakePlugin) renumber(unacked envelope) envelope {
+	p.outboundSeq++
+	unacked.Seq = p.outboundSeq
+	return unacked
+}
+
 // poll sends one poll exactly as given, without touching the plugin's own
 // sequence state. Checks that need to lie to the hub use this.
 func (p *fakePlugin) poll(ctx context.Context, request pollRequest) (pollResponse, error) {
@@ -139,8 +156,17 @@ func (p *fakePlugin) poll(ctx context.Context, request pollRequest) (pollRespons
 		if delivered.ID == "" || delivered.Type == "" {
 			return pollResponse{}, fmt.Errorf("poll: envelope %d is missing id or type: %+v", i, delivered)
 		}
-		if _, err := time.Parse(time.RFC3339, delivered.TS); err != nil {
+		if delivered.V < 1 {
+			return pollResponse{}, fmt.Errorf("poll: envelope %d carries v %d; a hub stamps the negotiated envelope version on everything it sends",
+				i, delivered.V)
+		}
+		stamped, err := time.Parse(time.RFC3339, delivered.TS)
+		if err != nil {
 			return pollResponse{}, fmt.Errorf("poll: envelope %d has ts %q, which is not RFC 3339",
+				i, delivered.TS)
+		}
+		if _, offset := stamped.Zone(); offset != 0 {
+			return pollResponse{}, fmt.Errorf("poll: envelope %d has ts %q; section 4 requires UTC",
 				i, delivered.TS)
 		}
 		if i > 0 && delivered.Seq <= response.Envelopes[i-1].Seq {

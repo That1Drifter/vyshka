@@ -208,7 +208,12 @@ Rules:
   queued for the session.
 - A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it
   begins to hold, so that a poll which only acks takes effect at once rather than at the
-  end of the hold.
+  end of the hold. It MUST apply the `ack` first: the ack frees queued work, and applying
+  it late means re-sending an envelope the plugin has already reported done.
+- A hub MUST validate the whole inbound batch before applying any of it. A poll that
+  carries a malformed envelope changes nothing at all, including its `ack`, so a plugin can
+  correct the batch and retry the request as a whole rather than reason about which half
+  landed.
 - A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops
   being live (superseded, revoked, or expired) rather than letting the hold run to term.
 - A hub MUST accept at least 200 envelopes in one poll request. It MAY cap the batch above
@@ -219,7 +224,7 @@ Rules:
 | `code` | HTTP | Raised when |
 |---|---|---|
 | `session_invalid` | 401 | The session token is expired, unknown, or superseded (section 5.3) |
-| `envelope_invalid` | 400 | An inbound envelope is missing `id` or `type`, carries a `seq` that is absent or below 1, or declares an envelope version the hub does not speak (section 4). `details.index` names its position in the batch, and `details.seq` the envelope itself when it has one |
+| `envelope_invalid` | 400 | An inbound envelope is missing `id` or `type`, carries a `seq` that is absent or below 1, exceeds the hub's length limit on `id` or `type`, or declares an envelope version the hub does not speak (section 4). `details.index` is REQUIRED and names the envelope's position in the batch; `details.seq` is OPTIONAL and carries its `seq` when that was usable |
 | `ack_out_of_range` | 400 | `ack` is above the highest `seq` the hub has sent on this session |
 | `bad_request` | 400 | The batch exceeds the hub's envelope limit, or the body is malformed |
 
@@ -255,7 +260,7 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 | Field | Type | Rules |
 |---|---|---|
 | `v` | integer | Envelope version. Bumps only on envelope-breaking changes. |
-| `id` | string | ULID, unique per message and stable across retransmissions. |
+| `id` | string | Opaque, unique per message, and stable across retransmissions. ULID RECOMMENDED. |
 | `type` | string | Namespaced message type (`action.dispatch`, `event.batch`, ...). |
 | `seq` | integer | Per-session, per-direction monotonic sequence number, starting at 1 (section 9). |
 | `ts` | string | RFC 3339 UTC timestamp of when the message was created, not of when it was last sent. |
@@ -265,11 +270,21 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 from the hub and OPTIONAL from a plugin, where its absence means the version the session
 negotiated as `envelopeVersion`.
 
-Receivers enforce that unevenly, on purpose:
+`id` is opaque to the receiver: it MUST be unique per message within a session and
+identical on every retransmission of that message, and a receiver MUST NOT parse it or
+require any particular format. The reference implementations mint ULIDs, and new
+implementations SHOULD, but a receiver that rejected anything else would force a ULID
+encoder into every game engine to buy nothing: deduplication only needs equality.
 
-- A receiver MUST reject an envelope missing `id`, `type` or `seq`, or declaring a version
-  it does not speak. Without those it cannot deduplicate, route, order, or parse the
-  message, and guessing would be worse than refusing.
+Receivers enforce the rest unevenly, on purpose:
+
+- A receiver MUST reject an envelope missing `id`, `type` or `seq`, declaring a version it
+  does not speak, or exceeding a documented length limit on `id` or `type`. Without those
+  it cannot deduplicate, route, order, or parse the message, and guessing would be worse
+  than refusing. A receiver MUST accept an `id` and a `type` of at least 128 characters.
+- An absent `v` and a `v` of `0` are different: absent means the negotiated version, while
+  `0` names a version no implementation speaks and MUST be rejected like any other unknown
+  version. Implementations MUST NOT collapse the two.
 - A receiver MUST NOT reject an envelope over `ts` alone. When `ts` is missing or
   unparseable it MUST substitute its own receipt time wherever it records one. Some game
   engines have no trustworthy clock, and losing a batch of real events to a wrong clock
@@ -474,7 +489,10 @@ This is the transport-level primitive: it puts one envelope on the server's queu
 returns. Everything the hub itself models (action dispatch, section 7) is defined in terms
 of the same queue, with its own endpoint and its own validation.
 
-- `type` is REQUIRED and MUST be non-empty. `body` is OPTIONAL and defaults to `{}`.
+- `type` is REQUIRED and MUST be non-empty after trimming surrounding whitespace. A hub
+  MUST accept a `type` of at least 128 characters and MAY reject a longer one with
+  `bad_request`. `body` is OPTIONAL, MUST be a JSON object when present, and defaults
+  to `{}`.
 - The hub assigns `id` and `ts`. It does not assign `seq` here: sequence numbers belong to
   a session, and an envelope may be queued while no session exists (section 9.2). The
   response therefore carries no `seq`.
@@ -687,16 +705,33 @@ plugin and a hub implement one mechanism twice rather than two mechanisms once.
 - A receiver tracks the highest `seq` it has durably processed **with no gap below it**,
   and reports that number as its ack. Acking N acks everything at or below N; there are no
   selective or negative acks.
-- A receiver MUST process envelopes in ascending `seq` order and MUST NOT advance its ack
-  past a gap. An envelope above a gap MAY be discarded; the sender's retransmission rule
-  recovers it.
+- A sender MUST send envelopes in ascending `seq` order. A receiver MUST take them in the
+  order they arrived and MUST NOT reorder them: a receiver that sorted first would ack a
+  batch its sender never sent in that order, and two hubs would then disagree about what a
+  given poll acked.
+- A receiver MUST NOT advance its ack past a gap. An envelope above a gap MAY be discarded;
+  the sender's retransmission rule recovers it.
 - A receiver MUST treat an envelope at or below its ack as a duplicate: acknowledged again,
   processed no further, and never an error. This is what makes at-least-once delivery safe
   to build on.
 - Acks are monotonic. A receiver MUST NOT lower an ack it has already reported, and a
-  sender MUST ignore an ack below the one it has already recorded.
-- A sender MUST retransmit every envelope above the receiver's ack, unchanged: same `id`,
-  same `seq`, same `ts`, same `body`. Only then can the receiver deduplicate.
+  sender MUST ignore an ack below the one it has already recorded. A receiver that answers
+  several requests concurrently MUST derive each reported ack from committed state rather
+  than from a value read before the other requests committed.
+- **Within a session**, a sender MUST retransmit every envelope above the receiver's ack
+  unchanged: same `id`, same `seq`, same `ts`, same `body`. Only then can the receiver
+  deduplicate.
+- **Across a session change**, `seq` is the one field that MUST change. Sequence spaces do
+  not survive their session, so an envelope still unacked when a session ends MUST be
+  renumbered into the new session's space, keeping its `id`, `type`, `ts` and `body`. This
+  applies to both directions and to every unacked envelope, whether or not it was ever
+  delivered under the old session.
+
+  Renumbering is not optional, and the alternatives do not work: resending an envelope with
+  its old `seq` opens a gap the new session can never close, because the receiver is
+  counting from 1 again, and dropping it instead would break the rule that nothing is
+  discarded before it is acked. Deduplication is unaffected, because it keys on `id`, which
+  is exactly why `id` is stable and `seq` is not.
 - Unknown `type` values are ordinary traffic for this purpose: they advance the ack like
   anything else (section 4), because a receiver that stalled its ack on a message it did
   not understand would block every later message behind it.
@@ -704,8 +739,14 @@ plugin and a hub implement one mechanism twice rather than two mechanisms once.
 ### 9.2 Hub -> plugin
 
 - Queued envelopes are durable. They survive a hub restart, and they survive the session
-  they were queued in: an envelope queued while no plugin is connected MUST be delivered on
-  the next session, renumbered into that session's sequence space.
+  they were queued in: an envelope that is unacked when a session ends MUST be delivered on
+  the next session, renumbered into that session's sequence space (section 9.1). That covers
+  both an envelope queued while no plugin was connected and one delivered under the previous
+  session but never acked.
+- A hub MAY cap how many envelopes it puts in one poll response (reference default 200).
+  The cap does not weaken the retransmission rule: the remainder follows on later polls as
+  the earlier envelopes are acked. A plugin that never acks therefore sees the same first
+  batch forever, and nothing behind it, which is the same bug reported louder.
 - The hub re-delivers until acked or expired. Re-delivery plus `actionId` gives
   at-least-once delivery with plugin-side dedup: the plugin MUST keep a small LRU of
   executed action ids and MUST NOT execute the same `actionId` twice.
@@ -724,6 +765,14 @@ plugin and a hub implement one mechanism twice rather than two mechanisms once.
   restart loses nothing, because acks are only sent after durable writes.
 - A hub MUST NOT ack an envelope it has not durably processed. Answering a poll is not an
   ack: the number in the response body is.
+- **Durably processed** means the envelope's effect has been committed to storage that
+  survives a restart, together with the ack that covers it. For a `type` the hub models,
+  the effect is whatever that type's section defines. For a `type` the hub does not
+  recognize, the effect is nothing at all, and the ack alone is what must be durable. What
+  it never means is that a side effect outside the hub has finished: acking an envelope
+  says the hub has taken responsibility for it, not that the work is done. Progress on that
+  work is reported by the mechanisms the type defines, such as the action lifecycle of
+  section 7.
 
 ### 9.4 Blocked-state honesty
 

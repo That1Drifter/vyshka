@@ -16,11 +16,17 @@ import (
 // grows a second process one day.
 const pollBackstop = time.Second
 
+// maxHeldPollsPerSession bounds how many polls one session may park at once.
+// It is an implementation limit rather than a protocol rule: a poll over the
+// ceiling is answered at once instead of held, which the protocol allows at any
+// moment. See the `holds` type for why the ceiling exists.
+const maxHeldPollsPerSession = 4
+
 type pollRequest struct {
 	// Ack is the highest contiguous hub -> plugin seq the plugin has durably
 	// processed. Absent or 0 acks nothing.
-	Ack       int64      `json:"ack"`
-	Envelopes []envelope `json:"envelopes"`
+	Ack       int64             `json:"ack"`
+	Envelopes []inboundEnvelope `json:"envelopes"`
 }
 
 type pollResponse struct {
@@ -84,8 +90,20 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// Then the plugin's envelopes. Nothing in this slice models a type, so every
 	// accepted envelope takes the forward-compatibility path of spec section 4:
 	// acked and ignored. Type handlers hook in here as their slices land.
-	batch := classifyInbound(session.InboundAck, request.Envelopes)
-	if err := s.store.RecordInbound(r.Context(), session.ID, batch.Ack, len(batch.Accepted)); err != nil {
+	//
+	// The classification runs inside the store's transaction against the ack as
+	// committed, not against the copy this request authenticated with, so two
+	// overlapping polls cannot report acks that disagree.
+	var batch inboundBatch
+	inboundAck, err := s.store.AdvanceInbound(r.Context(), session.ID, func(ack int64) (int64, int) {
+		batch = classifyInbound(ack, request.Envelopes)
+		return batch.Ack, len(batch.Accepted)
+	})
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.rejectSession(w, "session token is expired, unknown, or superseded")
+		return
+	case err != nil:
 		s.writeInternalError(w, r, err)
 		return
 	}
@@ -93,7 +111,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("poll ingested envelopes",
 			"serverId", server.ID, "sessionId", session.ID,
 			"accepted", len(batch.Accepted), "duplicate", batch.Duplicate,
-			"gapped", batch.Gapped, "ack", batch.Ack)
+			"gapped", batch.Gapped, "ack", inboundAck)
 	}
 
 	if err := s.store.TouchServer(r.Context(), server.ID); err != nil {
@@ -101,7 +119,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.holdPoll(w, r, session, sessionTokenHash, batch.Ack)
+	s.holdPoll(w, r, session, sessionTokenHash, inboundAck)
 }
 
 // holdPoll answers as soon as there is anything to send, and otherwise holds the
@@ -127,6 +145,12 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			SessionExpiresAt:   envelopeTimestamp(session.ExpiresAt),
 		})
 	}
+
+	// Refused only when this session is already parking its ceiling of polls, in
+	// which case this one still reports everything queued, it just does not wait
+	// around for more.
+	mayHold, releaseHold := s.holds.enter(session.ID, maxHeldPollsPerSession)
+	defer releaseHold()
 
 	for {
 		// Registered before the read, so work queued between the read and the
@@ -157,7 +181,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		}
 
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
+		if remaining <= 0 || !mayHold {
 			release()
 			respond(nil)
 			return

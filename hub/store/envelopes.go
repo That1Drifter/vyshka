@@ -18,6 +18,32 @@ var (
 	ErrAckOutOfRange     = errors.New("ack is above the highest seq sent on this session")
 )
 
+// liveSessionSeq reads a session's sequence state, but only while the session
+// is still live. Every envelope operation goes through it.
+//
+// The liveness predicate is the load-bearing part. A poll authenticates, and
+// only then reaches the store; in between, its session can be superseded by a
+// restarting game server or revoked by an operator. Matching on the row's
+// existence alone would let that stale poll renumber envelopes into a dead
+// session, stealing them from the live one and silently voiding the ack the
+// live session had already sent. Answering `401 session_invalid` is the only
+// correct outcome, so a dead session must look like no session here.
+func liveSessionSeq(ctx context.Context, tx *sql.Tx, sessionID string, columns string, dest ...any) error {
+	err := tx.QueryRowContext(ctx,
+		`SELECT `+columns+`
+		   FROM sessions
+		  WHERE id = ? AND ended_at IS NULL AND expires_at > ?`,
+		sessionID, formatTime(time.Now().UTC()),
+	).Scan(dest...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read live session sequence state: %w", err)
+	}
+	return nil
+}
+
 // OutboundEnvelope is one queued hub -> plugin message. Seq is 0 until the
 // envelope has been numbered into a session (spec section 9.2): an envelope
 // queued while the game server is down has no sequence number yet, because it
@@ -108,12 +134,8 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	defer tx.Rollback()
 
 	var outboundSeq int64
-	switch err := tx.QueryRowContext(ctx,
-		`SELECT outbound_seq FROM sessions WHERE id = ?`, sessionID).Scan(&outboundSeq); {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil, 0, ErrNotFound
-	case err != nil:
-		return nil, 0, fmt.Errorf("read session sequence: %w", err)
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq", &outboundSeq); err != nil {
+		return nil, 0, err
 	}
 
 	rows, err := tx.QueryContext(ctx,
@@ -215,13 +237,9 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 	defer tx.Rollback()
 
 	var outboundSeq, outboundAck int64
-	switch err := tx.QueryRowContext(ctx,
-		`SELECT outbound_seq, outbound_ack FROM sessions WHERE id = ?`, sessionID,
-	).Scan(&outboundSeq, &outboundAck); {
-	case errors.Is(err, sql.ErrNoRows):
-		return ErrNotFound
-	case err != nil:
-		return fmt.Errorf("read session sequence: %w", err)
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, outbound_ack",
+		&outboundSeq, &outboundAck); err != nil {
+		return err
 	}
 
 	if ack > outboundSeq {
@@ -250,21 +268,54 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 	return nil
 }
 
-// RecordInbound durably advances the session's inbound ack. It is the write that
-// makes the ack honest: the hub reports the number only after this commits (spec
-// section 9.3). accepted counts the envelopes the advance covers.
-func (s *Store) RecordInbound(ctx context.Context, sessionID string, ack int64, accepted int) error {
-	if accepted == 0 {
-		return nil
+// AdvanceInbound applies a poll's envelopes to the session's inbound ack and
+// returns the ack that is now durably committed (spec section 9.3).
+//
+// classify receives the ack as it stands inside this transaction and returns
+// the new ack plus how many envelopes the advance covers. Passing the rule in
+// as a callback, rather than passing a precomputed ack in, is what makes the
+// result correct when two polls overlap: each one classifies against committed
+// state instead of against a snapshot taken back when it authenticated. The
+// alternative reports an ack lower than one the hub already gave out, which
+// section 9.1 forbids outright, and double-counts duplicates on the way.
+//
+// The read and the write are one transaction. On SQLite that is enough because
+// the pool holds a single connection; a Postgres backend would need the read to
+// take a row lock.
+func (s *Store) AdvanceInbound(ctx context.Context, sessionID string, classify func(ack int64) (int64, int)) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin advance inbound: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET inbound_ack = ?, inbound_count = inbound_count + ?
-		  WHERE id = ? AND inbound_ack < ?`,
-		ack, accepted, sessionID, ack,
-	); err != nil {
-		return fmt.Errorf("record inbound ack: %w", err)
+	defer tx.Rollback()
+
+	var inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "inbound_ack", &inboundAck); err != nil {
+		return 0, err
 	}
-	return nil
+
+	newAck, accepted := classify(inboundAck)
+	if newAck < inboundAck {
+		// A classifier must never go backwards; treat it as a no-op rather
+		// than write a regression into the session.
+		newAck = inboundAck
+		accepted = 0
+	}
+
+	if accepted > 0 && newAck > inboundAck {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET inbound_ack = ?, inbound_count = inbound_count + ?
+			  WHERE id = ?`,
+			newAck, accepted, sessionID,
+		); err != nil {
+			return 0, fmt.Errorf("record inbound ack: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit advance inbound: %w", err)
+	}
+	return newAck, nil
 }
 
 // TouchServer records that the plugin was heard from, which is the operator's

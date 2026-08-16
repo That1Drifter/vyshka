@@ -59,3 +59,43 @@ func (w *waiters) notify(key string) {
 		}
 	}
 }
+
+// holds counts the polls currently being held per session, so that one
+// credential cannot park an unbounded number of them.
+//
+// A conforming plugin keeps exactly one poll in flight (spec section 3.1), and
+// a retry around a flaky link can briefly make that two. Past a small ceiling
+// the extra requests are not a plugin doing its job, and each one costs a
+// goroutine, a timer, and a database read every backstop tick. Answering them
+// immediately instead of holding is always protocol-legal: the hub owes a
+// response no later than the poll timeout, never no sooner.
+type holds struct {
+	mu   sync.Mutex
+	held map[string]int
+}
+
+func newHolds() *holds { return &holds{held: map[string]int{}} }
+
+// enter claims a hold slot for a session. It always returns a release function,
+// including when the claim was refused, so callers can defer it unconditionally.
+func (h *holds) enter(key string, limit int) (granted bool, release func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.held[key] >= limit {
+		return false, func() {}
+	}
+	h.held[key]++
+
+	var once sync.Once
+	return true, func() {
+		once.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.held[key]--
+			if h.held[key] <= 0 {
+				delete(h.held, key)
+			}
+		})
+	}
+}
