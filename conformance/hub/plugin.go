@@ -130,6 +130,18 @@ func (p *fakePlugin) nextOutbound(envelopeType string, body any) envelope {
 	}
 }
 
+// rawEnvelope renders an envelope as a plain map with `ts` replaced by an
+// arbitrary JSON value, so a check can send a `ts` the struct above could not
+// express. Section 4 obliges a receiver to tolerate every one of them: an
+// implementation that decoded `ts` into a string-typed field would fail the
+// whole request at its decoder instead, refusing the envelope over `ts` alone.
+func rawEnvelope(e envelope, ts any) map[string]any {
+	return map[string]any{
+		"v": e.V, "id": e.ID, "type": e.Type, "seq": e.Seq, "ts": ts,
+		"body": json.RawMessage(`{}`),
+	}
+}
+
 // renumber rewrites an envelope into a new session's sequence space, which is
 // what a plugin must do with anything still unacked when its session ends
 // (spec section 9.1). Everything a receiver deduplicates on is preserved; only

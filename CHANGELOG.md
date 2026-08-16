@@ -196,6 +196,34 @@ point if needed.
 
 ### Fixed
 
+- 2026-08-16: an envelope whose `ts` was the wrong JSON type wedged the session. The inbound
+  `ts` was decoded into a string field, so `"ts": 1755367200` failed the whole poll body at
+  `encoding/json`, before any rule of the hub's own ran: `400 bad_request`, nothing in the
+  poll processed, including the good envelopes travelling with it. Because a sender must
+  retransmit unacked envelopes unchanged (section 9.1), the same envelope came back on every
+  poll and the ack never advanced, so a plugin with a wrong clock type could not recover
+  without being redeployed. The field is now raw and read tolerantly, the way the event `ts`
+  already was: absent, null, and wrong-type all mean "no usable timestamp" and receipt time
+  stands in. Section 4 now says plainly that a wrongly typed `ts` is unparseable for this
+  purpose, and in `spec/envelopes.schema.json` the receiver-view `envelope` no longer
+  constrains `ts` to a string at all, since that definition is advertised as safe to use as
+  an admission filter; `hubEnvelope` and `pluginEnvelope` carry the constraint, which is
+  where the sender's obligation belongs. `plugin.poll.inboundTolerance` grades it. Found by
+  adversarial review of the event ingest slice; the defect predates it.
+- 2026-08-16: one poll could queue an unbounded number of `manifest.reject` notices. A poll
+  may legally carry 500 envelopes, so a plugin looping on a manifest it kept failing to fix
+  bought up to 500 queue inserts inside the store's single transaction and filled its own
+  outbound queue with complaints about its own bug, until that server could no longer be
+  dispatched an action. Rejection notices now share one per-poll budget across every notice
+  kind (`maxNoticesPerPoll`, 20), replacing the event-only cap; the refusals themselves are
+  unaffected and the suppressed count reaches the hub's log. Section 6.4 carries the same
+  permission clause section 8.1 had, including the requirement that suppression be recorded
+  where an operator can see it, and both sections now state the cap as an exception to their
+  "the rejection MUST NOT be silent" rule rather than leaving the two paragraphs to
+  contradict each other. `plugin.manifest.rejectStorm` grades what every hub owes whether or
+  not it caps: a poll made entirely of refusals succeeds, real notices come back naming
+  envelopes the plugin actually sent, and no refusal is answered with more than one notice.
+  Found by adversarial review of the event ingest slice; the defect predates it.
 - 2026-08-16: a superseded session could take delivery of envelopes belonging to its
   successor. A poll authenticates and only then reaches the store; in that window a
   restarting game server could open a new session, and the stale poll would renumber

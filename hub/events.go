@@ -40,13 +40,9 @@ const (
 	// maxEventFaults caps how many faults an event.reject echoes back, as the
 	// manifest rejection does.
 	maxEventFaults = 20
-	// maxEventRejectsPerPoll caps how many event.reject notices one poll may
-	// produce. A poll may legally carry 500 envelopes, so without this cap a
-	// plugin sending 500 refusable batches would buy 500 queue inserts inside
-	// the store's transaction and fill its own outbound queue with notices
-	// about its own bug. The first few name real envelopes, which is what a
-	// plugin author needs to fix it; the rest are counted in the hub's log.
-	maxEventRejectsPerPoll = 20
+	// How many event.reject notices one poll may queue is bounded too, by the
+	// budget every notice kind shares: see maxNoticesPerPoll in poll.go.
+	//
 	// maxEventClockSkew is how far ahead of the hub's own clock an event's `ts`
 	// may sit before receipt time is used instead.
 	maxEventClockSkew = time.Hour

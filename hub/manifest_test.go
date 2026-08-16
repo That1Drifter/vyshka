@@ -264,6 +264,83 @@ func TestManifestDuplicateDeliveryIsIdempotent(t *testing.T) {
 	}
 }
 
+// One poll may legally carry hundreds of manifests, and every rejection owes
+// the plugin a notice. Uncapped, that is an amplifier rather than a courtesy:
+// the notices land in the server's own outbound queue, and enough such polls
+// fill it, at which point the server can no longer be dispatched an action. So
+// the refusals all stand, and how many of them are narrated is bounded (spec
+// section 6.4).
+func TestManifestRejectionNoticesAreBoundedPerPoll(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "manifest rejection storm")
+
+	// Rejected on the revision alone, so each body stays small: what is being
+	// measured is the notices, not the validator.
+	const invalid = 300
+	envelopes := make([]map[string]any, 0, invalid)
+	sent := make(map[string]bool, invalid)
+	for seq := 1; seq <= invalid; seq++ {
+		envelope := publishEnvelope(int64(seq), map[string]any{"manifestRevision": 0})
+		envelopes = append(envelopes, envelope)
+		sent[envelope["id"].(string)] = true
+	}
+
+	result := poll(t, server, live.SessionToken, map[string]any{"envelopes": envelopes})
+	if result.Ack != invalid {
+		t.Fatalf("ack = %d after %d invalid manifests, want %d: rejection is envelope-level success",
+			result.Ack, invalid, invalid)
+	}
+
+	// Drain what the hub queued. Each round nudges, so a drained queue answers
+	// at once instead of holding.
+	rejects, ack := 0, int64(0)
+	for range 3 {
+		for _, delivered := range result.Envelopes {
+			ack = max(ack, delivered.Seq)
+			if delivered.Type != "manifest.reject" {
+				continue
+			}
+			rejects++
+			var body struct {
+				EnvelopeID string `json:"envelopeId"`
+			}
+			if err := json.Unmarshal(delivered.Body, &body); err != nil {
+				t.Fatalf("decode manifest.reject body %q: %v", delivered.Body, err)
+			}
+			// A suppressed notice is one the plugin never gets. The ones it does
+			// get must still name envelopes it actually sent, or the cap has
+			// turned into a fabrication.
+			if !sent[body.EnvelopeID] {
+				t.Errorf("manifest.reject names envelope %q, which this plugin never sent",
+					body.EnvelopeID)
+			}
+		}
+		result = pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{"ack": ack})
+	}
+
+	if rejects == 0 {
+		t.Fatal("no manifest.reject arrived at all; a rejection must not be silent")
+	}
+	// The reference cap is maxNoticesPerPoll, shared across notice kinds.
+	if rejects > 20 {
+		t.Errorf("one poll of %d invalid manifests queued %d manifest.reject envelopes, "+
+			"want at most the cap of 20", invalid, rejects)
+	}
+
+	// The queue is what the cap protects: the plugin's own traffic must not be
+	// stuck behind a pile of complaints about its own bug.
+	var record struct {
+		PendingEnvelopeCount int `json:"pendingEnvelopeCount"`
+	}
+	call(t, server, http.MethodGet, "/api/v1/servers/"+created.Server.ID,
+		testAdminToken, nil, &record)
+	if record.PendingEnvelopeCount > 20 {
+		t.Errorf("pendingEnvelopeCount = %d after the storm was drained, want the queue clear",
+			record.PendingEnvelopeCount)
+	}
+}
+
 func TestManifestAdminReadErrors(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)

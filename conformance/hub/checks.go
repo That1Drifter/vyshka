@@ -848,7 +848,7 @@ var checks = []Check{
 	},
 	{
 		ID:      "plugin.poll.inboundTolerance",
-		Title:   "An omitted v and an unparseable ts are tolerated, an explicit v of 0 is not",
+		Title:   "An omitted v and a ts the hub cannot use are tolerated, an explicit v of 0 is not",
 		Section: "4",
 		Run: func(ctx context.Context, env Env) error {
 			plugin, err := env.newFakePlugin(ctx, "conformance: inbound tolerance", shortPollTimeoutSeconds)
@@ -889,6 +889,34 @@ var checks = []Check{
 			if tolerated.Ack != badTimestamp.Seq {
 				return fmt.Errorf("ack = %d after an unparseable ts, want %d; a receiver must not reject an envelope over ts alone",
 					tolerated.Ack, badTimestamp.Seq)
+			}
+
+			// A ts of the wrong JSON type is unparseable in the same sense, and
+			// a hub that typed the field against a string would fail the whole
+			// request at its decoder: one bad field costs every envelope in the
+			// poll, and since a sender retransmits unacked envelopes unchanged
+			// (section 9.1) it costs them again on every poll after that.
+			good := plugin.nextOutbound(unknownType(), nil)
+			mixed := []map[string]any{rawEnvelope(good, good.TS)}
+			for _, ts := range []any{1755367200, true, map[string]any{"at": "now"}, nil, []any{}} {
+				mixed = append(mixed, rawEnvelope(plugin.nextOutbound(unknownType(), nil), ts))
+			}
+			// An absent ts is the same case with the field left out entirely.
+			absent := rawEnvelope(plugin.nextOutbound(unknownType(), nil), nil)
+			delete(absent, "ts")
+			mixed = append(mixed, absent)
+
+			if err := nudge(); err != nil {
+				return err
+			}
+			var wrongTypes pollResponse
+			if err := env.expectPoll(ctx, plugin.Session.SessionToken,
+				map[string]any{"envelopes": mixed}, http.StatusOK, &wrongTypes); err != nil {
+				return fmt.Errorf("%w; section 4 forbids refusing an envelope over ts alone, and a ts of the wrong JSON type is unparseable for that purpose", err)
+			}
+			if wrongTypes.Ack != plugin.outboundSeq {
+				return fmt.Errorf("ack = %d after a poll carrying ts values of the wrong JSON type, want %d; a receiver substitutes its own receipt time rather than lose the envelope or the batch it travelled in",
+					wrongTypes.Ack, plugin.outboundSeq)
 			}
 
 			// An explicit zero is not an absence: it names no version at all.
@@ -1806,6 +1834,101 @@ var checks = []Check{
 				return fmt.Errorf("revision = %d after the corrected republish, want 2", record.Revision)
 			}
 			return nil
+		},
+	},
+	{
+		ID:      "plugin.manifest.rejectStorm",
+		Title:   "A poll of many invalid manifests is refused without failing, fabricating, or amplifying",
+		Section: "6.4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: manifest reject storm", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			// Refused on the revision alone, so each body stays small: what is
+			// graded here is what a poll full of refusals costs, not the
+			// validator. Whether a hub caps how many notices it queues is its
+			// own call (section 6.4 says MAY), so the cap itself is not graded;
+			// what every hub owes is that the poll succeeds, that at least one
+			// real rejection comes back, and that no refusal is answered with
+			// more than one notice. 200 is the batch size every hub must accept
+			// (section 3.1.2).
+			const invalid = 200
+			storm := make([]envelope, 0, invalid)
+			sent := make(map[string]bool, invalid)
+			for range invalid {
+				published := plugin.nextOutbound("manifest.publish", map[string]any{"manifestRevision": 0})
+				storm = append(storm, published)
+				sent[published.ID] = true
+			}
+
+			response, err := plugin.pollAndAck(ctx, storm...)
+			if err != nil {
+				return fmt.Errorf("the poll carrying %d invalid manifests failed; a rejected manifest is envelope-level success: %w",
+					invalid, err)
+			}
+			if response.Ack != plugin.outboundSeq {
+				return fmt.Errorf("ack = %d after %d invalid manifests, want %d; every one of them is durably processed and acked",
+					response.Ack, invalid, plugin.outboundSeq)
+			}
+
+			rejects := 0
+			count := func(batch []envelope) (int, error) {
+				found := 0
+				for _, one := range batch {
+					if one.Type != "manifest.reject" {
+						continue
+					}
+					found++
+					var reject struct {
+						EnvelopeID string `json:"envelopeId"`
+					}
+					if err := json.Unmarshal(one.Body, &reject); err != nil {
+						return found, fmt.Errorf("decode manifest.reject body %q: %w", truncate(one.Body), err)
+					}
+					// A hub that suppresses notices under a cap of its own still
+					// owes the plugin real ones: every notice that does arrive
+					// must name an envelope this plugin actually sent.
+					if !sent[reject.EnvelopeID] {
+						return found, fmt.Errorf("manifest.reject names envelope %q, which this plugin never sent",
+							reject.EnvelopeID)
+					}
+				}
+				return found, nil
+			}
+
+			// Drain until a poll brings no more rejections. The bound is one
+			// poll per refusal plus one, because a hub may answer with as few
+			// envelopes per response as it likes (section 9.2).
+			found, err := count(response.Envelopes)
+			if err != nil {
+				return err
+			}
+			rejects += found
+			for attempt := 0; attempt <= invalid && found > 0; attempt++ {
+				next, err := plugin.pollAndAck(ctx)
+				if err != nil {
+					return err
+				}
+				if found, err = count(next.Envelopes); err != nil {
+					return err
+				}
+				rejects += found
+			}
+
+			if rejects == 0 {
+				return fmt.Errorf("no manifest.reject arrived for %d invalid manifests; a rejection must not be silent",
+					invalid)
+			}
+			if rejects > invalid {
+				return fmt.Errorf("%d manifest.reject envelopes for %d invalid manifests; one refusal owes at most one notice",
+					rejects, invalid)
+			}
+			// The session survives a poll made entirely of refusals, which is
+			// the point of rejection being envelope-level success.
+			return env.expect(ctx, http.MethodGet, "/plugin/v1/session", plugin.Session.SessionToken,
+				nil, http.StatusOK, nil)
 		},
 	},
 	{

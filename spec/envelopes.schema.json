@@ -17,12 +17,12 @@
     "timestamp": {
       "type": "string",
       "format": "date-time",
-      "description": "RFC 3339 with a UTC offset. The time the message was created, not the time it was last sent. A receiver substitutes its own receipt time rather than reject an envelope whose ts is missing or unparseable."
+      "description": "RFC 3339 with a UTC offset. The time the message was created, not the time it was last sent. A receiver substitutes its own receipt time rather than reject an envelope whose ts is missing, unparseable, or of the wrong JSON type."
     },
     "envelope": {
       "type": "object",
       "title": "Envelope",
-      "description": "The framed message unit exchanged between plugin and hub. This is the RECEIVER's view: it lists only what a receiver may refuse an envelope for. It is deliberately safe to use as an admission filter, which is why `ts` is not required here even though section 4 obliges every sender to emit one; a receiver that rejected an envelope over `ts` would violate section 4. For the stricter per-direction sender obligations, use hubEnvelope and pluginEnvelope.",
+      "description": "The framed message unit exchanged between plugin and hub. This is the RECEIVER's view: it lists only what a receiver may refuse an envelope for. It is deliberately safe to use as an admission filter, which is why `ts` is here neither required nor constrained to a string even though section 4 obliges every sender to emit an RFC 3339 one; a receiver that rejected an envelope over `ts` would violate section 4. For the stricter per-direction sender obligations, use hubEnvelope and pluginEnvelope.",
       "required": ["id", "type", "seq"],
       "properties": {
         "v": {
@@ -44,7 +44,9 @@
           "description": "Namespaced message type. Unknown values are acked and ignored, never fatal."
         },
         "seq": { "$ref": "#/$defs/seq" },
-        "ts": { "$ref": "#/$defs/timestamp" },
+        "ts": {
+          "description": "When the message was created. Deliberately unconstrained here, where hubEnvelope and pluginEnvelope constrain it to an RFC 3339 string: emitting one is the sender's obligation, and section 4 forbids a receiver refusing an envelope over ts alone. A receiver substitutes its own receipt time when ts is absent, unparseable, or of the wrong JSON type. Constraining it in the admission filter would fail a whole poll request over one bad field, and because unacked envelopes are retransmitted unchanged it would go on failing it, which wedges the session."
+        },
         "body": {
           "type": "object",
           "default": {},
@@ -55,15 +57,17 @@
     },
     "hubEnvelope": {
       "title": "Envelope sent by a hub",
-      "description": "What a hub must emit. A hub stamps `v` on everything it sends, so unlike a plugin it may not omit it.",
+      "description": "What a hub must emit. A hub stamps `v` on everything it sends, so unlike a plugin it may not omit it, and `ts` is a real RFC 3339 string rather than the anything-goes field a receiver must tolerate.",
       "allOf": [{ "$ref": "#/$defs/envelope" }],
-      "required": ["id", "type", "seq", "ts", "v"]
+      "required": ["id", "type", "seq", "ts", "v"],
+      "properties": { "ts": { "$ref": "#/$defs/timestamp" } }
     },
     "pluginEnvelope": {
       "title": "Envelope sent by a plugin",
-      "description": "What a plugin must emit. `v` is optional, meaning the session's negotiated envelopeVersion. `ts` is required of the sender even though the receiver must not reject over it.",
+      "description": "What a plugin must emit. `v` is optional, meaning the session's negotiated envelopeVersion. `ts` is required of the sender, and an RFC 3339 string, even though the receiver must not reject over it: this is the obligation, not the admission filter.",
       "allOf": [{ "$ref": "#/$defs/envelope" }],
-      "required": ["id", "type", "seq", "ts"]
+      "required": ["id", "type", "seq", "ts"],
+      "properties": { "ts": { "$ref": "#/$defs/timestamp" } }
     },
     "pollRequest": {
       "type": "object",

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.8 (2026-08-16)
+**Status:** draft 0.9 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -288,7 +288,14 @@ Receivers enforce the rest unevenly, on purpose:
 - A receiver MUST NOT reject an envelope over `ts` alone. When `ts` is missing or
   unparseable it MUST substitute its own receipt time wherever it records one. Some game
   engines have no trustworthy clock, and losing a batch of real events to a wrong clock
-  costs more than an approximate timestamp does.
+  costs more than an approximate timestamp does. A `ts` of the wrong JSON type (a number,
+  a boolean, an object, an array, `null`) is unparseable in exactly that sense, not a
+  framing error: an implementation that decodes the field into a string-typed variable
+  MUST still accept those, because failing the request at its decoder refuses the envelope
+  over `ts` alone before any rule of the implementation's own gets to run. It also refuses
+  the envelopes travelling with it, and since a sender MUST retransmit unacked envelopes
+  unchanged (section 9.1) it goes on refusing them, which wedges the session rather than
+  costing one poll.
 
 Receivers MUST ack the highest contiguous `seq` they have durably processed; senders MUST
 retransmit anything above the ack. Unknown `type` values MUST be acked and ignored.
@@ -620,7 +627,8 @@ poll or end the session over a manifest it rejected, and a rejected manifest MUS
 touch the stored one.
 
 The rejection MUST NOT be silent: the hub MUST queue a `manifest.reject` envelope
-(hub -> plugin) unless the server's outbound queue is at its bound (section 9.2), carrying
+(hub -> plugin) unless the server's outbound queue is at its bound (section 9.2) or the
+per-poll notice cap below has been spent, carrying
 the `id` of the refused envelope, the refused `manifestRevision` when it was readable, and
 `errors`, a list of `{ path, message }` faults into the rejected body:
 
@@ -637,6 +645,15 @@ the `id` of the refused envelope, the refused `manifestRevision` when it was rea
   }
 }
 ```
+
+A hub MAY bound how many `manifest.reject` envelopes it queues for a single poll
+(reference cap: 20), because a poll may legally carry hundreds of publishes and a plugin
+looping on a manifest it keeps failing to fix would otherwise fill its own outbound queue
+with notices about its own bug, until nothing could be dispatched to that server at all. A
+hub that suppresses a notice under this cap MUST record the suppression where the operator
+can see it. The rejections themselves are unaffected: what is capped is how many of them
+are narrated. The bound MAY be a single budget shared with the `event.reject` cap of
+section 8.1, since what it protects is the outbound queue rather than either notice kind.
 
 The stored revision advances only on acceptance, so a corrected manifest MAY be
 republished at the very revision that was just rejected. A plugin SHOULD surface a
@@ -859,7 +876,8 @@ whole rejection gives it, minus the certainty.
 Like a rejected manifest (section 6.4), a rejected batch is envelope-level success: the
 envelope is acked, the session stays up, the other envelopes in the poll are unaffected, and
 a hub MUST NOT fail the poll over it. The rejection MUST NOT be silent either: unless the
-server's outbound queue is at its bound (section 9.2), the hub MUST queue an `event.reject`
+server's outbound queue is at its bound (section 9.2) or the per-poll notice cap below has
+been spent, the hub MUST queue an `event.reject`
 envelope carrying the `id` of the refused envelope and `errors`, a list of
 `{ path, message }` faults into the rejected body:
 
@@ -884,7 +902,8 @@ A hub MAY bound how many `event.reject` envelopes it queues for a single poll (r
 20), because a poll may legally carry hundreds of batches and a plugin refusing every one of
 them would otherwise fill its own outbound queue with notices about its own bug. A hub that
 suppresses a notice under this cap MUST record the suppression where the operator can see it.
-The refusals themselves are unaffected: what is capped is how many of them are narrated.
+The refusals themselves are unaffected: what is capped is how many of them are narrated. The
+bound MAY be a single budget shared with the `manifest.reject` cap of section 6.4.
 
 **Duplicates** need no special handling here. A retransmitted `event.batch` is a duplicate
 like any other envelope (section 9.1): acked again, processed no further, and therefore

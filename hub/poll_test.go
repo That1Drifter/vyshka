@@ -3,6 +3,7 @@ package hub_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -622,20 +623,66 @@ func TestPollRejectsExplicitZeroEnvelopeVersion(t *testing.T) {
 	}
 }
 
-// A ts the hub cannot parse must never cost the batch (spec section 4).
-func TestPollAcceptsAnUnparseableTimestamp(t *testing.T) {
+// A ts the hub cannot use must never cost the batch (spec section 4). A ts of
+// the wrong JSON type counts: it is unparseable in exactly the way the rule is
+// about, and a hub that typed the field against a string would fail the whole
+// request at its decoder, before any rule of its own ran. That failure repeats
+// on every retransmission, so it wedges the session rather than costing one
+// poll.
+func TestPollAcceptsAnUnusableTimestamp(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)
-	created, live := enrolledSession(t, server, "bad timestamp")
+	created, live := enrolledSession(t, server, "unusable timestamp")
 
-	result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
-		"envelopes": []map[string]any{{
-			"v": 1, "id": "bad-ts", "type": "test.thing", "seq": 1,
-			"ts": "last tuesday", "body": map[string]any{},
-		}},
-	})
-	if result.Ack != 1 {
-		t.Errorf("ack = %d, want 1: a receiver must not reject an envelope over ts alone", result.Ack)
+	// A good envelope travelling with the bad ones, carrying an effect that can
+	// be read back: one bad field must not cost its neighbours either.
+	envelopes := []map[string]any{
+		eventBatchEnvelope(1, map[string]any{"t": "example-mod.travelling.along"}),
+	}
+	// Every shape a hub might have typed the field against, plus the absence
+	// the protocol already tolerates.
+	unusable := []any{"last tuesday", 1755367200, true, map[string]any{"at": "now"}, nil, []any{}}
+	for i, ts := range unusable {
+		envelopes = append(envelopes, map[string]any{
+			"v": 1, "id": "bad-ts-" + strconv.Itoa(i), "type": "test.thing",
+			"seq": int64(i + 2), "ts": ts, "body": map[string]any{},
+		})
+	}
+	omitted := map[string]any{
+		"v": 1, "id": "no-ts", "type": "test.thing",
+		"seq": int64(len(envelopes) + 1), "body": map[string]any{},
+	}
+	// A wrongly stamped envelope must be processed, not merely acked, so the
+	// last one carries events of its own.
+	numeric := eventBatchEnvelope(int64(len(envelopes)+2),
+		map[string]any{"t": "example-mod.stamped.wrong"})
+	numeric["ts"] = 1755367200
+	envelopes = append(envelopes, omitted, numeric)
+
+	result := pollNow(t, server, created.Server.ID, live.SessionToken,
+		map[string]any{"envelopes": envelopes})
+	if want := int64(len(envelopes)); result.Ack != want {
+		t.Fatalf("ack = %d, want %d: a receiver must not reject an envelope over ts alone, "+
+			"nor lose the envelopes travelling with it", result.Ack, want)
+	}
+
+	for _, eventType := range []string{"example-mod.travelling.along", "example-mod.stamped.wrong"} {
+		page := queryEvents(t, server, created.Server.ID, url.Values{"type": {eventType}})
+		if len(page.Events) != 1 {
+			t.Errorf("%s stored %d events, want 1: a ts the hub cannot use is substituted, "+
+				"never a reason to drop what the envelope carried", eventType, len(page.Events))
+			continue
+		}
+		// Nothing usable was sent, so what the hub recorded is its own receipt
+		// time: near enough to now, and not the 2025 the numeric ts named.
+		occurred, err := time.Parse(time.RFC3339, page.Events[0].OccurredAt)
+		if err != nil {
+			t.Errorf("%s occurredAt %q is not RFC 3339: %v", eventType, page.Events[0].OccurredAt, err)
+			continue
+		}
+		if time.Since(occurred) > time.Minute || occurred.After(time.Now().Add(time.Minute)) {
+			t.Errorf("%s occurredAt = %s, want the hub's own receipt time", eventType, occurred)
+		}
 	}
 }
 
