@@ -5,9 +5,10 @@
 //
 // Usage:
 //
-//	go run ./conformance/hub -url http://127.0.0.1:8080 [-wait 30s] [-json]
+//	go run ./conformance/hub -url http://127.0.0.1:8080 -admin-token TOKEN [-wait 30s] [-json]
 //
-// Exit code is 0 when every check passes and 1 when any check fails.
+// Exit code is 0 when every check passes, 1 when any check fails, and 2 when
+// the suite could not be run at all.
 package main
 
 import (
@@ -23,15 +24,26 @@ import (
 
 func main() {
 	url := flag.String("url", "http://127.0.0.1:8080", "base URL of the hub under test")
+	adminToken := flag.String("admin-token", os.Getenv("VYSHKA_ADMIN_TOKEN"),
+		"admin token of the hub under test (env VYSHKA_ADMIN_TOKEN)")
 	timeout := flag.Duration("timeout", 10*time.Second, "per-request timeout")
 	wait := flag.Duration("wait", 0, "wait up to this long for the hub to become reachable before running checks")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
 	flag.Parse()
 
+	// Refusing to start beats skipping checks. A suite that runs green while
+	// half of it never executed is worse than no suite.
+	if strings.TrimSpace(*adminToken) == "" {
+		fmt.Fprintln(os.Stderr,
+			"conformance: -admin-token (or VYSHKA_ADMIN_TOKEN) is required; the suite grades both API realms")
+		os.Exit(2)
+	}
+
 	baseURL := strings.TrimRight(*url, "/")
 	env := Env{
-		BaseURL: baseURL,
-		Client:  &http.Client{Timeout: *timeout},
+		BaseURL:    baseURL,
+		Client:     &http.Client{Timeout: *timeout},
+		AdminToken: *adminToken,
 	}
 
 	ctx := context.Background()
@@ -68,7 +80,7 @@ func main() {
 			if !result.Passed {
 				status = "FAIL"
 			}
-			fmt.Printf("%s  %-18s %s\n", status, result.ID, result.Title)
+			fmt.Printf("%s  %-30s %s\n", status, result.ID, result.Title)
 			if !result.Passed {
 				fmt.Printf("      %s\n", result.Error)
 			}

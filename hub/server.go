@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/That1Drifter/vyshka/hub/internal/token"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -25,8 +26,17 @@ type Config struct {
 	Addr string
 	// DatabaseURL selects the database. Empty means the default SQLite file.
 	DatabaseURL string
+	// AdminToken is the bootstrap Admin API credential. Empty means the hub
+	// mints one at boot and logs it, which keeps first run to one command at
+	// the cost of a token that changes on every restart.
+	AdminToken string
 	// Logger receives structured logs. Required.
 	Logger *slog.Logger
+	// SessionTTL bounds how long a plugin session token stays valid.
+	SessionTTL time.Duration
+	// EnrollmentTokenTTL is the default lifetime of a one-time enrollment
+	// token when the operator does not ask for another.
+	EnrollmentTokenTTL time.Duration
 	// ReadHeaderTimeout bounds how long a client may take to send headers.
 	ReadHeaderTimeout time.Duration
 	// ShutdownTimeout bounds graceful shutdown before connections are cut.
@@ -40,6 +50,12 @@ func (c *Config) withDefaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+	if c.SessionTTL == 0 {
+		c.SessionTTL = time.Hour
+	}
+	if c.EnrollmentTokenTTL == 0 {
+		c.EnrollmentTokenTTL = 24 * time.Hour
+	}
 	if c.ReadHeaderTimeout == 0 {
 		c.ReadHeaderTimeout = 10 * time.Second
 	}
@@ -50,11 +66,14 @@ func (c *Config) withDefaults() {
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	store   *store.Store
-	handler http.Handler
-	started time.Time
+	cfg   Config
+	log   *slog.Logger
+	store *store.Store
+	// adminTokenHash is the digest of the bootstrap admin token; the token
+	// itself is never held in memory after boot.
+	adminTokenHash string
+	handler        http.Handler
+	started        time.Time
 }
 
 // New opens the store, runs migrations, and builds the HTTP handler. The caller
@@ -84,11 +103,21 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		"migrationsApplied", len(applied),
 	)
 
+	adminToken := cfg.AdminToken
+	if adminToken == "" {
+		adminToken = token.New(token.Admin)
+		cfg.Logger.Warn("no admin token configured, generated an ephemeral one",
+			"adminToken", adminToken,
+			"hint", "set VYSHKA_ADMIN_TOKEN (or -admin-token) to keep it stable across restarts")
+	}
+	cfg.AdminToken = ""
+
 	s := &Server{
-		cfg:     cfg,
-		log:     cfg.Logger,
-		store:   st,
-		started: time.Now(),
+		cfg:            cfg,
+		log:            cfg.Logger,
+		store:          st,
+		adminTokenHash: token.Hash(adminToken),
+		started:        time.Now(),
 	}
 	s.handler = s.routes()
 	return s, nil
@@ -100,9 +129,43 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // Store exposes the database handle to packages built on top of the server.
 func (s *Server) Store() *store.Store { return s.store }
 
+// routes wires both realms. Every path is registered twice: once per method it
+// answers, and once without a method, which ServeMux treats as the less
+// specific pattern and therefore only reaches on a method mismatch. That is
+// what turns net/http's plain-text 405 into the protocol error shape.
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("/healthz", methodNotAllowed("GET"))
+
+	// Admin API: operator facing, bearer tokens (spec section 5.1).
+	mux.HandleFunc("POST /api/v1/servers", s.requireAdmin(s.handleCreateServer))
+	mux.HandleFunc("GET /api/v1/servers", s.requireAdmin(s.handleListServers))
+	mux.HandleFunc("/api/v1/servers", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("GET /api/v1/servers/{serverId}", s.requireAdmin(s.handleGetServer))
+	mux.HandleFunc("/api/v1/servers/{serverId}", methodNotAllowed("GET"))
+
+	mux.HandleFunc("POST /api/v1/servers/{serverId}/enrollment-token",
+		s.requireAdmin(s.handleIssueEnrollmentToken))
+	mux.HandleFunc("/api/v1/servers/{serverId}/enrollment-token", methodNotAllowed("POST"))
+
+	mux.HandleFunc("DELETE /api/v1/servers/{serverId}/credentials",
+		s.requireAdmin(s.handleRevokeCredentials))
+	mux.HandleFunc("/api/v1/servers/{serverId}/credentials", methodNotAllowed("DELETE"))
+
+	// Plugin API: game-server facing, a separate credential realm entirely
+	// (spec sections 5.2 and 5.3).
+	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)
+	mux.HandleFunc("/plugin/v1/enroll", methodNotAllowed("POST"))
+
+	mux.HandleFunc("POST /plugin/v1/session", s.handleCreateSession)
+	mux.HandleFunc("GET /plugin/v1/session", s.handleGetSession)
+	mux.HandleFunc("/plugin/v1/session", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("/", s.handleNotFound)
+
 	return logRequests(s.log, mux)
 }
 

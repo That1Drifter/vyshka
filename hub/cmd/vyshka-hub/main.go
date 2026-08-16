@@ -62,6 +62,8 @@ func runServe(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", envOr("VYSHKA_ADDR", "127.0.0.1:8080"), "listen address (env VYSHKA_ADDR)")
 	dsn := flags.String("db", os.Getenv("DATABASE_URL"), "database DSN, empty means local SQLite (env DATABASE_URL)")
+	adminToken := flags.String("admin-token", os.Getenv("VYSHKA_ADMIN_TOKEN"),
+		"bootstrap Admin API token, or file:/path/to/secret; empty generates one per boot (env VYSHKA_ADMIN_TOKEN)")
 	logLevel := flags.String("log-level", envOr("VYSHKA_LOG_LEVEL", "info"), "debug, info, warn, or error (env VYSHKA_LOG_LEVEL)")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -73,6 +75,11 @@ func runServe(args []string) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
+	resolvedAdminToken, err := resolveSecret(*adminToken)
+	if err != nil {
+		return fmt.Errorf("admin token: %w", err)
+	}
+
 	// Ctrl-C and SIGTERM both mean "drain and stop".
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -80,6 +87,7 @@ func runServe(args []string) error {
 	server, err := hub.New(ctx, hub.Config{
 		Addr:        *addr,
 		DatabaseURL: *dsn,
+		AdminToken:  resolvedAdminToken,
 		Logger:      logger,
 	})
 	if err != nil {
@@ -103,6 +111,25 @@ func parseLevel(name string) (slog.Level, error) {
 	default:
 		return 0, fmt.Errorf("unknown log level %q", name)
 	}
+}
+
+// resolveSecret supports the `file:` indirection every secret-bearing flag
+// takes, so an operator can keep credentials out of the process list and out of
+// their shell history.
+func resolveSecret(value string) (string, error) {
+	path, isFile := strings.CutPrefix(value, "file:")
+	if !isFile {
+		return value, nil
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(contents))
+	if secret == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return secret, nil
 }
 
 func envOr(key, fallback string) string {

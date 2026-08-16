@@ -8,42 +8,53 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 | Suite | Question it answers | Status |
 |---|---|---|
-| `hub/` | Is this hub compliant? | Runnable, one prefactor check group |
+| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions |
 | `plugin/` | Is this plugin compliant? | Not built yet, see `plugin/README.md` |
 
 ## Hub suite
 
-Point it at any running hub:
+Point it at any running hub, with that hub's admin token:
 
 ```
-go run ./conformance/hub -url http://127.0.0.1:8080
+go run ./conformance/hub -url http://127.0.0.1:8080 -admin-token vya_...
 ```
 
 ```
 conformance: hub suite against http://127.0.0.1:8080
 
-PASS  health.responds    GET /healthz answers 200 with JSON
-PASS  health.status      GET /healthz reports status ok
+PASS  health.responds                GET /healthz answers 200 with JSON
+PASS  health.status                  GET /healthz reports status ok
+PASS  errors.shape                   An unrouted path answers 404 in the protocol error shape
+...
+PASS  compat.unknownFields           Unknown request fields are tolerated, not rejected
 
-2 checks, 0 failed
+17 checks, 0 failed
 ```
 
-The command exits 0 when every check passes and 1 when any check fails, so it drops straight
-into CI.
+The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite
+could not run at all, so it drops straight into CI.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `-url` | `http://127.0.0.1:8080` | Base URL of the hub under test |
+| `-admin-token` | env `VYSHKA_ADMIN_TOKEN` | Admin credential of the hub under test; **required** |
 | `-timeout` | `10s` | Per-request timeout |
 | `-wait` | `0` | Poll `/healthz` for up to this long before starting, for CI |
 | `-json` | off | Machine-readable results instead of the text report |
+
+The admin token is required rather than optional because the suite grades both realms. A run
+that quietly skipped every Admin API check would report green against a hub that implements
+nothing, so the runner refuses to start instead.
+
+The suite creates its own server records as it goes, under the game id `conformance` and names
+prefixed `conformance:`. Point it at a scratch hub, not a production one.
 
 ### Grading the reference hub locally
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
-./bin/vyshka-hub serve &
-go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token ./bin/vyshka-hub serve &
+go run ./conformance/hub -url http://127.0.0.1:8080 -admin-token vya_local_dev_token -wait 30s
 ```
 
 CI runs exactly this against every push and pull request.
@@ -52,8 +63,16 @@ CI runs exactly this against every push and pull request.
 
 Append a `Check` to the `checks` slice in `hub/checks.go`. Each one carries an `ID`, a
 one-line `Title`, and a `Section` citing the clause of `spec/protocol.md` it enforces, so a
-failure points at the rule rather than at the runner. Use `Env.get` rather than a bare HTTP
-client so every check shares the same timeout and body-size handling.
+failure points at the rule rather than at the runner. Use the `Env` helpers (`expect`,
+`expectError`, `newServer`, `newEnrolled`, `startSession`) rather than a bare HTTP client, so
+every check shares the same timeout, body-size handling, and failure wording.
+
+Checks must be independent: each one mints the server records it needs. They run in order, but
+nothing may depend on state another check left behind.
+
+The request and response shapes in `checks.go` are written out by hand rather than shared with
+the hub package. That duplication is the point: if the reference implementation changes a field
+name, the suite must fail, not follow along.
 
 Checks must fail loudly rather than skip. A check that cannot run is a failing check: silent
 skips are how a suite ends up green against a hub that implements nothing.

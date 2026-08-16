@@ -1,0 +1,263 @@
+openapi: 3.1.0
+info:
+  title: Vyshka Admin API
+  version: 0.3.0
+  summary: Operator-facing API of the Vyshka hub.
+  description: |
+    The operator half of the Vyshka protocol. Normative text lives in
+    `spec/protocol.md`; this document is its machine-readable companion and
+    covers only the endpoints implemented so far (spec section 5.1).
+
+    Authentication is a bearer token. Until scoped tokens land (spec section
+    10), a hub accepts a single bootstrap admin token that carries the `admin`
+    scope.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: A hub running locally with default settings.
+
+security:
+  - adminToken: []
+
+tags:
+  - name: servers
+    description: Game server records, enrollment tokens, and credentials.
+
+paths:
+  /api/v1/servers:
+    get:
+      tags: [servers]
+      operationId: listServers
+      summary: List server records, newest first.
+      responses:
+        "200":
+          description: Every server record this hub knows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: "#/components/schemas/ServerRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [servers]
+      operationId: createServer
+      summary: Create a server record and mint its first enrollment token.
+      description: |
+        The enrollment token is returned in this response and is not
+        retrievable afterwards: the hub stores only a digest of it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Operator-facing label for the game server.
+                game:
+                  type: string
+                  maxLength: 64
+                  description: |
+                    Game the operator expects to enroll here, lowercase.
+                    Omit to accept whatever enrolls. A mismatching enrollment
+                    is rejected with `game_mismatch`.
+                  examples: [dayz, reforger]
+                enrollmentTokenTtlSeconds:
+                  type: integer
+                  minimum: 1
+                  default: 86400
+                  description: Requested lifetime of the enrollment token; the hub may clamp it.
+            example:
+              name: "Chernarus #1"
+              game: dayz
+      responses:
+        "201":
+          description: The record, plus the one-time enrollment token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, enrollment]
+                properties:
+                  server: { $ref: "#/components/schemas/ServerRecord" }
+                  enrollment: { $ref: "#/components/schemas/EnrollmentToken" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/servers/{serverId}:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    get:
+      tags: [servers]
+      operationId: getServer
+      summary: Read one server record.
+      responses:
+        "200":
+          description: The server record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServerRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/servers/{serverId}/enrollment-token:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    post:
+      tags: [servers]
+      operationId: issueEnrollmentToken
+      summary: Mint a replacement enrollment token.
+      description: |
+        Invalidates any unused enrollment token the server still had. This is
+        how an operator recovers a server whose secret was lost or revoked.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttlSeconds:
+                  type: integer
+                  minimum: 1
+                  default: 86400
+      responses:
+        "201":
+          description: The new one-time enrollment token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/servers/{serverId}/credentials:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    delete:
+      tags: [servers]
+      operationId: revokeServerCredentials
+      summary: Revoke a server's secret and end its sessions.
+      description: |
+        Takes effect immediately: a long-poll already held open is answered
+        with `401 session_invalid` rather than left to expire (spec section
+        5.4). Idempotent.
+      responses:
+        "204":
+          description: The credentials are revoked and no session survives.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    adminToken:
+      type: http
+      scheme: bearer
+      description: An admin token (spec section 10).
+
+  parameters:
+    ServerId:
+      name: serverId
+      in: path
+      required: true
+      description: Hub-assigned server id; opaque to clients.
+      schema:
+        type: string
+
+  schemas:
+    ServerRecord:
+      type: object
+      description: A game server as the Admin API sees it. Never carries a credential.
+      required: [id, name, game, createdAt, credentialState]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        game: { type: string }
+        createdAt: { type: string, format: date-time }
+        enrolledAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        revokedAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        credentialState:
+          type: string
+          enum: [none, active, revoked]
+        lastSeenAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: When the plugin last authenticated.
+        plugin:
+          oneOf: [{ $ref: "#/components/schemas/PluginDescriptor" }, { type: "null" }]
+        session:
+          oneOf: [{ $ref: "#/components/schemas/SessionSummary" }, { type: "null" }]
+
+    PluginDescriptor:
+      type: object
+      description: What the plugin last said about itself. Advisory.
+      properties:
+        name: { type: string }
+        version: { type: string }
+        transports:
+          type: array
+          items: { type: string }
+
+    SessionSummary:
+      type: object
+      description: The server's live session, or null when it has none.
+      required: [id, expiresAt, pollTimeoutSeconds]
+      properties:
+        id: { type: string }
+        expiresAt: { type: string, format: date-time }
+        pollTimeoutSeconds: { type: integer }
+
+    EnrollmentToken:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          description: One-time enrollment token. Returned once, never retrievable again.
+        expiresAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable identifier; branch on this.
+            message:
+              type: string
+              description: Human-readable. Never parse it.
+            details:
+              type: object
+              additionalProperties: true
+
+  responses:
+    BadRequest:
+      description: Malformed body, or a field missing, wrongly typed, or out of range.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or invalid admin token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such server.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

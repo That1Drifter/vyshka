@@ -13,12 +13,17 @@ import (
 	"github.com/That1Drifter/vyshka/hub"
 )
 
+// testAdminToken is the bootstrap Admin API credential every test hub boots
+// with, so tests never have to scrape it out of the log.
+const testAdminToken = "vya_TESTTOKENTESTTOKENTESTTO"
+
 // newTestServer boots a hub against a throwaway SQLite file.
 func newTestServer(t *testing.T) *hub.Server {
 	t.Helper()
 
 	server, err := hub.New(context.Background(), hub.Config{
 		DatabaseURL: filepath.Join(t.TempDir(), "test.db"),
+		AdminToken:  testAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {

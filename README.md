@@ -10,23 +10,35 @@ game-agnostic from day one.
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.2), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.3), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
-hub and plugins are reference implementations of it. Machine-readable OpenAPI and JSON Schema
-artifacts will land alongside the spec in `spec/`.
+hub and plugins are reference implementations of it. The implemented endpoints also have
+machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml) and
+[`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml).
 
-What runs today is the walking skeleton: the hub boots, migrates an embedded SQLite database,
-serves `/healthz`, and is graded by the hub conformance suite in CI. No protocol surface is
-implemented yet.
+What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
+implements the first protocol surface, enrollment and sessions. An operator can register a
+game server, a plugin can trade its one-time enrollment token for permanent credentials and
+those credentials for a session, and revoking a server kills its session immediately. Seventeen
+conformance checks grade all of it in CI. Long-poll envelopes, manifests, and actions come next.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
-./bin/vyshka-hub serve
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token ./bin/vyshka-hub serve
 curl http://127.0.0.1:8080/healthz
 ```
 
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
-SQLite file), and `-log-level`. Logs are structured JSON on stdout.
+SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
+and `-log-level`. With no admin token configured the hub mints one at boot and logs it, which
+keeps first run to a single command; set the flag to keep it stable across restarts. Logs are
+structured JSON on stdout.
+
+To watch the whole enrollment flow in curl:
+
+```
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-enrollment.sh
+```
 
 ## Why
 

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.2 (2026-08-15)
+**Status:** draft 0.3 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -65,6 +65,57 @@ The hub exposes two API surfaces with **separate authentication realms**:
 - **Admin API** (`/api/v1/...`): operator facing. Scoped bearer tokens (section 10).
 
 A credential valid in one realm MUST NOT be accepted in the other.
+
+### 2.1 HTTP conventions
+
+Both realms are JSON over HTTP:
+
+- Request and response bodies are UTF-8 JSON. A request carrying a body MUST use
+  `Content-Type: application/json`; a hub MUST reject anything else with `415`.
+- Receivers MUST ignore unknown fields in any request or response body. This is the
+  body-level half of the forward-compatibility rule in section 13: new optional fields may
+  appear at any time.
+- Bearer credentials travel in `Authorization: Bearer <token>`. All tokens defined by this
+  document (enrollment token, server secret, session token, admin token) are **opaque**:
+  clients MUST NOT parse them or depend on their length, alphabet, or any prefix.
+- Identifiers assigned by the hub (`serverId`, `sessionId`, `actionId`) are opaque strings,
+  stable for the lifetime of the object they name.
+- Timestamps are RFC 3339 with a UTC offset.
+
+### 2.2 Error model
+
+Every 4xx and 5xx response from either realm carries this body:
+
+```json
+{
+  "error": {
+    "code": "enrollment_token_invalid",
+    "message": "enrollment token is unknown or expired",
+    "details": { }
+  }
+}
+```
+
+`code` is a stable machine-readable identifier; `message` is human-readable and MUST NOT be
+parsed; `details` is OPTIONAL and its contents are code-specific. Clients MUST branch on
+`code` and MUST tolerate codes they do not recognize, falling back on the HTTP status.
+
+General codes, usable by any endpoint:
+
+| `code` | HTTP | Meaning |
+|---|---|---|
+| `bad_request` | 400 | Malformed body, or a field that is missing, wrongly typed, or out of range |
+| `unauthorized` | 401 | Missing or invalid credential for this realm |
+| `forbidden` | 403 | Valid credential, insufficient scope (section 10) |
+| `not_found` | 404 | No such object, or the credential may not see it |
+| `method_not_allowed` | 405 | Path exists, method does not |
+| `conflict` | 409 | The request contradicts current state |
+| `unsupported_media_type` | 415 | Body was not `application/json` |
+| `payload_too_large` | 413 | Body exceeded the hub's limit |
+| `rate_limited` | 429 | Reserved; hubs MAY rate-limit and SHOULD send `Retry-After` |
+| `internal` | 500 | The hub failed; the client MAY retry |
+
+Endpoint-specific codes are defined with the endpoints that raise them (section 5).
 
 ## 3. Transport
 
@@ -154,22 +205,176 @@ retransmit anything above the ack. Unknown `type` values MUST be acked and ignor
 
 ## 5. Enrollment and sessions
 
+Three credentials, each with one job:
+
+| Credential | Lifetime | Held by | Purpose |
+|---|---|---|---|
+| Enrollment token | One use, short expiry | Plugin config file | Bootstraps a server record into credentials |
+| Server secret | Permanent until revoked | Plugin, on disk | Proves which server is calling |
+| Session token | Short-lived | Plugin, in memory | Authenticates every other Plugin API call |
+
+The flow:
+
 1. The operator creates a server record (`POST /api/v1/servers` or the panel) and receives
    a one-time **enrollment token**.
 2. The plugin's config file holds the hub URL and the enrollment token.
 3. First boot: `POST /plugin/v1/enroll` exchanges the enrollment token for permanent
    **server credentials** (server id + secret). The enrollment token is burned: a second
    enroll attempt with it MUST fail.
-4. Every boot: `POST /plugin/v1/session` with the server credentials returns a short-lived
-   **session token**, the negotiated protocol version, the effective `pollTimeout`, and
-   feature flags. All subsequent Plugin API calls use the session token. The request MAY
-   carry a `pollTimeout` in seconds, which the hub honors within the bounds of section
-   3.1.1; the effective value in the response is authoritative for the session.
+4. Every boot, and again before the session expires: `POST /plugin/v1/session` with the
+   server credentials returns a short-lived **session token**, the negotiated protocol
+   version, the effective `pollTimeout`, and feature flags. All subsequent Plugin API calls
+   authenticate with the session token.
 
 Rationale: one-time enrollment tokens keep long-lived secrets out of chat logs and support
-tickets, and per-server credentials make revocation surgical. Revoking a server's
-credentials MUST invalidate its session immediately (an open long-poll returns 401; the
-plugin re-enrolls or enters `buffering`, section 9).
+tickets, and per-server credentials make revocation surgical.
+
+A hub MUST store only an irreversible digest of every credential it issues. Each secret is
+returned exactly once, in the response that mints it, and MUST NOT be retrievable
+afterwards through any API.
+
+### 5.1 Server records (Admin API)
+
+```
+POST /api/v1/servers
+Authorization: Bearer <admin token>
+{ "name": "Chernarus #1", "game": "dayz", "enrollmentTokenTtlSeconds": 86400 }
+
+-> 201 Created
+{
+  "server": {
+    "id": "01J5QK...",
+    "name": "Chernarus #1",
+    "game": "dayz",
+    "createdAt": "2026-08-16T18:00:00Z",
+    "enrolledAt": null,
+    "revokedAt": null,
+    "credentialState": "none",
+    "lastSeenAt": null,
+    "plugin": null,
+    "session": null
+  },
+  "enrollment": {
+    "token": "<one-time enrollment token>",
+    "expiresAt": "2026-08-17T18:00:00Z"
+  }
+}
+```
+
+- `name` is REQUIRED and MUST be non-empty. `game` is OPTIONAL: it declares what the
+  operator expects to enroll here, and the hub MUST reject a mismatching enrollment
+  (`game_mismatch`). When omitted, the game is whatever enrolls.
+- `enrollmentTokenTtlSeconds` is OPTIONAL (reference default 86400). A hub MAY clamp it and
+  MUST report the effective expiry in `expiresAt`.
+- `credentialState` is `none` before enrollment, `active` once enrolled, `revoked` after
+  revocation.
+- `session` is `null` when no live session exists, otherwise
+  `{ "id": ..., "expiresAt": ..., "pollTimeoutSeconds": ... }`.
+
+Supporting endpoints, all requiring the `admin` scope:
+
+| Request | Result |
+|---|---|
+| `GET /api/v1/servers` | `{ "servers": [ ... ] }`, newest first |
+| `GET /api/v1/servers/{serverId}` | One server record |
+| `POST /api/v1/servers/{serverId}/enrollment-token` | `201` with a fresh one-time token; any unused earlier token for that server MUST be invalidated |
+| `DELETE /api/v1/servers/{serverId}/credentials` | `204`; revokes the server secret and kills its sessions (section 5.4) |
+
+### 5.2 Enrollment (Plugin API)
+
+```
+POST /plugin/v1/enroll
+{
+  "enrollmentToken": "<one-time enrollment token>",
+  "game": "dayz",
+  "plugin": { "name": "vyshka-dayz", "version": "1.4.0" },
+  "transports": ["poll"]
+}
+
+-> 201 Created
+{
+  "serverId": "01J5QK...",
+  "serverSecret": "<permanent server secret>",
+  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz" }
+}
+```
+
+- `enrollmentToken` and `game` are REQUIRED; `plugin` and `transports` are OPTIONAL and
+  recorded for display.
+- Burning the token and issuing the secret MUST be atomic: two concurrent enrollments with
+  the same token MUST result in exactly one success.
+- Enrolling a server that already has credentials (with a freshly issued token) MUST replace
+  the secret, invalidating the previous secret and every session derived from it. This is
+  the recovery path after a lost secret or a revocation.
+- The plugin MUST persist `serverId` and `serverSecret` and MUST NOT need the enrollment
+  token again.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `enrollment_token_invalid` | 401 | Token is unknown or expired |
+| `enrollment_token_used` | 409 | Token was already burned |
+| `game_mismatch` | 409 | Server record declares a different `game` |
+
+### 5.3 Sessions (Plugin API)
+
+```
+POST /plugin/v1/session
+{
+  "serverId": "01J5QK...",
+  "serverSecret": "<permanent server secret>",
+  "protocolVersion": 1,
+  "pollTimeoutSeconds": 25,
+  "plugin": { "name": "vyshka-dayz", "version": "1.4.0" },
+  "transports": ["poll"]
+}
+
+-> 200 OK
+{
+  "sessionId": "01J5QM...",
+  "sessionToken": "<short-lived session token>",
+  "expiresAt": "2026-08-16T19:00:00Z",
+  "protocolVersion": 1,
+  "envelopeVersion": 1,
+  "pollTimeoutSeconds": 25,
+  "transports": ["poll"],
+  "features": { },
+  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz" }
+}
+```
+
+- `serverId` and `serverSecret` are REQUIRED. The remaining fields are the plugin's
+  requests, and the response is authoritative for all of them.
+- `protocolVersion` is what the plugin speaks; omitted means the current version. A hub MUST
+  support the current and previous major version (section 13) and MUST reject anything else
+  with `protocol_version_unsupported`.
+- `pollTimeoutSeconds` is honored within 5 s to 60 s and clamped outside it, per section
+  3.1.1. `envelopeVersion` is the `v` the hub will send on envelopes (section 4).
+- `transports` in the response lists what the hub offers; `features` is an object of
+  hub-declared flags, which plugins MUST tolerate not recognizing. Both MAY be extended
+  without a version bump.
+- A hub MUST hold **at most one live session per server**. Issuing a session MUST invalidate
+  any earlier session for the same server, so a restarted game server never contends with
+  the sequence state of its own previous session (section 9).
+- The session token authenticates every later Plugin API call as
+  `Authorization: Bearer <sessionToken>`. A hub MUST reject an expired, unknown, or
+  superseded session token with `401` and code `session_invalid`, and the plugin MUST
+  respond by requesting a new session rather than by re-enrolling.
+- The hub MUST update the server record's `lastSeenAt` on session creation.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `credentials_invalid` | 401 | `serverId`/`serverSecret` do not match a server |
+| `credentials_revoked` | 401 | The server's credentials were revoked |
+| `protocol_version_unsupported` | 400 | Requested version is outside what the hub supports |
+| `session_invalid` | 401 | (later calls) session token is expired, unknown, or superseded |
+
+### 5.4 Revocation
+
+Revoking a server's credentials MUST take effect immediately, not at the next session
+boundary: the current session is invalidated at once, and a long-poll already held open
+MUST be answered with `401 session_invalid` rather than being left to expire. The plugin
+then enters `buffering` (section 9) and retries its session, which fails with
+`credentials_revoked` until the operator issues a fresh enrollment token.
 
 ## 6. Registration: the manifest
 
