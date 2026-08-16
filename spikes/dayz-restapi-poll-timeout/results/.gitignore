@@ -1,0 +1,4 @@
+# Raw server profile output (RPT, caches, BattlEye) written by the game server during a
+# spike run. The distilled logs next to this file are what the findings cite.
+profile/
+stub.log

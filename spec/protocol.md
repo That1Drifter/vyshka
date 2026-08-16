@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.1 (2026-08-15)
+**Status:** draft 0.2 (2026-08-15)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -81,9 +81,35 @@ rely on, because some game scripting environments allow nothing beyond callback-
 - The plugin SHOULD re-poll immediately after each response so a request is normally held
   open, giving near-zero command latency over plain HTTP.
 
-> **Open question (pre-1.0):** some engine HTTP clients may enforce a client-side timeout
-> below 25 s. The `pollTimeout` floor will be fixed after empirical testing; hubs MUST
-> honor a plugin-requested lower value down to 5 s.
+#### 3.1.1 Negotiating `pollTimeout`
+
+Engine HTTP clients abort a request that has not produced a complete response within a
+client-side limit, and that limit can be well below 25 s. The negotiated `pollTimeout` is
+therefore the contract that keeps the hub's response ahead of the plugin's own deadline.
+
+- A plugin MAY request a `pollTimeout` at session start (section 5). A hub MUST honor any
+  requested value in the range **5 s to 60 s** inclusive, and MUST return the effective
+  value in the session response. A hub MAY clamp a value outside that range to the nearest
+  end of it; it MUST NOT silently apply a value the plugin did not request from inside the
+  range.
+- The default, when a plugin requests nothing, is 25 s.
+- The hub MUST send a response no later than the effective `pollTimeout`. When no envelopes
+  are queued, that response is an empty batch, and the plugin re-polls.
+- A plugin MUST configure its HTTP client's response timeout to at least the effective
+  `pollTimeout` plus 5 s, so that the hub's own timely response always wins the race against
+  the client-side abort. A plugin that cannot configure a timeout that high MUST request a
+  correspondingly lower `pollTimeout`.
+- Hubs and plugins MUST NOT rely on partial writes (chunked keepalives, early headers,
+  whitespace padding) to keep a held request alive. At least one engine client applies its
+  timeout to the complete response regardless of bytes already received.
+- An aborted poll is not a delivery failure. Sequence numbers and acks (section 9) already
+  make the next poll recover anything undelivered, so a plugin MUST simply re-poll rather
+  than treat a timeout as a session error.
+
+> **Measured basis:** DayZ 1.29 aborts a held response after 10 s by default, applies that
+> limit to the whole response rather than as an idle timer, and lets script raise it to any
+> value from 3 s to 120 s. A 25 s hold is reliable there once the plugin raises its own read
+> timeout, which is why 25 s stays the default and 60 s is the ceiling a hub must honor.
 
 ### 3.2 Upgrade: WebSocket (optional)
 
@@ -136,7 +162,9 @@ retransmit anything above the ack. Unknown `type` values MUST be acked and ignor
    enroll attempt with it MUST fail.
 4. Every boot: `POST /plugin/v1/session` with the server credentials returns a short-lived
    **session token**, the negotiated protocol version, the effective `pollTimeout`, and
-   feature flags. All subsequent Plugin API calls use the session token.
+   feature flags. All subsequent Plugin API calls use the session token. The request MAY
+   carry a `pollTimeout` in seconds, which the hub honors within the bounds of section
+   3.1.1; the effective value in the response is authoritative for the session.
 
 Rationale: one-time enrollment tokens keep long-lived secrets out of chat logs and support
 tickets, and per-server credentials make revocation surgical. Revoking a server's

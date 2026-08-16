@@ -12,6 +12,10 @@ point if needed.
 
 ### Added
 
+- 2026-08-15: `spikes/dayz-restapi-poll-timeout/`, the reproducible harness and measurements
+  behind the poll timeout decision: a Go stub server that holds responses open in three
+  shapes, an Enforce Script probe driven from a mission `init.c`, the captured script-side
+  and socket-side logs, and `results/findings.md` (measured on game build 1.29.0.163709).
 - 2026-08-15: repository published to GitHub
   ([That1Drifter/vyshka](https://github.com/That1Drifter/vyshka)) with a GitHub Pages site
   (just-the-docs theme): `_config.yml`, `index.md` landing page, Jekyll front matter on
@@ -33,3 +37,9 @@ point if needed.
 - 2026-08-15: adopted the platform-qualified player identity shape
   (`{ "platform": "...", "id": "..." }`) in the protocol body and examples; previously it
   was only listed as an open question.
+- 2026-08-15: `spec/protocol.md` draft 0.2 replaces the section 3.1 poll timeout open
+  question with normative rules (new section 3.1.1): hubs MUST honor a plugin-requested
+  `pollTimeout` from 5 s to 60 s, default 25 s, and MUST respond by that deadline; plugins
+  MUST set their client response timeout to `pollTimeout` + 5 s and MUST NOT rely on partial
+  writes to keep a held request alive; an aborted poll is a re-poll, not a session error.
+  Session requests may now carry a requested `pollTimeout` (section 5).

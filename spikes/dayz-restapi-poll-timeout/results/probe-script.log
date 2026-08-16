@@ -1,0 +1,39 @@
+VYSHKA_PROBE	step=-1	event=boot	t=0	api=1	base=http://127.0.0.1:8099/
+VYSHKA_PROBE	step=-1	event=context	t=0	ctx=1	count=2
+VYSHKA_PROBE	step=0	event=fire	t=0	label=default/hold-5s	path=hold?ms=5000	option=0	value=0
+VYSHKA_PROBE	step=0	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=0	event=success	t=5086	settled=false	size=50	data={"endpoint":"hold","heldMs":5000,"elapsedMs":5000}
+VYSHKA_PROBE	step=1	event=fire	t=0	label=default/hold-9s	path=hold?ms=9000	option=0	value=0
+VYSHKA_PROBE	step=1	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=1	event=success	t=9058	settled=false	size=50	data={"endpoint":"hold","heldMs":9000,"elapsedMs":9000}
+VYSHKA_PROBE	step=2	event=fire	t=0	label=default/hold-12s	path=hold?ms=12000	option=0	value=0
+VYSHKA_PROBE	step=2	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=2	event=error	t=10113	settled=false	code=8
+VYSHKA_PROBE	step=3	event=fire	t=0	label=default/hold-25s	path=hold?ms=25000	option=0	value=0
+VYSHKA_PROBE	step=3	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=3	event=error	t=10063	settled=false	code=8
+VYSHKA_PROBE	step=4	event=fire	t=0	label=default/headers-25s	path=headers?ms=25000	option=0	value=0
+VYSHKA_PROBE	step=4	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=4	event=error	t=10022	settled=false	code=8
+VYSHKA_PROBE	step=5	event=fire	t=0	label=default/drip-30s-4s	path=drip?ms=30000&every=4000	option=0	value=0
+VYSHKA_PROBE	step=5	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=5	event=error	t=10073	settled=false	code=8
+VYSHKA_PROBE	step=6	event=fire	t=0	label=conn30/hold-25s	path=hold?ms=25000	option=2	value=30
+VYSHKA_PROBE	step=6	event=submitted	t=1	rc=1
+VYSHKA_PROBE	step=6	event=error	t=10024	settled=false	code=8
+VYSHKA_PROBE	step=7	event=fire	t=0	label=read30/hold-25s	path=hold?ms=25000	option=1	value=30
+VYSHKA_PROBE	step=7	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=7	event=success	t=25074	settled=false	size=52	data={"endpoint":"hold","heldMs":25000,"elapsedMs":25000}
+VYSHKA_PROBE	step=8	event=fire	t=0	label=read30/hold-35s	path=hold?ms=35000	option=1	value=30
+VYSHKA_PROBE	step=8	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=8	event=error	t=30024	settled=false	code=8
+VYSHKA_PROBE	step=9	event=fire	t=0	label=read120/hold-60s	path=hold?ms=60000	option=1	value=120
+VYSHKA_PROBE	step=9	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=9	event=success	t=60074	settled=false	size=52	data={"endpoint":"hold","heldMs":60000,"elapsedMs":60000}
+VYSHKA_PROBE	step=10	event=fire	t=0	label=read200/hold-25s	path=hold?ms=25000	option=1	value=200
+VYSHKA_PROBE	step=10	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=10	event=success	t=25124	settled=false	size=52	data={"endpoint":"hold","heldMs":25000,"elapsedMs":25000}
+VYSHKA_PROBE	step=11	event=fire	t=0	label=read3/hold-5s	path=hold?ms=5000	option=1	value=3
+VYSHKA_PROBE	step=11	event=submitted	t=0	rc=1
+VYSHKA_PROBE	step=11	event=error	t=3074	settled=false	code=8
+VYSHKA_PROBE	step=-1	event=finished	t=0	steps=12
