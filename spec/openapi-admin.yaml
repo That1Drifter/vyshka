@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.7.0
+  version: 0.8.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.5, and 7).
+    6.5, 7, and 8.5).
 
     Authentication is a bearer token. Until scoped tokens land (spec section
     10), a hub accepts a single bootstrap admin token that carries the `admin`
@@ -30,6 +30,8 @@ tags:
     description: Putting work on a server's queue.
   - name: actions
     description: Dispatching tracked jobs and reading their lifecycle.
+  - name: events
+    description: Reading the telemetry a plugin has pushed.
 
 paths:
   /api/v1/servers:
@@ -356,6 +358,66 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/servers/{serverId}/events:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: Read a server's telemetry feed, newest first.
+      description: |
+        One page of the append-only event store (spec section 8.5). Core and
+        custom events come back through the same query and the same filters:
+        nothing here distinguishes them.
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: |
+            An exact event type, a `{namespace}.*` pattern, or `*`. Repeatable;
+            terms are ORed. Absent means every type.
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: "^(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?)$"
+          style: form
+          explode: true
+          example: ["core.player.*", "example-mod.raid.started"]
+        - name: since
+          in: query
+          required: false
+          description: Inclusive lower bound on occurredAt.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          required: false
+          description: Exclusive upper bound on occurredAt.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the hub's cap rather than refused.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          description: An opaque nextCursor from a previous page. Never parse or construct one.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of the feed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     adminToken:
@@ -483,6 +545,50 @@ components:
           type: string
           description: One-time enrollment token. Returned once, never retrievable again.
         expiresAt: { type: string, format: date-time }
+
+    EventRecord:
+      type: object
+      description: One stored telemetry event (spec section 8.1).
+      required: [id, serverId, type, occurredAt, receivedAt, data]
+      properties:
+        id:
+          type: string
+          description: Hub-assigned, opaque, and the tiebreak that makes the feed's order total.
+        serverId: { type: string }
+        type:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$"
+          description: The event's `t`, core or custom alike.
+        occurredAt:
+          type: string
+          format: date-time
+          description: |
+            When the game server says it happened, or the hub's receipt time
+            when the plugin sent nothing usable.
+        receivedAt:
+          type: string
+          format: date-time
+          description: |
+            When the hub took responsibility. Reported beside occurredAt rather
+            than reconciled with it, so a clock discrepancy stays visible.
+        data:
+          type: object
+          additionalProperties: true
+          description: The payload the plugin sent; an empty object when it sent none.
+
+    EventPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/EventRecord" }
+          description: Newest first, by occurredAt.
+        nextCursor:
+          type: string
+          description: |
+            Opaque position to resume from. Absent on the last page, which is
+            how a client knows to stop without fetching an empty one.
 
     Error:
       type: object

@@ -88,13 +88,14 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Then the plugin's envelopes. The hub models manifest.publish, action.ack,
-	// and action.result on the inbound path; every other accepted envelope
-	// takes the forward-compatibility path of spec section 4: acked and
-	// ignored. Bodies are validated up front because validity depends only on
-	// content, while which envelopes are newly accepted is only known inside
+	// action.result, and event.batch on the inbound path; every other accepted
+	// envelope takes the forward-compatibility path of spec section 4: acked
+	// and ignored. Bodies are validated up front because validity depends only
+	// on content, while which envelopes are newly accepted is only known inside
 	// the transaction.
 	manifests := prepareManifests(request.Envelopes)
 	actions := prepareActions(request.Envelopes)
+	events := s.prepareEvents(request.Envelopes, time.Now().UTC())
 
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
@@ -102,10 +103,17 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// rejection notices ride the same transaction: acking an envelope promises
 	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
-	var unusableActionBodies int
+	var unusableActionBodies, refusedEventBatches, unreportedEventRejects int
 	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
 		unusableActionBodies = 0
+		refusedEventBatches = 0
+		unreportedEventRejects = 0
+		// The event budget is charged here rather than during validation, so
+		// that only envelopes actually being accepted spend it: a poll carrying
+		// retransmitted batches alongside new ones must not lose the new ones
+		// to duplicates that store nothing.
+		eventBudget := maxEventsPerPoll
 		application := store.InboundApplication{Ack: batch.Ack, Accepted: len(batch.Accepted)}
 		for _, index := range batch.Accepted {
 			if prepared, isManifest := manifests[index]; isManifest {
@@ -124,6 +132,29 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 					application.ActionResults = append(application.ActionResults, *prepared.result)
 				default:
 					unusableActionBodies++
+				}
+				continue
+			}
+			if prepared, isEvents := events[index]; isEvents {
+				// A refused batch owes the plugin a notice, but only so many:
+				// see maxEventRejectsPerPoll for why one poll cannot be allowed
+				// to mint an unbounded number of them.
+				refuse := func(notice store.Notice) {
+					refusedEventBatches++
+					if refusedEventBatches > maxEventRejectsPerPoll {
+						unreportedEventRejects++
+						return
+					}
+					application.Notices = append(application.Notices, notice)
+				}
+				switch {
+				case prepared.reject != nil:
+					refuse(*prepared.reject)
+				case len(prepared.events) > eventBudget:
+					refuse(newEventBudgetReject(request.Envelopes[index].ID))
+				default:
+					eventBudget -= len(prepared.events)
+					application.Events = append(application.Events, prepared.events...)
 				}
 			}
 		}
@@ -146,11 +177,20 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 			"manifestsApplied", applied.ManifestsApplied,
 			"rejectsQueued", applied.NoticesQueued,
 			"actionsStarted", applied.ActionsStarted,
-			"actionsFinished", applied.ActionsFinished)
+			"actionsFinished", applied.ActionsFinished,
+			"eventsStored", applied.EventsStored)
 	}
 	if unusableActionBodies > 0 {
 		s.log.Warn("poll carried action envelopes with unusable bodies; acked and ignored",
 			"serverId", server.ID, "sessionId", session.ID, "count", unusableActionBodies)
+	}
+	if refusedEventBatches > 0 {
+		s.log.Warn("poll carried event batches this hub refused",
+			"serverId", server.ID, "sessionId", session.ID,
+			"batches", refusedEventBatches, "eventBudget", maxEventsPerPoll,
+			// The notices the plugin will not receive, so the count survives
+			// somewhere even when the cap swallows the envelope naming it.
+			"unreportedRejects", unreportedEventRejects)
 	}
 	if applied.NoticesQueued > 0 {
 		// A rejection notice is ordinary queued work: wake anything else this

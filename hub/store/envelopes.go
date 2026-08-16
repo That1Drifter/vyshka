@@ -325,6 +325,11 @@ type InboundApplication struct {
 	// states, and actions past their deadline are no-ops, never errors.
 	ActionAcks    []string
 	ActionResults []ActionResult
+	// Events are the telemetry records carried by the accepted event.batch
+	// envelopes, in arrival order, appended in this transaction for the same
+	// reason as everything else here: the ack says they are already durable
+	// (spec sections 8.1 and 9.3).
+	Events []NewEvent
 }
 
 // ManifestPublish is one validated manifest to store, revision-gated.
@@ -353,6 +358,8 @@ type InboundApplied struct {
 	// against what was sent is late or duplicate traffic, which is normal.
 	ActionsStarted  int
 	ActionsFinished int
+	// EventsStored counts telemetry records appended.
+	EventsStored int
 }
 
 // ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
@@ -444,6 +451,11 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 			applied.ActionsFinished++
 		}
 	}
+	stored, err := insertEvents(ctx, tx, serverID, application.Events, now)
+	if err != nil {
+		return InboundApplied{}, err
+	}
+	applied.EventsStored = stored
 
 	if err := tx.Commit(); err != nil {
 		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)

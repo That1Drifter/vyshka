@@ -42,6 +42,12 @@ type Config struct {
 	ReadHeaderTimeout time.Duration
 	// ShutdownTimeout bounds graceful shutdown before connections are cut.
 	ShutdownTimeout time.Duration
+	// EventRetention decides how long an ingested event is kept, by type
+	// pattern (spec section 8.4). Nil means DefaultEventRetention. Retention is
+	// hub configuration, not protocol: a hub is conformant whatever it keeps.
+	EventRetention []RetentionRule
+	// EventPruneInterval is how often the retention pass runs.
+	EventPruneInterval time.Duration
 }
 
 func (c *Config) withDefaults() {
@@ -63,6 +69,15 @@ func (c *Config) withDefaults() {
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 15 * time.Second
 	}
+	if c.EventRetention == nil {
+		c.EventRetention = DefaultEventRetention()
+	}
+	// Not just the zero value: Config is exported, and a negative interval here
+	// would panic time.NewTicker inside the maintenance goroutine, taking the
+	// process down moments after New returned successfully.
+	if c.EventPruneInterval <= 0 {
+		c.EventPruneInterval = 5 * time.Minute
+	}
 }
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
@@ -79,8 +94,8 @@ type Server struct {
 	holds   *holds
 	handler http.Handler
 	started time.Time
-	// stopSweeper ends the action expiry loop; sweeperDone confirms it ended,
-	// so Close never races the sweeper against the store it is closing.
+	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
+	// Close never races the loop against the store it is closing.
 	stopSweeper chan struct{}
 	sweeperDone chan struct{}
 	closeOnce   sync.Once
@@ -134,26 +149,39 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		sweeperDone:    make(chan struct{}),
 	}
 	s.handler = s.routes()
-	go s.sweepExpiredActions()
+	go s.runMaintenance()
 	return s, nil
 }
 
-// sweepExpiredActions is the expiry job of spec section 7: every non-terminal
-// action past its deadline flips to expired. Reads also expire lazily, so this
-// loop exists for the states nobody is currently reading, which are exactly
-// the ones an operator will ask about later.
-func (s *Server) sweepExpiredActions() {
+// eventPruneBatch bounds one retention pass, so a long-neglected database is
+// drained over several passes instead of in one statement that would hold the
+// store's single connection for the duration.
+const eventPruneBatch = 5000
+
+// runMaintenance owns the hub's background jobs: action expiry and event
+// retention. They share a goroutine because they share a shutdown, and Close
+// waits on exactly one loop rather than on a set it has to keep in sync.
+func (s *Server) runMaintenance() {
 	defer close(s.sweeperDone)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+
+	// The expiry job of spec section 7: every non-terminal action past its
+	// deadline flips to expired. Reads also expire lazily, so this ticker
+	// exists for the states nobody is currently reading, which are exactly the
+	// ones an operator will ask about later.
+	expiry := time.NewTicker(500 * time.Millisecond)
+	defer expiry.Stop()
+	// The retention job of spec section 8.4, which is measured in days and so
+	// has nothing to gain from running often.
+	prune := time.NewTicker(s.cfg.EventPruneInterval)
+	defer prune.Stop()
 
 	for {
 		select {
 		case <-s.stopSweeper:
 			return
-		case <-ticker.C:
+		case <-expiry.C:
 			// Bounded, because Close waits for this loop before closing the
-			// store: a sweep that could block forever could hang shutdown.
+			// store: a job that could block forever could hang shutdown.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			expired, err := s.store.ExpireActions(ctx)
 			cancel()
@@ -164,7 +192,39 @@ func (s *Server) sweepExpiredActions() {
 			if expired > 0 {
 				s.log.Info("actions expired", "count", expired)
 			}
+		case <-prune.C:
+			s.pruneEvents()
 		}
+	}
+}
+
+// pruneEvents runs the retention pass, in bounded batches, until it stops
+// finding work or the pass has taken long enough that the next tick can pick up
+// where it left off. Nothing is lost by stopping early: expired rows stay
+// expired.
+func (s *Server) pruneEvents() {
+	deadline := time.Now().Add(30 * time.Second)
+	total := 0
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pruned, err := s.store.PruneEvents(ctx, eventPruneBatch)
+		cancel()
+		if err != nil {
+			s.log.Error("event retention pass failed", "error", err.Error())
+			return
+		}
+		total += pruned
+		if pruned < eventPruneBatch {
+			break
+		}
+		select {
+		case <-s.stopSweeper:
+			return
+		default:
+		}
+	}
+	if total > 0 {
+		s.log.Info("events pruned", "count", total)
 	}
 }
 
@@ -214,6 +274,9 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/actions/{actionId}", s.requireAdmin(s.handleGetAction))
 	mux.HandleFunc("/api/v1/actions/{actionId}", methodNotAllowed("GET"))
+
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/events", s.requireAdmin(s.handleListEvents))
+	mux.HandleFunc("/api/v1/servers/{serverId}/events", methodNotAllowed("GET"))
 
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).

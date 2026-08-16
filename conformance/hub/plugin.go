@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -381,6 +382,56 @@ func (e Env) awaitActionState(ctx context.Context, actionID, want string, patien
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// eventBatch frames one event.batch body (spec section 8.1).
+func eventBatch(events ...map[string]any) map[string]any {
+	if events == nil {
+		events = []map[string]any{}
+	}
+	return map[string]any{"events": events}
+}
+
+// sendEvents pushes one event.batch and acks whatever comes back.
+func (p *fakePlugin) sendEvents(ctx context.Context, events ...map[string]any) (pollResponse, error) {
+	return p.send(ctx, p.nextOutbound("event.batch", eventBatch(events...)))
+}
+
+// eventRecord is the Admin API event view (spec section 8.5).
+type eventRecord struct {
+	ID         string          `json:"id"`
+	ServerID   string          `json:"serverId"`
+	Type       string          `json:"type"`
+	OccurredAt string          `json:"occurredAt"`
+	ReceivedAt string          `json:"receivedAt"`
+	Data       json.RawMessage `json:"data"`
+}
+
+type eventPage struct {
+	Events     []eventRecord `json:"events"`
+	NextCursor string        `json:"nextCursor"`
+}
+
+// events reads one page of a server's feed. parameters are appended as a query
+// string, so a check can grade filters and pagination without a URL builder.
+func (e Env) events(ctx context.Context, serverID string, parameters url.Values) (eventPage, error) {
+	path := "/api/v1/servers/" + serverID + "/events"
+	if encoded := parameters.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var page eventPage
+	err := e.expect(ctx, http.MethodGet, path, e.AdminToken, nil, http.StatusOK, &page)
+	return page, err
+}
+
+// eventTypes lists the types on a page, for checks that assert what a filter
+// matched rather than what one particular event carried.
+func (p eventPage) eventTypes() []string {
+	types := make([]string, 0, len(p.Events))
+	for _, one := range p.Events {
+		types = append(types, one.Type)
+	}
+	return types
 }
 
 // uniqueType mints an envelope type no hub can have heard of, for the checks
