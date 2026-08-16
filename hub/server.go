@@ -165,6 +165,10 @@ func (s *Server) routes() http.Handler {
 		s.requireAdmin(s.handleQueueEnvelope))
 	mux.HandleFunc("/api/v1/servers/{serverId}/envelopes", methodNotAllowed("POST"))
 
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/manifest",
+		s.requireAdmin(s.handleGetManifest))
+	mux.HandleFunc("/api/v1/servers/{serverId}/manifest", methodNotAllowed("GET"))
+
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
 	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)

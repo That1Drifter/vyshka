@@ -12,6 +12,26 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: manifest publish and validation (spec section 6), the first inbound envelope
+  type the hub models. A plugin declares its actions, contexts, and events with
+  `manifest.publish` at session start or at any later moment; the hub validates the body,
+  including every `params` and event `payload` schema against the protocol's closed JSON
+  Schema subset (`hub/internal/schema`, which rejects any keyword it would not enforce),
+  stores accepted manifests gated on `manifestRevision` (higher replaces, equal or lower
+  ignored), and answers an invalid manifest with a queued `manifest.reject` naming the
+  faults instead of failing the poll or the session. Manifest applies and rejection notices
+  commit in the same transaction as the ack that covers them (section 9.3). Operators read
+  the stored manifest at `GET /api/v1/servers/{serverId}/manifest`; the raw queue endpoint
+  now refuses `manifest.*` alongside `action.*` so a forged `manifest.reject` cannot be
+  queued as the hub's own word. Migration `0004_manifests.sql` adds the `manifests` table.
+  `spec/protocol.md` draft 0.6 adds sections 6.4 (validation and rejection) and 6.5 (the
+  Admin API read), pins the equal-revision rule, and formalizes the event declaration
+  shape; `spec/manifest.schema.json` is the machine-readable companion, validated in CI,
+  and `spec/openapi-admin.yaml` 0.6.0 covers the new endpoint. Four new hub conformance
+  checks (thirty-eight total) grade publish and Admin read, runtime republish with revision
+  monotonicity, rejection without dropping the session, and the 404 before a manifest is
+  accepted. `scripts/demo-manifest.sh` walks the whole exchange in curl.
+
 - 2026-08-16: the envelope exchange over long-poll, the transport every later capability
   rides on. `POST /plugin/v1/poll` carries both directions in one request: it applies the
   plugin's ack and ingests its envelopes, then holds up to the negotiated `pollTimeout` and

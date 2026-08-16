@@ -120,8 +120,12 @@ func validateInbound(index int, e inboundEnvelope) *envelopeFault {
 // inboundBatch is what one poll's envelopes did to the session's inbound ack.
 type inboundBatch struct {
 	// Ack is the highest contiguous seq after applying the batch.
-	Ack      int64
-	Accepted []inboundEnvelope
+	Ack int64
+	// Accepted holds the batch indices of the envelopes that advanced the ack,
+	// in arrival order. Indices rather than copies, because what a type handler
+	// needs is to match an accepted envelope back to state it prepared before
+	// classification ran.
+	Accepted []int
 	// Duplicate counts envelopes at or below the ack: already processed, acked
 	// again, never an error. Gapped counts envelopes above a gap, which are
 	// discarded and will come back on retransmission.
@@ -138,13 +142,13 @@ type inboundBatch struct {
 // hubs would then disagree about what a given poll acked.
 func classifyInbound(ack int64, envelopes []inboundEnvelope) inboundBatch {
 	batch := inboundBatch{Ack: ack}
-	for _, e := range envelopes {
+	for index, e := range envelopes {
 		switch {
 		case e.Seq <= batch.Ack:
 			batch.Duplicate++
 		case e.Seq == batch.Ack+1:
 			batch.Ack++
-			batch.Accepted = append(batch.Accepted, e)
+			batch.Accepted = append(batch.Accepted, index)
 		default:
 			// A gap. The ack must not move past it, and holding the envelope
 			// would only duplicate a buffer the sender already keeps.

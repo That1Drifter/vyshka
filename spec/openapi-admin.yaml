@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.4.0
+  version: 0.6.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
-    covers only the endpoints implemented so far (spec sections 5.1 and 5.5).
+    covers only the endpoints implemented so far (spec sections 5.1, 5.5,
+    and 6.5).
 
     Authentication is a bearer token. Until scoped tokens land (spec section
     10), a hub accepts a single bootstrap admin token that carries the `admin`
@@ -188,9 +189,9 @@ paths:
                   minLength: 1
                   maxLength: 128
                   description: |
-                    Namespaced message type, non-empty after trimming. Types a
-                    dedicated endpoint owns (`action.*`) are refused here with
-                    `conflict`.
+                    Namespaced message type, non-empty after trimming. Type
+                    families the hub itself models (`action.*`, `manifest.*`)
+                    are refused here with `conflict`.
                 body:
                   type: object
                   additionalProperties: true
@@ -226,6 +227,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/servers/{serverId}/manifest:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    get:
+      tags: [servers]
+      operationId: getServerManifest
+      summary: Read the server's stored manifest.
+      description: |
+        The accepted `manifest.publish` body, verbatim, with the hub's metadata
+        beside it (spec section 6.5). 404 covers an unknown server and a server
+        that has never had a manifest accepted alike.
+      responses:
+        "200":
+          description: The stored manifest.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManifestRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
 components:
   securitySchemes:
@@ -293,6 +314,23 @@ components:
         id: { type: string }
         expiresAt: { type: string, format: date-time }
         pollTimeoutSeconds: { type: integer }
+
+    ManifestRecord:
+      type: object
+      description: A server's stored manifest (spec section 6.5).
+      required: [revision, publishedAt, manifest]
+      properties:
+        revision:
+          type: integer
+          minimum: 1
+          description: The accepted manifestRevision.
+        publishedAt: { type: string, format: date-time }
+        manifest:
+          type: object
+          additionalProperties: true
+          description: |
+            The accepted manifest.publish body, verbatim. Its shape is
+            `manifest.schema.json#/$defs/manifestPublish`.
 
     EnrollmentToken:
       type: object

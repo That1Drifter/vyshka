@@ -1559,11 +1559,14 @@ var checks = []Check{
 				map[string]any{"body": map[string]any{}}, http.StatusBadRequest, "bad_request"); err != nil {
 				return err
 			}
-			// The raw queue must not become a way around the endpoint that
-			// validates action payloads.
-			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
-				map[string]any{"type": "action.dispatch"}, http.StatusConflict, "conflict"); err != nil {
-				return err
+			// The raw queue must not become a way around the endpoints that
+			// validate hub-modelled types, or a way to forge a message the
+			// plugin would take as the hub's own word.
+			for _, reserved := range []string{"action.dispatch", "manifest.reject"} {
+				if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
+					map[string]any{"type": reserved}, http.StatusConflict, "conflict"); err != nil {
+					return err
+				}
 			}
 			if err := env.expectError(ctx, http.MethodPost,
 				"/api/v1/servers/conformance-no-such-server/envelopes", env.AdminToken,
@@ -1572,6 +1575,239 @@ var checks = []Check{
 			}
 			return env.expectError(ctx, http.MethodPost, path, "",
 				map[string]any{"type": unknownType()}, http.StatusUnauthorized, "unauthorized")
+		},
+	},
+	{
+		ID:      "plugin.manifest.publish",
+		Title:   "A published manifest is stored and readable through the Admin API",
+		Section: "6",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: manifest publish", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			response, err := plugin.publishManifest(ctx, manifestBody(1))
+			if err != nil {
+				return err
+			}
+			if response.Ack < 1 {
+				return fmt.Errorf("ack = %d after manifest.publish, want the envelope acked", response.Ack)
+			}
+
+			record, err := env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 1 {
+				return fmt.Errorf("revision = %d, want the published 1", record.Revision)
+			}
+			if _, err := time.Parse(time.RFC3339, record.PublishedAt); err != nil {
+				return fmt.Errorf("publishedAt %q is not RFC 3339: %w", record.PublishedAt, err)
+			}
+			var stored struct {
+				ManifestRevision int64 `json:"manifestRevision"`
+				Actions          []struct {
+					Code   string `json:"code"`
+					Danger string `json:"danger"`
+				} `json:"actions"`
+			}
+			if err := json.Unmarshal(record.Manifest, &stored); err != nil {
+				return fmt.Errorf("decode stored manifest %q: %w", truncate(record.Manifest), err)
+			}
+			if stored.ManifestRevision != 1 {
+				return fmt.Errorf("the stored body carries manifestRevision %d, want it returned as published",
+					stored.ManifestRevision)
+			}
+			if len(stored.Actions) != 1 || stored.Actions[0].Code != "example-mod.heal" {
+				return fmt.Errorf("stored actions = %+v, want the published heal action", stored.Actions)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.manifest.republish",
+		Title:   "A runtime republish replaces the manifest; lower and equal revisions are ignored",
+		Section: "6.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: manifest republish", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			// Same session, no reconnect: changing a mod's actions costs one
+			// message, not a server restart.
+			revised := manifestBody(2, map[string]any{
+				"code": "example-mod.revive", "name": "Revive player",
+				"context": "player", "namespace": "example-mod",
+			})
+			if _, err := plugin.publishManifest(ctx, revised); err != nil {
+				return err
+			}
+			record, err := env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 2 {
+				return fmt.Errorf("revision = %d after a runtime republish, want 2", record.Revision)
+			}
+
+			// A lower revision is ignored, and its envelope still acked.
+			lower, err := plugin.publishManifest(ctx, manifestBody(1))
+			if err != nil {
+				return err
+			}
+			if lower.Ack < 3 {
+				return fmt.Errorf("ack = %d after an ignored revision, want the envelope acked anyway", lower.Ack)
+			}
+			// So is an equal one, whatever its content says.
+			equal := manifestBody(2, map[string]any{"code": "example-mod.other"})
+			if _, err := plugin.publishManifest(ctx, equal); err != nil {
+				return err
+			}
+
+			record, err = env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 2 {
+				return fmt.Errorf("revision = %d after lower and equal republishes, want it held at 2",
+					record.Revision)
+			}
+			var stored struct {
+				Actions []struct {
+					Code string `json:"code"`
+				} `json:"actions"`
+			}
+			if err := json.Unmarshal(record.Manifest, &stored); err != nil {
+				return fmt.Errorf("decode stored manifest: %w", err)
+			}
+			if len(stored.Actions) != 1 || stored.Actions[0].Code != "example-mod.revive" {
+				return fmt.Errorf("stored actions = %+v, want the revision 2 set untouched", stored.Actions)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "plugin.manifest.invalid",
+		Title:   "An invalid params schema is rejected without dropping the session",
+		Section: "6.4",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: manifest invalid", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			// `pattern` is a real JSON Schema keyword outside the subset. A hub
+			// that accepted it would promise validation it cannot perform.
+			invalid := manifestBody(2, map[string]any{
+				"code": "example-mod.heal",
+				"params": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"item": map[string]any{"type": "string", "pattern": "^a"}},
+				},
+			})
+			published := plugin.nextOutbound("manifest.publish", invalid)
+			response, err := plugin.pollAndAck(ctx, published)
+			if err != nil {
+				return fmt.Errorf("the poll carrying an invalid manifest failed; rejection must not fail the batch: %w", err)
+			}
+			if response.Ack < published.Seq {
+				return fmt.Errorf("ack = %d, want %d: a rejected manifest is still durably processed and acked",
+					response.Ack, published.Seq)
+			}
+
+			// The rejection must arrive as a manifest.reject envelope naming
+			// the refused publish. A hub may answer it on the same poll or on
+			// a later one; both are compliant.
+			var rejects []envelope
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "manifest.reject" {
+					rejects = append(rejects, delivered)
+				}
+			}
+			if len(rejects) == 0 {
+				if rejects, err = plugin.awaitEnvelope(ctx, "manifest.reject", 3); err != nil {
+					return err
+				}
+			}
+			if len(rejects) != 1 {
+				return fmt.Errorf("got %d manifest.reject envelopes, want exactly 1", len(rejects))
+			}
+			var reject struct {
+				EnvelopeID string `json:"envelopeId"`
+				Errors     []struct {
+					Path    string `json:"path"`
+					Message string `json:"message"`
+				} `json:"errors"`
+			}
+			if err := json.Unmarshal(rejects[0].Body, &reject); err != nil {
+				return fmt.Errorf("decode manifest.reject body %q: %w", truncate(rejects[0].Body), err)
+			}
+			if reject.EnvelopeID != published.ID {
+				return fmt.Errorf("manifest.reject names envelope %q, want the rejected %q",
+					reject.EnvelopeID, published.ID)
+			}
+			if len(reject.Errors) == 0 {
+				return fmt.Errorf("manifest.reject carried no errors; it must name what was wrong")
+			}
+
+			// The stored manifest is untouched and the session still works.
+			record, err := env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 1 {
+				return fmt.Errorf("revision = %d after a rejected publish, want the accepted 1 untouched",
+					record.Revision)
+			}
+			if err := env.expect(ctx, http.MethodGet, "/plugin/v1/session", plugin.Session.SessionToken,
+				nil, http.StatusOK, nil); err != nil {
+				return fmt.Errorf("the session did not survive a rejected manifest: %w", err)
+			}
+
+			// The stored revision advances only on acceptance, so the corrected
+			// manifest lands at the very revision that was rejected.
+			if _, err := plugin.publishManifest(ctx, manifestBody(2)); err != nil {
+				return err
+			}
+			record, err = env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 2 {
+				return fmt.Errorf("revision = %d after the corrected republish, want 2", record.Revision)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "admin.manifest.read",
+		Title:   "GET /api/v1/servers/{serverId}/manifest answers 404 until a manifest is accepted",
+		Section: "6.5",
+		Run: func(ctx context.Context, env Env) error {
+			created, err := env.newServer(ctx, "conformance: manifest read")
+			if err != nil {
+				return err
+			}
+			path := "/api/v1/servers/" + created.Server.ID + "/manifest"
+
+			if err := env.expectError(ctx, http.MethodGet, path, env.AdminToken,
+				nil, http.StatusNotFound, "not_found"); err != nil {
+				return err
+			}
+			if err := env.expectError(ctx, http.MethodGet, "/api/v1/servers/conformance-no-such-server/manifest",
+				env.AdminToken, nil, http.StatusNotFound, "not_found"); err != nil {
+				return err
+			}
+			return env.expectError(ctx, http.MethodGet, path, "",
+				nil, http.StatusUnauthorized, "unauthorized")
 		},
 	},
 	{
