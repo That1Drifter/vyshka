@@ -256,6 +256,13 @@ type preparedManifest struct {
 // batch index. Validation runs before classification because it depends only
 // on content; whether a prepared outcome is applied is decided later, when
 // classification says which envelopes are newly accepted.
+//
+// A duplicate delivery therefore pays for validation again before being
+// discarded. That is the cheaper side of the trade: the work is bounded by the
+// request-size cap the poll already parses, while validating lazily inside the
+// classify callback would put CPU-bound work into the store's transaction,
+// which on SQLite's single connection is the whole database's critical
+// section.
 func prepareManifests(envelopes []inboundEnvelope) map[int]preparedManifest {
 	var prepared map[int]preparedManifest
 	for index, e := range envelopes {
