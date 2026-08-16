@@ -1,3 +1,9 @@
+---
+title: Protocol Specification
+layout: default
+nav_order: 2
+---
+
 # Vyshka Protocol Specification
 
 **Status:** draft 0.1 (2026-08-15)

@@ -1,0 +1,20 @@
+title: Vyshka
+description: Open source, self-hosted game server integration hub. Spec-first.
+url: https://that1drifter.github.io
+baseurl: /vyshka
+
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+
+aux_links:
+  GitHub repository: https://github.com/That1Drifter/vyshka
+
+# Site pages carry front matter; repo meta docs are repo-only.
+exclude:
+  - README.md
+  - CONTRIBUTING.md
+  - SECURITY.md
+  - CODE_OF_CONDUCT.md
+  - CHANGELOG.md
+  - LICENSE

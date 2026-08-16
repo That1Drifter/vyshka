@@ -12,6 +12,11 @@ point if needed.
 
 ### Added
 
+- 2026-08-15: repository published to GitHub
+  ([That1Drifter/vyshka](https://github.com/That1Drifter/vyshka)) with a GitHub Pages site
+  (just-the-docs theme): `_config.yml`, `index.md` landing page, Jekyll front matter on
+  `spec/protocol.md`.
+- 2026-08-15: `.gitattributes` normalizing line endings to LF in the repository.
 - 2026-08-15: `spec/protocol.md` draft 0.1, the public normative protocol specification
   (RFC 2119): transport, envelope, enrollment and sessions, manifest, action lifecycle,
   telemetry and state, delivery guarantees, admin authorization and audit, webhooks, KV
