@@ -1831,6 +1831,302 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "action.lifecycle",
+		Title:   "An action walks queued -> delivered -> running -> completed, observable at every step",
+		Section: "7",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: action lifecycle", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			actionID, state, err := env.dispatchAction(ctx, plugin.Server.Server.ID, map[string]any{
+				"code":         "example-mod.heal",
+				"context":      "player",
+				"referenceKey": "player-1",
+				"params":       map[string]any{"amount": 50},
+			})
+			if err != nil {
+				return err
+			}
+			if state != "queued" {
+				return fmt.Errorf("dispatch answered state %q, want queued", state)
+			}
+
+			// The dispatch arrives as an action.dispatch envelope carrying what
+			// the plugin needs, including the deadline it must discard after.
+			response, err := plugin.poll(ctx, pollRequest{Ack: plugin.inboundAck})
+			if err != nil {
+				return err
+			}
+			var dispatch *envelope
+			for i := range response.Envelopes {
+				if response.Envelopes[i].Type == "action.dispatch" {
+					dispatch = &response.Envelopes[i]
+				}
+			}
+			if dispatch == nil {
+				return fmt.Errorf("no action.dispatch reached the plugin, got %+v", response.Envelopes)
+			}
+			var body struct {
+				ActionID     string          `json:"actionId"`
+				Code         string          `json:"code"`
+				Context      string          `json:"context"`
+				ReferenceKey string          `json:"referenceKey"`
+				Params       json.RawMessage `json:"params"`
+				ExpiresAt    string          `json:"expiresAt"`
+			}
+			if err := json.Unmarshal(dispatch.Body, &body); err != nil {
+				return fmt.Errorf("decode dispatch body %q: %w", truncate(dispatch.Body), err)
+			}
+			if body.ActionID != actionID || body.Code != "example-mod.heal" ||
+				body.Context != "player" || body.ReferenceKey != "player-1" {
+				return fmt.Errorf("dispatch body %+v does not carry the dispatched fields", body)
+			}
+			if _, err := time.Parse(time.RFC3339, body.ExpiresAt); err != nil {
+				return fmt.Errorf("dispatch expiresAt %q is not RFC 3339; a plugin cannot discard late work without a deadline", body.ExpiresAt)
+			}
+			var params struct {
+				Amount int `json:"amount"`
+			}
+			if err := json.Unmarshal(body.Params, &params); err != nil || params.Amount != 50 {
+				return fmt.Errorf("dispatch params = %q, want the dispatched payload", truncate(body.Params))
+			}
+
+			// The envelope ack is the delivery receipt.
+			plugin.inboundAck = dispatch.Seq
+			if _, err := plugin.pollAndAck(ctx); err != nil {
+				return err
+			}
+			record, err := env.action(ctx, actionID)
+			if err != nil {
+				return err
+			}
+			if record.State != "delivered" || record.DeliveredAt == nil {
+				return fmt.Errorf("state = %q after the envelope ack, want delivered with a timestamp",
+					record.State)
+			}
+
+			// action.ack -> running.
+			ackBody := map[string]any{"actionId": actionID}
+			if _, err := plugin.send(ctx, plugin.nextOutbound("action.ack", ackBody)); err != nil {
+				return err
+			}
+			record, err = env.action(ctx, actionID)
+			if err != nil {
+				return err
+			}
+			if record.State != "running" || record.RunningAt == nil {
+				return fmt.Errorf("state = %q after action.ack, want running", record.State)
+			}
+
+			// action.result -> completed, payload readable back.
+			resultBody := map[string]any{
+				"actionId": actionID, "ok": true,
+				"result": map[string]any{"healedTo": 100.0}, "durationMs": 12,
+			}
+			if _, err := plugin.send(ctx, plugin.nextOutbound("action.result", resultBody)); err != nil {
+				return err
+			}
+			record, err = env.action(ctx, actionID)
+			if err != nil {
+				return err
+			}
+			if record.State != "completed" || record.OK == nil || !*record.OK || record.FinishedAt == nil {
+				return fmt.Errorf("state = %q ok = %v, want completed true", record.State, record.OK)
+			}
+			var payload struct {
+				HealedTo float64 `json:"healedTo"`
+			}
+			if err := json.Unmarshal(record.Result, &payload); err != nil || payload.HealedTo != 100 {
+				return fmt.Errorf("result = %q, want the payload the plugin reported", truncate(record.Result))
+			}
+
+			// The failure path: ok false lands as failed, with the error kept.
+			failedID, _, err := env.dispatchAction(ctx, plugin.Server.Server.ID, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.pollAndAck(ctx); err != nil {
+				return err
+			}
+			failure := map[string]any{"actionId": failedID, "ok": false, "error": "player is offline"}
+			if _, err := plugin.send(ctx, plugin.nextOutbound("action.result", failure)); err != nil {
+				return err
+			}
+			record, err = env.action(ctx, failedID)
+			if err != nil {
+				return err
+			}
+			if record.State != "failed" || record.Error == nil || *record.Error != "player is offline" {
+				return fmt.Errorf("state = %q error = %v, want failed with the plugin's message",
+					record.State, record.Error)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "action.dispatch.idempotent",
+		Title:   "A dispatch retried with the same idempotencyKey returns the original actionId",
+		Section: "7",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: action idempotency", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			body := map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+				"idempotencyKey": "conformance-heal-once",
+			}
+			first, _, err := env.dispatchAction(ctx, plugin.Server.Server.ID, body)
+			if err != nil {
+				return err
+			}
+			second, _, err := env.dispatchAction(ctx, plugin.Server.Server.ID, body)
+			if err != nil {
+				return err
+			}
+			if second != first {
+				return fmt.Errorf("the retry returned actionId %q, want the original %q", second, first)
+			}
+
+			response, err := plugin.pollAndAck(ctx)
+			if err != nil {
+				return err
+			}
+			dispatches := 0
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "action.dispatch" {
+					dispatches++
+				}
+			}
+			if dispatches != 1 {
+				return fmt.Errorf("the plugin received %d action.dispatch envelopes, want exactly 1", dispatches)
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "action.dispatch.invalid",
+		Title:   "A schema-invalid or undeclared dispatch is refused and never queued",
+		Section: "7",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: invalid dispatch", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			path := "/api/v1/servers/" + plugin.Server.Server.ID + "/actions"
+
+			// amount is bounded [1, 100] by the published schema.
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 500},
+			}, http.StatusBadRequest, "params_invalid"); err != nil {
+				return err
+			}
+			// amount is required.
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{},
+			}, http.StatusBadRequest, "params_invalid"); err != nil {
+				return err
+			}
+			// A code the manifest does not declare cannot be validated, so it
+			// cannot be dispatched.
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken, map[string]any{
+				"code": "example-mod.undeclared", "params": map[string]any{},
+			}, http.StatusConflict, "unknown_action"); err != nil {
+				return err
+			}
+			if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken,
+				map[string]any{"params": map[string]any{}}, http.StatusBadRequest, "bad_request"); err != nil {
+				return err
+			}
+			if err := env.expectError(ctx, http.MethodPost,
+				"/api/v1/servers/conformance-no-such-server/actions", env.AdminToken,
+				map[string]any{"code": "example-mod.heal"}, http.StatusNotFound, "not_found"); err != nil {
+				return err
+			}
+
+			// None of it reached the queue: a poll comes back with nothing but
+			// the nudge it was primed with.
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			response, err := plugin.pollAndAck(ctx)
+			if err != nil {
+				return err
+			}
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "action.dispatch" {
+					return fmt.Errorf("a refused dispatch was queued anyway; schema-invalid input must never reach the game server")
+				}
+			}
+			return nil
+		},
+	},
+	{
+		ID:      "action.expiry",
+		Title:   "An undeliverable action expires at its TTL, and a late result cannot resurrect it",
+		Section: "7",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: action expiry", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			// Dispatched with the shortest TTL, and never polled for: the game
+			// server is down, which is exactly when TTLs matter.
+			actionID, _, err := env.dispatchAction(ctx, plugin.Server.Server.ID, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+				"ttlSeconds": 1,
+			})
+			if err != nil {
+				return err
+			}
+			record, err := env.awaitActionState(ctx, actionID, "expired", 5*time.Second)
+			if err != nil {
+				return err
+			}
+			if record.FinishedAt == nil {
+				return fmt.Errorf("an expired action carries no finishedAt")
+			}
+
+			// The plugin comes back and reports a result anyway. The envelope
+			// is acked like any other, and the state does not move: the
+			// operator already saw expired.
+			late := map[string]any{"actionId": actionID, "ok": true, "result": map[string]any{}}
+			response, err := plugin.send(ctx, plugin.nextOutbound("action.result", late))
+			if err != nil {
+				return err
+			}
+			if response.Ack < 1 {
+				return fmt.Errorf("ack = %d after a late result, want the envelope acked", response.Ack)
+			}
+			record, err = env.action(ctx, actionID)
+			if err != nil {
+				return err
+			}
+			if record.State != "expired" {
+				return fmt.Errorf("state = %q after a late result, want it held at expired", record.State)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "compat.unknownFields",
 		Title:   "Unknown request fields are tolerated, not rejected",
 		Section: "2.1",

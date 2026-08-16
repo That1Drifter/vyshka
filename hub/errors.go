@@ -32,6 +32,8 @@ const (
 	codeEnvelopeInvalid            = "envelope_invalid"
 	codeAckOutOfRange              = "ack_out_of_range"
 	codeOutboundQueueFull          = "outbound_queue_full"
+	codeUnknownAction              = "unknown_action"
+	codeParamsInvalid              = "params_invalid"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the

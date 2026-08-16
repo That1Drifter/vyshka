@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vyshka.dev/spec/actions.schema.json",
+  "title": "Vyshka action envelope bodies",
+  "description": "Machine-readable companion to spec/protocol.md section 7. The prose document is normative: where the two disagree, the prose wins. Like the other schema documents this is a library of definitions with no root constraint: reference `#/$defs/actionDispatch`, `#/$defs/actionAck`, and `#/$defs/actionResult` for the three envelope bodies of the action lifecycle.",
+  "$defs": {
+    "actionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hub-assigned, opaque to clients and plugins. The plugin's dedup key: an actionId must never execute twice."
+    },
+    "actionDispatch": {
+      "type": "object",
+      "title": "action.dispatch body",
+      "description": "Hub -> plugin. Everything the plugin needs to execute and report, including the deadline it must discard the action after.",
+      "required": ["actionId", "code", "params", "expiresAt"],
+      "properties": {
+        "actionId": { "$ref": "#/$defs/actionId" },
+        "code": {
+          "type": "string",
+          "description": "The declared action code, already validated against the server's manifest."
+        },
+        "context": {
+          "type": "string",
+          "description": "The context the action targets. Absent means the declared default."
+        },
+        "referenceKey": {
+          "type": "string",
+          "description": "The entity within the context, such as a platform player id."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Already validated against the schema the manifest declared for this code; a plugin may trust the shape."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The action's deadline. A plugin receiving the dispatch after this moment MUST discard it."
+        }
+      },
+      "additionalProperties": true
+    },
+    "actionAck": {
+      "type": "object",
+      "title": "action.ack body",
+      "description": "Plugin -> hub, sent on receipt. Moves the action to running.",
+      "required": ["actionId"],
+      "properties": {
+        "actionId": { "$ref": "#/$defs/actionId" }
+      },
+      "additionalProperties": true
+    },
+    "actionResult": {
+      "type": "object",
+      "title": "action.result body",
+      "description": "Plugin -> hub, sent when execution finished. `ok` decides the terminal state: completed or failed.",
+      "required": ["actionId", "ok"],
+      "properties": {
+        "actionId": { "$ref": "#/$defs/actionId" },
+        "ok": { "type": "boolean" },
+        "result": {
+          "description": "Arbitrary JSON up to 64 KiB; null or absent when there is nothing to report. Over the cap, the hub keeps the outcome, drops the payload, and notes the drop in error."
+        },
+        "error": {
+          "oneOf": [{ "type": "string" }, { "type": "null" }],
+          "description": "Human-readable failure description; null or absent when ok is true."
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How long execution took on the game server. Optional, advisory."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

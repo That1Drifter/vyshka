@@ -63,7 +63,8 @@ jobs:
               return yaml.safe_load(open(path, encoding="utf-8"))
 
           for path in ("spec/openapi-admin.yaml", "spec/openapi-plugin.yaml",
-                       "spec/envelopes.schema.json", "spec/manifest.schema.json"):
+                       "spec/envelopes.schema.json", "spec/manifest.schema.json",
+                       "spec/actions.schema.json"):
               document = load(path)
               refs = []
               def walk(node):

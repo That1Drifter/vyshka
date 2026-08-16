@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.6.0
+  version: 0.7.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    and 6.5).
+    6.5, and 7).
 
     Authentication is a bearer token. Until scoped tokens land (spec section
     10), a hub accepts a single bootstrap admin token that carries the `admin`
@@ -28,6 +28,8 @@ tags:
     description: Game server records, enrollment tokens, and credentials.
   - name: envelopes
     description: Putting work on a server's queue.
+  - name: actions
+    description: Dispatching tracked jobs and reading their lifecycle.
 
 paths:
   /api/v1/servers:
@@ -248,6 +250,112 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/servers/{serverId}/actions:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+    post:
+      tags: [actions]
+      operationId: dispatchAction
+      summary: Dispatch an action to a server.
+      description: |
+        Validated against the server's stored manifest before anything is
+        queued: the code must be declared there and params must satisfy its
+        schema, so schema-invalid input never reaches the game server (spec
+        section 7). A retry with the same `idempotencyKey` returns the
+        original actionId instead of double-queueing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  description: A code the server's manifest declares.
+                context:
+                  type: string
+                  description: The context the action targets.
+                referenceKey:
+                  type: string
+                  maxLength: 200
+                  description: The entity within the context, such as a player id.
+                params:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+                  description: Validated against the declared schema.
+                ttlSeconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400
+                  default: 120
+                  description: Deadline for reaching a terminal state; clamped into range.
+                idempotencyKey:
+                  type: string
+                  maxLength: 200
+            example:
+              code: example-mod.heal
+              context: player
+              referenceKey: "76561198000000000"
+              params: { amount: 100 }
+      responses:
+        "202":
+          description: Queued as a tracked job.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actionId, state]
+                properties:
+                  actionId: { type: string }
+                  state:
+                    type: string
+                    description: |
+                      `queued` for a fresh dispatch; an idempotent retry
+                      reports the original action's current state.
+        "400":
+          description: |
+            Malformed body (`bad_request`), or params failing the declared
+            schema (`params_invalid`, with `details.errors` listing
+            `{ path, message }` faults).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The manifest does not declare the code, or no manifest was ever
+            accepted (`unknown_action`); or the server's queue is at its bound
+            (`outbound_queue_full`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/actions/{actionId}:
+    get:
+      tags: [actions]
+      operationId: getAction
+      summary: Read one action's full lifecycle record.
+      parameters:
+        - name: actionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The action record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     adminToken:
@@ -331,6 +439,41 @@ components:
           description: |
             The accepted manifest.publish body, verbatim. Its shape is
             `manifest.schema.json#/$defs/manifestPublish`.
+
+    ActionRecord:
+      type: object
+      description: One tracked job and everything that happened to it (spec section 7).
+      required: [id, serverId, code, params, state, createdAt, expiresAt]
+      properties:
+        id: { type: string }
+        serverId: { type: string }
+        code: { type: string }
+        context: { type: string }
+        referenceKey: { type: string }
+        params:
+          type: object
+          additionalProperties: true
+        idempotencyKey: { type: string }
+        state:
+          type: string
+          enum: [queued, delivered, running, completed, failed, expired]
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        deliveredAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        runningAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        finishedAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        ok:
+          oneOf: [{ type: boolean }, { type: "null" }]
+          description: Null until an action.result landed.
+        result:
+          description: The result payload the plugin reported, or null.
+        error:
+          oneOf: [{ type: string }, { type: "null" }]
+        durationMs:
+          oneOf: [{ type: integer }, { type: "null" }]
 
     EnrollmentToken:
       type: object

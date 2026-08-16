@@ -316,6 +316,73 @@ func (p *fakePlugin) awaitEnvelope(ctx context.Context, envelopeType string, att
 	return nil, fmt.Errorf("no %s envelope arrived in %d polls", envelopeType, attempts)
 }
 
+// actionRecord is the Admin API action view (spec section 7).
+type actionRecord struct {
+	ID          string          `json:"id"`
+	ServerID    string          `json:"serverId"`
+	Code        string          `json:"code"`
+	State       string          `json:"state"`
+	CreatedAt   string          `json:"createdAt"`
+	ExpiresAt   string          `json:"expiresAt"`
+	DeliveredAt *string         `json:"deliveredAt"`
+	RunningAt   *string         `json:"runningAt"`
+	FinishedAt  *string         `json:"finishedAt"`
+	OK          *bool           `json:"ok"`
+	Result      json.RawMessage `json:"result"`
+	Error       *string         `json:"error"`
+	DurationMs  *int64          `json:"durationMs"`
+}
+
+// dispatchAction dispatches one action through the Admin API.
+func (e Env) dispatchAction(ctx context.Context, serverID string, body map[string]any) (string, string, error) {
+	var response struct {
+		ActionID string `json:"actionId"`
+		State    string `json:"state"`
+	}
+	err := e.expect(ctx, http.MethodPost, "/api/v1/servers/"+serverID+"/actions",
+		e.AdminToken, body, http.StatusAccepted, &response)
+	if err != nil {
+		return "", "", err
+	}
+	if response.ActionID == "" {
+		return "", "", fmt.Errorf("dispatch: response carried no actionId")
+	}
+	return response.ActionID, response.State, nil
+}
+
+// action reads one action record back through the Admin API.
+func (e Env) action(ctx context.Context, actionID string) (actionRecord, error) {
+	var record actionRecord
+	err := e.expect(ctx, http.MethodGet, "/api/v1/actions/"+actionID,
+		e.AdminToken, nil, http.StatusOK, &record)
+	return record, err
+}
+
+// awaitActionState polls the Admin API until the action reaches the wanted
+// state or the deadline passes. Used where a state change is the hub's own
+// doing (expiry) rather than an immediate consequence of a request.
+func (e Env) awaitActionState(ctx context.Context, actionID, want string, patience time.Duration) (actionRecord, error) {
+	deadline := time.Now().Add(patience)
+	for {
+		record, err := e.action(ctx, actionID)
+		if err != nil {
+			return actionRecord{}, err
+		}
+		if record.State == want {
+			return record, nil
+		}
+		if time.Now().After(deadline) {
+			return actionRecord{}, fmt.Errorf("action %s is still %q after %s, want %q",
+				actionID, record.State, patience, want)
+		}
+		select {
+		case <-ctx.Done():
+			return actionRecord{}, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // uniqueType mints an envelope type no hub can have heard of, for the checks
 // that grade the forward-compatibility rule.
 var unknownTypeCounter atomic.Int64

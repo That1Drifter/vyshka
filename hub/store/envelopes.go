@@ -89,32 +89,45 @@ func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string
 // enforcing the per-server queue bound. The caller has already established that
 // the server exists.
 func queueOutbound(ctx context.Context, tx *sql.Tx, serverID, envelopeType string, body []byte, limit int) (OutboundEnvelope, error) {
+	envelope := newOutbound(envelopeType, body)
+	if err := insertOutbound(ctx, tx, serverID, envelope, limit); err != nil {
+		return OutboundEnvelope{}, err
+	}
+	return envelope, nil
+}
+
+// newOutbound frames a hub -> plugin envelope, assigning its id and ts.
+func newOutbound(envelopeType string, body []byte) OutboundEnvelope {
 	now := time.Now().UTC()
-	envelope := OutboundEnvelope{
+	return OutboundEnvelope{
 		ID:        id.NewAt(now),
 		Type:      envelopeType,
 		Body:      json.RawMessage(body),
 		CreatedAt: now.Truncate(time.Millisecond),
 	}
+}
 
+// insertOutbound writes a framed envelope inside an open transaction,
+// enforcing the per-server queue bound.
+func insertOutbound(ctx context.Context, tx *sql.Tx, serverID string, envelope OutboundEnvelope, limit int) error {
 	var pending int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM outbound_envelopes WHERE server_id = ? AND acked_at IS NULL`,
 		serverID).Scan(&pending); err != nil {
-		return OutboundEnvelope{}, fmt.Errorf("count pending envelopes: %w", err)
+		return fmt.Errorf("count pending envelopes: %w", err)
 	}
 	if limit > 0 && pending >= limit {
-		return OutboundEnvelope{}, ErrOutboundQueueFull
+		return ErrOutboundQueueFull
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO outbound_envelopes (id, server_id, type, body, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
-		envelope.ID, serverID, envelope.Type, string(body), formatTime(envelope.CreatedAt),
+		envelope.ID, serverID, envelope.Type, string(envelope.Body), formatTime(envelope.CreatedAt),
 	); err != nil {
-		return OutboundEnvelope{}, fmt.Errorf("insert envelope: %w", err)
+		return fmt.Errorf("insert envelope: %w", err)
 	}
-	return envelope, nil
+	return nil
 }
 
 // PendingEnvelopeCount reports how many envelopes are queued for a server and
@@ -265,10 +278,11 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 		return nil
 	}
 
+	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE outbound_envelopes SET acked_at = ?
 		  WHERE session_id = ? AND seq <= ? AND acked_at IS NULL`,
-		formatTime(time.Now().UTC()), sessionID, ack,
+		formatTime(now), sessionID, ack,
 	); err != nil {
 		return fmt.Errorf("ack outbound envelopes: %w", err)
 	}
@@ -276,6 +290,11 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 		`UPDATE sessions SET outbound_ack = ? WHERE id = ?`, ack, sessionID,
 	); err != nil {
 		return fmt.Errorf("record outbound ack: %w", err)
+	}
+	// The dispatch envelope carries the action, so this ack is the delivery
+	// receipt for any action it carried (spec section 7).
+	if err := markDelivered(ctx, tx, sessionID, ack, now); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -300,6 +319,12 @@ type InboundApplication struct {
 	// such as a manifest rejection. A notice that would overflow the outbound
 	// queue is dropped rather than failing the poll.
 	Notices []Notice
+	// ActionAcks are action ids the plugin reported receipt of (-> running),
+	// and ActionResults the outcomes it reported (-> completed/failed), both
+	// applied in this transaction (spec section 7). Unknown ids, terminal
+	// states, and actions past their deadline are no-ops, never errors.
+	ActionAcks    []string
+	ActionResults []ActionResult
 }
 
 // ManifestPublish is one validated manifest to store, revision-gated.
@@ -323,6 +348,11 @@ type InboundApplied struct {
 	ManifestsApplied int
 	// NoticesQueued counts notices that made it onto the queue.
 	NoticesQueued int
+	// ActionsStarted counts acks that moved an action to running, and
+	// ActionsFinished results that reached a terminal state; the difference
+	// against what was sent is late or duplicate traffic, which is normal.
+	ActionsStarted  int
+	ActionsFinished int
 }
 
 // ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
@@ -394,6 +424,24 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 			return InboundApplied{}, err
 		default:
 			applied.NoticesQueued++
+		}
+	}
+	for _, actionID := range application.ActionAcks {
+		started, err := applyActionAck(ctx, tx, actionID, now)
+		if err != nil {
+			return InboundApplied{}, err
+		}
+		if started {
+			applied.ActionsStarted++
+		}
+	}
+	for _, result := range application.ActionResults {
+		finished, err := applyActionResult(ctx, tx, result, now)
+		if err != nil {
+			return InboundApplied{}, err
+		}
+		if finished {
+			applied.ActionsFinished++
 		}
 	}
 

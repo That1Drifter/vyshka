@@ -12,6 +12,26 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: the action lifecycle end to end (spec section 7), the core tracer bullet.
+  `POST /api/v1/servers/{serverId}/actions` validates a dispatch against the server's stored
+  manifest before anything is queued (undeclared code: `unknown_action`; schema faults:
+  `params_invalid` with the faults named), records the action and its `action.dispatch`
+  envelope in one transaction, and honors `idempotencyKey` even when a fresh dispatch would
+  be refused. The plugin's envelope ack is the delivery receipt (`queued -> delivered`);
+  `action.ack` and `action.result` commit in the same transaction as the inbound ack that
+  covers them, moving the action to `running` and `completed`/`failed`. A sweeper plus lazy
+  expiry on read flip anything non-terminal past its TTL to `expired`, and expiry is final:
+  a late ack or result is acked at the envelope level and changes nothing. Result payloads
+  over the 64 KiB cap keep their outcome but drop the payload, saying so in `error`.
+  `GET /api/v1/actions/{actionId}` shows the full record. Protocol draft 0.7 makes all of
+  this normative (dispatch error table, envelope body shapes, forward-only transitions,
+  TTL clamping); `spec/actions.schema.json` is the machine-readable companion, validated in
+  CI, and `spec/openapi-admin.yaml` 0.7.0 covers both endpoints. Four new hub conformance
+  checks (forty-two total) walk the full lifecycle including the failure path, idempotent
+  retry, refused dispatches never reaching the queue, and TTL expiry with a late result.
+  Migration `0005_actions.sql` adds the `actions` table. `scripts/demo-action.sh` walks the
+  whole exchange in curl.
+
 - 2026-08-16: manifest publish and validation (spec section 6), the first inbound envelope
   type the hub models. A plugin declares its actions, contexts, and events with
   `manifest.publish` at session start or at any later moment; the hub validates the body,

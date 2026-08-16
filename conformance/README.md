@@ -8,7 +8,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 | Suite | Question it answers | Status |
 |---|---|---|
-| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests |
+| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions |
 | `plugin/` | Is this plugin compliant? | Not built yet, see `plugin/README.md` |
 
 ## Hub suite
@@ -28,7 +28,7 @@ PASS  errors.shape                   An unrouted path answers 404 in the protoco
 ...
 PASS  compat.unknownFields           Unknown request fields are tolerated, not rejected
 
-38 checks, 0 failed
+42 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

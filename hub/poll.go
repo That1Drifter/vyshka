@@ -87,12 +87,14 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Then the plugin's envelopes. manifest.publish is the one inbound type the
-	// hub models so far; every other accepted envelope takes the
-	// forward-compatibility path of spec section 4: acked and ignored. Bodies
-	// are validated up front because validity depends only on content, while
-	// which envelopes are newly accepted is only known inside the transaction.
+	// Then the plugin's envelopes. The hub models manifest.publish, action.ack,
+	// and action.result on the inbound path; every other accepted envelope
+	// takes the forward-compatibility path of spec section 4: acked and
+	// ignored. Bodies are validated up front because validity depends only on
+	// content, while which envelopes are newly accepted is only known inside
+	// the transaction.
 	manifests := prepareManifests(request.Envelopes)
+	actions := prepareActions(request.Envelopes)
 
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
@@ -100,17 +102,29 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// rejection notices ride the same transaction: acking an envelope promises
 	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
+	var unusableActionBodies int
 	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
+		unusableActionBodies = 0
 		application := store.InboundApplication{Ack: batch.Ack, Accepted: len(batch.Accepted)}
 		for _, index := range batch.Accepted {
-			prepared, isManifest := manifests[index]
-			switch {
-			case !isManifest:
-			case prepared.publish != nil:
-				application.Manifests = append(application.Manifests, *prepared.publish)
-			default:
-				application.Notices = append(application.Notices, prepared.reject)
+			if prepared, isManifest := manifests[index]; isManifest {
+				if prepared.publish != nil {
+					application.Manifests = append(application.Manifests, *prepared.publish)
+				} else {
+					application.Notices = append(application.Notices, prepared.reject)
+				}
+				continue
+			}
+			if prepared, isAction := actions[index]; isAction {
+				switch {
+				case prepared.ack != "":
+					application.ActionAcks = append(application.ActionAcks, prepared.ack)
+				case prepared.result != nil:
+					application.ActionResults = append(application.ActionResults, *prepared.result)
+				default:
+					unusableActionBodies++
+				}
 			}
 		}
 		return application
@@ -130,7 +144,13 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 			"accepted", len(batch.Accepted), "duplicate", batch.Duplicate,
 			"gapped", batch.Gapped, "ack", inboundAck,
 			"manifestsApplied", applied.ManifestsApplied,
-			"rejectsQueued", applied.NoticesQueued)
+			"rejectsQueued", applied.NoticesQueued,
+			"actionsStarted", applied.ActionsStarted,
+			"actionsFinished", applied.ActionsFinished)
+	}
+	if unusableActionBodies > 0 {
+		s.log.Warn("poll carried action envelopes with unusable bodies; acked and ignored",
+			"serverId", server.ID, "sessionId", session.ID, "count", unusableActionBodies)
 	}
 	if applied.NoticesQueued > 0 {
 		// A rejection notice is ordinary queued work: wake anything else this
