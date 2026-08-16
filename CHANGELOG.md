@@ -12,6 +12,77 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: scoped Admin API tokens and the audit log (spec section 10). Until now a single
+  bootstrap credential could do everything on the Admin API, and every slice since enrollment
+  had widened what that meant. A token now carries an explicit set of grants in a closed
+  `resource:verb[:pattern]` grammar, and every route enforces one: `servers:read`,
+  `events:read`, `actions:read`, `actions:dispatch`, `kv:rw`, `webhooks:manage`, and `admin`.
+  Where the answer depends on a value in the request rather than the route, the value is what
+  gets checked, so a token scoped to `actions:dispatch:example-mod.heal` dispatches that code
+  and is refused on every other one. Two implications are normative and neither runs backwards:
+  `admin` implies everything, because it already carries token minting; and dispatching an
+  action implies reading it, because a token that could start a job but never learn its outcome
+  would be unusable alone. `actions:read` is new in this draft, added so that a monitoring
+  token does not have to hold write access to watch a job. A scope the hub does not define is
+  refused at mint rather than stored, since a token minted from a typo grants nothing and says
+  so nowhere. An `events:read:{pattern}` grant does not merely gate the section 8.5 feed, it
+  shapes it: a query with no `type` filter is narrowed to what the token may see, while an
+  explicit term the grant does not *cover* is refused, because narrowing an explicit filter
+  would answer it with a feed that looks complete and is not. Covering is deliberately not
+  matching, so a grant on one event type does not admit a query spanning its whole namespace.
+  Refusals are `403 forbidden`, never a quiet empty result, and the dispatch check runs before
+  both the manifest lookup and the idempotency lookup so neither can be used to learn about an
+  action the token may not dispatch. Every authenticated mutation is recorded in an append-only
+  audit log with the token's id and its name as it was at the time, the request line, the
+  status, the peer address, and a SHA-256 digest of the request body; refused mutations are
+  recorded alongside successful ones, because an attempt to use a credential outside its grant
+  is exactly what the log is read for. Reads are not recorded, and neither are requests that
+  never authenticated: an unauthenticated caller could otherwise fill the log an operator
+  depends on. `sourceIp` is the connection's peer address and never a forwarded header, which
+  is whatever the client typed. New endpoints: `POST`/`GET /api/v1/tokens`,
+  `DELETE /api/v1/tokens/{tokenId}`, and `GET /api/v1/audit`, all requiring `admin`, with the
+  same opaque-cursor pagination the event feed uses. A secret is returned by the mint response
+  and nowhere else; revocation takes effect on the next request while the record survives, so
+  the log's references to a retired token keep resolving. The generated bootstrap credential is
+  now confined to first run: a configured `VYSHKA_ADMIN_TOKEN` is always honoured, but the hub
+  stops minting an ephemeral one once it holds a usable scoped token, because a fresh superuser
+  credential on every boot would make revocation not survive a restart and hand permanent
+  access to anyone who could read the logs. Audit records are pruned on the same maintenance
+  loop as events (reference retention: 365 days), and `Config.EventPruneInterval` is renamed
+  `RetentionInterval` now that it drives both passes. Protocol draft 0.10 makes all of this
+  normative in a rewritten section 10 (scopes, enforcement, narrowed feeds, token management,
+  the audit log, and bootstrap credentials), and `spec/openapi-admin.yaml` 0.9.0 covers the new
+  endpoints and the `403` answers. Scopes are installation-wide in this draft: the grammar
+  narrows by action code, event type, and KV namespace, and has no term naming a server, which
+  section 10.1 now states outright rather than leaving to be discovered. Six new hub
+  conformance checks (fifty-five total) grade the token lifecycle, a narrowly scoped token
+  reaching nothing outside its grant, the idempotency-key oracle below, mint-time grammar
+  enforcement, a namespace-scoped feed narrowing and refusing, and the audit record of a
+  dispatch and its refusal. Migration `0007_tokens_audit.sql` adds the `admin_tokens` and
+  `audit_records` tables. `scripts/demo-tokens.sh` walks the whole thing in curl.
+
+  Hardened under adversarial review before landing. The one that mattered: an idempotency key
+  is client-chosen and keyed only on the server, so the action it names can carry a different
+  code than the request presenting it, and authorizing only the request's code let a token
+  present a key somebody else had bound and receive the id and state of an action it could
+  never have dispatched. The retry is now authorized against both codes, which is the rule
+  section 10.2 states and the new conformance check grades. Reading an action no longer
+  expires it before the scope check: the full read applies lazy expiry, so a token with no
+  grant over an action could drive its terminal state through a route that is not even
+  audited, and the code is now read on its own first. The first-run bootstrap condition was
+  wrong in the direction that locks operators out: it suppressed the generated credential when
+  *any* live token existed, so minting a read-only panel token and restarting shut the
+  operator out of their own Admin API, and it now asks whether a live token can still manage
+  tokens. `expiresInSeconds` is clamped in seconds before conversion, so a request for a
+  century no longer overflows `time.Duration` and mints a one-minute credential, the same trap
+  `clampActionTTL` already avoided. An audit entry is created before the request body is read,
+  so an authenticated caller cannot make a refused mutation vanish by hanging up mid-body; an
+  over-cap body records no digest rather than a digest of the truncated prefix, since two
+  oversized bodies routinely share a prefix and a colliding field that looks like a body
+  digest is worse than an empty one; and creating a server now stamps the audit record's
+  `serverId`, which the route's own path does not carry, so the entry an operator most wants
+  in a per-server view is actually in it.
+
 - 2026-08-16: telemetry event ingest and query (spec section 8), the first surface that runs
   plugin to operator rather than the other way. A plugin pushes `event.batch` envelopes over
   the existing transport; core `core.*` events and mod-defined `{namespace}.{name}` events

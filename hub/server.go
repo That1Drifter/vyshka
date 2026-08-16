@@ -27,9 +27,9 @@ type Config struct {
 	Addr string
 	// DatabaseURL selects the database. Empty means the default SQLite file.
 	DatabaseURL string
-	// AdminToken is the bootstrap Admin API credential. Empty means the hub
-	// mints one at boot and logs it, which keeps first run to one command at
-	// the cost of a token that changes on every restart.
+	// AdminToken is the bootstrap Admin API credential, which carries the
+	// `admin` scope. Empty means the hub mints one at boot and logs it, but
+	// only while no scoped token exists yet: see New.
 	AdminToken string
 	// Logger receives structured logs. Required.
 	Logger *slog.Logger
@@ -46,8 +46,12 @@ type Config struct {
 	// pattern (spec section 8.4). Nil means DefaultEventRetention. Retention is
 	// hub configuration, not protocol: a hub is conformant whatever it keeps.
 	EventRetention []RetentionRule
-	// EventPruneInterval is how often the retention pass runs.
-	EventPruneInterval time.Duration
+	// AuditRetention decides how long an audit record is kept (spec section
+	// 10). Zero means DefaultAuditRetention.
+	AuditRetention time.Duration
+	// RetentionInterval is how often the retention passes run, for events and
+	// for audit records alike.
+	RetentionInterval time.Duration
 }
 
 func (c *Config) withDefaults() {
@@ -72,11 +76,17 @@ func (c *Config) withDefaults() {
 	if c.EventRetention == nil {
 		c.EventRetention = DefaultEventRetention()
 	}
+	// Clamped rather than merely defaulted: a negative retention would stamp
+	// every audit record as already expired, and the next prune pass would
+	// delete the log as fast as it was written.
+	if c.AuditRetention <= 0 {
+		c.AuditRetention = DefaultAuditRetention
+	}
 	// Not just the zero value: Config is exported, and a negative interval here
 	// would panic time.NewTicker inside the maintenance goroutine, taking the
 	// process down moments after New returned successfully.
-	if c.EventPruneInterval <= 0 {
-		c.EventPruneInterval = 5 * time.Minute
+	if c.RetentionInterval <= 0 {
+		c.RetentionInterval = 5 * time.Minute
 	}
 }
 
@@ -85,9 +95,10 @@ type Server struct {
 	cfg   Config
 	log   *slog.Logger
 	store *store.Store
-	// adminTokenHash is the digest of the bootstrap admin token; the token
-	// itself is never held in memory after boot.
-	adminTokenHash string
+	// bootstrapTokenHash is the digest of the bootstrap admin token; the token
+	// itself is never held in memory after boot. Empty means this hub has no
+	// bootstrap credential and authenticates only its minted tokens.
+	bootstrapTokenHash string
 	// waiters wakes held long-polls when something changes for their server,
 	// and holds bounds how many of them one session may park at once.
 	waiters *waiters
@@ -128,39 +139,77 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		"migrationsApplied", len(applied),
 	)
 
-	adminToken := cfg.AdminToken
-	if adminToken == "" {
-		adminToken = token.New(token.Admin)
-		cfg.Logger.Warn("no admin token configured, generated an ephemeral one",
-			"adminToken", adminToken,
-			"hint", "set VYSHKA_ADMIN_TOKEN (or -admin-token) to keep it stable across restarts")
-	}
+	// The bootstrap credential of spec section 10, confined to first run.
+	//
+	// A configured token is always honoured: operators put it in a unit file
+	// and CI puts it in an env var, and it is the documented way back in after
+	// every minted token has been revoked. What is confined is the *generated*
+	// one. Minting a fresh `admin` token and printing it on every boot would
+	// make the whole tokens table decorative, because revoking a token would
+	// not survive a restart and anyone who could read the log would hold
+	// permanent superuser.
+	//
+	// The condition is specifically whether a live token can still *manage
+	// tokens*, not whether any live token exists. A hub whose only credential
+	// is a `servers:read` panel token has nothing that can mint or revoke, so
+	// suppressing the bootstrap there would lock the operator out of their own
+	// Admin API on the next restart, with no way back that does not involve
+	// the host.
+	bootstrapToken := cfg.AdminToken
 	cfg.AdminToken = ""
+	if bootstrapToken == "" {
+		live, err := st.LiveAdminTokens(ctx)
+		if err != nil {
+			st.Close()
+			return nil, err
+		}
+		administrators := 0
+		for _, stored := range live {
+			for _, text := range stored.Scopes {
+				if scope, err := ParseScope(text); err == nil && scope.Resource == resourceAdmin {
+					administrators++
+					break
+				}
+			}
+		}
+		if administrators > 0 {
+			cfg.Logger.Info("no bootstrap admin token; this hub authenticates with its scoped tokens only",
+				"liveTokens", len(live), "withAdminScope", administrators,
+				"hint", "set VYSHKA_ADMIN_TOKEN (or -admin-token) to restore a bootstrap credential")
+		} else {
+			bootstrapToken = token.New(token.Admin)
+			cfg.Logger.Warn("no admin token configured and none can manage tokens, generated an ephemeral one",
+				"adminToken", bootstrapToken, "liveTokens", len(live),
+				"hint", "set VYSHKA_ADMIN_TOKEN (or -admin-token) to keep it stable across restarts")
+		}
+	}
 
 	s := &Server{
-		cfg:            cfg,
-		log:            cfg.Logger,
-		store:          st,
-		adminTokenHash: token.Hash(adminToken),
-		waiters:        newWaiters(),
-		holds:          newHolds(),
-		started:        time.Now(),
-		stopSweeper:    make(chan struct{}),
-		sweeperDone:    make(chan struct{}),
+		cfg:         cfg,
+		log:         cfg.Logger,
+		store:       st,
+		waiters:     newWaiters(),
+		holds:       newHolds(),
+		started:     time.Now(),
+		stopSweeper: make(chan struct{}),
+		sweeperDone: make(chan struct{}),
+	}
+	if bootstrapToken != "" {
+		s.bootstrapTokenHash = token.Hash(bootstrapToken)
 	}
 	s.handler = s.routes()
 	go s.runMaintenance()
 	return s, nil
 }
 
-// eventPruneBatch bounds one retention pass, so a long-neglected database is
+// pruneBatch bounds one retention pass, so a long-neglected database is
 // drained over several passes instead of in one statement that would hold the
 // store's single connection for the duration.
-const eventPruneBatch = 5000
+const pruneBatch = 5000
 
-// runMaintenance owns the hub's background jobs: action expiry and event
-// retention. They share a goroutine because they share a shutdown, and Close
-// waits on exactly one loop rather than on a set it has to keep in sync.
+// runMaintenance owns the hub's background jobs: action expiry and the
+// retention passes. They share a goroutine because they share a shutdown, and
+// Close waits on exactly one loop rather than on a set it has to keep in sync.
 func (s *Server) runMaintenance() {
 	defer close(s.sweeperDone)
 
@@ -170,9 +219,9 @@ func (s *Server) runMaintenance() {
 	// ones an operator will ask about later.
 	expiry := time.NewTicker(500 * time.Millisecond)
 	defer expiry.Stop()
-	// The retention job of spec section 8.4, which is measured in days and so
-	// has nothing to gain from running often.
-	prune := time.NewTicker(s.cfg.EventPruneInterval)
+	// The retention jobs of spec sections 8.4 and 10, both measured in days and
+	// so with nothing to gain from running often.
+	prune := time.NewTicker(s.cfg.RetentionInterval)
 	defer prune.Stop()
 
 	for {
@@ -193,28 +242,28 @@ func (s *Server) runMaintenance() {
 				s.log.Info("actions expired", "count", expired)
 			}
 		case <-prune.C:
-			s.pruneEvents()
+			s.prune("events", s.store.PruneEvents)
+			s.prune("audit records", s.store.PruneAudit)
 		}
 	}
 }
 
-// pruneEvents runs the retention pass, in bounded batches, until it stops
-// finding work or the pass has taken long enough that the next tick can pick up
-// where it left off. Nothing is lost by stopping early: expired rows stay
-// expired.
-func (s *Server) pruneEvents() {
+// prune runs one retention pass, in bounded batches, until it stops finding
+// work or the pass has taken long enough that the next tick can pick up where
+// it left off. Nothing is lost by stopping early: expired rows stay expired.
+func (s *Server) prune(what string, delete func(context.Context, int) (int, error)) {
 	deadline := time.Now().Add(30 * time.Second)
 	total := 0
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pruned, err := s.store.PruneEvents(ctx, eventPruneBatch)
+		pruned, err := delete(ctx, pruneBatch)
 		cancel()
 		if err != nil {
-			s.log.Error("event retention pass failed", "error", err.Error())
+			s.log.Error("retention pass failed", "what", what, "error", err.Error())
 			return
 		}
 		total += pruned
-		if pruned < eventPruneBatch {
+		if pruned < pruneBatch {
 			break
 		}
 		select {
@@ -224,7 +273,7 @@ func (s *Server) pruneEvents() {
 		}
 	}
 	if total > 0 {
-		s.log.Info("events pruned", "count", total)
+		s.log.Info("retention pass pruned rows", "what", what, "count", total)
 	}
 }
 
@@ -244,39 +293,66 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("/healthz", methodNotAllowed("GET"))
 
-	// Admin API: operator facing, bearer tokens (spec section 5.1).
-	mux.HandleFunc("POST /api/v1/servers", s.requireAdmin(s.handleCreateServer))
-	mux.HandleFunc("GET /api/v1/servers", s.requireAdmin(s.handleListServers))
+	// Admin API: operator facing, scoped bearer tokens (spec sections 5.1, 10).
+	// The scope on each route is the coarse gate; the routes whose answer
+	// depends on a value in the request check that value again inside the
+	// handler.
+	//
+	// Creating a server, issuing an enrollment token, revoking credentials, and
+	// queueing a raw envelope all require `admin`. The first three are server
+	// enrollment, which section 10 assigns to `admin`; the fourth is a raw
+	// write channel to the game server that no narrower scope in the grammar
+	// describes, and defaulting it to something weaker would let a scoped token
+	// route around the validation the modelled endpoints perform.
+	mux.HandleFunc("POST /api/v1/servers", s.admin(resourceAdmin, "", s.handleCreateServer))
+	mux.HandleFunc("GET /api/v1/servers", s.admin(resourceServers, verbRead, s.handleListServers))
 	mux.HandleFunc("/api/v1/servers", methodNotAllowed("GET", "POST"))
 
-	mux.HandleFunc("GET /api/v1/servers/{serverId}", s.requireAdmin(s.handleGetServer))
+	mux.HandleFunc("GET /api/v1/servers/{serverId}",
+		s.admin(resourceServers, verbRead, s.handleGetServer))
 	mux.HandleFunc("/api/v1/servers/{serverId}", methodNotAllowed("GET"))
 
 	mux.HandleFunc("POST /api/v1/servers/{serverId}/enrollment-token",
-		s.requireAdmin(s.handleIssueEnrollmentToken))
+		s.admin(resourceAdmin, "", s.handleIssueEnrollmentToken))
 	mux.HandleFunc("/api/v1/servers/{serverId}/enrollment-token", methodNotAllowed("POST"))
 
 	mux.HandleFunc("DELETE /api/v1/servers/{serverId}/credentials",
-		s.requireAdmin(s.handleRevokeCredentials))
+		s.admin(resourceAdmin, "", s.handleRevokeCredentials))
 	mux.HandleFunc("/api/v1/servers/{serverId}/credentials", methodNotAllowed("DELETE"))
 
 	mux.HandleFunc("POST /api/v1/servers/{serverId}/envelopes",
-		s.requireAdmin(s.handleQueueEnvelope))
+		s.admin(resourceAdmin, "", s.handleQueueEnvelope))
 	mux.HandleFunc("/api/v1/servers/{serverId}/envelopes", methodNotAllowed("POST"))
 
 	mux.HandleFunc("GET /api/v1/servers/{serverId}/manifest",
-		s.requireAdmin(s.handleGetManifest))
+		s.admin(resourceServers, verbRead, s.handleGetManifest))
 	mux.HandleFunc("/api/v1/servers/{serverId}/manifest", methodNotAllowed("GET"))
 
 	mux.HandleFunc("POST /api/v1/servers/{serverId}/actions",
-		s.requireAdmin(s.handleDispatchAction))
+		s.admin(resourceActions, verbDispatch, s.handleDispatchAction))
 	mux.HandleFunc("/api/v1/servers/{serverId}/actions", methodNotAllowed("POST"))
 
-	mux.HandleFunc("GET /api/v1/actions/{actionId}", s.requireAdmin(s.handleGetAction))
+	mux.HandleFunc("GET /api/v1/actions/{actionId}",
+		s.admin(resourceActions, verbRead, s.handleGetAction))
 	mux.HandleFunc("/api/v1/actions/{actionId}", methodNotAllowed("GET"))
 
-	mux.HandleFunc("GET /api/v1/servers/{serverId}/events", s.requireAdmin(s.handleListEvents))
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/events",
+		s.admin(resourceEvents, verbRead, s.handleListEvents))
 	mux.HandleFunc("/api/v1/servers/{serverId}/events", methodNotAllowed("GET"))
+
+	// Token management and the audit log (spec section 10), all `admin`: a
+	// token that could mint tokens could grant itself anything, and the audit
+	// log names every credential and everything each one changed.
+	mux.HandleFunc("POST /api/v1/tokens", s.admin(resourceAdmin, "", s.handleCreateToken))
+	mux.HandleFunc("GET /api/v1/tokens", s.admin(resourceAdmin, "", s.handleListTokens))
+	mux.HandleFunc("/api/v1/tokens", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("DELETE /api/v1/tokens/{tokenId}",
+		s.admin(resourceAdmin, "", s.handleRevokeToken))
+	mux.HandleFunc("/api/v1/tokens/{tokenId}", methodNotAllowed("DELETE"))
+
+	mux.HandleFunc("GET /api/v1/audit", s.admin(resourceAdmin, "", s.handleListAudit))
+	mux.HandleFunc("/api/v1/audit", methodNotAllowed("GET"))
 
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).

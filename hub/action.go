@@ -102,6 +102,15 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "idempotencyKey is too long")
 		return
 	}
+	auditDetail(r, "code", request.Code)
+
+	// The exact scope check, now that the request has named the code it wants
+	// to run (spec section 10). It comes before the idempotency lookup: a token
+	// that may not dispatch `example-mod.wipe` must not be able to learn that
+	// somebody else already did, let alone be handed its id.
+	if !s.requireScope(w, r, resourceActions, verbDispatch, request.Code) {
+		return
+	}
 
 	// The idempotency contract comes before everything else that could refuse
 	// this request (spec section 7): a retry of an action that was already
@@ -111,10 +120,7 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 		original, err := s.store.ActionByIdempotencyKey(r.Context(), server.ID, request.IdempotencyKey)
 		switch {
 		case err == nil:
-			writeJSON(w, http.StatusAccepted, map[string]any{
-				"actionId": original.ID,
-				"state":    original.State,
-			})
+			s.answerIdempotentReplay(w, r, original)
 			return
 		case !errors.Is(err, store.ErrNotFound):
 			s.writeInternalError(w, r, err)
@@ -193,17 +199,55 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if created {
-			s.waiters.notify(server.ID)
-			s.log.Info("action dispatched",
-				"serverId", server.ID, "actionId", action.ID, "code", action.Code)
+		if !created {
+			// The lookup above missed, but the insert conflicted, so a
+			// concurrent request bound this key between the two. The action
+			// handed back is that request's, not this one's, and it may carry a
+			// code this token cannot dispatch: the same disclosure the lookup
+			// path guards against, reached by a race rather than by a replay.
+			s.answerIdempotentReplay(w, r, action)
+			return
 		}
+
+		auditDetail(r, "actionId", action.ID)
+		s.waiters.notify(server.ID)
+		s.log.Info("action dispatched",
+			"serverId", server.ID, "actionId", action.ID, "code", action.Code)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"actionId": action.ID,
 			"state":    action.State,
 		})
 		return
 	}
+}
+
+// answerIdempotentReplay answers a dispatch whose idempotency key already names
+// an action, honoring the section 7 retry contract without letting it become an
+// oracle (spec section 10.2).
+//
+// An idempotency key is client-chosen and keyed only on the server, so the
+// action it names may carry a code the presenting token cannot dispatch. The
+// caller has already cleared the code in the *request*; this clears the code in
+// the *answer*. There are two ways to arrive here, a replay and a lost race
+// against a concurrent binding, and both are answered the same way, which is
+// why they share this function rather than each checking for themselves.
+//
+// The refusal deliberately does not name the original's code. Saying which
+// scope was missing is the helpful thing to do everywhere else on the Admin API,
+// and exactly the wrong thing here: it would tell a caller holding a guessed key
+// that the key is taken and what it was taken for.
+func (s *Server) answerIdempotentReplay(w http.ResponseWriter, r *http.Request, original store.Action) {
+	if !principalFrom(r.Context()).allows(resourceActions, verbDispatch, original.Code) {
+		writeError(w, http.StatusForbidden, codeForbidden,
+			"this idempotency key names an action this token may not dispatch")
+		return
+	}
+	auditDetail(r, "actionId", original.ID)
+	auditDetail(r, "idempotentReplay", true)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"actionId": original.ID,
+		"state":    original.State,
+	})
 }
 
 // validateDispatch checks a dispatch against the server's stored manifest and
@@ -309,8 +353,35 @@ func newActionView(action store.Action) actionView {
 }
 
 // handleGetAction answers with one action record (spec section 7).
+//
+// The scope is checked against the action's own code, which cannot be known
+// before a lookup. That order tells a caller holding no matching scope that the
+// id exists, which is the deliberate trade of section 10: this hub is one
+// operator's trust boundary, and an answer that hid the difference between "not
+// yours" and "not there" would cost far more in debugging than it buys. Action
+// ids are 128-bit ULIDs, so the oracle confirms an id a caller already has
+// rather than letting one be found.
+//
+// The code is read on its own first, rather than by reading the whole record,
+// because the full read applies lazy expiry. Going through that path would let
+// a token with no grant over this action cause a state change on a route that
+// is not audited: a read must not be a write for someone who may not write.
 func (s *Server) handleGetAction(w http.ResponseWriter, r *http.Request) {
-	action, err := s.store.ActionByID(r.Context(), r.PathValue("actionId"))
+	actionID := r.PathValue("actionId")
+	code, err := s.store.ActionCode(r.Context(), actionID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "no such action")
+		return
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return
+	}
+	if !s.requireScope(w, r, resourceActions, verbRead, code) {
+		return
+	}
+
+	action, err := s.store.ActionByID(r.Context(), actionID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "no such action")

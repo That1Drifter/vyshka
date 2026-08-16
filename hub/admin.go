@@ -33,22 +33,6 @@ const outboundQueueLimit = 5000
 // take as the hub's own word (spec sections 5.5 and 6).
 var reservedEnvelopeTypes = []string{"action.", "manifest.", "event."}
 
-// requireAdmin gates a handler on the bootstrap admin token. Scoped tokens
-// (spec section 10) replace this in the scoped-tokens slice; until then one
-// token carries the `admin` scope and nothing else exists.
-func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		presented := bearerToken(r)
-		if presented == "" || !token.Equal(s.adminTokenHash, token.Hash(presented)) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="vyshka-admin"`)
-			writeError(w, http.StatusUnauthorized, codeUnauthorized,
-				"a valid admin token is required")
-			return
-		}
-		next(w, r)
-	}
-}
-
 type createServerRequest struct {
 	Name                      string `json:"name"`
 	Game                      string `json:"game"`
@@ -93,6 +77,10 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, r, err)
 		return
 	}
+	// Recorded before the enrollment token is minted, so that a creation whose
+	// second half fails is still attributable to the server it created.
+	auditServerID(r, server.ID)
+	auditDetail(r, "serverId", server.ID)
 
 	secret, expiresAt, err := s.issueEnrollmentToken(r, server.ID, request.EnrollmentTokenTTLSeconds)
 	if err != nil {
@@ -100,6 +88,8 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditDetail(r, "name", server.Name)
+	auditDetail(r, "game", server.Game)
 	s.log.Info("server created", "serverId", server.ID, "name", server.Name, "game", server.Game)
 	writeJSON(w, http.StatusCreated, createServerResponse{
 		Server:     newServerView(server, nil, 0),
@@ -284,6 +274,8 @@ func (s *Server) handleQueueEnvelope(w http.ResponseWriter, r *http.Request) {
 	// delivered now rather than whenever the hold happens to expire.
 	s.waiters.notify(server.ID)
 
+	auditDetail(r, "envelopeId", queued.ID)
+	auditDetail(r, "envelopeType", queued.Type)
 	s.log.Info("envelope queued",
 		"serverId", server.ID, "envelopeId", queued.ID, "type", queued.Type)
 	writeJSON(w, http.StatusAccepted, queueEnvelopeResponse{

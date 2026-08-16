@@ -10,7 +10,7 @@ game-agnostic from day one.
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.8), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.10), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
@@ -21,7 +21,7 @@ machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml
 [`spec/events.schema.json`](spec/events.schema.json).
 
 What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
-implements the first four protocol surfaces. An operator can register a game server, a plugin
+implements the protocol surfaces below. An operator can register a game server, a plugin
 can trade its one-time enrollment token for permanent credentials and those credentials for a
 session, and revoking a server kills its session immediately. On top of that sits the
 transport: a plugin holds a long-poll, the hub flushes queued envelopes into it the moment
@@ -36,8 +36,11 @@ reports, and every state of `queued -> delivered -> running -> completed/failed/
 observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Telemetry
 runs the other way on the same transport: a plugin pushes `event.batch` envelopes, core and
 mod-defined events land in one append-only store with per-type retention, and operators query
-them at `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Forty-eight
-conformance checks grade all of it in CI. State snapshots come next.
+them at `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. All of it
+sits behind scoped Admin API tokens: a credential can be narrowed to one action code or one
+event namespace, every route enforces its scope, and every authenticated mutation lands in an
+append-only audit log at `GET /api/v1/audit`. Fifty-five conformance checks grade all of it in
+CI. State snapshots come next.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -48,8 +51,10 @@ curl http://127.0.0.1:8080/healthz
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
 SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
 and `-log-level`. With no admin token configured the hub mints one at boot and logs it, which
-keeps first run to a single command; set the flag to keep it stable across restarts. Logs are
-structured JSON on stdout.
+keeps first run to a single command; set the flag to keep it stable across restarts. That
+generated credential is first-run behavior only: once the hub holds a scoped token of its own
+it stops minting one, because a fresh superuser token on every boot would mean revocation
+never survived a restart. Logs are structured JSON on stdout.
 
 To watch the protocol flows in curl:
 
@@ -59,6 +64,7 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-poll.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-manifest.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-action.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-events.sh
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-tokens.sh
 ```
 
 ## Why

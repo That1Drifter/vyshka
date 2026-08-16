@@ -202,9 +202,32 @@ func (s *Store) ActionByID(ctx context.Context, actionID string) (Action, error)
 	return action, nil
 }
 
+// ActionCode returns just an action's code, without the lazy expiry ActionByID
+// applies. It exists for authorization: the scope a read needs depends on the
+// code (spec section 10.2), so the code has to be known before the caller has
+// been allowed to touch the row at all. Reading through ActionByID instead
+// would let a token with no grant over this action drive a state change, which
+// is a write, on a route that is not even audited.
+func (s *Store) ActionCode(ctx context.Context, actionID string) (string, error) {
+	var code string
+	switch err := s.db.QueryRowContext(ctx,
+		`SELECT code FROM actions WHERE id = ?`, actionID).Scan(&code); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", fmt.Errorf("read action code: %w", err)
+	}
+	return code, nil
+}
+
 // ActionByIdempotencyKey returns the action a client-chosen key names, or
 // ErrNotFound. Callers use it to honor the retry contract before anything
 // else, validation included, can refuse the request (spec section 7).
+//
+// The action it returns may carry a different code than the request that
+// presented the key: the key is client-chosen and keyed only on the server. A
+// caller MUST therefore authorize against the returned action's own code as
+// well as the one it asked for.
 func (s *Store) ActionByIdempotencyKey(ctx context.Context, serverID, key string) (Action, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+actionColumns+` FROM actions WHERE server_id = ? AND idempotency_key = ?`,
