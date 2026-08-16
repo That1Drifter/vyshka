@@ -10,10 +10,10 @@ game-agnostic from day one.
 
 ## Status: design phase
 
-There is no runnable code yet. The project is currently a protocol design spec (draft 0.3).
-The spec and its conformance suites are the primary product; the hub and plugins are
-reference implementations of it. The spec will be published in this repository as
-`spec/protocol.md` alongside machine-readable OpenAPI and JSON Schema artifacts.
+There is no runnable code yet. The project is currently a protocol spec:
+[`spec/protocol.md`](spec/protocol.md) (draft 0.1). The spec and its conformance suites are
+the primary product; the hub and plugins are reference implementations of it.
+Machine-readable OpenAPI and JSON Schema artifacts will land alongside it in `spec/`.
 
 ## Why
 
