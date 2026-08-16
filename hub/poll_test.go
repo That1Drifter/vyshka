@@ -3,6 +3,7 @@ package hub_test
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -617,6 +618,63 @@ func TestPollUpdatesLastSeenAt(t *testing.T) {
 
 	if afterPoll := record(); afterPoll == atSession {
 		t.Errorf("lastSeenAt is still %q after a poll; it must move on every poll", afterPoll)
+	}
+}
+
+// Section 9.2 says queued envelopes survive a hub restart. The conformance
+// suite cannot grade that, because it cannot restart the implementation it is
+// pointed at, so the reference hub proves it here: a hub that kept its queue in
+// memory would pass every black-box check and still lose an operator's work.
+func TestQueuedEnvelopesSurviveAHubRestart(t *testing.T) {
+	t.Parallel()
+	databaseURL := filepath.Join(t.TempDir(), "restart.db")
+
+	before := newTestServerAt(t, databaseURL)
+	created := createServer(t, before, "survives a restart", "test-game")
+	credentials := enroll(t, before, created.Enrollment.Token, "test-game")
+	queuedID := queueEnvelope(t, before, created.Server.ID, "test.durable",
+		map[string]any{"marker": "written before the restart"})
+
+	// The hub goes away with the envelope queued and no session to deliver it.
+	if err := before.Close(); err != nil {
+		t.Fatalf("close the first hub: %v", err)
+	}
+
+	after := newTestServerAt(t, databaseURL)
+	live := startSession(t, after, credentials, 5)
+
+	result := poll(t, after, live.SessionToken, map[string]any{})
+	if len(result.Envelopes) != 1 {
+		t.Fatalf("got %d envelopes from the restarted hub, want the one queued before it stopped",
+			len(result.Envelopes))
+	}
+	delivered := result.Envelopes[0]
+	if delivered.ID != queuedID {
+		t.Errorf("envelope id = %q, want the pre-restart %q", delivered.ID, queuedID)
+	}
+	if delivered.Seq != 1 {
+		t.Errorf("seq = %d, want 1: the restarted hub numbers into the new session", delivered.Seq)
+	}
+	var body struct {
+		Marker string `json:"marker"`
+	}
+	if err := json.Unmarshal(delivered.Body, &body); err != nil {
+		t.Fatalf("decode body %q: %v", delivered.Body, err)
+	}
+	if body.Marker != "written before the restart" {
+		t.Errorf("body did not survive the restart: %q", delivered.Body)
+	}
+
+	// The ack must survive too, or the restart would replay the envelope for
+	// ever.
+	poll(t, after, live.SessionToken, map[string]any{"ack": delivered.Seq})
+	var record struct {
+		PendingEnvelopeCount int `json:"pendingEnvelopeCount"`
+	}
+	call(t, after, http.MethodGet, "/api/v1/servers/"+created.Server.ID,
+		testAdminToken, nil, &record)
+	if record.PendingEnvelopeCount != 0 {
+		t.Errorf("pendingEnvelopeCount = %d after the ack, want 0", record.PendingEnvelopeCount)
 	}
 }
 

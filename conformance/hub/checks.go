@@ -1274,6 +1274,82 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "plugin.poll.inboundRenumber",
+		Title:   "A plugin's unacked envelope is renumbered into the next session and accepted there",
+		Section: "9.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: inbound renumber", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			nudge := func() error {
+				_, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil)
+				return err
+			}
+
+			if err := nudge(); err != nil {
+				return err
+			}
+			settled, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{
+				plugin.nextOutbound(unknownType(), nil),
+				plugin.nextOutbound(unknownType(), nil),
+			}})
+			if err != nil {
+				return err
+			}
+			if settled.Ack != 2 {
+				return fmt.Errorf("ack = %d after two envelopes, want 2", settled.Ack)
+			}
+
+			// Framed but never sent: the envelope a real plugin still holds in
+			// its ring buffer when the game server goes down.
+			strandedInOldSession := plugin.nextOutbound(unknownType(),
+				map[string]any{"marker": "survived the session change"})
+
+			if err := plugin.reconnect(ctx, shortPollTimeoutSeconds); err != nil {
+				return err
+			}
+
+			// Sent unchanged, its old seq is a gap the new session can never
+			// close: this is why renumbering is required rather than optional.
+			if err := nudge(); err != nil {
+				return err
+			}
+			stranded, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{strandedInOldSession}})
+			if err != nil {
+				return err
+			}
+			if stranded.Ack != 0 {
+				return fmt.Errorf("ack = %d for an envelope carrying its previous session's seq %d, want 0: a new session counts from 1, so that seq is above a gap",
+					stranded.Ack, strandedInOldSession.Seq)
+			}
+
+			// Renumbered into the new session, it lands. Only seq moved, so the
+			// receiver can still recognize it as the message it always was.
+			renumbered := plugin.renumber(strandedInOldSession)
+			if renumbered.Seq != 1 {
+				return fmt.Errorf("the suite renumbered to seq %d, want 1", renumbered.Seq)
+			}
+			if renumbered.ID != strandedInOldSession.ID || renumbered.Type != strandedInOldSession.Type ||
+				renumbered.TS != strandedInOldSession.TS {
+				return fmt.Errorf("renumbering changed more than seq: %+v became %+v",
+					strandedInOldSession, renumbered)
+			}
+			if err := nudge(); err != nil {
+				return err
+			}
+			recovered, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{renumbered}})
+			if err != nil {
+				return err
+			}
+			if recovered.Ack != 1 {
+				return fmt.Errorf("ack = %d after the renumbered envelope, want 1: an envelope unacked when a session ended must be recoverable in the next one",
+					recovered.Ack)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "plugin.poll.envelopeInvalid",
 		Title:   "A malformed inbound envelope is refused, naming what was wrong",
 		Section: "3.1.2",

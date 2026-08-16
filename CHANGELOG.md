@@ -143,7 +143,20 @@ point if needed.
   so anyone generating a request validator from it would have rejected envelopes the spec
   says a receiver must accept. `lastSeenAt` joins `pendingEnvelopeCount` as required on the
   Admin API server record, since section 9.4 obliges a hub to expose both.
-- 2026-08-16: four hub conformance checks (thirty-three total) covering `lastSeenAt` on every
+- 2026-08-16: coverage for three obligations that had none. `plugin.poll.inboundRenumber`
+  grades the new cross-session renumbering rule from both sides: an envelope still carrying
+  its previous session's `seq` lands above a gap and moves nothing, while the same envelope
+  renumbered into the new session is accepted. That check is also what proves the rule is
+  necessary rather than merely satisfiable. Section 9.2's hub-restart durability and section
+  9.2's queue bound are graded by Go tests instead of conformance checks, because a
+  black-box suite cannot restart the implementation it is pointed at and should not have to
+  queue five thousand envelopes to observe one error code; a hub holding its queue in memory
+  would otherwise have passed every check in the suite.
+- 2026-08-16: the single SQLite connection is documented as load-bearing for correctness
+  rather than only for locking, and `resolveDSN` carries the note that a Postgres backend
+  must take row locks in `liveSessionSeq`. Raising the pool without them reintroduces the
+  concurrent-poll ack defects fixed above.
+- 2026-08-16: five hub conformance checks (thirty-four total) covering `lastSeenAt` on every
   poll, inbound tolerance of an omitted `v` and an unparseable `ts` against rejection of an
   explicit `v` of `0`, the 200-envelope batch floor with refusal rather than truncation above
   the cap, and a held poll answered at once when a new session supersedes it. Existing checks

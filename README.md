@@ -23,7 +23,7 @@ can trade its one-time enrollment token for permanent credentials and those cred
 session, and revoking a server kills its session immediately. On top of that sits the
 transport: a plugin holds a long-poll, the hub flushes queued envelopes into it the moment
 they arrive, and per-direction sequence numbers with cumulative acks make delivery
-at-least-once both ways. Thirty-three conformance checks grade all of it in CI. Manifests and
+at-least-once both ways. Thirty-four conformance checks grade all of it in CI. Manifests and
 the action lifecycle come next.
 
 ```

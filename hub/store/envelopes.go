@@ -280,8 +280,8 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 // section 9.1 forbids outright, and double-counts duplicates on the way.
 //
 // The read and the write are one transaction. On SQLite that is enough because
-// the pool holds a single connection; a Postgres backend would need the read to
-// take a row lock.
+// the pool holds a single connection; a Postgres backend would need the read in
+// liveSessionSeq to take a row lock. See the Postgres note in resolveDSN.
 func (s *Store) AdvanceInbound(ctx context.Context, sessionID string, classify func(ack int64) (int64, int)) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

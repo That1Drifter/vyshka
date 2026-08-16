@@ -153,6 +153,47 @@ func TestAdvanceInboundClassifiesAgainstCommittedState(t *testing.T) {
 	}
 }
 
+// Section 9.2: at the bound a hub refuses new work rather than discarding
+// envelopes it has already accepted. Graded here with a limit of two, because
+// grading it through the Admin API would mean queueing the reference default of
+// 5 000 to prove one error code.
+func TestQueueEnvelopeRefusesNewWorkAtTheBound(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "queue bound")
+
+	for i := range 2 {
+		if _, err := st.QueueEnvelope(ctx, serverID, "test.thing", []byte(`{}`), 2); err != nil {
+			t.Fatalf("queue envelope %d below the bound: %v", i, err)
+		}
+	}
+
+	if _, err := st.QueueEnvelope(ctx, serverID, "test.thing", []byte(`{}`), 2); !errors.Is(err, store.ErrOutboundQueueFull) {
+		t.Fatalf("err = %v at the bound, want ErrOutboundQueueFull", err)
+	}
+
+	// Nothing already accepted may be dropped to make room.
+	pending, err := st.PendingEnvelopeCount(ctx, serverID)
+	if err != nil {
+		t.Fatalf("pending count: %v", err)
+	}
+	if pending != 2 {
+		t.Errorf("pendingEnvelopeCount = %d after a refused queue, want the 2 already accepted", pending)
+	}
+
+	// Acking frees room again: the bound counts unacked work, not history.
+	session := startSession(t, st, serverID, "token-hash")
+	if _, _, err := st.NextOutbound(ctx, session.ID, serverID, 10); err != nil {
+		t.Fatalf("next outbound: %v", err)
+	}
+	if err := st.AckOutbound(ctx, session.ID, 1); err != nil {
+		t.Fatalf("ack outbound: %v", err)
+	}
+	if _, err := st.QueueEnvelope(ctx, serverID, "test.thing", []byte(`{}`), 2); err != nil {
+		t.Errorf("queue after an ack freed room: %v", err)
+	}
+}
+
 // Sequence state is per session: a new one numbers from 1 again in both
 // directions (spec section 9.1).
 func TestSequenceStateResetsWithTheSession(t *testing.T) {

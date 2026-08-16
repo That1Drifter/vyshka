@@ -20,9 +20,16 @@ const testAdminToken = "vya_TESTTOKENTESTTOKENTESTTO"
 // newTestServer boots a hub against a throwaway SQLite file.
 func newTestServer(t *testing.T) *hub.Server {
 	t.Helper()
+	return newTestServerAt(t, filepath.Join(t.TempDir(), "test.db"))
+}
+
+// newTestServerAt boots a hub against a named database, so a test can stop one
+// hub and start another over the same data.
+func newTestServerAt(t *testing.T, databaseURL string) *hub.Server {
+	t.Helper()
 
 	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL: filepath.Join(t.TempDir(), "test.db"),
+		DatabaseURL: databaseURL,
 		AdminToken:  testAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
