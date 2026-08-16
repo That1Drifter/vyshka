@@ -1,0 +1,258 @@
+openapi: 3.1.0
+info:
+  title: Vyshka Plugin API
+  version: 0.3.0
+  summary: Game-server-facing API of the Vyshka hub.
+  description: |
+    The plugin half of the Vyshka protocol. Normative text lives in
+    `spec/protocol.md`; this document is its machine-readable companion and
+    covers only the endpoints implemented so far (spec sections 5.2 and 5.3).
+    The long-poll endpoint arrives with the envelope slice.
+
+    Three credentials, each with one job: a one-time enrollment token bootstraps
+    a record into a permanent server secret, and the secret buys short-lived
+    session tokens. Enroll and session authenticate through the request body,
+    because they are what a plugin has before it has a bearer token; every other
+    Plugin API call uses `Authorization: Bearer <sessionToken>`.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: A hub running locally with default settings.
+
+tags:
+  - name: enrollment
+    description: Turning an enrollment token into credentials.
+  - name: session
+    description: Turning credentials into a session.
+
+paths:
+  /plugin/v1/enroll:
+    post:
+      tags: [enrollment]
+      operationId: enroll
+      summary: Exchange a one-time enrollment token for server credentials.
+      description: |
+        The token is burned atomically: two plugins racing on the same token
+        produce exactly one success. The secret is returned here and nowhere
+        else. Enrolling over existing credentials (with a freshly issued token)
+        replaces the secret and ends every session derived from the old one.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollmentToken, game]
+              properties:
+                enrollmentToken:
+                  type: string
+                  description: The one-time token from the operator, opaque.
+                game:
+                  type: string
+                  maxLength: 64
+                  description: Game this plugin serves, lowercase; compared case-insensitively.
+                  examples: [dayz, reforger]
+                plugin: { $ref: "#/components/schemas/PluginDescriptor" }
+                transports:
+                  type: array
+                  items: { type: string, enum: [poll, ws] }
+                  description: Transports this plugin can speak. `poll` is mandatory.
+            example:
+              enrollmentToken: vye_...
+              game: dayz
+              plugin: { name: vyshka-dayz, version: 1.4.0 }
+              transports: [poll]
+      responses:
+        "201":
+          description: Permanent credentials for this server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [serverId, serverSecret, server]
+                properties:
+                  serverId: { type: string }
+                  serverSecret:
+                    type: string
+                    description: Persist this. It is not retrievable again.
+                  server: { $ref: "#/components/schemas/ServerIdentity" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: |
+            The enrollment token is unknown or expired (`enrollment_token_invalid`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            The token was already burned (`enrollment_token_used`), or the server
+            record is registered for a different game (`game_mismatch`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /plugin/v1/session:
+    post:
+      tags: [session]
+      operationId: createSession
+      summary: Exchange server credentials for a short-lived session.
+      description: |
+        The response is authoritative for everything the plugin requested. A hub
+        holds at most one live session per server: issuing a session invalidates
+        the previous one.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serverId, serverSecret]
+              properties:
+                serverId: { type: string }
+                serverSecret: { type: string }
+                protocolVersion:
+                  type: integer
+                  description: Version the plugin speaks; omit for the hub's current one.
+                pollTimeoutSeconds:
+                  type: integer
+                  minimum: 5
+                  maximum: 60
+                  default: 25
+                  description: |
+                    Requested hold time for long-poll requests. Honored within 5
+                    to 60 seconds and clamped outside it (spec section 3.1.1).
+                    The plugin must set its own HTTP response timeout to the
+                    effective value plus 5 seconds.
+                plugin: { $ref: "#/components/schemas/PluginDescriptor" }
+                transports:
+                  type: array
+                  items: { type: string, enum: [poll, ws] }
+      responses:
+        "200":
+          description: A live session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400":
+          description: |
+            Missing credentials (`bad_request`), or a protocol version this hub
+            does not speak (`protocol_version_unsupported`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: |
+            Credentials do not match (`credentials_invalid`) or were revoked
+            (`credentials_revoked`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [session]
+      operationId: getSession
+      summary: Report the session behind a session token.
+      description: |
+        Lets a plugin confirm its session is still live without waiting for a
+        poll to fail. The session token is never echoed back.
+      security:
+        - sessionToken: []
+      responses:
+        "200":
+          description: The live session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: The session token from `POST /plugin/v1/session`.
+
+  schemas:
+    PluginDescriptor:
+      type: object
+      description: What the plugin says about itself. Advisory; the hub never routes on it.
+      properties:
+        name: { type: string }
+        version: { type: string }
+
+    ServerIdentity:
+      type: object
+      description: The server record this plugin is attached to.
+      required: [id, name, game]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        game: { type: string }
+
+    Session:
+      type: object
+      required:
+        [sessionId, expiresAt, protocolVersion, envelopeVersion, pollTimeoutSeconds, transports, features, server]
+      properties:
+        sessionId: { type: string }
+        sessionToken:
+          type: string
+          description: Present only in the response that mints the session.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Request a new session before this; an expired token is `session_invalid`.
+        protocolVersion: { type: integer }
+        envelopeVersion:
+          type: integer
+          description: The `v` this hub stamps on envelopes (spec section 4).
+        pollTimeoutSeconds:
+          type: integer
+          minimum: 5
+          maximum: 60
+          description: Effective hold time, authoritative for this session.
+        transports:
+          type: array
+          items: { type: string }
+          description: Transports the hub offers. May grow without a version bump.
+        features:
+          type: object
+          additionalProperties: true
+          description: Hub-declared flags. Plugins must tolerate unrecognized keys.
+        server: { $ref: "#/components/schemas/ServerIdentity" }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable identifier; branch on this.
+            message:
+              type: string
+              description: Human-readable. Never parse it.
+            details:
+              type: object
+              additionalProperties: true
+
+  responses:
+    BadRequest:
+      description: Malformed body, or a field missing, wrongly typed, or out of range.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    SessionInvalid:
+      description: |
+        The session token is expired, unknown, or superseded (`session_invalid`).
+        Request a new session; do not re-enroll.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

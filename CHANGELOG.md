@@ -12,6 +12,29 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: server enrollment and sessions, the first implemented protocol surface. The
+  Admin API creates server records with one-time enrollment tokens
+  (`POST /api/v1/servers`), lists and reads them, reissues a token
+  (`POST /api/v1/servers/{serverId}/enrollment-token`), and revokes credentials
+  (`DELETE /api/v1/servers/{serverId}/credentials`). The Plugin API exchanges a burned-on-use
+  enrollment token for permanent credentials (`POST /plugin/v1/enroll`) and those for a
+  short-lived session with a negotiated poll timeout (`POST /plugin/v1/session`,
+  `GET /plugin/v1/session`). Credentials are stored as digests only and each secret is
+  returned exactly once. Migration `0002_servers.sql` adds the `servers`,
+  `enrollment_tokens`, and `sessions` tables. The hub takes `-admin-token`
+  (env `VYSHKA_ADMIN_TOKEN`, `file:` indirection supported) and mints an ephemeral one when
+  none is configured.
+- 2026-08-16: `spec/openapi-admin.yaml` and `spec/openapi-plugin.yaml`, machine-readable
+  companions to the protocol document covering the endpoints implemented so far. CI parses
+  both and resolves every `$ref`.
+- 2026-08-16: fifteen new hub conformance checks (seventeen total) covering the error
+  envelope, admin authentication, server creation, enrollment (including single use, unknown
+  tokens, and recovery through a reissued token), session negotiation, poll timeout clamping,
+  session supersession, revocation, realm separation, and unknown-field tolerance. The runner
+  now requires `-admin-token`, and refuses to start without one rather than skipping half the
+  suite.
+- 2026-08-16: `scripts/demo-enrollment.sh`, a curl walkthrough of the enrollment flow from
+  record creation to revocation.
 - 2026-08-16: the walking skeleton. Go module `github.com/That1Drifter/vyshka` with the
   repository layout the spec commits to (`hub/`, `conformance/hub/`, `conformance/plugin/`,
   `plugins/`, `panel/`, placeholder READMEs where a slice has not landed yet).
@@ -43,6 +66,12 @@ point if needed.
 
 ### Changed
 
+- 2026-08-16: `spec/protocol.md` draft 0.3 makes enrollment and sessions normative rather
+  than descriptive. New section 2.1 (HTTP conventions: JSON, opaque tokens, unknown fields
+  tolerated) and 2.2 (the error envelope, with a table of general codes). Section 5 now
+  specifies every request and response shape, the endpoint-specific error codes, the rule
+  that a hub holds at most one live session per server, and that revocation takes effect
+  immediately rather than at the next session boundary.
 - 2026-08-15: adopted the platform-qualified player identity shape
   (`{ "platform": "...", "id": "..." }`) in the protocol body and examples; previously it
   was only listed as an open question.

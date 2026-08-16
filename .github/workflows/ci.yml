@@ -40,8 +40,38 @@ jobs:
         run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
 
       - name: Run conformance suite against a live hub
+        env:
+          # Not a secret: this hub exists for the length of one job and listens
+          # on loopback. The suite needs a known admin token to grade the
+          # Admin API realm at all.
+          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
         run: |
           ./bin/vyshka-hub serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/ci.db" &
           hub_pid=$!
           trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
           go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+
+      - name: Validate the OpenAPI documents
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 - <<'PY'
+          import sys, yaml
+          for path in ("spec/openapi-admin.yaml", "spec/openapi-plugin.yaml"):
+              document = yaml.safe_load(open(path, encoding="utf-8"))
+              refs = []
+              def walk(node):
+                  if isinstance(node, dict):
+                      for key, value in node.items():
+                          refs.append(value) if key == "$ref" else walk(value)
+                  elif isinstance(node, list):
+                      for item in node:
+                          walk(item)
+              walk(document)
+              for ref in sorted(set(refs)):
+                  target = document
+                  for part in ref.lstrip("#/").split("/"):
+                      if part not in target:
+                          sys.exit(f"{path}: unresolved $ref {ref}")
+                      target = target[part]
+              print(f"{path}: ok, {len(set(refs))} refs resolved")
+          PY
