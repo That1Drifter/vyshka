@@ -32,6 +32,8 @@ const (
 	codeEnvelopeInvalid            = "envelope_invalid"
 	codeAckOutOfRange              = "ack_out_of_range"
 	codeOutboundQueueFull          = "outbound_queue_full"
+	codeUnknownAction              = "unknown_action"
+	codeParamsInvalid              = "params_invalid"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the
@@ -119,6 +121,22 @@ func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, dst any, all
 			writeError(w, http.StatusBadRequest, codeBadRequest,
 				"request body is not valid JSON: "+err.Error())
 		}
+		return false
+	}
+
+	// The body must be one JSON value and nothing more. Without this check a
+	// second value, or garbage, after the decoded object would be silently
+	// swallowed, and the bytes behind it would never count against the size
+	// cap the decoder stopped enforcing.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, codePayloadTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxRequestBody))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"request body must be a single JSON value")
 		return false
 	}
 	return true

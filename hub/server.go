@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/internal/token"
@@ -78,6 +79,11 @@ type Server struct {
 	holds   *holds
 	handler http.Handler
 	started time.Time
+	// stopSweeper ends the action expiry loop; sweeperDone confirms it ended,
+	// so Close never races the sweeper against the store it is closing.
+	stopSweeper chan struct{}
+	sweeperDone chan struct{}
+	closeOnce   sync.Once
 }
 
 // New opens the store, runs migrations, and builds the HTTP handler. The caller
@@ -124,9 +130,42 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		waiters:        newWaiters(),
 		holds:          newHolds(),
 		started:        time.Now(),
+		stopSweeper:    make(chan struct{}),
+		sweeperDone:    make(chan struct{}),
 	}
 	s.handler = s.routes()
+	go s.sweepExpiredActions()
 	return s, nil
+}
+
+// sweepExpiredActions is the expiry job of spec section 7: every non-terminal
+// action past its deadline flips to expired. Reads also expire lazily, so this
+// loop exists for the states nobody is currently reading, which are exactly
+// the ones an operator will ask about later.
+func (s *Server) sweepExpiredActions() {
+	defer close(s.sweeperDone)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopSweeper:
+			return
+		case <-ticker.C:
+			// Bounded, because Close waits for this loop before closing the
+			// store: a sweep that could block forever could hang shutdown.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			expired, err := s.store.ExpireActions(ctx)
+			cancel()
+			if err != nil {
+				s.log.Error("action expiry sweep failed", "error", err.Error())
+				continue
+			}
+			if expired > 0 {
+				s.log.Info("actions expired", "count", expired)
+			}
+		}
+	}
 }
 
 // Handler exposes the routed handler, for tests and for embedding.
@@ -168,6 +207,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{serverId}/manifest",
 		s.requireAdmin(s.handleGetManifest))
 	mux.HandleFunc("/api/v1/servers/{serverId}/manifest", methodNotAllowed("GET"))
+
+	mux.HandleFunc("POST /api/v1/servers/{serverId}/actions",
+		s.requireAdmin(s.handleDispatchAction))
+	mux.HandleFunc("/api/v1/servers/{serverId}/actions", methodNotAllowed("POST"))
+
+	mux.HandleFunc("GET /api/v1/actions/{actionId}", s.requireAdmin(s.handleGetAction))
+	mux.HandleFunc("/api/v1/actions/{actionId}", methodNotAllowed("GET"))
 
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
@@ -223,8 +269,17 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-// Close releases resources owned by the server.
-func (s *Server) Close() error { return s.store.Close() }
+// Close releases resources owned by the server. It is idempotent: a test that
+// closes a hub explicitly to restart it will be closed again by its cleanup.
+func (s *Server) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.stopSweeper)
+		<-s.sweeperDone
+		err = s.store.Close()
+	})
+	return err
+}
 
 // logRequests emits one structured line per request once it completes.
 func logRequests(log *slog.Logger, next http.Handler) http.Handler {

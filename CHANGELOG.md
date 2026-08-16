@@ -12,6 +12,37 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: the action lifecycle end to end (spec section 7), the core tracer bullet.
+  `POST /api/v1/servers/{serverId}/actions` validates a dispatch against the server's stored
+  manifest before anything is queued (undeclared code: `unknown_action`; schema faults:
+  `params_invalid` with the faults named), records the action and its `action.dispatch`
+  envelope in one transaction, and honors `idempotencyKey` even when a fresh dispatch would
+  be refused. The plugin's envelope ack is the delivery receipt (`queued -> delivered`);
+  `action.ack` and `action.result` commit in the same transaction as the inbound ack that
+  covers them, moving the action to `running` and `completed`/`failed`. A sweeper plus lazy
+  expiry on read flip anything non-terminal past its TTL to `expired`, and expiry is final:
+  a late ack or result is acked at the envelope level and changes nothing. Result payloads
+  over the 64 KiB cap keep their outcome but drop the payload, saying so in `error`.
+  `GET /api/v1/actions/{actionId}` shows the full record. Protocol draft 0.7 makes all of
+  this normative (dispatch error table, envelope body shapes, forward-only transitions,
+  TTL clamping); `spec/actions.schema.json` is the machine-readable companion, validated in
+  CI, and `spec/openapi-admin.yaml` 0.7.0 covers both endpoints. Four new hub conformance
+  checks (forty-two total) walk the full lifecycle including the failure path, idempotent
+  retry, refused dispatches never reaching the queue, and TTL expiry with a late result.
+  Migration `0005_actions.sql` adds the `actions` table. `scripts/demo-action.sh` walks the
+  whole exchange in curl. Hardened under adversarial review before landing: `action.ack` and
+  `action.result` are scoped to the session's server (an actionId is not a credential, so
+  another server's plugin can no longer forge an outcome; graded by a new isolation check,
+  forty-three total), the idempotency lookup runs before validation so a retry survives a
+  manifest change that would refuse a fresh dispatch, dispatches commit gated on the
+  manifest revision they were validated against (a racing republish refuses and revalidates
+  instead of queueing unapproved params), expiry retires the dispatch envelope of
+  never-delivered work so an offline server's expired actions cannot eat the queue bound,
+  the wire deadline and the stored deadline are the same computed instant, `ttlSeconds`
+  clamps without overflow, dispatch length limits count code points like the manifest's,
+  `error` is capped at 4 KiB so it cannot launder the result cap, and a negative
+  `durationMs` is dropped.
+
 - 2026-08-16: manifest publish and validation (spec section 6), the first inbound envelope
   type the hub models. A plugin declares its actions, contexts, and events with
   `manifest.publish` at session start or at any later moment; the hub validates the body,
@@ -145,6 +176,10 @@ point if needed.
 
 ### Fixed
 
+- 2026-08-16: request bodies must be a single JSON value on every endpoint. The decoder
+  used to stop at the first value, silently swallowing anything after it, and the bytes
+  behind that point never counted against the 1 MiB request cap. Trailing content is now
+  `bad_request`. Found by adversarial review of the action slice; the defect predates it.
 - 2026-08-16: a held poll now reports the inbound ack as committed when it answers, not the
   value it ingested before the hold. A concurrent poll on the same session could commit a
   higher ack and be answered first, leaving the held poll to later report an ack the hub had

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.6 (2026-08-16)
+**Status:** draft 0.7 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -687,14 +687,70 @@ POST /api/v1/servers/{serverId}/actions
 -> 202 { "actionId": "01J5QK...", "state": "queued" }
 ```
 
+- The hub MUST validate a dispatch against the server's stored manifest before anything is
+  queued: the `code` must be declared there, and `params` must satisfy the schema that
+  declaration carries (section 6.1). A server with no accepted manifest can validate
+  nothing, so it can be dispatched nothing. What is never acceptable is queueing first and
+  wondering later: schema-invalid input must not exist anywhere on the path to the game
+  server. Validation and queueing MUST be atomic with respect to manifest replacement: a
+  dispatch never commits validated against a manifest that is no longer the stored one,
+  however narrow the window a runtime republish opens.
 - `idempotencyKey` (optional, client-chosen): a retry with the same key MUST return the
-  original `actionId` instead of double-queueing.
-- `ttlSeconds` (default 120): if the action has not reached a terminal state by then, the
-  hub marks it `expired`, and a plugin receiving it late MUST discard it.
+  original `actionId` instead of double-queueing. This holds in every failure mode too: a
+  retry of an action that was already accepted MUST answer with the original even when a
+  fresh dispatch would be refused (a full queue, a manifest that no longer declares the
+  code). The key binds permanently to the first accepted request, whatever the retry's
+  body says, so clients MUST use a fresh key per logical action; reusing one across
+  different requests silently answers with the old action, which is exactly what the
+  contract promises and exactly not what such a client meant.
+- `ttlSeconds` (default 120, clamped into 1 to 86 400; absent, zero, or negative means the
+  default): if the action has not reached a terminal state by the deadline, the hub marks
+  it `expired`. Expiry is final and wins every race: an `action.ack` or `action.result`
+  arriving after the deadline is acked at the envelope level and changes nothing, because
+  the operator has already been told the action expired, and a state that flip-flops
+  afterwards would be worse than a lost result. Expiry also retires the dispatch envelope
+  of an action that was never numbered into a session, so an offline server's expired work
+  cannot eat the section 9.2 queue bound; an envelope already numbered keeps
+  retransmitting, because deleting it would open a gap the plugin's contiguous ack could
+  never cross, and the deadline in its body already tells the plugin to discard it.
+- State transitions only ever move forward. `queued -> delivered` happens when the plugin
+  acks the envelope carrying the dispatch: the envelope is the action's vehicle, so its
+  ack is the delivery receipt, and no separate receipt message exists. An `action.ack`
+  also implies receipt, so a hub that learns of execution first backfills the delivery
+  timestamp rather than record a run that was never delivered.
 
-**Execution (Plugin API):** the action arrives as `action.dispatch` in a poll batch. The
-plugin MUST send `action.ack` on receipt (state becomes `running`) and `action.result` when
-done:
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | `code` missing or too long, `params` not a JSON object, body malformed |
+| `unknown_action` | 409 | The server's manifest does not declare `code`, or no manifest was ever accepted |
+| `params_invalid` | 400 | `params` fail the declared schema; `details.errors` lists `{ path, message }` faults |
+| `not_found` | 404 | No such server |
+| `outbound_queue_full` | 409 | The server's queue is at its bound (section 9.2) |
+
+**Execution (Plugin API):** the action arrives as `action.dispatch` in a poll batch,
+carrying everything the plugin needs, including the deadline it MUST discard the action
+after:
+
+```json
+{
+  "type": "action.dispatch",
+  "body": {
+    "actionId": "01J5QK...",
+    "code": "example-mod.heal",
+    "context": "player",
+    "referenceKey": "76561198000000000",
+    "params": { "amount": 100 },
+    "expiresAt": "2026-08-16T18:01:00.000Z"
+  }
+}
+```
+
+The plugin MUST send `action.ack` on receipt (state becomes `running`) and `action.result`
+when done:
+
+```json
+{ "type": "action.ack", "body": { "actionId": "01J5QK..." } }
+```
 
 ```json
 {
@@ -709,8 +765,24 @@ done:
 }
 ```
 
-`result` is arbitrary JSON up to 64 KiB. This enables **query actions**: "dump this
-player's inventory" is an action whose result is the answer.
+- `ok` is REQUIRED and decides the terminal state: `completed` or `failed`. `error` is a
+  human-readable string, null or absent when `ok` is true, and bounded (reference cap
+  4 KiB, truncated beyond it): without a bound it would launder the result cap. A negative
+  `durationMs` is dropped as unusable; the field is OPTIONAL and advisory.
+- `result` is arbitrary JSON up to 64 KiB, measured on the raw bytes of the serialized
+  value as received. This enables **query actions**: "dump this player's inventory" is an
+  action whose result is the answer. A payload over the cap does not void the outcome: the
+  hub records the terminal state, drops the payload, and says so in `error`, because
+  storing it would let one action monopolize the database and rejecting the envelope would
+  strand the batch behind it.
+- An `action.ack` or `action.result` affects only actions belonging to the session's
+  server. An `actionId` is not a credential and MUST NOT act like one: without this rule,
+  any enrolled plugin that learned another server's action id could forge its outcome.
+- An `action.ack` or `action.result` naming an unknown `actionId`, another server's
+  action, an action already terminal, or one past its deadline is a no-op, never an error:
+  at-least-once delivery makes repeats ordinary. A body the hub cannot use at all (missing
+  `actionId`, missing `ok`) is acked and ignored like an unknown type, because failing the
+  batch would stall every envelope behind a message a retry cannot fix.
 
 **Observation (Admin API):**
 
