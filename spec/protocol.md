@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.5 (2026-08-16)
+**Status:** draft 0.6 (2026-08-16)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -496,9 +496,11 @@ of the same queue, with its own endpoint and its own validation.
 - The hub assigns `id` and `ts`. It does not assign `seq` here: sequence numbers belong to
   a session, and an envelope may be queued while no session exists (section 9.2). The
   response therefore carries no `seq`.
-- A hub MUST reject a `type` it models with a dedicated endpoint (`action.*`) with
-  `conflict`, so that this endpoint can never be used to route around the validation that
-  endpoint performs.
+- A hub MUST reject a `type` family the hub itself models (`action.*` via the dispatch
+  endpoint of section 7, `manifest.*` via section 6) with `conflict`. This endpoint must
+  never become a way around the validation those surfaces perform, nor a way to queue a
+  message, such as a forged `manifest.reject`, that the plugin would take as the hub's own
+  word.
 - Queueing does not require a live session, and MUST NOT fail because the server has none.
 
 | `code` | HTTP | Raised when |
@@ -549,13 +551,20 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
 - `params` is a **JSON Schema subset** (draft 2020-12): `object`/`array`/scalar types,
   `enum`, `required`, numeric bounds, `default`. The vendor keyword `x-vyshka-widget`
   hints an admin UI widget (`itemlist`, `vector`, `player`, `webhook`) without
-  constraining the data model.
+  constraining the data model. Integer constants in a schema (bounds and `enum` members)
+  MUST lie strictly within ±2^53: every JSON toolchain in this ecosystem passes numbers
+  through IEEE doubles somewhere, and a constant that rounds on the way would be enforced
+  against a value its author never wrote, so hubs reject what they cannot compare exactly.
 - The hub MUST validate dispatch payloads against the schema **before** queueing, so
   schema-invalid input never reaches the game server.
 - `danger` is `none | warning | destructive`, advisory, for UI confirmation prompts.
-- `manifestRevision` is plugin-owned and monotonic. The hub replaces its stored manifest
-  when it receives a higher revision and MUST ignore lower ones. Publishing at runtime is
-  legal and expected: changing a mod's actions costs one message, not a server restart.
+- `manifestRevision` is plugin-owned, an integer in `[1, 2^53)` (the same exactness bound
+  as schema constants), and monotonic. The hub
+  replaces its stored manifest when it receives a higher revision and MUST ignore an equal
+  or lower one, whatever its content: at-least-once delivery means the same publish can
+  arrive twice, and an equal revision that changed content is a plugin bug the hub must not
+  paper over by guessing which copy is current. Publishing at runtime is legal and
+  expected: changing a mod's actions costs one message, not a server restart.
 - `namespace` groups actions by owning mod, for display and token scoping (section 10).
 
 ### 6.2 Contexts
@@ -573,10 +582,86 @@ enumeration briefly (default 10 s) to feed UI dropdowns.
 
 ### 6.3 Declared custom events
 
-The manifest's `events` array declares custom telemetry types (id, namespace, human name,
-optional payload schema). Declaration is advisory: it drives panel display and webhook
-filtering. Hubs MUST accept undeclared custom events (storing them with a generic label);
-requiring pre-declaration would reintroduce the restart-to-change problem.
+The manifest's `events` array declares custom telemetry types:
+
+```json
+{ "events": [ { "id": "example-mod.raid.start", "name": "Raid started",
+               "namespace": "example-mod", "payload": { "type": "object" } } ] }
+```
+
+`payload` is an OPTIONAL schema in the section 6.1 subset. Declaration is advisory: it
+drives panel display and webhook filtering. Hubs MUST accept undeclared custom events
+(storing them with a generic label); requiring pre-declaration would reintroduce the
+restart-to-change problem.
+
+### 6.4 Validation and rejection
+
+A hub MUST validate a `manifest.publish` body before storing it, and MUST reject the whole
+manifest when any of its `params` or event `payload` schemas uses a keyword outside the
+section 6.1 subset. This is stricter than JSON Schema's own "ignore what you don't know"
+rule, deliberately: the hub validates dispatch payloads against these schemas before they
+reach the game server, so a keyword it accepted but did not enforce (`pattern`, say) would
+wave through exactly the input the mod author wrote the schema to exclude, with the mod
+trusting a guarantee nobody was providing. A manifest is also rejected when
+`manifestRevision` is missing or outside `[1, 2^53)`, an action `code` is missing or
+duplicated, or a declared field exceeds the hub's length limits (counted in Unicode code
+points, the unit `maxLength` means in the companion schema). A JSON `null` where an
+OPTIONAL field could appear reads as the field being absent, never as a type error.
+
+Validation runs before the revision comparison: an invalid manifest is answered with
+`manifest.reject` whatever its revision says, including one equal to or below the stored
+revision. The revision rule of section 6.1 orders *valid* manifests; a rejection touches
+nothing, so answering it can contradict nothing.
+
+Rejection is envelope-level success. The envelope is acked like any other (section 9.3:
+the durably committed effect is that the stored manifest did not change), the session
+stays up, and the other envelopes in its batch are unaffected. A hub MUST NOT fail the
+poll or end the session over a manifest it rejected, and a rejected manifest MUST NOT
+touch the stored one.
+
+The rejection MUST NOT be silent: the hub MUST queue a `manifest.reject` envelope
+(hub -> plugin) unless the server's outbound queue is at its bound (section 9.2), carrying
+the `id` of the refused envelope, the refused `manifestRevision` when it was readable, and
+`errors`, a list of `{ path, message }` faults into the rejected body:
+
+```json
+{
+  "type": "manifest.reject",
+  "body": {
+    "envelopeId": "01J5QM...",
+    "manifestRevision": 8,
+    "errors": [
+      { "path": "actions[0].params.properties.item.pattern",
+        "message": "keyword \"pattern\" is outside the schema subset this protocol enforces" }
+    ]
+  }
+}
+```
+
+The stored revision advances only on acceptance, so a corrected manifest MAY be
+republished at the very revision that was just rejected. A plugin SHOULD surface a
+`manifest.reject` where the server operator will see it (a log line at least) and MUST NOT
+treat one as a transport error.
+
+Within a session, a retransmitted `manifest.publish` is a duplicate like any other
+(section 9.1): acked again, processed no further, and answered with no second rejection.
+Across a session change the receiver cannot tell a renumbered republication from a new
+publish, because `seq` is the one field renumbering changes and `seq` is what duplicate
+detection runs on, so a hub MAY answer it with another `manifest.reject`. The notice is
+at-least-once like everything else here; a plugin that cares deduplicates on `envelopeId`.
+
+### 6.5 Reading the manifest (Admin API)
+
+```
+GET /api/v1/servers/{serverId}/manifest
+
+-> 200 OK
+{ "revision": 7, "publishedAt": "2026-08-16T18:00:00Z", "manifest": { } }
+```
+
+`manifest` is the accepted `manifest.publish` body, verbatim: the hub adds its metadata
+beside the manifest rather than rewriting what the plugin published. `not_found` (404)
+covers an unknown server and a server that has never had a manifest accepted alike.
 
 ## 7. Action lifecycle
 

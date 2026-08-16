@@ -10,21 +10,25 @@ game-agnostic from day one.
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.5), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.6), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
-[`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml), and
-[`spec/envelopes.schema.json`](spec/envelopes.schema.json).
+[`spec/openapi-plugin.yaml`](spec/openapi-plugin.yaml),
+[`spec/envelopes.schema.json`](spec/envelopes.schema.json), and
+[`spec/manifest.schema.json`](spec/manifest.schema.json).
 
 What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
-implements the first two protocol surfaces. An operator can register a game server, a plugin
+implements the first three protocol surfaces. An operator can register a game server, a plugin
 can trade its one-time enrollment token for permanent credentials and those credentials for a
 session, and revoking a server kills its session immediately. On top of that sits the
 transport: a plugin holds a long-poll, the hub flushes queued envelopes into it the moment
 they arrive, and per-direction sequence numbers with cumulative acks make delivery
-at-least-once both ways. Thirty-four conformance checks grade all of it in CI. Manifests and
-the action lifecycle come next.
+at-least-once both ways. Over the transport, a plugin publishes its action manifest: the hub
+validates each params schema against the protocol's closed JSON Schema subset, stores accepted
+manifests revision-gated, answers invalid ones with a `manifest.reject` instead of an error,
+and serves the result to operators at `GET /api/v1/servers/{id}/manifest`. Thirty-eight
+conformance checks grade all of it in CI. The action lifecycle comes next.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -43,6 +47,7 @@ To watch the protocol flows in curl:
 ```
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-enrollment.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-poll.sh
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-manifest.sh
 ```
 
 ## Why

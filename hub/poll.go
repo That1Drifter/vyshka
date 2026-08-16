@@ -87,18 +87,34 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Then the plugin's envelopes. Nothing in this slice models a type, so every
-	// accepted envelope takes the forward-compatibility path of spec section 4:
-	// acked and ignored. Type handlers hook in here as their slices land.
-	//
+	// Then the plugin's envelopes. manifest.publish is the one inbound type the
+	// hub models so far; every other accepted envelope takes the
+	// forward-compatibility path of spec section 4: acked and ignored. Bodies
+	// are validated up front because validity depends only on content, while
+	// which envelopes are newly accepted is only known inside the transaction.
+	manifests := prepareManifests(request.Envelopes)
+
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
-	// overlapping polls cannot report acks that disagree.
+	// overlapping polls cannot report acks that disagree. Manifest applies and
+	// rejection notices ride the same transaction: acking an envelope promises
+	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
-	inboundAck, err := s.store.AdvanceInbound(r.Context(), session.ID, func(ack int64) (int64, int) {
+	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
-		return batch.Ack, len(batch.Accepted)
-	})
+		application := store.InboundApplication{Ack: batch.Ack, Accepted: len(batch.Accepted)}
+		for _, index := range batch.Accepted {
+			prepared, isManifest := manifests[index]
+			switch {
+			case !isManifest:
+			case prepared.publish != nil:
+				application.Manifests = append(application.Manifests, *prepared.publish)
+			default:
+				application.Notices = append(application.Notices, prepared.reject)
+			}
+		}
+		return application
+	}, outboundQueueLimit)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.rejectSession(w, "session token is expired, unknown, or superseded")
@@ -107,11 +123,19 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, r, err)
 		return
 	}
+	inboundAck := applied.Ack
 	if len(request.Envelopes) > 0 {
 		s.log.Info("poll ingested envelopes",
 			"serverId", server.ID, "sessionId", session.ID,
 			"accepted", len(batch.Accepted), "duplicate", batch.Duplicate,
-			"gapped", batch.Gapped, "ack", inboundAck)
+			"gapped", batch.Gapped, "ack", inboundAck,
+			"manifestsApplied", applied.ManifestsApplied,
+			"rejectsQueued", applied.NoticesQueued)
+	}
+	if applied.NoticesQueued > 0 {
+		// A rejection notice is ordinary queued work: wake anything else this
+		// server has parked. This request picks it up itself on the read below.
+		s.waiters.notify(server.ID)
 	}
 
 	if err := s.store.TouchServer(r.Context(), server.ID); err != nil {
@@ -125,6 +149,11 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 // holdPoll answers as soon as there is anything to send, and otherwise holds the
 // request until the negotiated timeout, the session's expiry, or the session
 // being ended out from under it.
+//
+// The ack it reports is refreshed from committed state on every database read,
+// never left at the value this request ingested: a concurrent poll may commit a
+// higher ack and be answered while this one is still held, and an ack the hub
+// has reported must never be lowered by a later response (spec section 9.1).
 func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64) {
 	pollTimeout := clampPollTimeout(time.Duration(session.PollTimeoutSeconds) * time.Second)
 	deadline := time.Now().Add(pollTimeout)
@@ -157,7 +186,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		// select still wakes this poll instead of waiting for the backstop.
 		signal, release := s.waiters.wait(session.ServerID)
 
-		queued, _, err := s.store.NextOutbound(r.Context(), session.ID, session.ServerID, maxOutboundBatch)
+		queued, _, committedAck, err := s.store.NextOutbound(r.Context(), session.ID, session.ServerID, maxOutboundBatch)
 		if err != nil {
 			release()
 			if errors.Is(err, store.ErrNotFound) {
@@ -167,6 +196,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			s.writeInternalError(w, r, err)
 			return
 		}
+		inboundAck = max(inboundAck, committedAck)
 		if len(queued) > 0 {
 			release()
 			envelopes := make([]envelope, len(queued))
@@ -216,6 +246,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			s.rejectSession(w, "the credentials behind this session were revoked")
 			return
 		}
+		inboundAck = max(inboundAck, refreshed.InboundAck)
 		session = refreshed
 	}
 }

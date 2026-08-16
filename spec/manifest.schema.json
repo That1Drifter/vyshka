@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vyshka.dev/spec/manifest.schema.json",
+  "title": "Vyshka manifest bodies",
+  "description": "Machine-readable companion to spec/protocol.md section 6. The prose document is normative: where the two disagree, the prose wins. Like envelopes.schema.json this is a library of definitions with no root constraint: reference `#/$defs/manifestPublish` for the manifest.publish body and `#/$defs/manifestReject` for the hub's answer to a refused one. The `paramsSchema` definition describes the *shape* of the section 6.1 schema subset; the closed-keyword rule (anything outside the subset rejects the manifest) is enforced by hubs, not expressible here.",
+  "$defs": {
+    "label": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Human-facing display name. Advisory; the hub never routes on it."
+    },
+    "namespace": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "The owning mod's namespace, for display grouping and token scoping (section 10)."
+    },
+    "paramsSchema": {
+      "type": "object",
+      "title": "Section 6.1 schema subset",
+      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["object", "array", "string", "integer", "number", "boolean", "null"]
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Allowed values, compared by deep equality."
+        },
+        "required": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Property names an object instance must carry."
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/paramsSchema" }
+        },
+        "items": { "$ref": "#/$defs/paramsSchema" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "exclusiveMinimum": { "type": "number" },
+        "exclusiveMaximum": { "type": "number" },
+        "default": {
+          "description": "Annotation only: surfaced to UIs, never enforced."
+        },
+        "x-vyshka-widget": {
+          "type": "string",
+          "description": "UI hint (itemlist, vector, player, webhook, ...). Deliberately open-ended: it never constrains the data model, so an unknown hint must not reject a manifest.",
+          "examples": ["itemlist", "vector", "player", "webhook"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "title": "Declared action",
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Unique within a server. SHOULD be {namespace}.{name}."
+        },
+        "name": { "$ref": "#/$defs/label" },
+        "context": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A built-in context (world, player, vehicle, object) or one the manifest declares."
+        },
+        "namespace": { "$ref": "#/$defs/namespace" },
+        "danger": {
+          "type": "string",
+          "enum": ["none", "warning", "destructive"],
+          "default": "none",
+          "description": "Advisory, for UI confirmation prompts."
+        },
+        "params": { "$ref": "#/$defs/paramsSchema" }
+      },
+      "additionalProperties": true
+    },
+    "context": {
+      "type": "object",
+      "title": "Declared custom context",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "name": { "$ref": "#/$defs/label" },
+        "namespace": { "$ref": "#/$defs/namespace" }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "title": "Declared custom event",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "$ref": "#/$defs/label" },
+        "namespace": { "$ref": "#/$defs/namespace" },
+        "payload": { "$ref": "#/$defs/paramsSchema" }
+      },
+      "additionalProperties": true
+    },
+    "manifestPublish": {
+      "type": "object",
+      "title": "manifest.publish body",
+      "description": "Body of the manifest.publish envelope (section 6). Sent at session start and at any later moment; a runtime republish costs one message, not a server restart. A JSON null where an optional field could appear reads as the field being absent (section 6.4); length limits count Unicode code points.",
+      "required": ["manifestRevision"],
+      "properties": {
+        "game": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Lowercase game identifier. Advisory here; enrollment enforces the match."
+        },
+        "plugin": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "manifestRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Plugin-owned and monotonic, within [1, 2^53). A higher revision replaces the stored manifest; an equal or lower one is ignored. Advances only on acceptance, so a corrected manifest may be republished at a revision that was rejected."
+        },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" }
+        },
+        "contexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/context" }
+        },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "manifestReject": {
+      "type": "object",
+      "title": "manifest.reject body",
+      "description": "Body of the manifest.reject envelope (section 6.4): the hub's answer to a manifest.publish it refused. The refusal never fails the poll or the session; this envelope is how the plugin learns.",
+      "required": ["envelopeId", "errors"],
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "description": "The `id` of the refused manifest.publish envelope."
+        },
+        "manifestRevision": {
+          "type": "integer",
+          "description": "The refused revision, present when it was readable from the rejected body."
+        },
+        "errors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["path", "message"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Dotted path into the rejected body; \"\" for its root."
+              },
+              "message": { "type": "string" }
+            },
+            "additionalProperties": true
+          },
+          "description": "What was wrong, capped by the hub (reference cap: 20)."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

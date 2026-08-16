@@ -60,14 +60,6 @@ type OutboundEnvelope struct {
 // at the bound the hub refuses new work rather than dropping envelopes it has
 // already accepted (spec section 9.2).
 func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string, body []byte, limit int) (OutboundEnvelope, error) {
-	now := time.Now().UTC()
-	envelope := OutboundEnvelope{
-		ID:        id.NewAt(now),
-		Type:      envelopeType,
-		Body:      json.RawMessage(body),
-		CreatedAt: now.Truncate(time.Millisecond),
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return OutboundEnvelope{}, fmt.Errorf("begin queue envelope: %w", err)
@@ -80,6 +72,29 @@ func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string
 		return OutboundEnvelope{}, ErrNotFound
 	case err != nil:
 		return OutboundEnvelope{}, fmt.Errorf("read server: %w", err)
+	}
+
+	envelope, err := queueOutbound(ctx, tx, serverID, envelopeType, body, limit)
+	if err != nil {
+		return OutboundEnvelope{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return OutboundEnvelope{}, fmt.Errorf("commit queue envelope: %w", err)
+	}
+	return envelope, nil
+}
+
+// queueOutbound inserts one hub -> plugin envelope inside an open transaction,
+// enforcing the per-server queue bound. The caller has already established that
+// the server exists.
+func queueOutbound(ctx context.Context, tx *sql.Tx, serverID, envelopeType string, body []byte, limit int) (OutboundEnvelope, error) {
+	now := time.Now().UTC()
+	envelope := OutboundEnvelope{
+		ID:        id.NewAt(now),
+		Type:      envelopeType,
+		Body:      json.RawMessage(body),
+		CreatedAt: now.Truncate(time.Millisecond),
 	}
 
 	var pending int
@@ -98,10 +113,6 @@ func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string
 		envelope.ID, serverID, envelope.Type, string(body), formatTime(envelope.CreatedAt),
 	); err != nil {
 		return OutboundEnvelope{}, fmt.Errorf("insert envelope: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return OutboundEnvelope{}, fmt.Errorf("commit queue envelope: %w", err)
 	}
 	return envelope, nil
 }
@@ -124,18 +135,23 @@ func (s *Store) PendingEnvelopeCount(ctx context.Context, serverID string) (int,
 // that is the retransmission rule of spec section 9.1, and it is what makes an
 // interrupted poll cost nothing.
 //
-// It returns the batch and the session's sequence high-water mark after
-// numbering, so the caller can keep its own copy of the session in step.
-func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, error) {
+// It returns the batch, the session's outbound sequence high-water mark after
+// numbering, and the committed inbound ack. The inbound ack rides along because
+// a poll that held for seconds must report the ack as committed *now*, not the
+// value it ingested before the hold: another poll may have advanced it in
+// between, and an ack the hub has already reported must never be lowered
+// (section 9.1).
+func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("begin next outbound: %w", err)
+		return nil, 0, 0, fmt.Errorf("begin next outbound: %w", err)
 	}
 	defer tx.Rollback()
 
-	var outboundSeq int64
-	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq", &outboundSeq); err != nil {
-		return nil, 0, err
+	var outboundSeq, inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, inbound_ack",
+		&outboundSeq, &inboundAck); err != nil {
+		return nil, 0, 0, err
 	}
 
 	rows, err := tx.QueryContext(ctx,
@@ -145,7 +161,7 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		  ORDER BY created_at, id
 		  LIMIT ?`, serverID, limit)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read outbound envelopes: %w", err)
+		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
 
 	type pending struct {
@@ -164,12 +180,12 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		if err := rows.Scan(&row.envelope.ID, &row.envelope.Type, &body, &createdAt,
 			&sessionOf, &seq); err != nil {
 			rows.Close()
-			return nil, 0, fmt.Errorf("scan outbound envelope: %w", err)
+			return nil, 0, 0, fmt.Errorf("scan outbound envelope: %w", err)
 		}
 		row.envelope.Body = json.RawMessage(body)
 		if row.envelope.CreatedAt, err = parseTime(createdAt); err != nil {
 			rows.Close()
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		// A seq from an earlier session means nothing here: sequence spaces are
 		// per session, so the envelope is renumbered into this one.
@@ -181,12 +197,12 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, 0, fmt.Errorf("read outbound envelopes: %w", err)
+		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
 	rows.Close()
 
 	if len(batch) == 0 {
-		return nil, outboundSeq, tx.Commit()
+		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
 
 	sentAt := formatTime(time.Now().UTC())
@@ -199,25 +215,25 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,
 		); err != nil {
-			return nil, 0, fmt.Errorf("number outbound envelope: %w", err)
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET outbound_seq = ? WHERE id = ?`, outboundSeq, sessionID,
 	); err != nil {
-		return nil, 0, fmt.Errorf("record outbound sequence: %w", err)
+		return nil, 0, 0, fmt.Errorf("record outbound sequence: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, 0, fmt.Errorf("commit next outbound: %w", err)
+		return nil, 0, 0, fmt.Errorf("commit next outbound: %w", err)
 	}
 
 	envelopes := make([]OutboundEnvelope, len(batch))
 	for i := range batch {
 		envelopes[i] = batch[i].envelope
 	}
-	return envelopes, outboundSeq, nil
+	return envelopes, outboundSeq, inboundAck, nil
 }
 
 // AckOutbound applies the plugin's ack: everything at or below it is delivered
@@ -268,54 +284,123 @@ func (s *Store) AckOutbound(ctx context.Context, sessionID string, ack int64) er
 	return nil
 }
 
-// AdvanceInbound applies a poll's envelopes to the session's inbound ack and
-// returns the ack that is now durably committed (spec section 9.3).
+// InboundApplication is what one poll's batch should do to the session,
+// derived by the classify callback from the committed ack.
+type InboundApplication struct {
+	// Ack is the highest contiguous inbound seq after applying the batch, and
+	// Accepted how many envelopes the advance covers.
+	Ack      int64
+	Accepted int
+	// Manifests are validated manifest.publish bodies among the newly accepted
+	// envelopes, in arrival order. They are applied in the same transaction as
+	// the ack that covers them, because acking an envelope promises its effect
+	// is already durable (spec section 9.3).
+	Manifests []ManifestPublish
+	// Notices are hub -> plugin envelopes to queue in the same transaction,
+	// such as a manifest rejection. A notice that would overflow the outbound
+	// queue is dropped rather than failing the poll.
+	Notices []Notice
+}
+
+// ManifestPublish is one validated manifest to store, revision-gated.
+type ManifestPublish struct {
+	Revision int64
+	Body     json.RawMessage
+}
+
+// Notice is one hub -> plugin envelope queued as a side effect of ingest.
+type Notice struct {
+	Type string
+	Body json.RawMessage
+}
+
+// InboundApplied reports what an ApplyInbound call committed.
+type InboundApplied struct {
+	// Ack is the inbound ack that is now durable.
+	Ack int64
+	// ManifestsApplied counts manifests that replaced the stored one; the rest
+	// carried an equal or lower revision and were ignored (spec section 6.1).
+	ManifestsApplied int
+	// NoticesQueued counts notices that made it onto the queue.
+	NoticesQueued int
+}
+
+// ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
+// whatever effects the accepted envelopes carry, in one transaction (spec
+// sections 9.1 and 9.3).
 //
 // classify receives the ack as it stands inside this transaction and returns
-// the new ack plus how many envelopes the advance covers. Passing the rule in
-// as a callback, rather than passing a precomputed ack in, is what makes the
-// result correct when two polls overlap: each one classifies against committed
-// state instead of against a snapshot taken back when it authenticated. The
-// alternative reports an ack lower than one the hub already gave out, which
-// section 9.1 forbids outright, and double-counts duplicates on the way.
+// what to apply. Passing the rule in as a callback, rather than passing a
+// precomputed result in, is what makes the outcome correct when two polls
+// overlap: each one classifies against committed state instead of against a
+// snapshot taken back when it authenticated. The alternative reports an ack
+// lower than one the hub already gave out, which section 9.1 forbids outright,
+// and double-counts duplicates on the way.
 //
-// The read and the write are one transaction. On SQLite that is enough because
+// The read and the writes are one transaction. On SQLite that is enough because
 // the pool holds a single connection; a Postgres backend would need the read in
 // liveSessionSeq to take a row lock. See the Postgres note in resolveDSN.
-func (s *Store) AdvanceInbound(ctx context.Context, sessionID string, classify func(ack int64) (int64, int)) (int64, error) {
+func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify func(ack int64) InboundApplication, noticeQueueLimit int) (InboundApplied, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin advance inbound: %w", err)
+		return InboundApplied{}, fmt.Errorf("begin apply inbound: %w", err)
 	}
 	defer tx.Rollback()
 
-	var inboundAck int64
-	if err := liveSessionSeq(ctx, tx, sessionID, "inbound_ack", &inboundAck); err != nil {
-		return 0, err
+	var (
+		inboundAck int64
+		serverID   string
+	)
+	if err := liveSessionSeq(ctx, tx, sessionID, "inbound_ack, server_id",
+		&inboundAck, &serverID); err != nil {
+		return InboundApplied{}, err
 	}
 
-	newAck, accepted := classify(inboundAck)
-	if newAck < inboundAck {
-		// A classifier must never go backwards; treat it as a no-op rather
-		// than write a regression into the session.
-		newAck = inboundAck
-		accepted = 0
+	application := classify(inboundAck)
+	if application.Ack < inboundAck {
+		// A classifier must never go backwards. Distrust everything it derived
+		// and treat the batch as a no-op rather than write a regression into
+		// the session.
+		application = InboundApplication{Ack: inboundAck}
 	}
 
-	if accepted > 0 && newAck > inboundAck {
+	if application.Accepted > 0 && application.Ack > inboundAck {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE sessions SET inbound_ack = ?, inbound_count = inbound_count + ?
 			  WHERE id = ?`,
-			newAck, accepted, sessionID,
+			application.Ack, application.Accepted, sessionID,
 		); err != nil {
-			return 0, fmt.Errorf("record inbound ack: %w", err)
+			return InboundApplied{}, fmt.Errorf("record inbound ack: %w", err)
+		}
+	}
+
+	applied := InboundApplied{Ack: application.Ack}
+	now := time.Now().UTC()
+	for _, manifest := range application.Manifests {
+		replaced, err := applyManifest(ctx, tx, serverID, manifest.Revision, manifest.Body, now)
+		if err != nil {
+			return InboundApplied{}, err
+		}
+		if replaced {
+			applied.ManifestsApplied++
+		}
+	}
+	for _, notice := range application.Notices {
+		switch _, err := queueOutbound(ctx, tx, serverID, notice.Type, notice.Body, noticeQueueLimit); {
+		case errors.Is(err, ErrOutboundQueueFull):
+			// Dropped. The queue bound protects the plugin's own traffic, and a
+			// notice must never turn a valid poll into a failure.
+		case err != nil:
+			return InboundApplied{}, err
+		default:
+			applied.NoticesQueued++
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit advance inbound: %w", err)
+		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)
 	}
-	return newAck, nil
+	return applied, nil
 }
 
 // TouchServer records that the plugin was heard from, which is the operator's

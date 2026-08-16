@@ -518,6 +518,47 @@ func TestConcurrentPollsNeverLowerTheReportedAck(t *testing.T) {
 	}
 }
 
+// Regression: a held poll used to report the inbound ack it captured at ingest
+// time, so a concurrent poll that committed a higher ack and answered first
+// left the held poll to lower an ack the hub had already reported, which
+// section 9.1 forbids. The response ack is session state, not request state:
+// a held poll must report the ack as committed when it answers.
+func TestHeldPollReportsTheCommittedAck(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "held poll ack")
+
+	// P1 parks with nothing to say and nothing queued.
+	held := make(chan pollResult, 1)
+	go func() {
+		held <- poll(t, server, live.SessionToken, map[string]any{})
+	}()
+	time.Sleep(250 * time.Millisecond)
+
+	// P2, same session, commits envelopes 1 and 2 and parks too.
+	advanced := make(chan pollResult, 1)
+	go func() {
+		advanced <- poll(t, server, live.SessionToken, map[string]any{
+			"envelopes": []map[string]any{
+				{"v": 1, "id": "held-ack-1", "type": "test.thing", "seq": 1,
+					"ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{}},
+				{"v": 1, "id": "held-ack-2", "type": "test.thing", "seq": 2,
+					"ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{}},
+			},
+		})
+	}()
+	time.Sleep(250 * time.Millisecond)
+
+	// Wake both. Whatever each answers with, neither may report an ack below
+	// the 2 that is committed by now.
+	queueEnvelope(t, server, created.Server.ID, "test.wake", nil)
+	for name, result := range map[string]pollResult{"held": <-held, "advanced": <-advanced} {
+		if result.Ack != 2 {
+			t.Errorf("the %s poll reported ack %d, want the committed 2", name, result.Ack)
+		}
+	}
+}
+
 // Regression: a poll that authenticated before its session was superseded used
 // to reach the store anyway, renumbering envelopes into a dead session and
 // voiding the ack the live session had already sent.

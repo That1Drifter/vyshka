@@ -12,6 +12,32 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: manifest publish and validation (spec section 6), the first inbound envelope
+  type the hub models. A plugin declares its actions, contexts, and events with
+  `manifest.publish` at session start or at any later moment; the hub validates the body,
+  including every `params` and event `payload` schema against the protocol's closed JSON
+  Schema subset (`hub/internal/schema`, which rejects any keyword it would not enforce),
+  stores accepted manifests gated on `manifestRevision` (higher replaces, equal or lower
+  ignored), and answers an invalid manifest with a queued `manifest.reject` naming the
+  faults instead of failing the poll or the session. Manifest applies and rejection notices
+  commit in the same transaction as the ack that covers them (section 9.3). Operators read
+  the stored manifest at `GET /api/v1/servers/{serverId}/manifest`; the raw queue endpoint
+  now refuses `manifest.*` alongside `action.*` so a forged `manifest.reject` cannot be
+  queued as the hub's own word. Migration `0004_manifests.sql` adds the `manifests` table.
+  `spec/protocol.md` draft 0.6 adds sections 6.4 (validation and rejection) and 6.5 (the
+  Admin API read), pins the equal-revision rule, and formalizes the event declaration
+  shape; `spec/manifest.schema.json` is the machine-readable companion, validated in CI,
+  and `spec/openapi-admin.yaml` 0.6.0 covers the new endpoint. Four new hub conformance
+  checks (thirty-eight total) grade publish and Admin read, runtime republish with revision
+  monotonicity, rejection without dropping the session, and the 404 before a manifest is
+  accepted. `scripts/demo-manifest.sh` walks the whole exchange in curl. Hardened under
+  adversarial review before landing: integer constants in schemas and `manifestRevision`
+  are bounded to what survives a float64 round-trip exactly (strictly within ±2^53), length
+  limits count Unicode code points rather than bytes, wrongly typed advisory fields
+  (`game`, `plugin`) reject instead of storing what the companion schema calls invalid, an
+  over-cap declaration list faults once instead of validating every item, and a readable
+  but invalid revision (0, negative) is echoed in the rejection instead of clamped away.
+
 - 2026-08-16: the envelope exchange over long-poll, the transport every later capability
   rides on. `POST /plugin/v1/poll` carries both directions in one request: it applies the
   plugin's ack and ingests its envelopes, then holds up to the negotiated `pollTimeout` and
@@ -116,6 +142,15 @@ point if needed.
   and a database read per backstop tick against SQLite's single connection. Polls past a
   ceiling of four per session are answered immediately instead of held, which the protocol
   permits at any time. This is an implementation limit, not a protocol rule.
+
+### Fixed
+
+- 2026-08-16: a held poll now reports the inbound ack as committed when it answers, not the
+  value it ingested before the hold. A concurrent poll on the same session could commit a
+  higher ack and be answered first, leaving the held poll to later report an ack the hub had
+  already exceeded, which section 9.1 forbids. `NextOutbound` returns the committed inbound
+  ack alongside the batch, and the hold refreshes what it will report on every database
+  read. Found by adversarial review of the manifest slice; the defect predates it.
 
 ### Changed
 

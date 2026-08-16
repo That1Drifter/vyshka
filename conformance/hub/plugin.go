@@ -246,6 +246,76 @@ func (e Env) queueEnvelope(ctx context.Context, serverID, envelopeType string, b
 	return queued.Envelope.ID, nil
 }
 
+// manifestBody builds a manifest.publish body (spec section 6). With no
+// actions given it declares the section's example: one heal action whose
+// params schema stays inside the subset.
+func manifestBody(revision int64, actions ...map[string]any) map[string]any {
+	if actions == nil {
+		actions = []map[string]any{{
+			"code": "example-mod.heal", "name": "Heal player",
+			"context": "player", "namespace": "example-mod", "danger": "warning",
+			"params": map[string]any{
+				"type":     "object",
+				"required": []string{"amount"},
+				"properties": map[string]any{
+					"amount": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+					"item":   map[string]any{"type": "string", "x-vyshka-widget": "itemlist"},
+				},
+			},
+		}}
+	}
+	return map[string]any{
+		"game":             fixtureGame,
+		"plugin":           map[string]any{"name": "conformance-plugin", "version": "0.1.0"},
+		"manifestRevision": revision,
+		"actions":          actions,
+		"contexts":         []any{},
+		"events":           []any{},
+	}
+}
+
+// publishManifest frames and sends one manifest.publish, acking as it goes.
+func (p *fakePlugin) publishManifest(ctx context.Context, body map[string]any) (pollResponse, error) {
+	return p.send(ctx, p.nextOutbound("manifest.publish", body))
+}
+
+// manifestRecord is the Admin API manifest view (spec section 6.5).
+type manifestRecord struct {
+	Revision    int64           `json:"revision"`
+	PublishedAt string          `json:"publishedAt"`
+	Manifest    json.RawMessage `json:"manifest"`
+}
+
+// storedManifest reads a server's manifest back through the Admin API.
+func (e Env) storedManifest(ctx context.Context, serverID string) (manifestRecord, error) {
+	var record manifestRecord
+	err := e.expect(ctx, http.MethodGet, "/api/v1/servers/"+serverID+"/manifest",
+		e.AdminToken, nil, http.StatusOK, &record)
+	return record, err
+}
+
+// awaitEnvelope polls until an envelope of the wanted type arrives, acking
+// everything on the way, for up to attempts polls. The type's other deliveries
+// in the same responses are returned too, so a check can assert exactly one.
+func (p *fakePlugin) awaitEnvelope(ctx context.Context, envelopeType string, attempts int) ([]envelope, error) {
+	var matched []envelope
+	for range attempts {
+		response, err := p.pollAndAck(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, delivered := range response.Envelopes {
+			if delivered.Type == envelopeType {
+				matched = append(matched, delivered)
+			}
+		}
+		if len(matched) > 0 {
+			return matched, nil
+		}
+	}
+	return nil, fmt.Errorf("no %s envelope arrived in %d polls", envelopeType, attempts)
+}
+
 // uniqueType mints an envelope type no hub can have heard of, for the checks
 // that grade the forward-compatibility rule.
 var unknownTypeCounter atomic.Int64

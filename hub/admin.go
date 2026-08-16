@@ -27,10 +27,11 @@ const (
 // accepted would make "nothing is dropped silently" a lie.
 const outboundQueueLimit = 5000
 
-// reservedEnvelopeTypes are the prefixes a dedicated endpoint owns. The raw
-// queue endpoint refuses them, so it can never be used to route around the
-// validation those endpoints perform (spec sections 5.5 and 6.1).
-var reservedEnvelopeTypes = []string{"action."}
+// reservedEnvelopeTypes are the prefixes the hub itself models. The raw queue
+// endpoint refuses them, so it can never be used to route around the
+// validation the hub performs on them, or to forge a message the plugin will
+// take as the hub's own word (spec sections 5.5 and 6).
+var reservedEnvelopeTypes = []string{"action.", "manifest."}
 
 // requireAdmin gates a handler on the bootstrap admin token. Scoped tokens
 // (spec section 10) replace this in the scoped-tokens slice; until then one
