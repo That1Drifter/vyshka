@@ -12,6 +12,15 @@ point if needed.
 
 ### Added
 
+- 2026-08-16: the walking skeleton. Go module `github.com/That1Drifter/vyshka` with the
+  repository layout the spec commits to (`hub/`, `conformance/hub/`, `conformance/plugin/`,
+  `plugins/`, `panel/`, placeholder READMEs where a slice has not landed yet).
+  `vyshka-hub serve` boots with an embedded cgo-free SQLite database, runs embedded
+  migrations on every boot, serves `GET /healthz`, logs structured JSON, and shuts down
+  gracefully. `conformance/hub` is a black-box runner that grades any hub URL and exits
+  nonzero on failure; usage is documented in `conformance/README.md`. GitHub Actions runs
+  gofmt, vet, tests, a build, and the conformance suite against a live hub on every push and
+  pull request.
 - 2026-08-15: `spikes/dayz-restapi-poll-timeout/`, the reproducible harness and measurements
   behind the poll timeout decision: a Go stub server that holds responses open in three
   shapes, an Enforce Script probe driven from a mission `init.c`, the captured script-side
