@@ -152,7 +152,11 @@ func (s *Server) sweepExpiredActions() {
 		case <-s.stopSweeper:
 			return
 		case <-ticker.C:
-			expired, err := s.store.ExpireActions(context.Background())
+			// Bounded, because Close waits for this loop before closing the
+			// store: a sweep that could block forever could hang shutdown.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			expired, err := s.store.ExpireActions(ctx)
+			cancel()
 			if err != nil {
 				s.log.Error("action expiry sweep failed", "error", err.Error())
 				continue

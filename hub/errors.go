@@ -123,6 +123,22 @@ func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, dst any, all
 		}
 		return false
 	}
+
+	// The body must be one JSON value and nothing more. Without this check a
+	// second value, or garbage, after the decoded object would be silently
+	// swallowed, and the bytes behind it would never count against the size
+	// cap the decoder stopped enforcing.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, codePayloadTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxRequestBody))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"request body must be a single JSON value")
+		return false
+	}
 	return true
 }
 

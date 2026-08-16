@@ -28,7 +28,7 @@ PASS  errors.shape                   An unrouted path answers 404 in the protoco
 ...
 PASS  compat.unknownFields           Unknown request fields are tolerated, not rejected
 
-42 checks, 0 failed
+43 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

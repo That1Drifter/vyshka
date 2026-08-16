@@ -3,24 +3,41 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
+// publishManifestRow stores a manifest at the given revision through the same
+// ingest path the poll handler uses.
+func publishManifestRow(t *testing.T, st *store.Store, sessionID string, revision int64) {
+	t.Helper()
+	_, err := st.ApplyInbound(context.Background(), sessionID, func(ack int64) store.InboundApplication {
+		return store.InboundApplication{Ack: ack, Manifests: []store.ManifestPublish{{
+			Revision: revision,
+			Body:     []byte(`{"manifestRevision": ` + strconv.FormatInt(revision, 10) + `}`),
+		}}}
+	}, 100)
+	if err != nil {
+		t.Fatalf("publish manifest: %v", err)
+	}
+}
+
 func dispatch(t *testing.T, st *store.Store, serverID, actionID, key string, ttl time.Duration, limit int) (store.Action, bool) {
 	t.Helper()
 	action, created, err := st.DispatchAction(context.Background(), store.NewAction{
-		ID:             actionID,
-		ServerID:       serverID,
-		Code:           "test.heal",
-		Params:         []byte(`{"amount": 1}`),
-		IdempotencyKey: key,
-		TTL:            ttl,
-		EnvelopeType:   "action.dispatch",
-		EnvelopeBody:   []byte(`{"actionId": "` + actionID + `"}`),
-		QueueLimit:     limit,
+		ID:               actionID,
+		ServerID:         serverID,
+		Code:             "test.heal",
+		Params:           []byte(`{"amount": 1}`),
+		IdempotencyKey:   key,
+		ExpiresAt:        time.Now().UTC().Add(ttl),
+		ManifestRevision: 1,
+		EnvelopeType:     "action.dispatch",
+		EnvelopeBody:     []byte(`{"actionId": "` + actionID + `"}`),
+		QueueLimit:       limit,
 	})
 	if err != nil {
 		t.Fatalf("dispatch action: %v", err)
@@ -34,6 +51,8 @@ func TestDispatchActionIdempotency(t *testing.T) {
 	ctx := context.Background()
 	st := migrated(t)
 	serverID := enrolledServer(t, st, "action idempotency")
+	session := startSession(t, st, serverID, "token-hash")
+	publishManifestRow(t, st, session.ID, 1)
 
 	first, created := dispatch(t, st, serverID, "action-1", "retry-key", time.Minute, 1)
 	if !created || first.State != store.ActionQueued {
@@ -61,13 +80,103 @@ func TestDispatchActionIdempotency(t *testing.T) {
 	// leaves no half-recorded action behind.
 	_, _, err = st.DispatchAction(ctx, store.NewAction{
 		ID: "action-3", ServerID: serverID, Code: "test.heal", Params: []byte(`{}`),
-		TTL: time.Minute, EnvelopeType: "action.dispatch", EnvelopeBody: []byte(`{}`), QueueLimit: 1,
+		ExpiresAt: time.Now().UTC().Add(time.Minute), ManifestRevision: 1,
+		EnvelopeType: "action.dispatch", EnvelopeBody: []byte(`{}`), QueueLimit: 1,
 	})
 	if !errors.Is(err, store.ErrOutboundQueueFull) {
 		t.Fatalf("err = %v at the bound, want ErrOutboundQueueFull", err)
 	}
 	if _, err := st.ActionByID(ctx, "action-3"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("a refused dispatch left an action row behind (err = %v)", err)
+	}
+}
+
+// The revision gate: a dispatch validated against a manifest that was replaced
+// before the insert is refused, never queued with params the current manifest
+// did not approve. The idempotent-retry path stays exempt: the original was
+// already accepted.
+func TestDispatchActionRefusesAStaleManifestRevision(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "stale revision")
+	session := startSession(t, st, serverID, "token-hash")
+	publishManifestRow(t, st, session.ID, 1)
+
+	// Accepted while revision 1 was current.
+	dispatch(t, st, serverID, "accepted-1", "kept-key", time.Minute, 100)
+
+	// The manifest moves on; a dispatch still carrying revision 1 is refused.
+	publishManifestRow(t, st, session.ID, 2)
+	_, _, err := st.DispatchAction(ctx, store.NewAction{
+		ID: "stale-1", ServerID: serverID, Code: "test.heal", Params: []byte(`{}`),
+		ExpiresAt: time.Now().UTC().Add(time.Minute), ManifestRevision: 1,
+		EnvelopeType: "action.dispatch", EnvelopeBody: []byte(`{}`), QueueLimit: 100,
+	})
+	if !errors.Is(err, store.ErrManifestChanged) {
+		t.Fatalf("err = %v for a stale revision, want ErrManifestChanged", err)
+	}
+	pending, err := st.PendingEnvelopeCount(ctx, serverID)
+	if err != nil {
+		t.Fatalf("pending count: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("pendingEnvelopeCount = %d, want only the accepted dispatch's envelope", pending)
+	}
+
+	// The accepted action is still resolvable by key: the handler consults it
+	// before the revision is ever compared, so retries survive the republish.
+	if _, err := st.ActionByIdempotencyKey(ctx, serverID, "kept-key"); err != nil {
+		t.Fatalf("read by idempotency key: %v", err)
+	}
+}
+
+// Expiry retires the dispatch envelope of undelivered work, so an offline
+// server's expired actions stop counting against the queue bound. An envelope
+// already numbered into a session is left for retransmission instead, because
+// deleting it would open a gap the plugin's contiguous ack could never cross.
+func TestExpiryRetiresUndeliveredDispatchEnvelopes(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "expiry retires")
+	session := startSession(t, st, serverID, "token-hash")
+	publishManifestRow(t, st, session.ID, 1)
+
+	// Numbered into the live session: survives expiry for retransmission.
+	numbered, _ := dispatch(t, st, serverID, "numbered-1", "", 30*time.Millisecond, 100)
+	if _, _, _, err := st.NextOutbound(ctx, session.ID, serverID, 10); err != nil {
+		t.Fatalf("next outbound: %v", err)
+	}
+	// Never delivered: retired with the action.
+	undelivered, _ := dispatch(t, st, serverID, "undelivered-1", "", 30*time.Millisecond, 100)
+
+	time.Sleep(50 * time.Millisecond)
+	if _, err := st.ExpireActions(ctx); err != nil {
+		t.Fatalf("expire actions: %v", err)
+	}
+
+	for _, id := range []string{numbered.ID, undelivered.ID} {
+		action, err := st.ActionByID(ctx, id)
+		if err != nil {
+			t.Fatalf("read action %s: %v", id, err)
+		}
+		if action.State != store.ActionExpired {
+			t.Errorf("action %s state = %q, want expired", id, action.State)
+		}
+	}
+
+	pending, err := st.PendingEnvelopeCount(ctx, serverID)
+	if err != nil {
+		t.Fatalf("pending count: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("pendingEnvelopeCount = %d, want only the numbered envelope kept for retransmission", pending)
+	}
+	envelopes, _, _, err := st.NextOutbound(ctx, session.ID, serverID, 10)
+	if err != nil {
+		t.Fatalf("next outbound after expiry: %v", err)
+	}
+	if len(envelopes) != 1 || envelopes[0].ID != numbered.EnvelopeID {
+		t.Errorf("delivery after expiry = %+v, want only the numbered envelope", envelopes)
 	}
 }
 
@@ -78,6 +187,7 @@ func TestActionLifecycleTransitions(t *testing.T) {
 	st := migrated(t)
 	serverID := enrolledServer(t, st, "action transitions")
 	session := startSession(t, st, serverID, "token-hash")
+	publishManifestRow(t, st, session.ID, 1)
 
 	action, _ := dispatch(t, st, serverID, "walk-1", "", time.Minute, 100)
 
@@ -149,6 +259,7 @@ func TestActionExpiryBeatsALateResult(t *testing.T) {
 	st := migrated(t)
 	serverID := enrolledServer(t, st, "action expiry")
 	session := startSession(t, st, serverID, "token-hash")
+	publishManifestRow(t, st, session.ID, 1)
 
 	action, _ := dispatch(t, st, serverID, "expire-1", "", 10*time.Millisecond, 100)
 	time.Sleep(20 * time.Millisecond)

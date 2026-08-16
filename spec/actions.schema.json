@@ -60,16 +60,16 @@
         "actionId": { "$ref": "#/$defs/actionId" },
         "ok": { "type": "boolean" },
         "result": {
-          "description": "Arbitrary JSON up to 64 KiB; null or absent when there is nothing to report. Over the cap, the hub keeps the outcome, drops the payload, and notes the drop in error."
+          "description": "Arbitrary JSON up to 64 KiB, measured on the raw bytes of the serialized value; null or absent when there is nothing to report. Over the cap, the hub keeps the outcome, drops the payload, and notes the drop in error."
         },
         "error": {
           "oneOf": [{ "type": "string" }, { "type": "null" }],
-          "description": "Human-readable failure description; null or absent when ok is true."
+          "description": "Human-readable failure description; null or absent when ok is true. Bounded by the hub (reference cap 4 KiB, truncated beyond it)."
         },
         "durationMs": {
           "type": "integer",
           "minimum": 0,
-          "description": "How long execution took on the game server. Optional, advisory."
+          "description": "How long execution took on the game server. Optional, advisory; a negative value is dropped as unusable."
         }
       },
       "additionalProperties": true

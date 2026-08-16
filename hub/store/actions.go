@@ -44,6 +44,11 @@ type Action struct {
 	DurationMs *int64
 }
 
+// ErrManifestChanged reports that the manifest a dispatch was validated
+// against was replaced before the dispatch could commit. The caller
+// revalidates against the new manifest and retries.
+var ErrManifestChanged = errors.New("the manifest changed since the dispatch was validated")
+
 // NewAction is the request side of DispatchAction. The caller assigns the id
 // and frames the dispatch envelope, because the envelope body embeds the id
 // and body shapes are the handler's business, not the store's.
@@ -55,7 +60,15 @@ type NewAction struct {
 	ReferenceKey   string
 	Params         json.RawMessage
 	IdempotencyKey string
-	TTL            time.Duration
+	// ExpiresAt is the action's one deadline: the same instant the dispatch
+	// envelope advertises to the plugin. Computed once by the caller, so the
+	// database can never hold a later deadline than the wire promised.
+	ExpiresAt time.Time
+	// ManifestRevision is the revision the dispatch was validated against.
+	// The insert is gated on it still being the stored revision, closing the
+	// window in which a republish could invalidate the validation that
+	// already happened (ErrManifestChanged when it lost the race).
+	ManifestRevision int64
 	// EnvelopeType and EnvelopeBody frame the action.dispatch envelope queued
 	// in the same transaction as the action row.
 	EnvelopeType string
@@ -87,6 +100,23 @@ func (s *Store) DispatchAction(ctx context.Context, request NewAction) (Action, 
 		return Action{}, false, fmt.Errorf("read server: %w", err)
 	}
 
+	// The validation the caller performed is only as good as the manifest it
+	// read, and that read happened outside this transaction. Re-checking the
+	// revision here closes the window: a dispatch that lost the race to a
+	// republish is refused and revalidated rather than queued with params the
+	// plugin's current manifest never approved.
+	var storedRevision int64
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT revision FROM manifests WHERE server_id = ?`, request.ServerID,
+	).Scan(&storedRevision); {
+	case errors.Is(err, sql.ErrNoRows):
+		return Action{}, false, ErrManifestChanged
+	case err != nil:
+		return Action{}, false, fmt.Errorf("read manifest revision: %w", err)
+	case storedRevision != request.ManifestRevision:
+		return Action{}, false, ErrManifestChanged
+	}
+
 	// The action row goes in first, so that an idempotent retry is recognized
 	// before anything else can fail: a retry against a full outbound queue
 	// must still return the original action, not outbound_queue_full.
@@ -103,7 +133,7 @@ func (s *Store) DispatchAction(ctx context.Context, request NewAction) (Action, 
 		 DO NOTHING`,
 		request.ID, request.ServerID, request.Code, request.Context, request.ReferenceKey,
 		string(request.Params), idempotencyKey, envelope.ID, ActionQueued,
-		formatTime(now), formatTime(now.Add(request.TTL)),
+		formatTime(now), formatTime(request.ExpiresAt),
 	)
 	if err != nil {
 		return Action{}, false, fmt.Errorf("insert action: %w", err)
@@ -119,7 +149,7 @@ func (s *Store) DispatchAction(ctx context.Context, request NewAction) (Action, 
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 			return Action{}, false, fmt.Errorf("roll back idempotent retry: %w", err)
 		}
-		original, err := s.actionByIdempotencyKey(ctx, request.ServerID, request.IdempotencyKey)
+		original, err := s.ActionByIdempotencyKey(ctx, request.ServerID, request.IdempotencyKey)
 		if err != nil {
 			return Action{}, false, err
 		}
@@ -145,12 +175,19 @@ const actionColumns = `id, server_id, code, context, reference_key, params,
 	idempotency_key, envelope_id, state, created_at, expires_at,
 	delivered_at, running_at, finished_at, ok, result, error, duration_ms`
 
-// ActionByID returns one action, applying lazy expiry first: a read must never
-// report a non-terminal state for an action whose deadline has passed, however
-// recently the sweeper last ran.
+// ActionByID returns one action, applying lazy expiry to that action first: a
+// read must never report a non-terminal state for an action whose deadline has
+// passed, however recently the sweeper last ran. Expiry here is per row rather
+// than the sweeper's global pass, so a hot read path never pays for, or
+// contends on, everyone else's deadlines.
 func (s *Store) ActionByID(ctx context.Context, actionID string) (Action, error) {
-	if _, err := s.ExpireActions(ctx); err != nil {
-		return Action{}, err
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE actions SET state = ?, finished_at = ?
+		  WHERE id = ? AND state IN (?, ?, ?) AND expires_at <= ?`,
+		ActionExpired, formatTime(time.Now().UTC()), actionID,
+		ActionQueued, ActionDelivered, ActionRunning, formatTime(time.Now().UTC()),
+	); err != nil {
+		return Action{}, fmt.Errorf("expire action on read: %w", err)
 	}
 
 	row := s.db.QueryRowContext(ctx,
@@ -165,7 +202,10 @@ func (s *Store) ActionByID(ctx context.Context, actionID string) (Action, error)
 	return action, nil
 }
 
-func (s *Store) actionByIdempotencyKey(ctx context.Context, serverID, key string) (Action, error) {
+// ActionByIdempotencyKey returns the action a client-chosen key names, or
+// ErrNotFound. Callers use it to honor the retry contract before anything
+// else, validation included, can refuse the request (spec section 7).
+func (s *Store) ActionByIdempotencyKey(ctx context.Context, serverID, key string) (Action, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+actionColumns+` FROM actions WHERE server_id = ? AND idempotency_key = ?`,
 		serverID, key)
@@ -180,12 +220,38 @@ func (s *Store) actionByIdempotencyKey(ctx context.Context, serverID, key string
 }
 
 // ExpireActions flips every non-terminal action past its deadline to expired
-// (spec section 7). It runs on a timer and lazily before reads; both callers
-// tolerate racing each other because the WHERE clause makes the flip
-// idempotent.
+// (spec section 7), and retires the dispatch envelope of any expiring action
+// that was never numbered into a session: undelivered work whose deadline
+// passed would otherwise sit on the queue forever, counting against the
+// section 9.2 bound until an offline server could refuse all fresh work.
+//
+// An envelope already numbered into a session is deliberately left alone.
+// Deleting it would open a gap in a live sequence space that the plugin's
+// contiguous ack could never cross; retransmission delivers it, and the
+// deadline in its body tells the plugin to discard it (section 7).
 func (s *Store) ExpireActions(ctx context.Context) (int, error) {
 	now := formatTime(time.Now().UTC())
-	result, err := s.db.ExecContext(ctx,
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin expire actions: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Expired actions are included alongside queued ones because the lazy
+	// per-row expiry in ActionByID can flip an action first; the sweep still
+	// owes its envelope a retirement on the next pass.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM outbound_envelopes
+		  WHERE acked_at IS NULL AND session_id IS NULL
+		    AND id IN (SELECT envelope_id FROM actions
+		                WHERE state IN (?, ?) AND expires_at <= ?)`,
+		ActionQueued, ActionExpired, now,
+	); err != nil {
+		return 0, fmt.Errorf("retire expired dispatch envelopes: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
 		`UPDATE actions SET state = ?, finished_at = ?
 		  WHERE state IN (?, ?, ?) AND expires_at <= ?`,
 		ActionExpired, now, ActionQueued, ActionDelivered, ActionRunning, now)
@@ -195,6 +261,10 @@ func (s *Store) ExpireActions(ctx context.Context) (int, error) {
 	expired, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("expire actions: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit expire actions: %w", err)
 	}
 	return int(expired), nil
 }
@@ -220,11 +290,19 @@ func markDelivered(ctx context.Context, tx *sql.Tx, sessionID string, ack int64,
 // for an unknown id, a terminal state, or an action past its deadline: the ack
 // beat the sweeper, but expiry still wins, and at-least-once delivery makes a
 // repeat ack ordinary rather than an error.
-func applyActionAck(ctx context.Context, tx *sql.Tx, actionID string, now time.Time) (bool, error) {
+//
+// serverID scopes the update to the session that sent the ack. Without it, any
+// enrolled plugin could finish any other server's action by guessing or
+// leaking an actionId; ids are not credentials, and the session's server is.
+// An ack implies receipt, so a missing delivered_at is filled in on the way:
+// the plugin can only be acking a dispatch it received.
+func applyActionAck(ctx context.Context, tx *sql.Tx, serverID, actionID string, now time.Time) (bool, error) {
 	result, err := tx.ExecContext(ctx,
-		`UPDATE actions SET state = ?, running_at = ?
-		  WHERE id = ? AND state IN (?, ?) AND expires_at > ?`,
-		ActionRunning, formatTime(now), actionID, ActionQueued, ActionDelivered, formatTime(now))
+		`UPDATE actions
+		    SET state = ?, running_at = ?, delivered_at = COALESCE(delivered_at, ?)
+		  WHERE id = ? AND server_id = ? AND state IN (?, ?) AND expires_at > ?`,
+		ActionRunning, formatTime(now), formatTime(now),
+		actionID, serverID, ActionQueued, ActionDelivered, formatTime(now))
 	if err != nil {
 		return false, fmt.Errorf("apply action ack: %w", err)
 	}
@@ -248,8 +326,9 @@ type ActionResult struct {
 // no-op for an unknown id, a terminal state, or an action past its deadline: a
 // result that arrives after expiry changes nothing, because the operator has
 // already been told the action expired and a state that flip-flops afterwards
-// would be worse than a lost result.
-func applyActionResult(ctx context.Context, tx *sql.Tx, result ActionResult, now time.Time) (bool, error) {
+// would be worse than a lost result. serverID scopes the update for the same
+// reason as in applyActionAck: an actionId is not a credential.
+func applyActionResult(ctx context.Context, tx *sql.Tx, serverID string, result ActionResult, now time.Time) (bool, error) {
 	state := ActionCompleted
 	if !result.OK {
 		state = ActionFailed
@@ -266,11 +345,12 @@ func applyActionResult(ctx context.Context, tx *sql.Tx, result ActionResult, now
 	outcome, err := tx.ExecContext(ctx,
 		`UPDATE actions
 		    SET state = ?, finished_at = ?, running_at = COALESCE(running_at, ?),
+		        delivered_at = COALESCE(delivered_at, ?),
 		        ok = ?, result = ?, error = ?, duration_ms = ?
-		  WHERE id = ? AND state IN (?, ?, ?) AND expires_at > ?`,
-		state, formatTime(now), formatTime(now),
+		  WHERE id = ? AND server_id = ? AND state IN (?, ?, ?) AND expires_at > ?`,
+		state, formatTime(now), formatTime(now), formatTime(now),
 		result.OK, resultJSON, errorText, result.DurationMs,
-		result.ActionID, ActionQueued, ActionDelivered, ActionRunning, formatTime(now))
+		result.ActionID, serverID, ActionQueued, ActionDelivered, ActionRunning, formatTime(now))
 	if err != nil {
 		return false, fmt.Errorf("apply action result: %w", err)
 	}

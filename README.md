@@ -32,7 +32,7 @@ and serves the result to operators at `GET /api/v1/servers/{id}/manifest`. And o
 manifest sits the core tracer bullet, the action lifecycle: an operator dispatches an action
 (validated against the manifest schema before anything is queued), the plugin executes it and
 reports, and every state of `queued -> delivered -> running -> completed/failed/expired` is
-observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Forty-two
+observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Forty-three
 conformance checks grade all of it in CI. Telemetry ingest comes next.
 
 ```

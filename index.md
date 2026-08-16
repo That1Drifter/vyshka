@@ -20,7 +20,7 @@ conformance suites are the product; the hub and plugins are reference implementa
 **Status:** early implementation. The protocol is at draft 0.7. The hub runs today with
 enrollment, sessions, the envelope exchange over long-poll, manifest publish with
 schema-subset validation, and the full action lifecycle (dispatch, execute, observe, expire),
-graded by forty-two black-box conformance checks in CI. Telemetry ingest comes next.
+graded by forty-three black-box conformance checks in CI. Telemetry ingest comes next.
 
 ## Start here
 

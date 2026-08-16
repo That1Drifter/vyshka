@@ -2076,6 +2076,56 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "action.isolation",
+		Title:   "An actionId is not a credential: another server's plugin cannot move it",
+		Section: "7",
+		Run: func(ctx context.Context, env Env) error {
+			victim, err := env.newFakePlugin(ctx, "conformance: isolation victim", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := victim.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			attacker, err := env.newFakePlugin(ctx, "conformance: isolation attacker", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+
+			actionID, _, err := env.dispatchAction(ctx, victim.Server.Server.ID, map[string]any{
+				"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+			})
+			if err != nil {
+				return err
+			}
+
+			// The attacker forges an ack and a failing result for the victim's
+			// action. The envelopes are ordinary traffic (acked); the effect
+			// must be nothing.
+			forgedAck := attacker.nextOutbound("action.ack", map[string]any{"actionId": actionID})
+			forgedResult := attacker.nextOutbound("action.result",
+				map[string]any{"actionId": actionID, "ok": false, "error": "forged"})
+			response, err := attacker.send(ctx, forgedAck, forgedResult)
+			if err != nil {
+				return err
+			}
+			if response.Ack < forgedResult.Seq {
+				return fmt.Errorf("ack = %d, want %d: the forged envelopes are still ordinary traffic",
+					response.Ack, forgedResult.Seq)
+			}
+
+			record, err := env.action(ctx, actionID)
+			if err != nil {
+				return err
+			}
+			if record.State != "queued" || record.Error != nil {
+				return fmt.Errorf("state = %q error = %v after another server's forged result; an actionId must not act as a credential",
+					record.State, record.Error)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "action.expiry",
 		Title:   "An undeliverable action expires at its TTL, and a late result cannot resurrect it",
 		Section: "7",
@@ -2085,6 +2135,20 @@ var checks = []Check{
 				return err
 			}
 			if _, err := plugin.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+
+			pending := func() (int, error) {
+				var record serverRecord
+				if err := env.expect(ctx, http.MethodGet,
+					"/api/v1/servers/"+plugin.Server.Server.ID, env.AdminToken,
+					nil, http.StatusOK, &record); err != nil {
+					return 0, err
+				}
+				return record.PendingEnvelopeCount, nil
+			}
+			baseline, err := pending()
+			if err != nil {
 				return err
 			}
 
@@ -2103,6 +2167,25 @@ var checks = []Check{
 			}
 			if record.FinishedAt == nil {
 				return fmt.Errorf("an expired action carries no finishedAt")
+			}
+
+			// The undelivered dispatch envelope leaves the queue with the
+			// action, or an offline server's expired work would eventually eat
+			// the whole section 9.2 bound.
+			drained := false
+			for wait := time.Now().Add(3 * time.Second); time.Now().Before(wait); {
+				outstanding, err := pending()
+				if err != nil {
+					return err
+				}
+				if outstanding == baseline {
+					drained = true
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if !drained {
+				return fmt.Errorf("the expired dispatch is still queued; expiry must retire undelivered dispatch envelopes")
 			}
 
 			// The plugin comes back and reports a result anyway. The envelope

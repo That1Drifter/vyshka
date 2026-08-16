@@ -3,6 +3,7 @@ package hub_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -343,6 +344,168 @@ func TestActionFailureAndOversizedResult(t *testing.T) {
 	}
 	if oversized.Error == nil || !strings.Contains(*oversized.Error, "64 KiB") {
 		t.Errorf("error = %v, want a note that the payload was dropped", oversized.Error)
+	}
+}
+
+// An actionId is not a credential: another server's plugin must not be able
+// to move it, however it learned the id.
+func TestActionEffectsAreScopedToTheirServer(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	victim, _ := manifestFirst(t, server, "forgery victim")
+	attacker, attackerLive := manifestFirst(t, server, "forgery attacker")
+
+	actionID, _ := dispatchAction(t, server, victim.Server.ID, map[string]any{
+		"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+	})
+
+	// The attacker's plugin sends an ack and a forged failure for the victim's
+	// action. Both envelopes are acked (their durable effect is nothing), and
+	// the victim's action does not move.
+	response := pollNow(t, server, attacker.Server.ID, attackerLive.SessionToken, map[string]any{
+		"envelopes": []map[string]any{
+			{
+				"v": 1, "id": "forged-ack", "type": "action.ack", "seq": 2,
+				"ts":   time.Now().UTC().Format(time.RFC3339),
+				"body": map[string]any{"actionId": actionID},
+			},
+			{
+				"v": 1, "id": "forged-result", "type": "action.result", "seq": 3,
+				"ts": time.Now().UTC().Format(time.RFC3339),
+				"body": map[string]any{
+					"actionId": actionID, "ok": false, "error": "forged",
+				},
+			},
+		},
+	})
+	if response.Ack != 3 {
+		t.Fatalf("ack = %d, want 3: the envelopes themselves are ordinary traffic", response.Ack)
+	}
+
+	record := getAction(t, server, actionID)
+	if record.State != "queued" {
+		t.Fatalf("state = %q after another server's forged result, want queued", record.State)
+	}
+	if record.Error != nil {
+		t.Errorf("error = %q was written by another server's plugin", *record.Error)
+	}
+}
+
+// The idempotency contract survives a manifest change: a retry of an accepted
+// action returns the original even when a fresh dispatch of the same body
+// would now be refused.
+func TestActionRetrySurvivesAManifestChange(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := manifestFirst(t, server, "retry survives republish")
+
+	body := map[string]any{
+		"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+		"idempotencyKey": "heal-before-republish",
+	}
+	original, _ := dispatchAction(t, server, created.Server.ID, body)
+
+	// Revision 2 drops the heal action entirely; a fresh dispatch would be
+	// unknown_action now.
+	replacement := healManifest(2, map[string]any{"code": "example-mod.revive"})
+	pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(2, replacement)},
+	})
+	if code := errorCode(t, server, http.MethodPost, "/api/v1/servers/"+created.Server.ID+"/actions",
+		testAdminToken, map[string]any{"code": "example-mod.heal", "params": map[string]any{"amount": 10}},
+		http.StatusConflict); code != "unknown_action" {
+		t.Fatalf("fresh dispatch after the republish: code = %q, want unknown_action", code)
+	}
+
+	retry, _ := dispatchAction(t, server, created.Server.ID, body)
+	if retry != original {
+		t.Errorf("retry returned %q, want the original %q despite the republish", retry, original)
+	}
+}
+
+// An expired, never-delivered dispatch stops counting against the queue bound.
+func TestExpiredDispatchesLeaveTheQueue(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, _ := manifestFirst(t, server, "expired queue")
+
+	pending := func() int {
+		var record struct {
+			PendingEnvelopeCount int `json:"pendingEnvelopeCount"`
+		}
+		call(t, server, http.MethodGet, "/api/v1/servers/"+created.Server.ID, testAdminToken, nil, &record)
+		return record.PendingEnvelopeCount
+	}
+	baseline := pending()
+
+	actionID, _ := dispatchAction(t, server, created.Server.ID, map[string]any{
+		"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+		"ttlSeconds": 1,
+	})
+	if pending() != baseline+1 {
+		t.Fatalf("the dispatch envelope was not queued")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for getAction(t, server, actionID).State != "expired" {
+		if time.Now().After(deadline) {
+			t.Fatal("the action never expired")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for pending() != baseline {
+		if time.Now().After(deadline) {
+			t.Fatalf("pendingEnvelopeCount = %d long after expiry, want the baseline %d",
+				pending(), baseline)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A TTL large enough to overflow time.Duration arithmetic must clamp to the
+// maximum, not wrap under the minimum.
+func TestActionTTLClampsWithoutOverflow(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, _ := manifestFirst(t, server, "ttl overflow")
+
+	actionID, _ := dispatchAction(t, server, created.Server.ID, map[string]any{
+		"code": "example-mod.heal", "params": map[string]any{"amount": 10},
+		"ttlSeconds": int64(9_223_372_037),
+	})
+	record := getAction(t, server, actionID)
+	expiresAt, err := time.Parse(time.RFC3339, record.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expiresAt %q: %v", record.ExpiresAt, err)
+	}
+	lifetime := time.Until(expiresAt)
+	if lifetime < 23*time.Hour || lifetime > 25*time.Hour {
+		t.Errorf("an overflowing ttlSeconds produced a %s lifetime, want the 24 h cap", lifetime)
+	}
+	if record.State == "expired" {
+		t.Error("an overflowing ttlSeconds expired the action immediately")
+	}
+}
+
+// A request body must be one JSON value: trailing content is rejected, not
+// silently swallowed past the size cap.
+func TestRequestBodiesRejectTrailingContent(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, _ := manifestFirst(t, server, "trailing content")
+
+	raw := `{"code": "example-mod.heal", "params": {"amount": 10}}{"smuggled": true}`
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v1/servers/"+created.Server.ID+"/actions", strings.NewReader(raw))
+	request.Header.Set("Authorization", "Bearer "+testAdminToken)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d for a body with trailing JSON, want 400 (body %s)",
+			recorder.Code, recorder.Body.String())
 	}
 }
 

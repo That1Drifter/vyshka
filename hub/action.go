@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/That1Drifter/vyshka/hub/internal/id"
 	"github.com/That1Drifter/vyshka/hub/internal/schema"
@@ -27,19 +28,29 @@ const (
 	MinActionTTL     = time.Second
 	MaxActionTTL     = 24 * time.Hour
 
-	// maxActionResultBytes caps the result payload of one action (section 7).
+	// maxActionResultBytes caps the result payload of one action, measured on
+	// the raw bytes of the serialized value (section 7).
 	maxActionResultBytes = 64 << 10
+	// maxActionErrorBytes caps the error string the same way; without it, the
+	// result cap could be laundered through a 900 KiB "error".
+	maxActionErrorBytes = 4 << 10
 
 	maxReferenceKeyLength   = 200
 	maxIdempotencyKeyLength = 200
 )
 
-// clampActionTTL applies the section 7 bounds to a requested TTL.
+// clampActionTTL applies the section 7 bounds to a requested TTL. Absent,
+// zero, or negative means the default. The comparison happens in seconds, not
+// time.Duration, because a huge request multiplied by time.Second would wrap
+// negative and sail under the cap it was meant to hit.
 func clampActionTTL(requestedSeconds int) time.Duration {
 	if requestedSeconds <= 0 {
 		return DefaultActionTTL
 	}
-	return min(max(time.Duration(requestedSeconds)*time.Second, MinActionTTL), MaxActionTTL)
+	if requestedSeconds > int(MaxActionTTL/time.Second) {
+		return MaxActionTTL
+	}
+	return time.Duration(requestedSeconds) * time.Second
 }
 
 type dispatchRequest struct {
@@ -81,15 +92,34 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 	case request.Code == "":
 		writeError(w, http.StatusBadRequest, codeBadRequest, "code is required")
 		return
-	case len(request.Code) > maxCodeLength:
+	case utf8.RuneCountInString(request.Code) > maxCodeLength:
 		writeError(w, http.StatusBadRequest, codeBadRequest, "code is too long")
 		return
-	case len(request.ReferenceKey) > maxReferenceKeyLength:
+	case utf8.RuneCountInString(request.ReferenceKey) > maxReferenceKeyLength:
 		writeError(w, http.StatusBadRequest, codeBadRequest, "referenceKey is too long")
 		return
-	case len(request.IdempotencyKey) > maxIdempotencyKeyLength:
+	case utf8.RuneCountInString(request.IdempotencyKey) > maxIdempotencyKeyLength:
 		writeError(w, http.StatusBadRequest, codeBadRequest, "idempotencyKey is too long")
 		return
+	}
+
+	// The idempotency contract comes before everything else that could refuse
+	// this request (spec section 7): a retry of an action that was already
+	// accepted returns the original even if the manifest has since changed in
+	// a way that would refuse a fresh dispatch of the same body.
+	if request.IdempotencyKey != "" {
+		original, err := s.store.ActionByIdempotencyKey(r.Context(), server.ID, request.IdempotencyKey)
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"actionId": original.ID,
+				"state":    original.State,
+			})
+			return
+		case !errors.Is(err, store.ErrNotFound):
+			s.writeInternalError(w, r, err)
+			return
+		}
 	}
 
 	params := json.RawMessage(`{}`)
@@ -102,19 +132,121 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 		params = request.Params
 	}
 
-	// The dispatch is validated against the manifest the server has published:
-	// the declared action must exist, and params must pass its schema.
-	declared, ok := s.declaredAction(w, r, server.ID, request.Code)
-	if !ok {
+	// Validate against the stored manifest, then dispatch gated on the
+	// revision the validation used. A republish landing in between refuses the
+	// insert (ErrManifestChanged), and this loop revalidates against the new
+	// manifest rather than queue params it never approved. Two rounds settle
+	// any realistic race; a manifest that changes faster than that is answered
+	// with conflict rather than chased forever.
+	for attempt := 0; ; attempt++ {
+		revision, ok := s.validateDispatch(w, r, server.ID, request.Code, params)
+		if !ok {
+			return
+		}
+
+		actionID := id.NewAt(time.Now().UTC())
+		expiresAt := time.Now().UTC().Add(clampActionTTL(request.TTLSeconds)).Truncate(time.Millisecond)
+		envelopeBody, err := json.Marshal(actionDispatchBody{
+			ActionID:     actionID,
+			Code:         request.Code,
+			Context:      request.Context,
+			ReferenceKey: request.ReferenceKey,
+			Params:       params,
+			ExpiresAt:    envelopeTimestamp(expiresAt),
+		})
+		if err != nil {
+			s.writeInternalError(w, r, err)
+			return
+		}
+
+		action, created, err := s.store.DispatchAction(r.Context(), store.NewAction{
+			ID:               actionID,
+			ServerID:         server.ID,
+			Code:             request.Code,
+			Context:          request.Context,
+			ReferenceKey:     request.ReferenceKey,
+			Params:           params,
+			IdempotencyKey:   request.IdempotencyKey,
+			ExpiresAt:        expiresAt,
+			ManifestRevision: revision,
+			EnvelopeType:     envelopeTypeActionDispatch,
+			EnvelopeBody:     envelopeBody,
+			QueueLimit:       outboundQueueLimit,
+		})
+		switch {
+		case errors.Is(err, store.ErrManifestChanged):
+			if attempt < 2 {
+				continue
+			}
+			writeError(w, http.StatusConflict, codeConflict,
+				"the server's manifest kept changing while this dispatch was being validated; try again")
+			return
+		case errors.Is(err, store.ErrOutboundQueueFull):
+			writeError(w, http.StatusConflict, codeOutboundQueueFull,
+				"this server already has "+strconv.Itoa(outboundQueueLimit)+" unacked envelopes queued")
+			return
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, codeNotFound, "no such server")
+			return
+		case err != nil:
+			s.writeInternalError(w, r, err)
+			return
+		}
+
+		if created {
+			s.waiters.notify(server.ID)
+			s.log.Info("action dispatched",
+				"serverId", server.ID, "actionId", action.ID, "code", action.Code)
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"actionId": action.ID,
+			"state":    action.State,
+		})
 		return
 	}
+}
+
+// validateDispatch checks a dispatch against the server's stored manifest and
+// returns the revision the check used, answering the client itself when the
+// dispatch cannot proceed.
+func (s *Server) validateDispatch(w http.ResponseWriter, r *http.Request, serverID, code string, params json.RawMessage) (int64, bool) {
+	manifest, err := s.store.Manifest(r.Context(), serverID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusConflict, codeUnknownAction,
+			"this server has not published a manifest, so no action can be validated or dispatched")
+		return 0, false
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return 0, false
+	}
+
+	var body manifestBody
+	if err := json.Unmarshal(manifest.Body, &body); err != nil {
+		s.writeInternalError(w, r, err)
+		return 0, false
+	}
+	var declared *manifestAction
+	for i := range body.Actions {
+		if body.Actions[i].Code == code {
+			declared = &body.Actions[i]
+			break
+		}
+	}
+	if declared == nil {
+		writeError(w, http.StatusConflict, codeUnknownAction,
+			"the server's manifest (revision "+strconv.FormatInt(manifest.Revision, 10)+
+				") does not declare the action "+code)
+		return 0, false
+	}
+
 	if len(declared.Params) > 0 && string(declared.Params) != "null" {
 		compiled, faults := schema.Compile(declared.Params)
 		if len(faults) > 0 {
 			// The manifest validator refuses these at publish; a stored schema
 			// that no longer compiles is a hub bug, not a client error.
 			s.writeInternalError(w, r, errors.New("stored manifest schema failed to compile: "+faults[0].String()))
-			return
+			return 0, false
 		}
 		if faults := compiled.Validate(params); len(faults) > 0 {
 			details := make([]map[string]string, 0, len(faults))
@@ -124,90 +256,10 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 			writeErrorDetails(w, http.StatusBadRequest, codeParamsInvalid,
 				"params do not satisfy the schema this action declared",
 				map[string]any{"errors": details})
-			return
+			return 0, false
 		}
 	}
-
-	actionID := id.NewAt(time.Now().UTC())
-	ttl := clampActionTTL(request.TTLSeconds)
-	envelopeBody, err := json.Marshal(actionDispatchBody{
-		ActionID:     actionID,
-		Code:         request.Code,
-		Context:      request.Context,
-		ReferenceKey: request.ReferenceKey,
-		Params:       params,
-		ExpiresAt:    envelopeTimestamp(time.Now().UTC().Add(ttl)),
-	})
-	if err != nil {
-		s.writeInternalError(w, r, err)
-		return
-	}
-
-	action, created, err := s.store.DispatchAction(r.Context(), store.NewAction{
-		ID:             actionID,
-		ServerID:       server.ID,
-		Code:           request.Code,
-		Context:        request.Context,
-		ReferenceKey:   request.ReferenceKey,
-		Params:         params,
-		IdempotencyKey: request.IdempotencyKey,
-		TTL:            ttl,
-		EnvelopeType:   envelopeTypeActionDispatch,
-		EnvelopeBody:   envelopeBody,
-		QueueLimit:     outboundQueueLimit,
-	})
-	switch {
-	case errors.Is(err, store.ErrOutboundQueueFull):
-		writeError(w, http.StatusConflict, codeOutboundQueueFull,
-			"this server already has "+strconv.Itoa(outboundQueueLimit)+" unacked envelopes queued")
-		return
-	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, codeNotFound, "no such server")
-		return
-	case err != nil:
-		s.writeInternalError(w, r, err)
-		return
-	}
-
-	if created {
-		s.waiters.notify(server.ID)
-		s.log.Info("action dispatched",
-			"serverId", server.ID, "actionId", action.ID, "code", action.Code)
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"actionId": action.ID,
-		"state":    action.State,
-	})
-}
-
-// declaredAction resolves an action code against the server's stored manifest,
-// answering the client itself when it cannot.
-func (s *Server) declaredAction(w http.ResponseWriter, r *http.Request, serverID, code string) (manifestAction, bool) {
-	manifest, err := s.store.Manifest(r.Context(), serverID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusConflict, codeUnknownAction,
-			"this server has not published a manifest, so no action can be validated or dispatched")
-		return manifestAction{}, false
-	case err != nil:
-		s.writeInternalError(w, r, err)
-		return manifestAction{}, false
-	}
-
-	var body manifestBody
-	if err := json.Unmarshal(manifest.Body, &body); err != nil {
-		s.writeInternalError(w, r, err)
-		return manifestAction{}, false
-	}
-	for _, action := range body.Actions {
-		if action.Code == code {
-			return action, true
-		}
-	}
-	writeError(w, http.StatusConflict, codeUnknownAction,
-		"the server's manifest (revision "+strconv.FormatInt(manifest.Revision, 10)+
-			") does not declare the action "+code)
-	return manifestAction{}, false
+	return manifest.Revision, true
 }
 
 // actionView is the Admin API representation of an action record.
@@ -327,13 +379,22 @@ func prepareActions(envelopes []inboundEnvelope) map[int]preparedAction {
 		if string(result.Result) == "null" {
 			result.Result = nil
 		}
+		if result.DurationMs != nil && *result.DurationMs < 0 {
+			// A negative duration is nonsense, not an error: dropped like any
+			// other advisory field the hub cannot use.
+			result.DurationMs = nil
+		}
 		if body.Error != nil {
 			result.Error = *body.Error
 		}
-		// The 64 KiB cap of section 7. The outcome is recorded either way; a
-		// payload over the cap is dropped and says so, because storing it
-		// would let one action monopolize the database and rejecting the
-		// envelope would strand the batch behind it.
+		// The 64 KiB cap of section 7, and its smaller sibling on error. The
+		// outcome is recorded either way; an over-cap payload is dropped and
+		// says so, because storing it would let one action monopolize the
+		// database and rejecting the envelope would strand the batch behind
+		// it.
+		if len(result.Error) > maxActionErrorBytes {
+			result.Error = truncateUTF8(result.Error, maxActionErrorBytes) + " [truncated]"
+		}
 		if len(result.Result) > maxActionResultBytes {
 			result.Result = nil
 			result.Error = joinNonEmpty(result.Error,
@@ -349,4 +410,16 @@ func joinNonEmpty(a, b string) string {
 		return b
 	}
 	return a + "; " + b
+}
+
+// truncateUTF8 cuts a string to at most limit bytes without splitting a rune.
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

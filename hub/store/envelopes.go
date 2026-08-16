@@ -427,7 +427,7 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 		}
 	}
 	for _, actionID := range application.ActionAcks {
-		started, err := applyActionAck(ctx, tx, actionID, now)
+		started, err := applyActionAck(ctx, tx, serverID, actionID, now)
 		if err != nil {
 			return InboundApplied{}, err
 		}
@@ -436,7 +436,7 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 		}
 	}
 	for _, result := range application.ActionResults {
-		finished, err := applyActionResult(ctx, tx, result, now)
+		finished, err := applyActionResult(ctx, tx, serverID, result, now)
 		if err != nil {
 			return InboundApplied{}, err
 		}
