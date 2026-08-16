@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, test, conform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
+
+      - name: Run conformance suite against a live hub
+        run: |
+          ./bin/vyshka-hub serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/ci.db" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s

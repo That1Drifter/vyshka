@@ -2,3 +2,8 @@
 *.md text
 *.yml text
 LICENSE text
+
+# Go tooling treats CRLF as unformatted, so keep these LF in the working tree
+# too, not just in the repository.
+*.go text eol=lf
+*.sql text eol=lf

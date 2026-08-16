@@ -1,2 +1,13 @@
 CLAUDE.md
 vyshka-spec.md
+
+# Build output. Anchored to the repository root so these do not match the
+# command directory hub/cmd/vyshka-hub.
+/bin/
+/vyshka-hub
+/vyshka-hub.exe
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal

@@ -8,12 +8,25 @@ telemetry, live state, webhooks, and per-mod storage. DayZ is the first supporte
 Arma Reforger is the explicit second target, and the protocol is designed to be
 game-agnostic from day one.
 
-## Status: design phase
+## Status: early implementation
 
-There is no runnable code yet. The project is currently a protocol spec:
-[`spec/protocol.md`](spec/protocol.md) (draft 0.1). The spec and its conformance suites are
-the primary product; the hub and plugins are reference implementations of it.
-Machine-readable OpenAPI and JSON Schema artifacts will land alongside it in `spec/`.
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.2), is the primary product,
+together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
+hub and plugins are reference implementations of it. Machine-readable OpenAPI and JSON Schema
+artifacts will land alongside the spec in `spec/`.
+
+What runs today is the walking skeleton: the hub boots, migrates an embedded SQLite database,
+serves `/healthz`, and is graded by the hub conformance suite in CI. No protocol surface is
+implemented yet.
+
+```
+go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
+./bin/vyshka-hub serve
+curl http://127.0.0.1:8080/healthz
+```
+
+`serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
+SQLite file), and `-log-level`. Logs are structured JSON on stdout.
 
 ## Why
 
