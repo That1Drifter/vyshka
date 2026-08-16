@@ -17,7 +17,7 @@ protocol is game-agnostic by design.
 The project is **spec-first**: the [protocol specification](spec/protocol.html) and its
 conformance suites are the product; the hub and plugins are reference implementations.
 
-**Status:** early implementation. The protocol is at draft 0.4. The hub runs today with
+**Status:** early implementation. The protocol is at draft 0.5. The hub runs today with
 enrollment, sessions, and the envelope exchange over long-poll, graded by thirty-four
 black-box conformance checks in CI. Manifests and the action lifecycle come next.
 
