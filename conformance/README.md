@@ -9,7 +9,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 | Suite | Question it answers | Status |
 |---|---|---|
 | `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, scoped tokens and audit |
-| `plugin/` | Is this plugin compliant? | Not built yet, see `plugin/README.md` |
+| `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, and a schema-invalid dispatch; see `plugin/README.md` |
 
 ## Hub suite
 
@@ -89,3 +89,24 @@ name, the suite must fail, not follow along.
 
 Checks must fail loudly rather than skip. A check that cannot run is a failing check: silent
 skips are how a suite ends up green against a hub that implements nothing.
+
+## Plugin suite
+
+The mirror image: a mock hub the candidate plugin points at, which drives it through its
+lifecycle and grades what it does. One command when the harness launches the candidate:
+
+```
+go run ./conformance/plugin -- <command that starts your plugin>
+```
+
+Or run it with no command and point a hand-started plugin at the URL and enrollment token it
+prints. Flags, the stage model, and what a candidate must declare are documented in
+`plugin/README.md`. CI runs the suite against the reference candidate in
+`plugin/driver/` on every push.
+
+Because the candidate is one long-lived process, the plugin suite's checks are staged rather
+than independent: each builds on the state the previous ones established, and a failed
+prerequisite fails its dependents loudly instead of skipping them. Protocol violations
+observed along the way (a non-ascending batch, a lowered ack, a changed retransmission, a
+verbatim buffer replay after a session change) are recorded as faults naming the spec
+section violated, and fail the stage they occurred in.
