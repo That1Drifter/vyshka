@@ -230,6 +230,12 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		// server has parked. This request picks it up itself on the read below.
 		s.waiters.notify(server.ID)
 	}
+	if applied.EventsStored > 0 || applied.ActionsFinished > 0 {
+		// Fresh telemetry and terminal actions are what webhooks push (spec
+		// section 11.1); the dispatcher's ticker would find them anyway, but a
+		// nudge makes delivery prompt.
+		s.nudgeWebhooks()
+	}
 
 	if err := s.store.TouchServer(r.Context(), server.ID); err != nil {
 		s.writeInternalError(w, r, err)

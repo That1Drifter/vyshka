@@ -29,6 +29,10 @@ func main() {
 	timeout := flag.Duration("timeout", 10*time.Second, "per-request timeout for everything but a long-poll")
 	checkTimeout := flag.Duration("check-timeout", 90*time.Second, "budget for one check, which may hold several long-polls")
 	wait := flag.Duration("wait", 0, "wait up to this long for the hub to become reachable before running checks")
+	webhookListen := flag.String("webhook-listen", "127.0.0.1:0",
+		"address the webhook checks bind their receiver on; the hub under test must be able to reach it")
+	webhookAdvertise := flag.String("webhook-advertise", "",
+		"base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels)")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
 	flag.Parse()
 
@@ -48,8 +52,10 @@ func main() {
 		// the protocol lets a hub negotiate, plus the margin a plugin must also
 		// leave (spec section 3.1.1), so a held request is never mistaken for a
 		// hung one.
-		PollClient: &http.Client{Timeout: maxPollTimeout + 5*time.Second},
-		AdminToken: *adminToken,
+		PollClient:       &http.Client{Timeout: maxPollTimeout + 5*time.Second},
+		AdminToken:       *adminToken,
+		WebhookListen:    *webhookListen,
+		WebhookAdvertise: *webhookAdvertise,
 	}
 
 	ctx := context.Background()

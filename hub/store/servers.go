@@ -52,6 +52,9 @@ type Server struct {
 	PluginName     string
 	PluginVersion  string
 	Transports     []string
+	// LinkState is the link monitor's classification (spec section 11.1):
+	// unknown until a session has been observed, then up or down.
+	LinkState string
 }
 
 // CredentialState reports whether the server can authenticate right now.
@@ -138,7 +141,7 @@ func scanTime(column sql.NullString) (*time.Time, error) {
 }
 
 const serverColumns = `id, name, game, created_at, secret_hash, enrolled_at, revoked_at,
-	plugin_name, plugin_version, transports, last_seen_at`
+	plugin_name, plugin_version, transports, last_seen_at, link_state`
 
 const sessionColumns = `id, server_id, created_at, expires_at, ended_at, end_reason,
 	protocol_version, poll_timeout_seconds, outbound_seq, outbound_ack,
@@ -157,7 +160,7 @@ func scanServer(row rowScanner) (Server, error) {
 
 	if err := row.Scan(&server.ID, &server.Name, &server.Game, &createdAt, &secretHash,
 		&enrolledAt, &revokedAt, &server.PluginName, &server.PluginVersion,
-		&transports, &lastSeenAt,
+		&transports, &lastSeenAt, &server.LinkState,
 	); err != nil {
 		return Server{}, err
 	}

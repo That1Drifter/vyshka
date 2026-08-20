@@ -72,6 +72,10 @@ type serverView struct {
 	RevokedAt       *time.Time `json:"revokedAt"`
 	CredentialState string     `json:"credentialState"`
 	LastSeenAt      *time.Time `json:"lastSeenAt"`
+	// LinkState mirrors the link monitor of spec section 11.1: unknown until a
+	// session has been observed, then up or down. Exposing it here is what
+	// makes the link bounds observable, for panels and conformance alike.
+	LinkState string `json:"linkState"`
 	// PendingEnvelopeCount is how much work is queued for this server and not
 	// yet acked: the operator's view of a link that has stopped draining.
 	PendingEnvelopeCount int          `json:"pendingEnvelopeCount"`
@@ -101,6 +105,7 @@ func newServerView(server store.Server, session *store.Session, pendingEnvelopes
 		RevokedAt:            server.RevokedAt,
 		CredentialState:      server.CredentialState(),
 		LastSeenAt:           server.LastSeenAt,
+		LinkState:            server.LinkState,
 		PendingEnvelopeCount: pendingEnvelopes,
 	}
 	if server.PluginName != "" || server.PluginVersion != "" || len(server.Transports) > 0 {

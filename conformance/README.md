@@ -8,7 +8,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 | Suite | Question it answers | Status |
 |---|---|---|
-| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, scoped tokens and audit |
+| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, scoped tokens and audit, webhooks |
 | `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, and a schema-invalid dispatch; see `plugin/README.md` |
 
 ## Hub suite
@@ -26,9 +26,9 @@ PASS  health.responds                GET /healthz answers 200 with JSON
 PASS  health.status                  GET /healthz reports status ok
 PASS  errors.shape                   An unrouted path answers 404 in the protocol error shape
 ...
-PASS  compat.unknownFields           Unknown request fields are tolerated, not rejected
+PASS  webhooks.linkTransitions       A silent server fires link lost once, and a poll restores it
 
-55 checks, 0 failed
+60 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite
@@ -41,6 +41,8 @@ could not run at all, so it drops straight into CI.
 | `-timeout` | `10s` | Per-request timeout for everything but a long-poll |
 | `-check-timeout` | `90s` | Budget for one check, which may hold several long-polls |
 | `-wait` | `0` | Poll `/healthz` for up to this long before starting, for CI |
+| `-webhook-listen` | `127.0.0.1:0` | Where the webhook checks bind their local receiver; the hub under test must be able to reach it |
+| `-webhook-advertise` | bound address | Base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels) |
 | `-json` | off | Machine-readable results instead of the text report |
 
 Long-polls get their own client, with a timeout of the protocol's maximum `pollTimeout` plus
@@ -51,6 +53,13 @@ hold out negotiate the 5 s floor; the suite spends a few seconds there and nowhe
 The admin token is required rather than optional because the suite grades both realms. A run
 that quietly skipped every Admin API check would report green against a hub that implements
 nothing, so the runner refuses to start instead.
+
+The webhook checks are the one place the suite stops being a pure client: grading push
+delivery means being a target, so those checks bind a local HTTP receiver (default
+`127.0.0.1:0`, movable with `-webhook-listen`) and the hub under test must be able to reach
+it. The link-transition check deliberately spends about half a minute silent, because the
+loss threshold a hub derives from the shortest negotiable `pollTimeout` is time nothing can
+compress.
 
 The suite creates its own server records as it goes, under the game id `conformance` and names
 prefixed `conformance:`. Point it at a scratch hub, not a production one.

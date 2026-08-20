@@ -610,6 +610,179 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/webhooks:
+    get:
+      tags: [webhooks]
+      operationId: listWebhooks
+      summary: List registered webhooks, newest first.
+      description: |
+        Requires `webhooks:manage`. No response other than the registration
+        ever carries a signing secret.
+      responses:
+        "200":
+          description: Every registered webhook.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks]
+                properties:
+                  webhooks:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [webhooks]
+      operationId: createWebhook
+      summary: Register a webhook.
+      description: |
+        Requires `webhooks:manage`, plus grants covering what the filter
+        subscribes to (spec section 11.2): a webhook is a standing export of
+        what it matches, so `events:read` coverage is required for telemetry
+        patterns, `actions:read` for a filter admitting `action.completed`,
+        and `servers:read` for the link notifications or a named serverIds
+        list. The signing secret is minted by the hub and returned in this
+        response only; the hub keeps the secret itself, because signing needs
+        it, so database access is secret access. A webhook observes only what
+        lands after registration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  maxLength: 2048
+                  description: The http(s) target deliveries are POSTed to.
+                events:
+                  type: array
+                  maxItems: 20
+                  items: { $ref: "#/components/schemas/EventPattern" }
+                  description: |
+                    Type patterns in the spec section 10.1 grammar. Absent or
+                    empty means every type. A pattern outside the grammar is
+                    refused, never a filter that silently matches nothing.
+                serverIds:
+                  type: array
+                  maxItems: 50
+                  items: { type: string }
+                  description: |
+                    Exact server ids the webhook observes; absent or empty
+                    means every server. An id naming no server is refused.
+                template:
+                  type: string
+                  enum: [generic-json]
+                  default: generic-json
+                  description: |
+                    The delivery body shape. `discord` is reserved for a
+                    future draft; an unimplemented template is refused.
+            example:
+              url: https://example.net/hooks/vyshka
+              events: ["core.player.*", "action.completed"]
+              serverIds: []
+              template: generic-json
+      responses:
+        "201":
+          description: The webhook record and its signing secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhook, secret]
+                properties:
+                  webhook: { $ref: "#/components/schemas/WebhookRecord" }
+                  secret:
+                    type: string
+                    description: The HMAC-SHA256 signing key. Returned here and nowhere else.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            Missing `webhooks:manage`, or the token's grants do not cover what
+            the filter subscribes to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: A serverIds entry names no server this hub knows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/webhooks/{webhookId}:
+    parameters:
+      - name: webhookId
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags: [webhooks]
+      operationId: deleteWebhook
+      summary: Delete a webhook.
+      description: |
+        Requires `webhooks:manage`. The webhook's pending deliveries are
+        abandoned with it (spec section 11.2).
+      responses:
+        "204":
+          description: Deleted.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such webhook.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/webhooks/{webhookId}/deliveries:
+    parameters:
+      - name: webhookId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [webhooks]
+      operationId: listWebhookDeliveries
+      summary: Read a webhook's delivery record, newest first.
+      description: |
+        Requires `webhooks:manage`. This is the visible counter of spec
+        section 11.5: pending, delivered, and dead deliveries alike, with
+        attempt counts and last failures.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the hub's cap rather than refused.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The most recent deliveries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveries]
+                properties:
+                  deliveries:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such webhook.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     adminToken:
@@ -631,7 +804,7 @@ components:
       type: object
       description: A game server as the Admin API sees it. Never carries a credential.
       required:
-        [id, name, game, createdAt, credentialState, lastSeenAt, pendingEnvelopeCount]
+        [id, name, game, createdAt, credentialState, lastSeenAt, linkState, pendingEnvelopeCount]
       properties:
         id: { type: string }
         name: { type: string }
@@ -647,6 +820,12 @@ components:
         lastSeenAt:
           oneOf: [{ type: string, format: date-time }, { type: "null" }]
           description: When the plugin last authenticated or polled.
+        linkState:
+          type: string
+          enum: [unknown, up, down]
+          description: |
+            The link monitor's classification (spec section 11.1): unknown
+            until a session has been observed, then up or down.
         pendingEnvelopeCount:
           type: integer
           minimum: 0
@@ -866,6 +1045,79 @@ components:
         nextCursor:
           type: string
           description: Opaque position to resume from. Absent on the last page.
+
+    EventPattern:
+      type: string
+      maxLength: 128
+      description: |
+        A notification type pattern in the spec section 10.1 grammar: `*`, a
+        `{prefix}.*` namespace pattern where the separating dot belongs to the
+        prefix, or an exact type. Matches telemetry types and the lifecycle
+        types (`action.completed`, `server.link.lost`, `server.link.restored`)
+        alike.
+      example: core.player.*
+
+    WebhookRecord:
+      type: object
+      required: [id, url, events, serverIds, template, createdAt]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          description: The delivery target.
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/EventPattern" }
+          description: Empty means every type.
+        serverIds:
+          type: array
+          items: { type: string }
+          description: Empty means every server.
+        template:
+          type: string
+          enum: [generic-json]
+        createdAt:
+          type: string
+          format: date-time
+
+    WebhookDelivery:
+      type: object
+      required: [id, type, serverId, state, attempts, createdAt, deliveredAt]
+      properties:
+        id:
+          type: string
+          description: Stable across the delivery's attempts; the receiver deduplicates on it.
+        type:
+          type: string
+          description: The notification type delivered.
+        serverId:
+          type: string
+        state:
+          type: string
+          enum: [pending, delivered, dead]
+          description: Dead is a state, not a deletion (spec section 11.5).
+        attempts:
+          type: integer
+          minimum: 0
+          description: Attempts made so far.
+        lastStatus:
+          type: integer
+          description: The last HTTP status received. Absent when the last failure was transport-level.
+        lastError:
+          type: string
+          description: Human-readable account of the last failure.
+        createdAt:
+          type: string
+          format: date-time
+        nextAttemptAt:
+          type: string
+          format: date-time
+          description: Present while the delivery is pending.
+        deliveredAt:
+          type: string
+          format: date-time
+          nullable: true
 
     Error:
       type: object

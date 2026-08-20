@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.10 (2026-08-16)
+**Status:** draft 0.11 (2026-08-20)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -352,6 +352,7 @@ Authorization: Bearer <admin token>
     "revokedAt": null,
     "credentialState": "none",
     "lastSeenAt": null,
+    "linkState": "unknown",
     "pendingEnvelopeCount": 0,
     "plugin": null,
     "session": null
@@ -370,6 +371,8 @@ Authorization: Bearer <admin token>
   MUST report the effective expiry in `expiresAt`.
 - `credentialState` is `none` before enrollment, `active` once enrolled, `revoked` after
   revocation.
+- `linkState` is the link monitor's classification (section 11.1): `unknown` until a
+  session has been observed, then `up` or `down`.
 - `pendingEnvelopeCount` is how many envelopes are queued for the server and not yet acked
   (section 9.4).
 - `session` is `null` when no live session exists, otherwise
@@ -848,10 +851,16 @@ supports): `player.connect`, `player.disconnect`, `player.death`, `player.damage
 `object.placed`, `item.interact`, `server.start`, `server.fps` (periodic performance
 sample), `server.stop`.
 
-**Custom events** are any other type of the same form. Same channel, same storage, same
-webhook fan-out; hubs MUST NOT privilege core events over custom events in routing or
-retention capability. A custom event MUST be accepted whether or not the manifest declared
-it (section 6.3).
+**Custom events** are any other type of the same form, with one exception: the `action`
+and `server` namespaces are **reserved** for the hub's own lifecycle notifications
+(section 11.1), and a hub MUST refuse an event whose `t` begins with `action.` or
+`server.` exactly as it refuses one outside the grammar. Without the reservation, a
+plugin's telemetry could impersonate the hub's own word to every webhook receiver, since
+both arrive through the same fan-out. Core `server` telemetry is unaffected: those types
+live under `core.` (`core.server.fps`), not under bare `server.`. Otherwise: same channel,
+same storage, same webhook fan-out; hubs MUST NOT privilege core events over custom events
+in routing or retention capability. A custom event MUST be accepted whether or not the
+manifest declared it (section 6.3).
 
 **Timestamps.** A hub MUST NOT refuse an event over `ts` alone; when `ts` is absent or
 unparseable it MUST substitute its own receipt time, exactly as section 4 requires for the
@@ -1305,14 +1314,245 @@ It is retired by removing it from the hub's configuration and restarting.
 
 ## 11. Webhooks
 
-`POST /api/v1/webhooks` registers a target URL, an event filter (type patterns, server
-ids), and an optional template (`generic-json` | `discord`).
+Webhooks push what the hub already knows to systems that cannot poll for it: a chat
+channel, a moderation bot, an ops dashboard. A webhook is a registered target URL with an
+event filter; when a matching notification lands, the hub delivers a signed HTTP POST to
+the target, retries failures with increasing delays, and dead-letters what never
+succeeds, with every failure visible through the API.
 
-- Deliveries MUST be signed: `X-Vyshka-Signature: hmac-sha256(secret, body)`.
-- Failed deliveries MUST be retried with exponential backoff (reference: 5 attempts over
-  ~15 min) and then dead-lettered with a visible failure count.
-- Subscribable events: every telemetry type plus lifecycle events (`action.completed`,
-  `server.link.lost`, `server.link.restored`).
+Webhooks are observers. A delivery, failed or not, MUST NOT affect the ingest, storage,
+or lifecycle of whatever triggered it, and a hub MUST NOT lose a matching notification
+that arrives after the webhook was registered merely because the delivery pipeline was
+busy or down: what cannot be delivered yet is queued, and what can never be delivered is
+dead-lettered where the operator can see it.
+
+### 11.1 Subscribable notifications
+
+A webhook subscribes by type, using the pattern grammar of section 10.1 (`*`, a
+`{prefix}.*` prefix, or an exact value). Two kinds of notification exist, matched by the
+same patterns:
+
+- **Telemetry**: every stored event (section 8.1), core and custom alike, under its own
+  type. A refused batch stores nothing and therefore notifies nothing, and a hub MUST NOT
+  privilege core events over custom events here any more than in section 8.
+- **Lifecycle**: notifications the hub itself emits:
+
+| Type | Fires when | `data` carries |
+|---|---|---|
+| `action.completed` | An action reaches a terminal state: completed, failed, or expired (section 7) | The action record: `actionId`, `code`, `state`, `ok`, `error`, `durationMs`, `createdAt`, `finishedAt` |
+| `server.link.lost` | A server that was reachable stops being reachable | `lastSeenAt` |
+| `server.link.restored` | A server whose link was lost is reachable again | `lastSeenAt` |
+
+Link semantics: a server is **reachable** while it holds a live session and Plugin API
+traffic from it has arrived recently, where "recently" is derived from the negotiated
+`pollTimeout`, because that is the longest silence a healthy plugin can produce. The
+reference derivation treats the link as lost when nothing has arrived for twice the
+`pollTimeout` plus 10 s; a hub MAY derive differently but MUST have classified the link
+as lost no later than four times the `pollTimeout` plus 30 s after the last traffic,
+because a bound nothing enforces is a bound the conformance suite cannot grade and an
+operator cannot rely on.
+
+The notifications fire on observed transitions between reachable and lost, exactly once
+per transition rather than once per check. A server's **first** classification, whichever
+way it goes, fires nothing: a hub restarting or upgrading must not announce a fleet of
+losses for servers that merely predate its bookkeeping, and a server that has never had a
+session has no link to lose. `server.link.restored` fires when a server classified lost
+becomes reachable again.
+
+A hub MUST expose its current classification on the server record as `linkState`
+(section 5.1): `unknown | up | down`. The bounds here are gradeable only because the state
+they govern is observable, and the ceiling above bounds staleness in both directions: a
+hub MUST have classified a reachable server `up`, and an unreachable one `down`, within
+four times the negotiated `pollTimeout` plus 30 s of the evidence changing.
+
+### 11.2 Registration (Admin API)
+
+Every webhook route requires the `webhooks:manage` scope, and registration requires more:
+a webhook is a standing export of everything its filter matches, so the registering token
+MUST also hold grants **covering** what it subscribes to (the coverage rule of section
+10.3), or `webhooks:manage` would quietly be an installation-wide read grant. Concretely:
+
+- A pattern that can match telemetry requires `events:read` coverage of that pattern.
+- A filter that admits `action.completed` requires `actions:read` (unnarrowed: the
+  notification carries any code's record).
+- A filter that admits the link notifications, and a non-empty `serverIds` list (which can
+  otherwise be used to probe which server ids exist), require `servers:read`.
+- An absent or empty `events` filter subscribes to everything and requires all three.
+
+The namespace reservation of section 8.1 is what makes this decidable: a filter naming
+only reserved lifecycle types can never match telemetry, so it needs no `events:read`. A
+registration the token's grants do not cover is `forbidden` (403).
+
+`webhooks:manage` still carries real weight on its own: it aims signed POSTs at any URL
+the hub can reach, including addresses internal to the hub's own network, so operators
+SHOULD grant it like the capability it is.
+
+```
+POST /api/v1/webhooks
+Authorization: Bearer <admin token>
+{
+  "url": "https://example.net/hooks/vyshka",
+  "events": ["core.player.*", "action.completed"],
+  "serverIds": [],
+  "template": "generic-json"
+}
+
+-> 201 Created
+{
+  "webhook": {
+    "id": "01J5QK...",
+    "url": "https://example.net/hooks/vyshka",
+    "events": ["core.player.*", "action.completed"],
+    "serverIds": [],
+    "template": "generic-json",
+    "createdAt": "2026-08-20T18:00:00.000Z"
+  },
+  "secret": "<signing secret>"
+}
+```
+
+- `url` is REQUIRED and MUST be `http` or `https`.
+- `events` is OPTIONAL: patterns in the section 10.1 grammar; absent or empty means every
+  type. A pattern outside the grammar is `bad_request`, never a filter that silently
+  matches nothing.
+- `serverIds` is OPTIONAL: exact server ids the webhook observes; absent or empty means
+  every server. An entry naming no server the hub knows is `not_found`, because a typo
+  here would otherwise become a webhook that silently never fires.
+- `template` is OPTIONAL and defaults to `generic-json`, the shape of section 11.3.
+  `discord` is reserved for a future draft; a template the hub does not implement is
+  `bad_request`.
+- `secret` is minted by the hub and returned only in this response. Unlike the credentials
+  of section 5, the hub cannot store a digest of it, because signing needs the secret
+  itself; operators should treat read access to the hub's database as read access to
+  webhook secrets.
+- A webhook observes only what lands after it is registered. Registration is not a
+  backfill request, and a hub MUST NOT replay stored history into a new webhook.
+
+| Request | Result |
+|---|---|
+| `GET /api/v1/webhooks` | `{ "webhooks": [ ... ] }`, newest first, without secrets |
+| `DELETE /api/v1/webhooks/{webhookId}` | `204`; the webhook's pending deliveries are abandoned |
+| `GET /api/v1/webhooks/{webhookId}/deliveries` | The webhook's most recent deliveries, newest first (see section 11.5) |
+
+A hub SHOULD redact the query, fragment, and userinfo of a webhook's URL wherever it logs
+or audits one: target URLs routinely embed bearer credentials in exactly those parts, and
+logs outlive and outtravel webhook configuration.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template |
+| `forbidden` | 403 | The token's grants do not cover what the filter subscribes to |
+| `not_found` | 404 | Unknown webhook id, or a `serverIds` entry naming no server |
+
+### 11.3 Delivery
+
+One matching notification produces one delivery per matching webhook: an HTTP POST of the
+`generic-json` body to the target URL.
+
+```
+POST <target url>
+Content-Type: application/json
+X-Vyshka-Delivery: 01J5QN...
+X-Vyshka-Attempt: 2
+X-Vyshka-Signature: sha256=7f1d...
+
+{
+  "deliveryId": "01J5QN...",
+  "webhookId": "01J5QK...",
+  "type": "core.player.death",
+  "serverId": "01J5QM...",
+  "eventId": "01J5QP...",
+  "occurredAt": "2026-08-20T18:00:00.000Z",
+  "data": { }
+}
+```
+
+- `deliveryId` is unique per delivery and stable across its retries. It is repeated in
+  the `X-Vyshka-Delivery` header as a convenience, but the signed body's copy is the
+  authoritative one: a receiver that deduplicates SHOULD verify the signature first and
+  key on the body's `deliveryId`, because an unsigned header a forger can set must never
+  be able to make a receiver discard the genuine delivery.
+- `eventId` names the stored telemetry event behind a telemetry delivery, so a receiver
+  can correlate with the section 8.5 feed; lifecycle deliveries omit it.
+- `occurredAt` is the event's own `occurredAt` for telemetry, the action's `finishedAt`
+  for `action.completed`, and the transition time for the link notifications.
+- The body MUST be byte-for-byte identical on every attempt of one delivery, so its
+  signature is too. `X-Vyshka-Attempt` is 1-based and lives in a header precisely so the
+  body can stay stable.
+- A response with a 2xx status is success. Any other status, a transport failure, or a
+  response slower than the hub's delivery timeout (reference: 10 s) is failure.
+- A hub MUST NOT follow redirects: a 3xx answer is a failure like any other non-2xx
+  status. Following one would resend the signed body and headers to an address nobody
+  registered and no audit names, which is exactly the laundering the registration-time
+  URL scrutiny exists to prevent.
+- Delivery order between notifications is not guaranteed; a receiver that needs order has
+  `occurredAt`.
+
+### 11.4 Signature
+
+```
+X-Vyshka-Signature: sha256=<hex>
+```
+
+where `<hex>` is the lowercase hexadecimal HMAC-SHA256 of the raw request body bytes,
+keyed with the webhook's secret. Every delivery MUST be signed. The `sha256=` prefix
+names the algorithm so a future draft can rotate it without changing the header. A
+receiver SHOULD verify the signature with a constant-time comparison and reject anything
+unsigned or mis-signed: the target URL is reachable by anyone who can reach the receiver,
+and the signature is the only thing that makes a delivery the hub's word.
+
+The signature authenticates content, not freshness: a captured delivery replays verbatim
+forever. The stable, signed `deliveryId` makes replays idempotent for a receiver that
+deduplicates, and an `https` target denies capture in the first place; a receiver that
+needs more than that is asking a shared secret to be a session protocol and should sit
+behind TLS regardless.
+
+### 11.5 Retries and the dead letter
+
+A delivery that failed is retried; one that can never succeed is dead-lettered, never
+silently discarded. This is section 9.4's principle pointed outward: nothing is dropped
+without a visible counter.
+
+- A failed delivery MUST be retried with increasing delays, and the first retry MUST be
+  **scheduled** no more than 60 s after the failed attempt: retries measured in minutes
+  from the start would make webhook problems undiagnosable in any interactive session,
+  and the schedule is visible through `nextAttemptAt`, which is what lets the conformance
+  suite grade the bound. The attempt itself then contends with every other due delivery,
+  so a hub SHOULD size its delivery concurrency so that a healthy target's retry also
+  lands within the minute. Later delays are the hub's own; the reference schedule retries
+  after 10 s, 1 min, 4 min, and 10 min, five attempts over roughly a quarter hour.
+- When its schedule is exhausted, the delivery MUST be marked **dead** and never tried
+  again. Dead is a state, not a deletion: the delivery, its attempt count, and its last
+  failure MUST be retained and readable through the deliveries page until retention prunes
+  them, and retention is counted from the delivery's terminal instant, not its creation,
+  so a delivery that spent its whole schedule pending gets the same readable afterlife as
+  one that died at once (reference: delivered and dead deliveries are kept 7 days). The
+  page is finite (below), so a record can scroll out of practical reach before retention
+  takes it; a cursor over deliveries is deliberately deferred to a future draft, and until
+  then the caller's remedies are a wider `limit` and a shorter retention.
+- A hub MAY bound how many pending deliveries it holds per webhook (reference: 1 000).
+  At the bound, a new delivery for that webhook is created dead, with a `lastError`
+  saying so: the queue being full is exactly the kind of failure webhooks exist to make
+  visible, so it must not be hidden by discarding the evidence.
+- `GET /api/v1/webhooks/{webhookId}/deliveries` exposes the record, newest first:
+
+```
+-> 200 OK
+{
+  "deliveries": [
+    { "id": "01J5QN...", "type": "core.player.death", "serverId": "01J5QM...",
+      "state": "pending", "attempts": 2, "lastStatus": 500, "lastError": "status 500",
+      "createdAt": "...", "nextAttemptAt": "...", "deliveredAt": null }
+  ]
+}
+```
+
+`state` is `pending | delivered | dead`. `attempts` counts attempts made; `lastStatus` is
+the last HTTP status received, absent when the failure was transport-level, and
+`lastError` a human-readable account of the last failure. `nextAttemptAt` is present
+while the delivery is pending. The page is bounded, but the bound is the caller's to
+widen: `limit` is clamped into the hub's range (reference default 100, cap 500) rather
+than refused, the same contract as section 8.5's feed.
 
 ## 12. Key/value store
 

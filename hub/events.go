@@ -300,6 +300,14 @@ func (s *Server) validateEventBatch(body json.RawMessage, now time.Time) ([]stor
 				maxEventType, truncateUTF8(event.T, 64))
 			continue
 		}
+		// The action and server namespaces belong to the hub's own lifecycle
+		// notifications (spec sections 8.1 and 11.1). Telemetry admitted there
+		// would reach webhook receivers looking exactly like the hub's word.
+		if strings.HasPrefix(event.T, "action.") || strings.HasPrefix(event.T, "server.") {
+			fault(path+".t",
+				"the action and server namespaces are reserved for the hub's lifecycle notifications; core server telemetry lives under core.server.*")
+			continue
+		}
 
 		data := json.RawMessage(`{}`)
 		if len(event.Data) > 0 && string(event.Data) != "null" {

@@ -21,10 +21,11 @@ conformance suites are the product; the hub and plugins are reference implementa
 enrollment, sessions, the envelope exchange over long-poll, manifest publish with
 schema-subset validation, the full action lifecycle (dispatch, execute, observe, expire),
 telemetry ingest with a queryable event feed, and scoped Admin API tokens with an audit log,
-graded by fifty-five black-box conformance checks in CI. The plugin conformance harness now
-runs too: a mock hub that grades any candidate plugin black-box, including the
-session-change renumbering rule that only shows up when a game server restarts with traffic
-in flight. Webhooks come next.
+and webhooks with signed delivery, retries, and a dead letter, graded by sixty black-box
+conformance checks in CI. The plugin conformance harness runs too: a mock hub that grades
+any candidate plugin black-box, including the session-change renumbering rule that only
+shows up when a game server restarts with traffic in flight. The per-mod key/value store
+comes next.
 
 ## Start here
 

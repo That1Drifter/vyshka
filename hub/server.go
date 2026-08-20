@@ -52,6 +52,17 @@ type Config struct {
 	// RetentionInterval is how often the retention passes run, for events and
 	// for audit records alike.
 	RetentionInterval time.Duration
+	// WebhookRetryDelays are the waits between a failed webhook delivery
+	// attempt and the next one (spec section 11.5); total attempts are one more
+	// than the number of delays. Nil means the reference schedule. The first
+	// delay is clamped to 60 s because the protocol requires the first retry
+	// within that window, whatever the configuration says.
+	WebhookRetryDelays []time.Duration
+	// WebhookDeliveryTimeout bounds one delivery attempt end to end.
+	WebhookDeliveryTimeout time.Duration
+	// WebhookDeliveryRetention is how long delivered and dead deliveries stay
+	// readable before the retention pass prunes them.
+	WebhookDeliveryRetention time.Duration
 }
 
 func (c *Config) withDefaults() {
@@ -88,6 +99,37 @@ func (c *Config) withDefaults() {
 	if c.RetentionInterval <= 0 {
 		c.RetentionInterval = 5 * time.Minute
 	}
+	// The retry schedule is sanitized rather than trusted, because section 11.5
+	// makes promises no configuration may opt the hub out of: a failed delivery
+	// is retried at least once, delays are never negative, and the first retry
+	// is scheduled within 60 s (clamped to 50 s here, leaving the dispatcher's
+	// own cadence inside the bound).
+	if len(c.WebhookRetryDelays) == 0 {
+		// Nil and empty alike: the reference schedule of spec section 11.5,
+		// five attempts over roughly a quarter hour.
+		c.WebhookRetryDelays = []time.Duration{
+			10 * time.Second, time.Minute, 4 * time.Minute, 10 * time.Minute,
+		}
+	}
+	if c.WebhookRetryDelays[0] < 0 {
+		c.WebhookRetryDelays[0] = 0
+	}
+	if c.WebhookRetryDelays[0] > 50*time.Second {
+		c.WebhookRetryDelays[0] = 50 * time.Second
+	}
+	// Section 11.5 promises increasing delays; a configured schedule that dips
+	// is raised to monotone rather than honored.
+	for i := 1; i < len(c.WebhookRetryDelays); i++ {
+		if c.WebhookRetryDelays[i] < c.WebhookRetryDelays[i-1] {
+			c.WebhookRetryDelays[i] = c.WebhookRetryDelays[i-1]
+		}
+	}
+	if c.WebhookDeliveryTimeout <= 0 {
+		c.WebhookDeliveryTimeout = 10 * time.Second
+	}
+	if c.WebhookDeliveryRetention <= 0 {
+		c.WebhookDeliveryRetention = 7 * 24 * time.Hour
+	}
 }
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
@@ -106,10 +148,20 @@ type Server struct {
 	handler http.Handler
 	started time.Time
 	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
-	// Close never races the loop against the store it is closing.
+	// Close never races the loop against the store it is closing. The webhook
+	// dispatcher shares the stop channel and confirms through dispatcherDone.
 	stopSweeper chan struct{}
 	sweeperDone chan struct{}
-	closeOnce   sync.Once
+	// webhookWake nudges the webhook dispatcher when fresh work landed;
+	// webhookClient makes its delivery attempts.
+	webhookWake    chan struct{}
+	dispatcherDone chan struct{}
+	webhookClient  *http.Client
+	// baseCtx parents every in-flight delivery attempt; Close cancels it so
+	// shutdown never waits out a slow webhook target's timeout.
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
+	closeOnce  sync.Once
 }
 
 // New opens the store, runs migrations, and builds the HTTP handler. The caller
@@ -185,20 +237,33 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:         cfg,
-		log:         cfg.Logger,
-		store:       st,
-		waiters:     newWaiters(),
-		holds:       newHolds(),
-		started:     time.Now(),
-		stopSweeper: make(chan struct{}),
-		sweeperDone: make(chan struct{}),
+		cfg:            cfg,
+		log:            cfg.Logger,
+		store:          st,
+		waiters:        newWaiters(),
+		holds:          newHolds(),
+		started:        time.Now(),
+		stopSweeper:    make(chan struct{}),
+		sweeperDone:    make(chan struct{}),
+		webhookWake:    make(chan struct{}, 1),
+		dispatcherDone: make(chan struct{}),
+		webhookClient: &http.Client{
+			Timeout: cfg.WebhookDeliveryTimeout,
+			// A 3xx is handed back as the final answer, never followed: a
+			// redirect would resend the signed body to an address nobody
+			// registered and no audit names (spec section 11.3).
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
+	s.baseCtx, s.baseCancel = context.WithCancel(context.Background())
 	if bootstrapToken != "" {
 		s.bootstrapTokenHash = token.Hash(bootstrapToken)
 	}
 	s.handler = s.routes()
 	go s.runMaintenance()
+	go s.runWebhookDispatcher()
 	return s, nil
 }
 
@@ -240,10 +305,17 @@ func (s *Server) runMaintenance() {
 			}
 			if expired > 0 {
 				s.log.Info("actions expired", "count", expired)
+				// Expiry is a terminal state, and terminal states owe the
+				// action.completed webhooks a notification (spec section 11.1).
+				s.nudgeWebhooks()
 			}
 		case <-prune.C:
 			s.prune("events", s.store.PruneEvents)
 			s.prune("audit records", s.store.PruneAudit)
+			s.prune("webhook deliveries", func(ctx context.Context, limit int) (int, error) {
+				cutoff := time.Now().UTC().Add(-s.cfg.WebhookDeliveryRetention)
+				return s.store.PruneWebhookDeliveries(ctx, cutoff, limit)
+			})
 		}
 	}
 }
@@ -354,6 +426,21 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/audit", s.admin(resourceAdmin, "", s.handleListAudit))
 	mux.HandleFunc("/api/v1/audit", methodNotAllowed("GET"))
 
+	// Webhooks (spec section 11), all behind webhooks:manage: registration can
+	// aim signed POSTs at anything the hub can reach, and the delivery record
+	// names every target, so reading and writing carry the same weight here.
+	mux.HandleFunc("POST /api/v1/webhooks", s.admin(resourceWebhooks, verbManage, s.handleCreateWebhook))
+	mux.HandleFunc("GET /api/v1/webhooks", s.admin(resourceWebhooks, verbManage, s.handleListWebhooks))
+	mux.HandleFunc("/api/v1/webhooks", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("DELETE /api/v1/webhooks/{webhookId}",
+		s.admin(resourceWebhooks, verbManage, s.handleDeleteWebhook))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}", methodNotAllowed("DELETE"))
+
+	mux.HandleFunc("GET /api/v1/webhooks/{webhookId}/deliveries",
+		s.admin(resourceWebhooks, verbManage, s.handleListWebhookDeliveries))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries", methodNotAllowed("GET"))
+
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
 	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)
@@ -414,7 +501,9 @@ func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.stopSweeper)
+		s.baseCancel()
 		<-s.sweeperDone
+		<-s.dispatcherDone
 		err = s.store.Close()
 	})
 	return err
