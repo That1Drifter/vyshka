@@ -36,6 +36,13 @@ type Env struct {
 	// AdminToken is the hub's bootstrap Admin API credential. The suite cannot
 	// grade enrollment without one, so the runner refuses to start without it.
 	AdminToken string
+	// WebhookListen is where the webhook checks bind their local receiver.
+	// Empty means 127.0.0.1:0, which works whenever the hub under test can
+	// reach this machine's loopback. WebhookAdvertise, when set, is the base
+	// URL the hub is told to deliver to instead of the bound address, for hubs
+	// that reach this machine through a container boundary or a tunnel.
+	WebhookListen    string
+	WebhookAdvertise string
 }
 
 // get issues a GET against the target hub and returns the response body.
@@ -183,6 +190,7 @@ type serverRecord struct {
 	CreatedAt            string  `json:"createdAt"`
 	CredentialState      string  `json:"credentialState"`
 	LastSeenAt           *string `json:"lastSeenAt"`
+	LinkState            string  `json:"linkState"`
 	PendingEnvelopeCount int     `json:"pendingEnvelopeCount"`
 	Session              *struct {
 		ID                 string `json:"id"`
@@ -3224,6 +3232,36 @@ var checks = []Check{
 				"fieldFromALaterDraft": []int{1, 2, 3},
 			}, http.StatusCreated, &enrolled)
 		},
+	},
+	{
+		ID:      "webhooks.register",
+		Title:   "Webhook registration validates and never re-leaks the secret",
+		Section: "11.2",
+		Run:     checkWebhookRegister,
+	},
+	{
+		ID:      "webhooks.scope",
+		Title:   "Webhook routes require webhooks:manage",
+		Section: "11.2",
+		Run:     checkWebhookScope,
+	},
+	{
+		ID:      "webhooks.signedDelivery",
+		Title:   "A matching event arrives as a signed generic-json delivery",
+		Section: "11.3",
+		Run:     checkWebhookSignedDelivery,
+	},
+	{
+		ID:      "webhooks.retryVisible",
+		Title:   "A failing target is retried promptly with the failures visible",
+		Section: "11.5",
+		Run:     checkWebhookRetryVisible,
+	},
+	{
+		ID:      "webhooks.linkTransitions",
+		Title:   "A silent server fires link lost once, and a poll restores it",
+		Section: "11.1",
+		Run:     checkWebhookLinkTransitions,
 	},
 }
 

@@ -12,6 +12,59 @@ point if needed.
 
 ### Added
 
+- 2026-08-20: webhooks with signed delivery (spec section 11, issue #10). Section 11 grows
+  from a stub into the full contract, and the hub implements it: `POST /api/v1/webhooks`
+  registers a target URL with an event filter (type patterns in the section 10.1 grammar,
+  optional exact server ids) behind the `webhooks:manage` scope, and every matching
+  notification is POSTed to the target as a `generic-json` body signed with
+  `X-Vyshka-Signature: sha256=<hex HMAC-SHA256>` under a per-webhook secret returned once at
+  registration. Subscribable notifications are every stored telemetry event plus three the
+  hub emits itself: `action.completed` on every terminal action state, expiry included, and
+  `server.link.lost` / `server.link.restored`, driven by a link monitor that derives its
+  loss threshold from the negotiated `pollTimeout` (twice it, plus 10 s) and fires once per
+  transition, never for a server that was never seen. Delivery is an outbox: stored events
+  and finished actions carry a `notified` flag cleared in the same transaction that enqueues
+  their deliveries, so a crash costs neither a lost notification nor a duplicate, and the
+  payload is rendered once so every attempt sends byte-identical, identically signed bytes
+  with the attempt number in a header. Failures retry on a schedule whose first retry the
+  protocol pins inside 60 s, precisely so retry behavior is observable by a conformance
+  suite and an operator alike (reference: 10 s, 1 min, 4 min, 10 min); an exhausted schedule
+  dead-letters the delivery, dead being a state that stays readable through
+  `GET /api/v1/webhooks/{id}/deliveries` along with attempt counts and last failures, and a
+  per-webhook pending bound creates over-bound deliveries dead with a reason rather than
+  discarding the evidence. Five new conformance checks grade registration and secret
+  hygiene, scope enforcement, the signed delivery, visible retries, and both link
+  transitions; the suite gains `-webhook-listen` because grading push delivery means being a
+  target. `scripts/demo-webhooks.sh` shows a local receiver getting a signed
+  `core.player.death` and verifying it with openssl. Protocol draft 0.11; the `discord`
+  template stays reserved for a follow-up.
+
+  An adversarial review pass then hardened the security model beyond the first cut, and the
+  spec with it. Registration now requires grants covering what the filter subscribes to,
+  because `webhooks:manage` alone would otherwise have been a quiet installation-wide read
+  grant: `events:read` coverage per telemetry pattern, `actions:read` for a filter admitting
+  `action.completed`, `servers:read` for the link notifications or a named `serverIds` list.
+  The `action` and `server` event namespaces are reserved at ingest (section 8.1) so plugin
+  telemetry can never impersonate the hub's lifecycle notifications to a receiver, which is
+  also what makes the coverage rule decidable. Redirects are never followed, a webhook's URL
+  is redacted in logs and the audit trail, and webhooks are read inside the fan-out
+  transaction with a registration-time boundary on every notification, closing both the
+  backfill and the lost-notification races a snapshot outside the transaction allowed. Link
+  transitions are guarded on the exact `lastSeenAt` they were computed from and a
+  restoration additionally on a live session existing inside the transaction, a server's
+  first classification is silent in both directions, the server record now exposes
+  `linkState` (section 5.1) so the state the bounds govern is observable, and the spec
+  gained a normative ceiling (four `pollTimeout`s plus 30 s) bounding both the loss and the
+  classification lag. Delivery retention counts
+  from the terminal instant, the deliveries page takes `limit`, attempts record their
+  outcome even when the target is slower than the bookkeeping, and shutdown cancels
+  in-flight attempts instead of waiting them out. The conformance checks grew teeth to
+  match: all four routes are scope-checked, the secret's value is searched for in raw
+  response bytes rather than under a guessed field name, deliveries must be well-formed
+  POSTs with exactly one signature header, lifecycle deliveries are signature-verified too,
+  the retry schedule is graded through `nextAttemptAt`, and `-webhook-advertise` separates
+  where the receiver binds from where the hub is told to deliver.
+
 - 2026-08-20: the plugin conformance harness (spec section 14, issue #9), the artifact that
   makes third-party plugins possible. `conformance/plugin` is a mock hub a candidate plugin
   points at instead of a real one: it walks the plugin through enrollment, sessions,

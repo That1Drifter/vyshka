@@ -24,6 +24,7 @@ const (
 	Server     = "vys" // permanent per-server secret
 	Session    = "vyt" // short-lived session token
 	Admin      = "vya" // Admin API bearer token
+	Webhook    = "vyw" // webhook signing secret
 )
 
 // New returns a fresh token in the given realm.
