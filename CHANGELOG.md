@@ -12,7 +12,30 @@ point if needed.
 
 ### Added
 
-- 2026-08-16: scoped Admin API tokens and the audit log (spec section 10). Until now a single
+- 2026-08-20: the plugin conformance harness (spec section 14, issue #9), the artifact that
+  makes third-party plugins possible. `conformance/plugin` is a mock hub a candidate plugin
+  points at instead of a real one: it walks the plugin through enrollment, sessions,
+  long-poll, manifest publish, and action round-trips, then misbehaves on purpose the way
+  only a hub can, redelivering a delivered envelope verbatim, dispatching the same actionId
+  in a fresh envelope, withholding acks, resetting every connection to simulate an outage,
+  and invalidating the session with envelopes still unacked. Eleven staged checks grade the
+  responses; the stage that earns the harness its keep is the session-change one, which
+  forces the section 9.1 renumbering case (seq moves, id, type, ts and body do not) and
+  names a verbatim buffer replay explicitly, because that failure only surfaces in the wild
+  when a game server restarts with traffic in flight. Everything the plugin sends is also
+  validated as it arrives, and violations are recorded as faults citing the spec section
+  broken, failing the stage they occurred in. The checks are stages rather than the hub
+  suite's independent checks because the candidate is one long-lived process: each stage
+  builds on the last, and a failed prerequisite fails its dependents loudly instead of
+  skipping them. The harness synthesizes dispatch params from whatever schema the
+  candidate's manifest declares (and, for the crash check, params that violate it), so it
+  grades real plugins, not just ones that declare a blessed test action; the one requirement
+  beyond the protocol is that the manifest declare at least one action. A reference
+  candidate lives in `conformance/plugin/driver`: a minimal autonomous plugin with an
+  executed-actionId LRU, an unacked-envelope buffer, and session-change renumbering, which
+  CI now grades on every push to keep the suite honest in the green direction, while
+  `harness_test.go` points deliberately broken clients at the mock hub to keep it honest in
+  the red direction. Neither imports hub code; both speak only HTTP. Until now a single
   bootstrap credential could do everything on the Admin API, and every slice since enrollment
   had widened what that meant. A token now carries an explicit set of grants in a closed
   `resource:verb[:pattern]` grammar, and every route enforces one: `servers:read`,

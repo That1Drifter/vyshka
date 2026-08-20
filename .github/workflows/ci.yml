@@ -51,6 +51,9 @@ jobs:
           trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
           go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
 
+      - name: Run the plugin conformance suite against the reference driver
+        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver
+
       - name: Validate the spec documents
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
