@@ -22,12 +22,13 @@ const (
 // lengths mirror the caps the rest of the protocol already applies to names
 // and types.
 const (
-	maxManifestActions  = 500
-	maxManifestContexts = 100
-	maxManifestEvents   = 500
-	maxCodeLength       = 128
-	maxLabelLength      = 200
-	maxNamespaceLength  = 64
+	maxManifestActions      = 500
+	maxManifestContexts     = 100
+	maxManifestEvents       = 500
+	maxManifestKVNamespaces = 100
+	maxCodeLength           = 128
+	maxLabelLength          = 200
+	maxNamespaceLength      = 64
 
 	// maxManifestFaults caps how many faults a manifest.reject echoes back. A
 	// manifest wrong in more ways than this is wrong enough to fix iteratively.
@@ -57,6 +58,7 @@ type manifestBody struct {
 	Actions          []manifestAction  `json:"actions"`
 	Contexts         []manifestContext `json:"contexts"`
 	Events           []manifestEvent   `json:"events"`
+	KVNamespaces     []string          `json:"kvNamespaces"`
 }
 
 type manifestPlugin struct {
@@ -220,6 +222,30 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 			fault(path+".namespace", "namespace is longer than %d characters", maxNamespaceLength)
 		}
 		faults = append(faults, compileParams(declared.Payload, path+".payload")...)
+	}
+
+	// kvNamespaces is validated against the full section 12.1 grammar, not
+	// just a length cap like the display namespaces above, because this field
+	// grants access (section 6.6): a malformed grant must fail at publish
+	// time, where the plugin author is looking, not at the first KV call in
+	// production.
+	if len(manifest.KVNamespaces) > maxManifestKVNamespaces {
+		fault("kvNamespaces", "a manifest may declare at most %d KV namespaces, got %d",
+			maxManifestKVNamespaces, len(manifest.KVNamespaces))
+		manifest.KVNamespaces = nil
+	}
+	kvNamespaces := make(map[string]bool, len(manifest.KVNamespaces))
+	for i, namespace := range manifest.KVNamespaces {
+		path := fmt.Sprintf("kvNamespaces[%d]", i)
+		switch {
+		case !validKVName(namespace, maxNamespaceLength):
+			fault(path, "%q is not a KV namespace: dot-separated segments of letters, digits, _, and -, at most %d characters",
+				namespace, maxNamespaceLength)
+		case kvNamespaces[namespace]:
+			fault(path, "namespace %q appears more than once", namespace)
+		default:
+			kvNamespaces[namespace] = true
+		}
 	}
 
 	if len(faults) > 0 {

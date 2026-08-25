@@ -35,6 +35,7 @@ const (
 	codeOutboundQueueFull          = "outbound_queue_full"
 	codeUnknownAction              = "unknown_action"
 	codeParamsInvalid              = "params_invalid"
+	codeRevisionMismatch           = "revision_mismatch"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the

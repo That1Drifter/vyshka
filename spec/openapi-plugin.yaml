@@ -33,6 +33,11 @@ tags:
     description: Turning credentials into a session.
   - name: transport
     description: The envelope exchange that carries everything else.
+  - name: kv
+    description: |
+      The per-mod key/value store (spec section 12): synchronous
+      request/response, never envelopes, confined to the namespaces the
+      server's stored manifest declares in `kvNamespaces` (section 6.6).
 
 paths:
   /plugin/v1/enroll:
@@ -278,6 +283,109 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
+  /plugin/v1/kv/{namespace}/{key}:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+      - $ref: "#/components/parameters/KVKey"
+    get:
+      tags: [kv]
+      operationId: kvGet
+      summary: Read one key.
+      security:
+        - sessionToken: []
+      responses:
+        "200":
+          description: The key, its value, and its revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KVEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "404": { $ref: "#/components/responses/KVNotFound" }
+    put:
+      tags: [kv]
+      operationId: kvSet
+      summary: Write one key, optionally as a compare-and-swap.
+      description: |
+        A set defines the key entirely: `ttlSeconds` absent means no expiry,
+        whatever TTL the key carried before. `ifRevision` makes the write
+        conditional: 0 means "only if the key does not exist", n >= 1 "only if
+        the current revision is exactly n". A mismatch answers
+        `409 revision_mismatch` with `details.revision` carrying the current
+        revision (0 when the key does not exist).
+      security:
+        - sessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KVSetRequest" }
+      responses:
+        "200":
+          description: The key's new revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KVWriteResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "409": { $ref: "#/components/responses/KVRevisionMismatch" }
+    delete:
+      tags: [kv]
+      operationId: kvDelete
+      summary: Delete one key.
+      description: |
+        Unconditional. A retry that finds the key already gone gets
+        `not_found` and treats it as success.
+      security:
+        - sessionToken: []
+      responses:
+        "204":
+          description: The key was deleted.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "404": { $ref: "#/components/responses/KVNotFound" }
+
+  /plugin/v1/kv/{namespace}/{key}/incr:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+      - $ref: "#/components/parameters/KVKey"
+    post:
+      tags: [kv]
+      operationId: kvIncr
+      summary: Atomically add an integer to one key.
+      description: |
+        Creates the key at `delta` (revision 1, no TTL) when absent. Decrement
+        is a negative `delta`. Concurrent incrs each land exactly once. An
+        existing value that is not a JSON integer within ±2^53, or a sum that
+        would leave that range, answers `conflict` and changes nothing.
+      security:
+        - sessionToken: []
+      requestBody:
+        required: false
+        description: An empty body means `delta` 1.
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KVIncrRequest" }
+      responses:
+        "200":
+          description: The key with its new value and revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KVEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "409":
+          description: |
+            The stored value is not an integer the exactness bound admits, or
+            the sum would leave it (`conflict`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionToken:
@@ -400,6 +508,69 @@ components:
           description: Hub-declared flags. Plugins must tolerate unrecognized keys.
         server: { $ref: "#/components/schemas/ServerIdentity" }
 
+    KVEntry:
+      type: object
+      description: One key of the section 12 store, with its value.
+      required: [namespace, key, value, revision]
+      properties:
+        namespace: { type: string }
+        key: { type: string }
+        value:
+          not: { type: "null" }
+          description: Any JSON value except null, at most 16384 encoded bytes.
+        revision:
+          type: integer
+          minimum: 1
+          description: 1 at creation, +1 per successful write.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Present only when the key carries a TTL.
+
+    KVWriteResult:
+      type: object
+      description: A set's answer; the value is not echoed back.
+      required: [namespace, key, revision]
+      properties:
+        namespace: { type: string }
+        key: { type: string }
+        revision: { type: integer, minimum: 1 }
+        expiresAt: { type: string, format: date-time }
+
+    KVSetRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          not: { type: "null" }
+          description: Any JSON value except null, at most 16384 encoded bytes.
+        ifRevision:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+          description: |
+            Compare-and-swap guard. 0 means "only if the key does not exist";
+            n >= 1 means "only if the current revision is exactly n". Absent
+            means unconditional.
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+          description: |
+            Expiry, from now, at most ten years. Absent means the key does not
+            expire, whatever TTL it carried before: a set defines the key
+            entirely.
+
+    KVIncrRequest:
+      type: object
+      properties:
+        delta:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+          default: 1
+          description: Signed; a negative delta is the decrement.
+
     Error:
       type: object
       required: [error]
@@ -418,9 +589,51 @@ components:
               type: object
               additionalProperties: true
 
+  parameters:
+    KVNamespace:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+      description: A KV namespace (spec section 12.1).
+    KVKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+      description: A key within the namespace (spec section 12.1). Case-sensitive.
+
   responses:
     BadRequest:
       description: Malformed body, or a field missing, wrongly typed, or out of range.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    KVForbidden:
+      description: |
+        The namespace is not one the server's stored manifest declares in
+        `kvNamespaces`, or the server has no stored manifest (`forbidden`).
+        Checked before the key is looked up.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    KVNotFound:
+      description: The key is absent or expired (`not_found`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    KVRevisionMismatch:
+      description: |
+        `ifRevision` does not match (`revision_mismatch`); `details.revision`
+        carries the current revision, 0 when the key does not exist.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
