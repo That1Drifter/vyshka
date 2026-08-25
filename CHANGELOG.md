@@ -12,6 +12,56 @@ point if needed.
 
 ### Added
 
+- 2026-08-25: state snapshots and live state endpoint (spec section 8.3, issue #12). The
+  data feed for the live map: section 8.3 grows from a stub into the full contract, and
+  the hub implements it. Three plugin -> hub envelope types (`state.players`,
+  `state.vehicles`, `state.entities`) each carry the full current list of one kind of
+  thing; a snapshot replaces its predecessor whole, an empty list is a meaningful answer
+  ("nobody online"), and there is no diff form (the pre-1.0 open question stays open, with
+  the 256 KiB body cap named as its tripwire). Player entries must carry the
+  platform-qualified identity of section 8.2, the one field enforced deeply, because
+  identity is what lets a reader correlate a snapshot with events and actions; vehicle and
+  entity entries need a stable `id`. Optional `capturedAt` falls back through the
+  envelope's `ts` to receipt time with section 4's wrong-clock tolerance. An invalid
+  snapshot is rejected whole (a partially applied snapshot would be a state nobody ever
+  observed), acked, and narrated with a `state.reject` notice sharing the per-poll notice
+  budget; the `state.*` family joins the reserved list on the raw envelope queue so the
+  notice cannot be forged. Snapshots apply in acceptance order, never reordered by
+  `capturedAt`; storage keys "latest" off an autoincrement sequence because ULIDs go
+  arbitrary within a millisecond. The hub keeps the latest snapshot per (server, type),
+  which survives every retention pass however stale, plus bounded history (config:
+  24 h window, depth 500, the depth enforced at insert so a fast plugin cannot outrun the
+  prune). Two Admin API reads behind `servers:read`:
+  `GET /api/v1/servers/{id}/state/{type}` for the live answer and `.../history` for
+  recent snapshots newest first. Section 5.5's reserved-family list now also names
+  `event.*`, closing an existing spec-code drift. Four new conformance checks (70 total)
+  grade replacement and history order, whole-rejection with the notice, cross-session
+  replay dedup, and the type/scope/forgery guards; `scripts/demo-state.sh` walks the
+  issue's demo path (plugin pushes a player snapshot, admin curl returns the live list).
+  New migration `0010_state.sql`, new companion `spec/state.schema.json`, Admin OpenAPI
+  updated; protocol draft 0.13.
+
+  An adversarial review pass then trued up the edges before landing. The real find:
+  a snapshot retransmitted across a session change is renumbered (section 9.1), so `seq`
+  alone cannot deduplicate it, and the first cut would have stored it twice with a fresh
+  receipt time; snapshots now dedup on the envelope `id` per server (a unique index the
+  insert defers to), and section 8.3 states the two-layer rule honestly instead of
+  claiming `seq` covers everything. Unknown-field tolerance now genuinely holds inside
+  snapshot bodies (the unconsulted list fields decode lazily, so a `state.players` body
+  carrying a strangely shaped `vehicles` field is tolerated per section 2.1 rather than
+  rejected at the decoder). The entry length caps the hub enforces (platform 64, player
+  id 128, name 200, kind 128) are now in the normative prose, not just the code and
+  companion schema. State-type and limit validation run before the server lookup, so an
+  unusable request is `bad_request` whether or not the server exists. The four clamped
+  `limit` query parameters across the Admin OpenAPI no longer declare a `maximum` a
+  validating client would enforce against a server that clamps, and
+  `spec/state.schema.json` joined CI's schema validation list. Conformance grew the
+  replay-dedup check plus teeth the review showed were missing: a byte-honest verbatim
+  round-trip with unknown fields, a replacement whose `capturedAt` is older than its
+  predecessor's (acceptance order, not the game's clock, decides "latest"), a
+  cap-boundary player id, history behind `servers:read`, and raw-queue refusal of the
+  whole `state.*` family.
+
 - 2026-08-25: per-mod key/value store (spec section 12, issue #11). Section 12 grows from a
   stub into the full contract and the hub implements it on both realms: `get`, `set`,
   `delete`, and atomic `incr` on `{namespace}/{key}` paths under `/api/v1/kv/...` and

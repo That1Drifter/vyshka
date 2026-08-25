@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.12 (2026-08-25)
+**Status:** draft 0.13 (2026-08-25)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -507,10 +507,11 @@ of the same queue, with its own endpoint and its own validation.
   a session, and an envelope may be queued while no session exists (section 9.2). The
   response therefore carries no `seq`.
 - A hub MUST reject a `type` family the hub itself models (`action.*` via the dispatch
-  endpoint of section 7, `manifest.*` via section 6) with `conflict`. This endpoint must
-  never become a way around the validation those surfaces perform, nor a way to queue a
-  message, such as a forged `manifest.reject`, that the plugin would take as the hub's own
-  word.
+  endpoint of section 7, `manifest.*` via section 6, `event.*` via section 8.1, `state.*`
+  via section 8.3) with `conflict`. This endpoint must never become a way around the
+  validation those surfaces perform, nor a way to queue a message, such as a forged
+  `manifest.reject`, `event.reject`, or `state.reject`, that the plugin would take as the
+  hub's own word.
 - Queueing does not require a live session, and MUST NOT fail because the server has none.
 
 | `code` | HTTP | Raised when |
@@ -960,12 +961,105 @@ platform-specific id:
 
 ### 8.3 State snapshots
 
-Separate periodic envelopes (`state.players`, `state.vehicles`, `state.entities`) carry
-full current lists. The hub keeps only the latest snapshot per type plus a configurable
-history window; these feed the live map.
+Where events say what happened, snapshots say what *is*: the data feed for a live map.
+Three plugin -> hub envelope types each carry the full current list of one kind of thing:
+
+| `type` | List field | One entry |
+|---|---|---|
+| `state.players` | `players` | `{ "player": { "platform", "id" }, "name"?, "position"?, "data"? }` |
+| `state.vehicles` | `vehicles` | `{ "id", "kind"?, "position"?, "data"? }` |
+| `state.entities` | `entities` | `{ "id", "kind"?, "position"?, "data"? }` |
+
+```json
+{
+  "type": "state.players",
+  "body": {
+    "capturedAt": "2026-08-25T18:00:00Z",
+    "players": [
+      { "player": { "platform": "steam", "id": "76561198000000000" },
+        "name": "Survivor", "position": [4231.5, 300.2, 10620.0],
+        "data": { "health": 82 } }
+    ]
+  }
+}
+```
+
+A snapshot is **whole**: it replaces its predecessor of the same type entirely, and an
+entry absent from it is gone. An empty list is therefore a meaningful snapshot ("nobody
+is online"), where an absent list field is not a snapshot at all and rejects the body.
+There is no diff form in this draft; the open question below stays open.
+
+- `capturedAt` is OPTIONAL: when the game sampled the state. Absent, unparseable, or
+  implausibly far ahead of the hub's clock, the envelope's `ts` stands in, with the
+  section 4 receipt-time substitution behind that.
+- Player entries MUST carry `player`, the platform-qualified identity of section 8.2, with
+  `platform` (at most 64 code points) and `id` (at most 128) non-empty strings. This is
+  the one field the hub enforces deeply, because it is what lets a panel or bot correlate
+  a snapshot entry with events, actions, and its own records; a player list without
+  stable identity is a list of labels. `name` is an OPTIONAL display label of at most 200
+  code points.
+- Vehicle and entity entries MUST carry `id`, a non-empty string stable for the lifetime of
+  the thing it names, of at most 128 code points. `kind` is an OPTIONAL free-form label
+  (`car`, `helicopter`, `tent`) of at most 128 code points.
+- `position` is OPTIONAL: an array of two or three finite JSON numbers in the game's own
+  map frame, advisory, for display. The hub never interprets it.
+- `data` is OPTIONAL, a JSON object of game- or mod-specific extras. Unknown fields on an
+  entry are tolerated everywhere, per section 2.1.
+- A snapshot body is capped at 262144 bytes (256 KiB) and 5000 entries. A hub MAY lower
+  neither: these are the floor a plugin may rely on.
+
+A snapshot that breaks these rules is rejected **whole**: acked like any envelope (the
+durable effect is that the stored state did not change), answered with a `state.reject`
+notice shaped like the rejections of sections 6.4 and 8.1 (`envelopeId` plus `errors`,
+sharing the same per-poll notice budget), and never partially applied, because a partially
+applied snapshot would be a state nobody ever observed.
+
+The hub keeps the **latest** accepted snapshot per `(server, type)`, plus a bounded
+history behind it. Latest means latest *accepted*: snapshots apply in envelope order
+(section 9.1), and a hub MUST NOT reorder them by `capturedAt`, whose clock it does not
+own. How much history is kept is configuration in the sense of section 8.4 (reference: 24
+hours, at most 500 snapshots per server and type), but the latest snapshot per type MUST
+survive every retention pass: a server's last known state stays readable however stale,
+and its `capturedAt` is what tells the reader how stale.
+
+Retransmissions are deduplicated twice over, because `seq` alone cannot cover them.
+Within a session a retransmitted snapshot is a duplicate like any envelope (section 9.1):
+acked again, applied no further. Across a session change `seq` is renumbered and only the
+envelope `id` survives, so a hub MUST deduplicate an accepted `state.*` envelope on its
+`id` (per server), storing nothing for one it has already stored. Without that, the one
+case section 14 calls out, a restart with traffic in flight, would put the same snapshot
+in history twice with a fresh receipt time.
+
+**Reading state (Admin API).** Both reads sit behind `servers:read` (section 10):
+
+```
+GET /api/v1/servers/{serverId}/state/{stateType}
+
+-> 200 OK
+{ "type": "players", "capturedAt": "2026-08-25T18:00:00.000Z",
+  "receivedAt": "2026-08-25T18:00:01.000Z", "snapshot": { } }
+```
+
+`{stateType}` is `players`, `vehicles`, or `entities`; anything else is `bad_request`,
+never an empty answer. `snapshot` is the accepted body, verbatim: the hub adds its
+metadata beside what the plugin published rather than rewriting it. `not_found` covers an
+unknown server and a server that has never had a snapshot of that type accepted alike.
+
+```
+GET /api/v1/servers/{serverId}/state/{stateType}/history?limit=20
+
+-> 200 OK
+{ "snapshots": [ { "capturedAt": "...", "receivedAt": "...", "snapshot": { } } ] }
+```
+
+History comes back newest first, in acceptance order, the latest snapshot included as its
+first element. `limit` is bounded (reference default 20, cap 100) and clamped rather than
+refused. There is no cursor: history is bounded by the window above, and a client that
+wants more than the cap pages nothing, it asks again later.
 
 > **Open question (pre-1.0):** whether `state.*` messages become diffs after the first full
-> snapshot per session. Deferred unless real-world payloads prove heavy.
+> snapshot per session. Still deferred: the 256 KiB body cap is the tripwire, and a plugin
+> that hits it is the evidence this question reopens on.
 
 ### 8.4 Retention
 
@@ -1125,7 +1219,7 @@ Every Admin API credential is a bearer token carrying an explicit set of scopes.
 `resource:verb`, optionally narrowed by a third `:pattern` field:
 
 ```
-servers:read                     server records, sessions, and manifests
+servers:read                     server records, sessions, manifests, and state snapshots
 events:read                      every event type
 events:read:example-mod.*        one namespace of event types
 actions:read                     every action record
@@ -1174,7 +1268,7 @@ in the request, the check MUST run against that value:
 
 | Surface | Scope |
 |---|---|
-| `GET /api/v1/servers`, `GET /api/v1/servers/{id}`, `GET .../manifest` | `servers:read` |
+| `GET /api/v1/servers`, `GET /api/v1/servers/{id}`, `GET .../manifest`, `GET .../state/{type}` and `.../history` | `servers:read` |
 | `POST /api/v1/servers`, `POST .../enrollment-token`, `DELETE .../credentials` | `admin` |
 | `POST /api/v1/servers/{id}/envelopes` | `admin` |
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |

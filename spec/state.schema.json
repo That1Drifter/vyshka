@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vyshka.dev/spec/state.schema.json",
+  "title": "Vyshka state snapshot envelope bodies",
+  "description": "Machine-readable companion to spec/protocol.md section 8.3. The prose document is normative: where the two disagree, the prose wins. Like the other schema documents this is a library of definitions with no root constraint: reference `#/$defs/statePlayers`, `#/$defs/stateVehicles`, and `#/$defs/stateEntities` for the plugin -> hub bodies and `#/$defs/stateReject` for the hub -> plugin refusal.",
+  "$defs": {
+    "playerRef": {
+      "type": "object",
+      "title": "Platform-qualified player identity",
+      "description": "The player reference shape of section 8.2, shared by every protocol payload that names a player.",
+      "required": ["platform", "id"],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "examples": ["steam"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": true
+    },
+    "position": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 3,
+      "items": { "type": "number" },
+      "description": "Two or three finite numbers in the game's own map frame. Advisory, for display; the hub never interprets it."
+    },
+    "playerEntry": {
+      "type": "object",
+      "title": "One player in a state.players snapshot",
+      "required": ["player"],
+      "properties": {
+        "player": { "$ref": "#/$defs/playerRef" },
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Display name at capture time. Advisory: identity lives in `player`."
+        },
+        "position": { "$ref": "#/$defs/position" },
+        "data": {
+          "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],
+          "description": "Game- or mod-specific extras. Absent and null both read as an empty object."
+        }
+      },
+      "additionalProperties": true
+    },
+    "objectEntry": {
+      "type": "object",
+      "title": "One vehicle or entity in a snapshot",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Stable for the lifetime of the thing it names, so consecutive snapshots can be correlated."
+        },
+        "kind": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Free-form label (car, helicopter, tent). Advisory.",
+          "examples": ["car", "helicopter", "tent"]
+        },
+        "position": { "$ref": "#/$defs/position" },
+        "data": {
+          "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],
+          "description": "Game- or mod-specific extras. Absent and null both read as an empty object."
+        }
+      },
+      "additionalProperties": true
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the game sampled this state. Optional: absent, unparseable, or implausibly far ahead of the hub's clock, the envelope's ts stands in, with the section 4 receipt-time substitution behind that."
+    },
+    "statePlayers": {
+      "type": "object",
+      "title": "state.players body",
+      "description": "Plugin -> hub. The full current player list; it replaces its predecessor entirely, and an empty array is a meaningful snapshot (nobody online). Applied or rejected whole; caps: 262144 bytes, 5000 entries.",
+      "required": ["players"],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/capturedAt" },
+        "players": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": { "$ref": "#/$defs/playerEntry" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "stateVehicles": {
+      "type": "object",
+      "title": "state.vehicles body",
+      "description": "Plugin -> hub. The full current vehicle list, same replacement and whole-application rules as state.players.",
+      "required": ["vehicles"],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/capturedAt" },
+        "vehicles": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": { "$ref": "#/$defs/objectEntry" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "stateEntities": {
+      "type": "object",
+      "title": "state.entities body",
+      "description": "Plugin -> hub. The full current list of everything else worth mapping, same replacement and whole-application rules as state.players.",
+      "required": ["entities"],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/capturedAt" },
+        "entities": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": { "$ref": "#/$defs/objectEntry" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "stateReject": {
+      "type": "object",
+      "title": "state.reject body",
+      "description": "Hub -> plugin, queued when a snapshot was refused. Envelope-level success like the rejections of sections 6.4 and 8.1: the refused envelope is still acked, the stored state did not change, and the plugin must not treat this as a transport error.",
+      "required": ["envelopeId", "errors"],
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The id of the state.* envelope this rejection answers."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "message"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "A path into the rejected body, such as players[3].player. Empty when the fault is the body as a whole."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable, never parsed."
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Bounded by the hub (reference cap 20 entries)."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -103,14 +103,16 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Then the plugin's envelopes. The hub models manifest.publish, action.ack,
-	// action.result, and event.batch on the inbound path; every other accepted
-	// envelope takes the forward-compatibility path of spec section 4: acked
-	// and ignored. Bodies are validated up front because validity depends only
-	// on content, while which envelopes are newly accepted is only known inside
-	// the transaction.
+	// action.result, event.batch, and the state.* snapshots on the inbound
+	// path; every other accepted envelope takes the forward-compatibility path
+	// of spec section 4: acked and ignored. Bodies are validated up front
+	// because validity depends only on content, while which envelopes are
+	// newly accepted is only known inside the transaction.
+	now := time.Now().UTC()
 	manifests := prepareManifests(request.Envelopes)
 	actions := prepareActions(request.Envelopes)
-	events := s.prepareEvents(request.Envelopes, time.Now().UTC())
+	events := s.prepareEvents(request.Envelopes, now)
+	snapshots := s.prepareSnapshots(request.Envelopes, now)
 
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
@@ -118,12 +120,13 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// rejection notices ride the same transaction: acking an envelope promises
 	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
-	var unusableActionBodies, rejectedManifests, refusedEventBatches, suppressedNotices int
+	var unusableActionBodies, rejectedManifests, refusedEventBatches, refusedSnapshots, suppressedNotices int
 	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
 		unusableActionBodies = 0
 		rejectedManifests = 0
 		refusedEventBatches = 0
+		refusedSnapshots = 0
 		suppressedNotices = 0
 		// The event budget is charged here rather than during validation, so
 		// that only envelopes actually being accepted spend it: a poll carrying
@@ -177,6 +180,15 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 					eventBudget -= len(prepared.events)
 					application.Events = append(application.Events, prepared.events...)
 				}
+				continue
+			}
+			if prepared, isSnapshot := snapshots[index]; isSnapshot {
+				if prepared.reject != nil {
+					refusedSnapshots++
+					queueNotice(*prepared.reject)
+				} else {
+					application.Snapshots = append(application.Snapshots, *prepared.snapshot)
+				}
 			}
 		}
 		return application
@@ -199,7 +211,8 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 			"rejectsQueued", applied.NoticesQueued,
 			"actionsStarted", applied.ActionsStarted,
 			"actionsFinished", applied.ActionsFinished,
-			"eventsStored", applied.EventsStored)
+			"eventsStored", applied.EventsStored,
+			"snapshotsStored", applied.SnapshotsStored)
 	}
 	if unusableActionBodies > 0 {
 		s.log.Warn("poll carried action envelopes with unusable bodies; acked and ignored",
@@ -213,6 +226,10 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("poll carried event batches this hub refused",
 			"serverId", server.ID, "sessionId", session.ID,
 			"batches", refusedEventBatches, "eventBudget", maxEventsPerPoll)
+	}
+	if refusedSnapshots > 0 {
+		s.log.Warn("poll carried state snapshots this hub refused",
+			"serverId", server.ID, "sessionId", session.ID, "count", refusedSnapshots)
 	}
 	if suppressedNotices > 0 {
 		// The notices the plugin will not receive, so the count survives

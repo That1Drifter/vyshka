@@ -3264,6 +3264,30 @@ var checks = []Check{
 		Run:     checkWebhookLinkTransitions,
 	},
 	{
+		ID:      "state.latestReplaces",
+		Title:   "A newer snapshot replaces the older whole; history reads newest first",
+		Section: "8.3",
+		Run:     checkStateLatestReplaces,
+	},
+	{
+		ID:      "state.rejectWhole",
+		Title:   "An invalid snapshot is refused whole, acked, and narrated with state.reject",
+		Section: "8.3",
+		Run:     checkStateRejectWhole,
+	},
+	{
+		ID:      "state.retransmitDedup",
+		Title:   "A snapshot replayed across a session change is stored once",
+		Section: "8.3",
+		Run:     checkStateRetransmitDedup,
+	},
+	{
+		ID:      "state.guards",
+		Title:   "State reads are typed, scoped, and the state family is unforgeable",
+		Section: "8.3",
+		Run:     checkStateGuards,
+	},
+	{
 		ID:      "kv.pluginWrite",
 		Title:   "A plugin writes a key both realms read back, and delete removes it",
 		Section: "12.2",

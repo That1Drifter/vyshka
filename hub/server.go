@@ -63,6 +63,13 @@ type Config struct {
 	// WebhookDeliveryRetention is how long delivered and dead deliveries stay
 	// readable before the retention pass prunes them.
 	WebhookDeliveryRetention time.Duration
+	// StateSnapshotRetention is how long a state snapshot stays in history
+	// (spec section 8.3). The latest snapshot per (server, type) outlives it.
+	StateSnapshotRetention time.Duration
+	// StateHistoryDepth bounds how many snapshots per (server, type) are kept,
+	// enforced at insert so a fast-pushing plugin cannot outrun the retention
+	// pass. Zero means the default; the latest snapshot always survives.
+	StateHistoryDepth int
 }
 
 func (c *Config) withDefaults() {
@@ -129,6 +136,13 @@ func (c *Config) withDefaults() {
 	}
 	if c.WebhookDeliveryRetention <= 0 {
 		c.WebhookDeliveryRetention = 7 * 24 * time.Hour
+	}
+	// The reference window of spec section 8.4: snapshots are kept a day.
+	if c.StateSnapshotRetention <= 0 {
+		c.StateSnapshotRetention = 24 * time.Hour
+	}
+	if c.StateHistoryDepth <= 0 {
+		c.StateHistoryDepth = 500
 	}
 }
 
@@ -313,6 +327,7 @@ func (s *Server) runMaintenance() {
 			s.prune("events", s.store.PruneEvents)
 			s.prune("audit records", s.store.PruneAudit)
 			s.prune("kv entries", s.store.PruneKV)
+			s.prune("state snapshots", s.store.PruneSnapshots)
 			s.prune("webhook deliveries", func(ctx context.Context, limit int) (int, error) {
 				cutoff := time.Now().UTC().Add(-s.cfg.WebhookDeliveryRetention)
 				return s.store.PruneWebhookDeliveries(ctx, cutoff, limit)
@@ -412,6 +427,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{serverId}/events",
 		s.admin(resourceEvents, verbRead, s.handleListEvents))
 	mux.HandleFunc("/api/v1/servers/{serverId}/events", methodNotAllowed("GET"))
+
+	// State snapshots (spec section 8.3), behind servers:read like the rest of
+	// a server's own record.
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/state/{stateType}",
+		s.admin(resourceServers, verbRead, s.handleGetState))
+	mux.HandleFunc("/api/v1/servers/{serverId}/state/{stateType}", methodNotAllowed("GET"))
+
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/state/{stateType}/history",
+		s.admin(resourceServers, verbRead, s.handleGetStateHistory))
+	mux.HandleFunc("/api/v1/servers/{serverId}/state/{stateType}/history", methodNotAllowed("GET"))
 
 	// Token management and the audit log (spec section 10), all `admin`: a
 	// token that could mint tokens could grant itself anything, and the audit

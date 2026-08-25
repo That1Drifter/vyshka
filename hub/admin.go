@@ -31,7 +31,7 @@ const outboundQueueLimit = 5000
 // endpoint refuses them, so it can never be used to route around the
 // validation the hub performs on them, or to forge a message the plugin will
 // take as the hub's own word (spec sections 5.5 and 6).
-var reservedEnvelopeTypes = []string{"action.", "manifest.", "event."}
+var reservedEnvelopeTypes = []string{"action.", "manifest.", "event.", "state."}
 
 type createServerRequest struct {
 	Name                      string `json:"name"`

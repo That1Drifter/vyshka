@@ -319,6 +319,9 @@ type InboundApplication struct {
 	// such as a manifest rejection. A notice that would overflow the outbound
 	// queue is dropped rather than failing the poll.
 	Notices []Notice
+	// Snapshots are state records to append (spec section 8.3), committed
+	// with the ack that covers the envelopes they rode in on.
+	Snapshots []NewSnapshot
 	// ActionAcks are action ids the plugin reported receipt of (-> running),
 	// and ActionResults the outcomes it reported (-> completed/failed), both
 	// applied in this transaction (spec section 7). Unknown ids, terminal
@@ -360,6 +363,8 @@ type InboundApplied struct {
 	ActionsFinished int
 	// EventsStored counts telemetry records appended.
 	EventsStored int
+	// SnapshotsStored counts state snapshots appended.
+	SnapshotsStored int
 }
 
 // ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
@@ -456,6 +461,12 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 		return InboundApplied{}, err
 	}
 	applied.EventsStored = stored
+
+	snapshots, err := insertSnapshots(ctx, tx, serverID, application.Snapshots, now)
+	if err != nil {
+		return InboundApplied{}, err
+	}
+	applied.SnapshotsStored = snapshots
 
 	if err := tx.Commit(); err != nil {
 		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)
