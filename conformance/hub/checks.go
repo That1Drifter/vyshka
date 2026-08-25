@@ -3263,6 +3263,42 @@ var checks = []Check{
 		Section: "11.1",
 		Run:     checkWebhookLinkTransitions,
 	},
+	{
+		ID:      "kv.pluginWrite",
+		Title:   "A plugin writes a key both realms read back, and delete removes it",
+		Section: "12.2",
+		Run:     checkKVPluginWrite,
+	},
+	{
+		ID:      "kv.cas",
+		Title:   "A stale ifRevision loses with the current revision; a fresh one wins",
+		Section: "12.2",
+		Run:     checkKVCompareAndSwap,
+	},
+	{
+		ID:      "kv.incrAtomic",
+		Title:   "Concurrent incrs each land exactly once",
+		Section: "12.2",
+		Run:     checkKVIncrAtomic,
+	},
+	{
+		ID:      "kv.ttl",
+		Title:   "An expired key reads as absent",
+		Section: "12.1",
+		Run:     checkKVTTL,
+	},
+	{
+		ID:      "kv.confinement",
+		Title:   "Namespace access is confined on both realms",
+		Section: "12.3",
+		Run:     checkKVConfinement,
+	},
+	{
+		ID:      "kv.validate",
+		Title:   "Names, values, and guards outside section 12.1 are refused",
+		Section: "12.1",
+		Run:     checkKVValidation,
+	},
 }
 
 func truncate(body []byte) string {

@@ -12,6 +12,29 @@ point if needed.
 
 ### Added
 
+- 2026-08-25: per-mod key/value store (spec section 12, issue #11). Section 12 grows from a
+  stub into the full contract and the hub implements it on both realms: `get`, `set`,
+  `delete`, and atomic `incr` on `{namespace}/{key}` paths under `/api/v1/kv/...` and
+  `/plugin/v1/kv/...`, as synchronous request/response rather than envelopes, because a
+  compare-and-swap over an at-least-once queue could not tell its caller whether it won.
+  Values are any JSON value except null up to 16384 bytes; every key carries a revision (1
+  at creation, +1 per write) and `set` takes an optional `ifRevision` guard whose loss is
+  `409 revision_mismatch` with the current revision in `details.revision`, so the loser
+  retries without a second read. `incr` takes a signed `delta` (decrement included),
+  creates absent keys, refuses non-integer or out-of-exactness-bound arithmetic with
+  `conflict`, and must land concurrent bumps exactly once. Optional `ttlSeconds` expires a
+  key into absence the moment its deadline passes, with physical deletion left to the
+  retention pass; `incr` preserves a key's TTL while `set` redefines it. The store is
+  installation-wide like the scope grammar that guards it: admin tokens need
+  `kv:rw:{namespace}` checked against the path before the key is looked up, and plugins are
+  confined to the namespaces their manifest declares in the new `kvNamespaces` array
+  (section 6.6), which is validated against the full namespace grammar at publish time
+  because it grants access. Six new conformance checks grade the cross-realm round-trip,
+  CAS arbitration, incr atomicity, TTL expiry, confinement on both realms, and input
+  validation; `scripts/demo-kv.sh` walks the issue's demo path (plugin writes, a bot's
+  stale CAS is rejected, the fresh one wins). New migration `0009_kv.sql`; protocol draft
+  0.12; both OpenAPI documents and `manifest.schema.json` updated.
+
 - 2026-08-20: webhooks with signed delivery (spec section 11, issue #10). Section 11 grows
   from a stub into the full contract, and the hub implements it: `POST /api/v1/webhooks`
   registers a target URL with an event filter (type patterns in the section 10.1 grammar,

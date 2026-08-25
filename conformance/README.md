@@ -8,7 +8,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 | Suite | Question it answers | Status |
 |---|---|---|
-| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, scoped tokens and audit, webhooks |
+| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, scoped tokens and audit, webhooks, key/value store |
 | `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, and a schema-invalid dispatch; see `plugin/README.md` |
 
 ## Hub suite
@@ -26,9 +26,9 @@ PASS  health.responds                GET /healthz answers 200 with JSON
 PASS  health.status                  GET /healthz reports status ok
 PASS  errors.shape                   An unrouted path answers 404 in the protocol error shape
 ...
-PASS  webhooks.linkTransitions       A silent server fires link lost once, and a poll restores it
+PASS  kv.confinement                 Namespace access is confined on both realms
 
-60 checks, 0 failed
+66 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

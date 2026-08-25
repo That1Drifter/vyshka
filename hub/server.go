@@ -312,6 +312,7 @@ func (s *Server) runMaintenance() {
 		case <-prune.C:
 			s.prune("events", s.store.PruneEvents)
 			s.prune("audit records", s.store.PruneAudit)
+			s.prune("kv entries", s.store.PruneKV)
 			s.prune("webhook deliveries", func(ctx context.Context, limit int) (int, error) {
 				cutoff := time.Now().UTC().Add(-s.cfg.WebhookDeliveryRetention)
 				return s.store.PruneWebhookDeliveries(ctx, cutoff, limit)
@@ -441,6 +442,17 @@ func (s *Server) routes() http.Handler {
 		s.admin(resourceWebhooks, verbManage, s.handleListWebhookDeliveries))
 	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries", methodNotAllowed("GET"))
 
+	// The key/value store (spec section 12), the same operations on both
+	// realms. The admin side layers the value-level kv:rw:{namespace} check
+	// inside adminKV, because the namespace lives in the path.
+	mux.HandleFunc("GET /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvGet)))
+	mux.HandleFunc("PUT /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvSet)))
+	mux.HandleFunc("DELETE /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvDelete)))
+	mux.HandleFunc("/api/v1/kv/{namespace}/{key}", methodNotAllowed("GET", "PUT", "DELETE"))
+
+	mux.HandleFunc("POST /api/v1/kv/{namespace}/{key}/incr", s.admin(resourceKV, verbRW, s.adminKV(kvIncr)))
+	mux.HandleFunc("/api/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
+
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
 	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)
@@ -453,6 +465,16 @@ func (s *Server) routes() http.Handler {
 	// The transport heartbeat (spec section 3.1.2).
 	mux.HandleFunc("POST /plugin/v1/poll", s.handlePoll)
 	mux.HandleFunc("/plugin/v1/poll", methodNotAllowed("POST"))
+
+	// The plugin side of the key/value store, confined inside pluginKV to the
+	// namespaces the server's stored manifest declares (spec section 12.3).
+	mux.HandleFunc("GET /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvGet))
+	mux.HandleFunc("PUT /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvSet))
+	mux.HandleFunc("DELETE /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvDelete))
+	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}", methodNotAllowed("GET", "PUT", "DELETE"))
+
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/incr", s.pluginKV(kvIncr))
+	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
 
 	mux.HandleFunc("/", s.handleNotFound)
 

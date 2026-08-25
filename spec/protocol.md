@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.11 (2026-08-20)
+**Status:** draft 0.12 (2026-08-25)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -550,7 +550,8 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
       }
     ],
     "contexts": [ ],
-    "events": [ ]
+    "events": [ ],
+    "kvNamespaces": [ "example-mod" ]
   }
 }
 ```
@@ -682,6 +683,25 @@ GET /api/v1/servers/{serverId}/manifest
 `manifest` is the accepted `manifest.publish` body, verbatim: the hub adds its metadata
 beside the manifest rather than rewriting what the plugin published. `not_found` (404)
 covers an unknown server and a server that has never had a manifest accepted alike.
+
+### 6.6 Declared KV namespaces
+
+The OPTIONAL `kvNamespaces` array names the key/value namespaces (section 12) this
+plugin's mods use. It is the sole source of a plugin's KV access: the `namespace` fields
+on actions, contexts, and events group things for display and token scoping and grant
+nothing, so a mod that stores no data declares no KV namespace, however many actions it
+ships.
+
+- Each entry follows the namespace grammar of section 12.1 and is at most 64 code points.
+- At most 100 entries; a duplicate entry is a fault.
+- An entry that breaks the grammar rejects the manifest (section 6.4), and the check is
+  stricter than the length-only checks on the display namespaces above, deliberately: this
+  field grants access, and a malformed grant must fail at publish time, where the plugin
+  author is looking, not at the first KV call in production.
+
+Publishing a manifest replaces the declared set. A namespace that disappears from the
+manifest stops being accessible to the plugin on the next accepted publish; the keys under
+it are untouched, because admin tokens and other servers' manifests may still reach them.
 
 ## 7. Action lifecycle
 
@@ -1157,6 +1177,7 @@ in the request, the check MUST run against that value:
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |
 | `GET /api/v1/actions/{actionId}` | `actions:read:{the action's code}` |
 | `GET /api/v1/servers/{id}/events` | `events:read`, intersected per section 10.3 |
+| `/api/v1/kv/{namespace}/{key}`, `POST .../incr` | `kv:rw:{the path's namespace}` |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
 
 The raw envelope endpoint of section 5.5 requires `admin` because no narrower scope in the
@@ -1556,15 +1577,124 @@ than refused, the same contract as section 8.5's feed.
 
 ## 12. Key/value store
 
-Per-mod persistence so mods do not need their own database:
+Per-mod persistence so mods do not need their own database. A key is addressed as
+`{namespace}/{key}`; a value is one JSON value.
 
-- Keys are namespaced per mod: `{namespace}/{key}`; values are JSON up to 16 KiB.
-- Operations, available over both APIs: `get`, `set`, `delete`, atomic `incr`/`decr`, and
-  `setIfRevision` (compare-and-swap by revision number, required as soon as a mod and an
-  external bot write the same key).
-- Optional per-key TTL.
-- Admin tokens need `kv:rw:{namespace}`; plugins are confined to the namespaces their
-  manifest declares.
+The store is **installation-wide**, like the scope grammar of section 10 that guards it:
+there is no server dimension. Two servers whose manifests declare the same namespace read
+and write the same keys, which is the feature; a mod that wants per-server keys encodes the
+server in the key. Isolation between mods is the namespace, and nothing else.
+
+### 12.1 Names and values
+
+- A **namespace** is one or more non-empty segments of letters, digits, `_`, and `-`,
+  separated by `.` (the identifier alphabet of section 8.1), at most 64 code points in all.
+- A **key** follows the same grammar, at most 128 code points. Keys are case-sensitive and
+  never contain `/`, so both names travel in a URL path without escaping, which matters on
+  engines with no URL-encoding library.
+- A **value** is any JSON value except `null` (a `null` where an optional field could
+  appear reads as the field being absent, section 6.4, so a null value could not be told
+  from no value at all). Its encoding is at most 16384 bytes.
+- Every key carries a **revision**: 1 when the key is created, incremented by one on every
+  successful write. Revisions live in `[1, 2^53)`, the exactness bound the rest of this
+  document uses; a write that would exceed it is refused with `conflict`. Deleting a key
+  discards its revision, and a key created again starts at 1: a compare-and-swap answers
+  "has this key changed since I read revision n", and a delete-and-recreate that happens to
+  realign revisions is a case a mod that needs tombstones must handle with a marker value.
+- A key MAY carry a **TTL**. From the moment its expiry passes, the key MUST read as
+  absent on every operation; when the hub physically deletes it is the hub's business.
+
+### 12.2 Operations
+
+The same five operations exist in both realms, as synchronous HTTP request/response, never
+as envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
+whether it won. They carry no sequence numbers and no acks; a client that retries a write
+after a network failure uses `ifRevision` when it needs to know whether the first attempt
+landed.
+
+| Operation | Plugin API | Admin API |
+|---|---|---|
+| get | `GET /plugin/v1/kv/{namespace}/{key}` | `GET /api/v1/kv/{namespace}/{key}` |
+| set | `PUT /plugin/v1/kv/{namespace}/{key}` | `PUT /api/v1/kv/{namespace}/{key}` |
+| delete | `DELETE /plugin/v1/kv/{namespace}/{key}` | `DELETE /api/v1/kv/{namespace}/{key}` |
+| incr | `POST /plugin/v1/kv/{namespace}/{key}/incr` | `POST /api/v1/kv/{namespace}/{key}/incr` |
+
+The Plugin API side authenticates with the session token of section 5.3; the Admin API
+side with a bearer token holding `kv:rw:{namespace}` (section 10).
+
+**get** answers `200` with the key, or `not_found` when it is absent or expired:
+
+```json
+{ "namespace": "example-mod", "key": "balance.76561198000000000",
+  "value": 250, "revision": 7, "expiresAt": "2026-09-01T00:00:00Z" }
+```
+
+`expiresAt` is present only when the key carries a TTL.
+
+**set** writes one value and answers `200` with the key's new `revision` (and `expiresAt`
+when a TTL was set). The body:
+
+```json
+{ "value": { "any": "JSON" }, "ifRevision": 7, "ttlSeconds": 3600 }
+```
+
+- `value` is REQUIRED.
+- `ifRevision` is OPTIONAL and makes the write a compare-and-swap: `0` means "only if the
+  key does not exist", `n >= 1` means "only if the current revision is exactly n". A
+  mismatch is answered `409 revision_mismatch` with `details.revision` carrying the current
+  revision (`0` when the key does not exist), which is what lets the loser re-read and
+  retry without a second round-trip. Absent means unconditional.
+- `ttlSeconds` is OPTIONAL, an integer of at least 1. A set defines the key entirely:
+  absent means the key does not expire, whatever TTL it carried before.
+
+`ifRevision` is REQUIRED behavior, not an extension, because it is the whole concurrency
+model: the moment a mod in-game and a bot over the Admin API write the same key, one of
+them is wrong unless one of them can lose.
+
+**delete** removes the key, answering `204`, or `not_found` when it is absent or expired.
+A client that retries a delete treats `not_found` as success: the key is gone either way.
+Delete is unconditional in this draft; a mod that needs a guarded delete keeps a marker
+value and uses `ifRevision` on the set that writes it.
+
+**incr** atomically adds an integer to a key, creating it when absent. The body is
+OPTIONAL:
+
+```json
+{ "delta": -5 }
+```
+
+- `delta` is an integer in `(-2^53, 2^53)`, defaulting to 1. There is no separate
+  decrement operation: `decr` is `incr` with a negative `delta`.
+- When the key is absent or expired, it is created with `value` = `delta`, revision 1, and
+  no TTL.
+- When it exists, its value MUST be a JSON integer in `(-2^53, 2^53)`, and the sum MUST
+  stay inside that range; otherwise the answer is `conflict` and nothing changes. A
+  successful incr increments the revision and **preserves** the key's TTL: a counter's
+  lifetime is set where the counter is defined, not reset by every bump.
+
+The answer is the get shape, with the new value and revision. Concurrent incrs MUST each
+land exactly once: two clients adding 1 to a key at revision n leave it at n+2 with both
+deltas applied, never n+1. This is the one operation whose atomicity the hub owes the
+client outright, with no `ifRevision` in the loop.
+
+### 12.3 Confinement
+
+- **Plugins** may operate only on the namespaces the server's stored manifest declares in
+  `kvNamespaces` (section 6.6). Any operation on any other namespace, and any operation
+  while the server has no stored manifest, is `403 forbidden`. The check runs before the
+  key is looked up, so the difference between `forbidden` and `not_found` cannot probe a
+  namespace the plugin was not granted.
+- **Admin tokens** need `kv:rw:{namespace}` (or `admin`), checked against the namespace in
+  the path, likewise before the key is looked up. The verb is `rw`: this draft defines no
+  read-only KV grant, and a hub MUST NOT invent one (section 10.1's closed set).
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | Malformed namespace, key, value, `ifRevision`, `ttlSeconds`, or `delta`; value over 16384 bytes |
+| `forbidden` | 403 | Undeclared namespace (Plugin API) or missing `kv:rw` grant (Admin API) |
+| `not_found` | 404 | get or delete on a key that is absent or expired |
+| `revision_mismatch` | 409 | `ifRevision` does not match the current revision; `details.revision` carries it |
+| `conflict` | 409 | incr on a non-integer value, an arithmetic result outside `(-2^53, 2^53)`, or a revision at the `2^53` bound |
 
 ## 13. Versioning and compatibility
 
