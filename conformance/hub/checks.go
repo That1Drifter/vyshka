@@ -3276,6 +3276,12 @@ var checks = []Check{
 		Run:     checkStateRejectWhole,
 	},
 	{
+		ID:      "state.retransmitDedup",
+		Title:   "A snapshot replayed across a session change is stored once",
+		Section: "8.3",
+		Run:     checkStateRetransmitDedup,
+	},
+	{
 		ID:      "state.guards",
 		Title:   "State reads are typed, scoped, and the state family is unforgeable",
 		Section: "8.3",

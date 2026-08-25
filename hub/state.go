@@ -62,15 +62,16 @@ func stateTypeFor(pathValue string) (string, bool) {
 }
 
 // snapshotBody is a state.* body as the plugin sends it. Exactly one of the
-// three lists is consulted, by envelope type; the others are unknown fields
-// and tolerated. Pointers keep an absent array distinguishable from an empty
-// one: the first is not a snapshot at all, the second means "nothing is
-// there", which is a meaningful snapshot (spec section 8.3).
+// three lists is consulted, by envelope type, so all three are raw here and
+// decoded lazily: a `state.players` body carrying a `vehicles` field of any
+// shape at all is a body with an unknown field, which section 2.1 obliges the
+// hub to tolerate, and a typed field would fail the whole unmarshal before
+// that rule could apply.
 type snapshotBody struct {
-	CapturedAt json.RawMessage  `json:"capturedAt"`
-	Players    *[]playerEntry   `json:"players"`
-	Vehicles   *[]snapshotEntry `json:"vehicles"`
-	Entities   *[]snapshotEntry `json:"entities"`
+	CapturedAt json.RawMessage `json:"capturedAt"`
+	Players    json.RawMessage `json:"players"`
+	Vehicles   json.RawMessage `json:"vehicles"`
+	Entities   json.RawMessage `json:"entities"`
 }
 
 // playerRef is the platform-qualified identity of spec section 8.2.
@@ -154,17 +155,30 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		return utf8.RuneCountInString(value) > limit
 	}
 
-	entries := 0
+	// Only the list this envelope type owns is decoded. A JSON null reads as
+	// the field being absent (section 6.4), which for the one required field
+	// means the same refusal as leaving it out.
+	rawList := body.Players
+	switch e.Type {
+	case envelopeTypeStateVehicles:
+		rawList = body.Vehicles
+	case envelopeTypeStateEntities:
+		rawList = body.Entities
+	}
+	if len(rawList) == 0 || string(rawList) == "null" {
+		return nil, []schema.Fault{{Path: listField, Message: listField + " is required"}}
+	}
+
 	switch e.Type {
 	case envelopeTypeStatePlayers:
-		if body.Players == nil {
-			return nil, []schema.Fault{{Path: listField, Message: listField + " is required"}}
+		var players []playerEntry
+		if err := json.Unmarshal(rawList, &players); err != nil {
+			return nil, []schema.Fault{{Path: listField,
+				Message: listField + " does not match the snapshot entry shape: " + err.Error()}}
 		}
-		players := *body.Players
-		entries = len(players)
-		if entries > maxSnapshotEntries {
+		if len(players) > maxSnapshotEntries {
 			return nil, []schema.Fault{{Path: listField, Message: fmt.Sprintf(
-				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, entries)}}
+				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, len(players))}}
 		}
 		for i, entry := range players {
 			path := fmt.Sprintf("%s[%d]", listField, i)
@@ -185,18 +199,14 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 			faults = append(faults, validateEntryData(entry.Data, path+".data")...)
 		}
 	default:
-		list := body.Vehicles
-		if e.Type == envelopeTypeStateEntities {
-			list = body.Entities
+		var items []snapshotEntry
+		if err := json.Unmarshal(rawList, &items); err != nil {
+			return nil, []schema.Fault{{Path: listField,
+				Message: listField + " does not match the snapshot entry shape: " + err.Error()}}
 		}
-		if list == nil {
-			return nil, []schema.Fault{{Path: listField, Message: listField + " is required"}}
-		}
-		items := *list
-		entries = len(items)
-		if entries > maxSnapshotEntries {
+		if len(items) > maxSnapshotEntries {
 			return nil, []schema.Fault{{Path: listField, Message: fmt.Sprintf(
-				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, entries)}}
+				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, len(items))}}
 		}
 		for i, entry := range items {
 			path := fmt.Sprintf("%s[%d]", listField, i)
@@ -223,6 +233,7 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		capturedAt = eventTimestamp(e.TS, now)
 	}
 	return &store.NewSnapshot{
+		EnvelopeID:   e.ID,
 		Type:         listField,
 		CapturedAt:   capturedAt,
 		Body:         e.Body,
@@ -311,16 +322,18 @@ func newSnapshotView(snapshot store.Snapshot) snapshotView {
 	}
 }
 
-// handleGetState answers with the latest snapshot of one type.
+// handleGetState answers with the latest snapshot of one type. The request's
+// own shape is checked before the server is looked up, so an unusable state
+// type is bad_request whether or not the server exists.
 func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
-	server, ok := s.lookupServer(w, r)
-	if !ok {
-		return
-	}
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
 			"state type must be players, vehicles, or entities")
+		return
+	}
+	server, ok := s.lookupServer(w, r)
+	if !ok {
 		return
 	}
 
@@ -338,11 +351,8 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetStateHistory answers recent snapshots of one type, newest first.
+// Like handleGetState, the request's own shape is checked before the lookup.
 func (s *Server) handleGetStateHistory(w http.ResponseWriter, r *http.Request) {
-	server, ok := s.lookupServer(w, r)
-	if !ok {
-		return
-	}
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
@@ -351,6 +361,10 @@ func (s *Server) handleGetStateHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, ok := parseLimitParam(w, r.URL.Query().Get("limit"),
 		defaultStateHistoryPage, maxStateHistoryPage)
+	if !ok {
+		return
+	}
+	server, ok := s.lookupServer(w, r)
 	if !ok {
 		return
 	}

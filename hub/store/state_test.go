@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,8 +29,18 @@ func applySnapshots(t *testing.T, st *store.Store, sessionID string, ack int64, 
 	}
 }
 
+// snapshotIDs hands out unique envelope ids, because the store deduplicates
+// snapshots on (server, envelope id) and a fixture reusing one would silently
+// insert nothing.
+var snapshotIDs atomic.Int64
+
+func nextSnapshotID() string {
+	return fmt.Sprintf("snapshot-envelope-%d", snapshotIDs.Add(1))
+}
+
 func playersSnapshot(retention time.Duration, depth int, payload string) store.NewSnapshot {
 	return store.NewSnapshot{
+		EnvelopeID:   nextSnapshotID(),
 		Type:         "players",
 		Body:         json.RawMessage(payload),
 		Retention:    retention,
@@ -117,7 +128,7 @@ func TestSnapshotPruneKeepsLatest(t *testing.T) {
 		playersSnapshot(time.Millisecond, 0, `{"players":[{"n":2}]}`),
 	)
 	applySnapshots(t, st, session.ID, 2,
-		store.NewSnapshot{Type: "vehicles", Body: json.RawMessage(`{"vehicles":[]}`),
+		store.NewSnapshot{EnvelopeID: nextSnapshotID(), Type: "vehicles", Body: json.RawMessage(`{"vehicles":[]}`),
 			Retention: time.Millisecond},
 	)
 	time.Sleep(30 * time.Millisecond)
@@ -142,6 +153,42 @@ func TestSnapshotPruneKeepsLatest(t *testing.T) {
 	}
 }
 
+// The cross-session retransmission case of spec section 8.3: a snapshot whose
+// envelope id was already stored inserts nothing, however its seq was
+// renumbered on the way in.
+func TestSnapshotDedupByEnvelopeID(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "state dedup")
+	session := startSession(t, st, serverID, "state-dedup-token")
+
+	replayed := playersSnapshot(time.Hour, 10, `{"players":[{"n":1}]}`)
+	applySnapshots(t, st, session.ID, 1, replayed)
+
+	// The plugin reconnects; the buffer replay arrives on a new session with
+	// a renumbered seq and the same envelope id.
+	second := startSession(t, st, serverID, "state-dedup-token-2")
+	applied, err := st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				Snapshots: []store.NewSnapshot{replayed}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.SnapshotsStored != 0 {
+		t.Errorf("replay stored %d snapshots, want 0", applied.SnapshotsStored)
+	}
+
+	history, err := st.SnapshotHistory(ctx, serverID, "players", 10)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Errorf("history has %d snapshots after a replay, want 1", len(history))
+	}
+}
+
 func TestSnapshotCapturedAtFallsBackToReceipt(t *testing.T) {
 	ctx := context.Background()
 	st := migrated(t)
@@ -150,11 +197,11 @@ func TestSnapshotCapturedAtFallsBackToReceipt(t *testing.T) {
 
 	sampled := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
 	applySnapshots(t, st, session.ID, 1,
-		store.NewSnapshot{Type: "players", CapturedAt: &sampled,
+		store.NewSnapshot{EnvelopeID: nextSnapshotID(), Type: "players", CapturedAt: &sampled,
 			Body: json.RawMessage(`{"players":[]}`), Retention: time.Hour},
 	)
 	applySnapshots(t, st, session.ID, 2,
-		store.NewSnapshot{Type: "vehicles",
+		store.NewSnapshot{EnvelopeID: nextSnapshotID(), Type: "vehicles",
 			Body: json.RawMessage(`{"vehicles":[]}`), Retention: time.Hour},
 	)
 

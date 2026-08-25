@@ -993,12 +993,14 @@ There is no diff form in this draft; the open question below stays open.
   implausibly far ahead of the hub's clock, the envelope's `ts` stands in, with the
   section 4 receipt-time substitution behind that.
 - Player entries MUST carry `player`, the platform-qualified identity of section 8.2, with
-  `platform` and `id` non-empty strings. This is the one field the hub enforces deeply,
-  because it is what lets a panel or bot correlate a snapshot entry with events, actions,
-  and its own records; a player list without stable identity is a list of labels.
+  `platform` (at most 64 code points) and `id` (at most 128) non-empty strings. This is
+  the one field the hub enforces deeply, because it is what lets a panel or bot correlate
+  a snapshot entry with events, actions, and its own records; a player list without
+  stable identity is a list of labels. `name` is an OPTIONAL display label of at most 200
+  code points.
 - Vehicle and entity entries MUST carry `id`, a non-empty string stable for the lifetime of
   the thing it names, of at most 128 code points. `kind` is an OPTIONAL free-form label
-  (`car`, `helicopter`, `tent`).
+  (`car`, `helicopter`, `tent`) of at most 128 code points.
 - `position` is OPTIONAL: an array of two or three finite JSON numbers in the game's own
   map frame, advisory, for display. The hub never interprets it.
 - `data` is OPTIONAL, a JSON object of game- or mod-specific extras. Unknown fields on an
@@ -1020,9 +1022,13 @@ hours, at most 500 snapshots per server and type), but the latest snapshot per t
 survive every retention pass: a server's last known state stays readable however stale,
 and its `capturedAt` is what tells the reader how stale.
 
-Retransmitted snapshots need no special handling: a duplicate is deduplicated by `seq`
-like any envelope (section 9.1), so at-least-once delivery cannot re-apply an old
-snapshot out of order.
+Retransmissions are deduplicated twice over, because `seq` alone cannot cover them.
+Within a session a retransmitted snapshot is a duplicate like any envelope (section 9.1):
+acked again, applied no further. Across a session change `seq` is renumbered and only the
+envelope `id` survives, so a hub MUST deduplicate an accepted `state.*` envelope on its
+`id` (per server), storing nothing for one it has already stored. Without that, the one
+case section 14 calls out, a restart with traffic in flight, would put the same snapshot
+in history twice with a fresh receipt time.
 
 **Reading state (Admin API).** Both reads sit behind `servers:read` (section 10):
 

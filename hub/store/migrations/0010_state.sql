@@ -19,6 +19,7 @@
 CREATE TABLE IF NOT EXISTS state_snapshots (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id   TEXT NOT NULL REFERENCES servers (id) ON DELETE CASCADE,
+    envelope_id TEXT NOT NULL,           -- the state.* envelope's id, for cross-session dedup
     type        TEXT NOT NULL,           -- players | vehicles | entities
     captured_at TEXT NOT NULL,           -- body capturedAt, envelope ts, or receipt, in that order
     received_at TEXT NOT NULL,           -- when the hub durably took responsibility
@@ -29,6 +30,13 @@ CREATE TABLE IF NOT EXISTS state_snapshots (
 -- Latest and history are both one descending range over this index.
 CREATE INDEX IF NOT EXISTS state_snapshots_feed
     ON state_snapshots (server_id, type, seq DESC);
+
+-- Within a session a retransmission is deduplicated by seq before it gets
+-- here; across a session change seq is renumbered and only the envelope id
+-- survives (spec section 9.1), so it is the key that keeps a replayed
+-- snapshot from landing in history twice with a fresh received_at.
+CREATE UNIQUE INDEX IF NOT EXISTS state_snapshots_envelope
+    ON state_snapshots (server_id, envelope_id);
 
 -- The retention pass, a range scan over one column.
 CREATE INDEX IF NOT EXISTS state_snapshots_retention ON state_snapshots (expires_at);

@@ -23,6 +23,11 @@ type Snapshot struct {
 
 // NewSnapshot is one snapshot to store, already validated by the caller.
 type NewSnapshot struct {
+	// EnvelopeID is the id of the state.* envelope that carried this
+	// snapshot. It is what deduplicates a retransmission across a session
+	// change, where seq is renumbered and only the id survives (spec section
+	// 9.1); a snapshot whose id was already stored inserts nothing.
+	EnvelopeID string
 	// Type is the list kind: "players", "vehicles", or "entities".
 	Type string
 	// CapturedAt is when the game says it sampled the state. Nil means no
@@ -47,27 +52,39 @@ func insertSnapshots(ctx context.Context, tx *sql.Tx, serverID string, snapshots
 		return 0, nil
 	}
 
+	// ON CONFLICT DO NOTHING rather than failing: a retransmission renumbered
+	// into a new session is accepted by the sequence layer (its seq is fresh)
+	// and only the envelope id reveals it was already stored. Re-storing it
+	// would put the snapshot in history twice with a fresh received_at.
 	insert, err := tx.PrepareContext(ctx,
-		`INSERT INTO state_snapshots (server_id, type, captured_at, received_at, expires_at, body)
-		 VALUES (?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO state_snapshots (server_id, envelope_id, type, captured_at, received_at, expires_at, body)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (server_id, envelope_id) DO NOTHING`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare snapshot insert: %w", err)
 	}
 	defer insert.Close()
 
 	receivedAt := formatTime(now)
+	stored := 0
 	depths := map[string]int{}
 	for _, snapshot := range snapshots {
 		capturedAt := now
 		if snapshot.CapturedAt != nil {
 			capturedAt = *snapshot.CapturedAt
 		}
-		if _, err := insert.ExecContext(ctx,
-			serverID, snapshot.Type, formatTime(capturedAt), receivedAt,
+		result, err := insert.ExecContext(ctx,
+			serverID, snapshot.EnvelopeID, snapshot.Type, formatTime(capturedAt), receivedAt,
 			formatTime(now.Add(snapshot.Retention)), string(snapshot.Body),
-		); err != nil {
+		)
+		if err != nil {
 			return 0, fmt.Errorf("insert snapshot: %w", err)
 		}
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("insert snapshot: %w", err)
+		}
+		stored += int(inserted)
 		if snapshot.HistoryDepth > depths[snapshot.Type] {
 			depths[snapshot.Type] = snapshot.HistoryDepth
 		}
@@ -89,7 +106,7 @@ func insertSnapshots(ctx context.Context, tx *sql.Tx, serverID string, snapshots
 			return 0, fmt.Errorf("trim snapshot history: %w", err)
 		}
 	}
-	return len(snapshots), nil
+	return stored, nil
 }
 
 // LatestSnapshot returns the most recently accepted snapshot of one type, or

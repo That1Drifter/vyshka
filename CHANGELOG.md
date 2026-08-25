@@ -34,12 +34,33 @@ point if needed.
   prune). Two Admin API reads behind `servers:read`:
   `GET /api/v1/servers/{id}/state/{type}` for the live answer and `.../history` for
   recent snapshots newest first. Section 5.5's reserved-family list now also names
-  `event.*`, closing an existing spec-code drift. Three new conformance checks (69 total)
-  grade replacement and history order, whole-rejection with the notice, and the
-  type/scope/forgery guards; `scripts/demo-state.sh` walks the issue's demo path (plugin
-  pushes a player snapshot, admin curl returns the live list). New migration
-  `0010_state.sql`, new companion `spec/state.schema.json`, Admin OpenAPI updated;
-  protocol draft 0.13.
+  `event.*`, closing an existing spec-code drift. Four new conformance checks (70 total)
+  grade replacement and history order, whole-rejection with the notice, cross-session
+  replay dedup, and the type/scope/forgery guards; `scripts/demo-state.sh` walks the
+  issue's demo path (plugin pushes a player snapshot, admin curl returns the live list).
+  New migration `0010_state.sql`, new companion `spec/state.schema.json`, Admin OpenAPI
+  updated; protocol draft 0.13.
+
+  An adversarial review pass then trued up the edges before landing. The real find:
+  a snapshot retransmitted across a session change is renumbered (section 9.1), so `seq`
+  alone cannot deduplicate it, and the first cut would have stored it twice with a fresh
+  receipt time; snapshots now dedup on the envelope `id` per server (a unique index the
+  insert defers to), and section 8.3 states the two-layer rule honestly instead of
+  claiming `seq` covers everything. Unknown-field tolerance now genuinely holds inside
+  snapshot bodies (the unconsulted list fields decode lazily, so a `state.players` body
+  carrying a strangely shaped `vehicles` field is tolerated per section 2.1 rather than
+  rejected at the decoder). The entry length caps the hub enforces (platform 64, player
+  id 128, name 200, kind 128) are now in the normative prose, not just the code and
+  companion schema. State-type and limit validation run before the server lookup, so an
+  unusable request is `bad_request` whether or not the server exists. The four clamped
+  `limit` query parameters across the Admin OpenAPI no longer declare a `maximum` a
+  validating client would enforce against a server that clamps, and
+  `spec/state.schema.json` joined CI's schema validation list. Conformance grew the
+  replay-dedup check plus teeth the review showed were missing: a byte-honest verbatim
+  round-trip with unknown fields, a replacement whose `capturedAt` is older than its
+  predecessor's (acceptance order, not the game's clock, decides "latest"), a
+  cap-boundary player id, history behind `servers:read`, and raw-queue refusal of the
+  whole `state.*` family.
 
 - 2026-08-25: per-mod key/value store (spec section 12, issue #11). Section 12 grows from a
   stub into the full contract and the hub implements it on both realms: `get`, `set`,

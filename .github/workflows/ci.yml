@@ -67,7 +67,8 @@ jobs:
 
           for path in ("spec/openapi-admin.yaml", "spec/openapi-plugin.yaml",
                        "spec/envelopes.schema.json", "spec/manifest.schema.json",
-                       "spec/actions.schema.json", "spec/events.schema.json"):
+                       "spec/actions.schema.json", "spec/events.schema.json",
+                       "spec/state.schema.json"):
               document = load(path)
               refs = []
               def walk(node):

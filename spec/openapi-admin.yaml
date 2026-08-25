@@ -420,11 +420,13 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Page size. Clamped to the hub's cap rather than refused.
+          description: |
+            Page size. Values above the hub's cap (500) are clamped
+            rather than refused, so the schema declares no maximum a
+            validating client would enforce for the server.
           schema:
             type: integer
             minimum: 1
-            maximum: 500
             default: 100
         - name: cursor
           in: query
@@ -505,11 +507,13 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Page size. Clamped to the hub's cap rather than refused.
+          description: |
+            Page size. Values above the hub's cap (100) are clamped
+            rather than refused, so the schema declares no maximum a
+            validating client would enforce for the server.
           schema:
             type: integer
             minimum: 1
-            maximum: 100
             default: 20
       responses:
         "200":
@@ -679,11 +683,13 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Page size. Clamped to the hub's cap rather than refused.
+          description: |
+            Page size. Values above the hub's cap (500) are clamped
+            rather than refused, so the schema declares no maximum a
+            validating client would enforce for the server.
           schema:
             type: integer
             minimum: 1
-            maximum: 500
             default: 100
         - name: cursor
           in: query
@@ -847,11 +853,13 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Page size. Clamped to the hub's cap rather than refused.
+          description: |
+            Page size. Values above the hub's cap (500) are clamped
+            rather than refused, so the schema declares no maximum a
+            validating client would enforce for the server.
           schema:
             type: integer
             minimum: 1
-            maximum: 500
             default: 100
       responses:
         "200":

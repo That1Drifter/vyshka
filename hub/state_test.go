@@ -270,6 +270,39 @@ func TestStateValidationEdges(t *testing.T) {
 	}
 }
 
+// Section 2.1's unknown-field rule applies inside a snapshot body too: a
+// state.players body carrying a `vehicles` field of any shape at all is a
+// body with an unknown field, not a malformed snapshot.
+func TestStateSnapshotToleratesUnknownFields(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "state tolerance")
+
+	body := map[string]any{
+		"players":     []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}}},
+		"vehicles":    map[string]any{"formatFromFutureDraft": 2},
+		"x-mod-extra": "kept verbatim",
+	}
+	result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{stateEnvelope(1, "state.players", body)},
+	})
+	if result.Ack != 1 {
+		t.Fatalf("ack = %d, want 1", result.Ack)
+	}
+
+	view := getState(t, server, created.Server.ID, "players")
+	var stored map[string]json.RawMessage
+	if err := json.Unmarshal(view.Snapshot, &stored); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if string(stored["x-mod-extra"]) != `"kept verbatim"` {
+		t.Errorf("unknown field was not stored verbatim: %s", stored["x-mod-extra"])
+	}
+	if _, present := stored["vehicles"]; !present {
+		t.Error("the unknown-shaped vehicles field was dropped rather than kept verbatim")
+	}
+}
+
 func TestStateEndpointGuards(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"time"
 )
 
@@ -42,6 +43,14 @@ func checkStateLatestReplaces(ctx context.Context, env Env) error {
 		return fmt.Errorf("state before any snapshot: %w", err)
 	}
 
+	// The first snapshot deliberately stresses three tolerance rules at once:
+	// a body-level unknown field and an unknown list-shaped field must both
+	// survive verbatim (section 2.1), and a player id at the 128-code-point
+	// cap must be accepted, pinning the boundary from the accepting side.
+	longID := "76561198000000042"
+	for len(longID) < 128 {
+		longID += "x"
+	}
 	first := map[string]any{
 		"capturedAt": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
 		"players": []map[string]any{{
@@ -49,7 +58,11 @@ func checkStateLatestReplaces(ctx context.Context, env Env) error {
 			"name":     "Conformance Survivor",
 			"position": []float64{4231.5, 300.25, 10620},
 			"data":     map[string]any{"health": 82},
+		}, {
+			"player": map[string]any{"platform": "conformance-platform", "id": longID},
 		}},
+		"x-mod-extra": map[string]any{"weather": "fog"},
+		"vehicles":    map[string]any{"formatFromFutureDraft": 2},
 	}
 	if _, err := plugin.send(ctx, plugin.nextOutbound("state.players", first)); err != nil {
 		return err
@@ -57,11 +70,12 @@ func checkStateLatestReplaces(ctx context.Context, env Env) error {
 
 	record, err := env.latestState(ctx, serverID, "players")
 	if err != nil {
-		return err
+		return fmt.Errorf("the snapshot with unknown fields was not accepted: %w", err)
 	}
 	if record.Type != "players" {
 		return fmt.Errorf("latest type = %q, want players", record.Type)
 	}
+	firstCapturedAt := record.CapturedAt
 	for _, stamp := range []struct{ name, value string }{
 		{"capturedAt", record.CapturedAt}, {"receivedAt", record.ReceivedAt},
 	} {
@@ -69,25 +83,30 @@ func checkStateLatestReplaces(ctx context.Context, env Env) error {
 			return fmt.Errorf("%s %q is not RFC 3339: %w", stamp.name, stamp.value, err)
 		}
 	}
-	var stored struct {
-		Players []struct {
-			Player struct {
-				Platform string `json:"platform"`
-				ID       string `json:"id"`
-			} `json:"player"`
-		} `json:"players"`
+	// Verbatim means verbatim: the stored body must equal what was sent, the
+	// unknown fields included, not a rewrite that kept the fields this suite
+	// happens to check.
+	var sentValue, storedValue any
+	sentEncoded, _ := json.Marshal(first)
+	if err := json.Unmarshal(sentEncoded, &sentValue); err != nil {
+		return err
 	}
-	if err := json.Unmarshal(record.Snapshot, &stored); err != nil {
+	if err := json.Unmarshal(record.Snapshot, &storedValue); err != nil {
 		return fmt.Errorf("snapshot %q does not decode: %w", truncate(record.Snapshot), err)
 	}
-	if len(stored.Players) != 1 || stored.Players[0].Player.ID != "76561198000000042" {
-		return fmt.Errorf("snapshot = %s, want the pushed list verbatim", truncate(record.Snapshot))
+	if !reflect.DeepEqual(sentValue, storedValue) {
+		return fmt.Errorf("the stored snapshot is not the sent body verbatim: got %s",
+			truncate(record.Snapshot))
 	}
 
-	// A newer snapshot replaces the older entirely: an empty list is a
-	// meaningful answer, not a missing one.
-	if _, err := plugin.send(ctx, plugin.nextOutbound("state.players",
-		map[string]any{"players": []any{}})); err != nil {
+	// A newer snapshot replaces the older entirely, and "newer" means newer
+	// accepted: this one carries an older capturedAt, and a hub ordering by
+	// the game's clock instead of acceptance order would keep the wrong one.
+	// An empty list is a meaningful answer, not a missing one.
+	if _, err := plugin.send(ctx, plugin.nextOutbound("state.players", map[string]any{
+		"capturedAt": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+		"players":    []any{},
+	})); err != nil {
 		return err
 	}
 	record, err = env.latestState(ctx, serverID, "players")
@@ -101,8 +120,12 @@ func checkStateLatestReplaces(ctx context.Context, env Env) error {
 		return fmt.Errorf("empty snapshot does not decode: %w", err)
 	}
 	if emptied.Players == nil || len(*emptied.Players) != 0 {
-		return fmt.Errorf("after the empty push the latest snapshot is %s, want an empty list",
+		return fmt.Errorf("after the empty push the latest snapshot is %s, want an empty list; "+
+			"latest is the last accepted snapshot, never the one with the freshest capturedAt",
 			truncate(record.Snapshot))
+	}
+	if record.CapturedAt == firstCapturedAt {
+		return fmt.Errorf("the latest snapshot still reports the first capturedAt %q", firstCapturedAt)
 	}
 
 	// History: newest first, both snapshots present, latest included first.
@@ -211,15 +234,18 @@ func checkStateGuards(ctx context.Context, env Env) error {
 		nil, http.StatusBadRequest, "bad_request"); err != nil {
 		return err
 	}
-	// The raw envelope queue refuses the state family: a forged state.reject
-	// must not be queueable as the hub's own word.
-	if err := env.expectError(ctx, http.MethodPost,
-		"/api/v1/servers/"+serverID+"/envelopes", env.AdminToken,
-		map[string]any{"type": "state.reject"}, http.StatusConflict, "conflict"); err != nil {
-		return err
+	// The raw envelope queue refuses the whole state family: a forged
+	// state.reject must not be queueable as the hub's own word, and a forged
+	// snapshot must not route around the validation ingest performs.
+	for _, forged := range []string{"state.reject", "state.players", "state.something-new"} {
+		if err := env.expectError(ctx, http.MethodPost,
+			"/api/v1/servers/"+serverID+"/envelopes", env.AdminToken,
+			map[string]any{"type": forged}, http.StatusConflict, "conflict"); err != nil {
+			return fmt.Errorf("queueing %s: %w", forged, err)
+		}
 	}
 
-	// servers:read is the gate.
+	// servers:read is the gate, on the latest read and the history read alike.
 	reader, err := env.mintToken(ctx, "conformance: state reader", "servers:read")
 	if err != nil {
 		return err
@@ -229,11 +255,65 @@ func checkStateGuards(ctx context.Context, env Env) error {
 		nil, http.StatusNotFound, "not_found"); err != nil {
 		return fmt.Errorf("servers:read reading empty state: %w", err)
 	}
+	if err := env.expect(ctx, http.MethodGet,
+		"/api/v1/servers/"+serverID+"/state/players/history", reader.Secret,
+		nil, http.StatusOK, nil); err != nil {
+		return fmt.Errorf("servers:read reading history: %w", err)
+	}
 	outsider, err := env.mintToken(ctx, "conformance: state outsider", "events:read")
 	if err != nil {
 		return err
 	}
-	return env.refused(ctx, http.MethodGet,
+	if err := env.refused(ctx, http.MethodGet,
 		"/api/v1/servers/"+serverID+"/state/players", outsider.Secret, nil,
-		"a token without servers:read read state")
+		"a token without servers:read read state"); err != nil {
+		return err
+	}
+	return env.refused(ctx, http.MethodGet,
+		"/api/v1/servers/"+serverID+"/state/players/history", outsider.Secret, nil,
+		"a token without servers:read read state history")
+}
+
+// checkStateRetransmitDedup drives the one case section 14 singles out: a
+// session change with a snapshot the plugin believes unacked. The replay is
+// renumbered into the new session (section 9.1), so only the envelope id can
+// reveal it was already stored; a hub that stores it again puts the same
+// snapshot in history twice with a fresh receipt time.
+func checkStateRetransmitDedup(ctx context.Context, env Env) error {
+	plugin, err := env.newFakePlugin(ctx, "conformance: state retransmit", 5)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Creds.ServerID
+
+	sent := plugin.nextOutbound("state.players", map[string]any{
+		"players": []map[string]any{{
+			"player": map[string]any{"platform": "steam", "id": "76561198000000042"},
+		}}})
+	if _, err := plugin.send(ctx, sent); err != nil {
+		return err
+	}
+
+	// The game server restarts before the ack reaches the plugin: the buffer
+	// is replayed on the next session, renumbered, everything else unchanged.
+	if err := plugin.reconnect(ctx, 5); err != nil {
+		return err
+	}
+	if _, err := plugin.send(ctx, plugin.renumber(sent)); err != nil {
+		return err
+	}
+
+	var history struct {
+		Snapshots []stateRecord `json:"snapshots"`
+	}
+	if err := env.expect(ctx, http.MethodGet,
+		"/api/v1/servers/"+serverID+"/state/players/history", env.AdminToken,
+		nil, http.StatusOK, &history); err != nil {
+		return err
+	}
+	if len(history.Snapshots) != 1 {
+		return fmt.Errorf("history has %d snapshots after a cross-session replay, want the one original",
+			len(history.Snapshots))
+	}
+	return nil
 }
