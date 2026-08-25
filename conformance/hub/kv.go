@@ -110,6 +110,47 @@ func checkKVPluginWrite(ctx context.Context, env Env) error {
 		}
 	}
 
+	// The Plugin API's incr is the same atomic operation as the Admin API's:
+	// a bump through each realm lands in the other's read.
+	var bumped kvEntry
+	if err := env.expect(ctx, http.MethodPost, kvPath("/plugin/v1", namespace, "hits")+"/incr",
+		plugin.Session.SessionToken, map[string]any{"delta": 2}, http.StatusOK, &bumped); err != nil {
+		return err
+	}
+	if string(bumped.Value) != "2" || bumped.Revision != 1 {
+		return fmt.Errorf("plugin incr = (%s, rev %d), want (2, rev 1)", bumped.Value, bumped.Revision)
+	}
+	if err := env.expect(ctx, http.MethodPost, kvPath("/api/v1", namespace, "hits")+"/incr",
+		env.AdminToken, nil, http.StatusOK, &bumped); err != nil {
+		return err
+	}
+	if string(bumped.Value) != "3" || bumped.Revision != 2 {
+		return fmt.Errorf("admin incr after plugin incr = (%s, rev %d), want (3, rev 2)",
+			bumped.Value, bumped.Revision)
+	}
+
+	// A TTL set through the plugin realm answers with the expiry, and a later
+	// set with no TTL clears it: a set defines the key entirely.
+	var expiring kvEntry
+	if err := env.expect(ctx, http.MethodPut, kvPath("/plugin/v1", namespace, "ephemeral"),
+		plugin.Session.SessionToken, map[string]any{"value": 1, "ttlSeconds": 60},
+		http.StatusOK, &expiring); err != nil {
+		return err
+	}
+	if expiring.ExpiresAt == "" {
+		return fmt.Errorf("a plugin set with ttlSeconds answered no expiresAt")
+	}
+	// Decoded into a fresh value: a field the response omits must read as
+	// absent, not as whatever the previous decode left behind.
+	var cleared kvEntry
+	if err := env.expect(ctx, http.MethodPut, kvPath("/plugin/v1", namespace, "ephemeral"),
+		plugin.Session.SessionToken, map[string]any{"value": 1}, http.StatusOK, &cleared); err != nil {
+		return err
+	}
+	if cleared.ExpiresAt != "" {
+		return fmt.Errorf("a set with no ttlSeconds kept the previous expiry %q", cleared.ExpiresAt)
+	}
+
 	// Delete, then a get and a retried delete both answer not_found.
 	if err := env.expect(ctx, http.MethodDelete, kvPath("/plugin/v1", namespace, "greeting"),
 		plugin.Session.SessionToken, nil, http.StatusNoContent, nil); err != nil {
@@ -297,7 +338,10 @@ func checkKVTTL(ctx context.Context, env Env) error {
 			return err
 		}
 		if resp.StatusCode == http.StatusNotFound {
-			return assertErrorCode(http.MethodGet, path, body, "not_found")
+			if err := assertErrorCode(http.MethodGet, path, body, "not_found"); err != nil {
+				return err
+			}
+			break
 		}
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("waiting for expiry: status = %d, body %q", resp.StatusCode, truncate(body))
@@ -311,6 +355,21 @@ func checkKVTTL(ctx context.Context, env Env) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+
+	// An expired key counts as absent to a compare-and-swap: the create-only
+	// guard wins, and the recreated key starts over at revision 1.
+	var recreated kvEntry
+	if err := env.expect(ctx, http.MethodPut, path, env.AdminToken,
+		map[string]any{"value": 2, "ifRevision": 0}, http.StatusOK, &recreated); err != nil {
+		return fmt.Errorf("create-only set over an expired key: %w", err)
+	}
+	if recreated.Revision != 1 {
+		return fmt.Errorf("recreated key: revision = %d, want a fresh 1", recreated.Revision)
+	}
+	if recreated.ExpiresAt != "" {
+		return fmt.Errorf("recreated key kept the expired TTL, expiresAt %q", recreated.ExpiresAt)
+	}
+	return nil
 }
 
 func checkKVConfinement(ctx context.Context, env Env) error {
@@ -409,6 +468,8 @@ func checkKVValidation(ctx context.Context, env Env) error {
 			"a key with an empty segment was accepted"),
 		bad(http.MethodPut, kvPath("/api/v1", namespace, "key"), map[string]any{},
 			"a set with no value was accepted"),
+		bad(http.MethodPut, kvPath("/api/v1", namespace, "key"), map[string]any{"value": nil},
+			"a null value was accepted; null must read as the field being absent"),
 		bad(http.MethodPut, kvPath("/api/v1", namespace, "key"),
 			map[string]any{"value": string(oversized)},
 			"a value over the 16384 byte cap was accepted"),
@@ -418,6 +479,9 @@ func checkKVValidation(ctx context.Context, env Env) error {
 		bad(http.MethodPut, kvPath("/api/v1", namespace, "key"),
 			map[string]any{"value": 1, "ifRevision": -1},
 			"a negative ifRevision was accepted"),
+		bad(http.MethodPost, kvPath("/api/v1", namespace, "key")+"/incr",
+			map[string]any{"delta": int64(1) << 53},
+			"a delta at the 2^53 exactness bound was accepted"),
 	}
 	for _, err := range checks {
 		if err != nil {

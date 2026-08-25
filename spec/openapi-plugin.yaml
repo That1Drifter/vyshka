@@ -516,6 +516,7 @@ components:
         namespace: { type: string }
         key: { type: string }
         value:
+          not: { type: "null" }
           description: Any JSON value except null, at most 16384 encoded bytes.
         revision:
           type: integer
@@ -541,10 +542,12 @@ components:
       required: [value]
       properties:
         value:
+          not: { type: "null" }
           description: Any JSON value except null, at most 16384 encoded bytes.
         ifRevision:
           type: integer
           minimum: 0
+          maximum: 9007199254740991
           description: |
             Compare-and-swap guard. 0 means "only if the key does not exist";
             n >= 1 means "only if the current revision is exactly n". Absent
@@ -552,15 +555,19 @@ components:
         ttlSeconds:
           type: integer
           minimum: 1
+          maximum: 315360000
           description: |
-            Expiry, from now. Absent means the key does not expire, whatever
-            TTL it carried before: a set defines the key entirely.
+            Expiry, from now, at most ten years. Absent means the key does not
+            expire, whatever TTL it carried before: a set defines the key
+            entirely.
 
     KVIncrRequest:
       type: object
       properties:
         delta:
           type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
           default: 1
           description: Signed; a negative delta is the decrement.
 

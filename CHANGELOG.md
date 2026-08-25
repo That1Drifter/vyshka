@@ -35,6 +35,19 @@ point if needed.
   stale CAS is rejected, the fresh one wins). New migration `0009_kv.sql`; protocol draft
   0.12; both OpenAPI documents and `manifest.schema.json` updated.
 
+  An adversarial review pass then trued up the edges. The store now reads its clock after
+  winning the database connection, not before, so a TTL cannot arrive partly spent and a
+  liveness decision cannot be made from a timestamp that aged in the queue. The ten-year
+  `ttlSeconds` ceiling the hub enforces is now in the spec and both OpenAPI schemas rather
+  than being an undocumented refusal, the OpenAPI schemas gained the exactness bounds on
+  `ifRevision` and `delta` and the not-null rule on `value`, and `manifest.schema.json`
+  gained `uniqueItems` on `kvNamespaces`. Section 6.6 now states the concurrency of
+  namespace withdrawal precisely (a publish stops operations that begin after it commits,
+  not one already past its confinement check), and section 12.2 says a JSON `null` incr
+  body reads as an absent body. Conformance grew to cover the Plugin API's incr and TTL
+  surfaces, a null `value`, an out-of-bound `delta`, TTL clearing by a TTL-less set, and
+  the revision restart of a compare-and-swap over an expired key.
+
 - 2026-08-20: webhooks with signed delivery (spec section 11, issue #10). Section 11 grows
   from a stub into the full contract, and the hub implements it: `POST /api/v1/webhooks`
   registers a target URL with an event filter (type patterns in the section 10.1 grammar,

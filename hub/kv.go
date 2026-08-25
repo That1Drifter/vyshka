@@ -9,7 +9,7 @@ import (
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
-// The key/value store of spec section 12: the same five operations on both
+// The key/value store of spec section 12: the same operations on both
 // realms, as synchronous request/response, never as envelopes. The Admin API
 // side is gated by kv:rw:{namespace}; the Plugin API side is confined to the
 // namespaces the server's stored manifest declares in kvNamespaces (section

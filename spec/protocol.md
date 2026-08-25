@@ -700,8 +700,11 @@ ships.
   author is looking, not at the first KV call in production.
 
 Publishing a manifest replaces the declared set. A namespace that disappears from the
-manifest stops being accessible to the plugin on the next accepted publish; the keys under
-it are untouched, because admin tokens and other servers' manifests may still reach them.
+manifest is refused to the plugin on every KV operation that begins after the publish is
+accepted; an operation already past its confinement check when the publish commits MAY
+still land under the old declaration, which is the ordering any pair of concurrent
+requests already has. The keys under a withdrawn namespace are untouched, because admin
+tokens and other servers' manifests may still reach them.
 
 ## 7. Action lifecycle
 
@@ -1606,9 +1609,10 @@ server in the key. Isolation between mods is the namespace, and nothing else.
 
 ### 12.2 Operations
 
-The same five operations exist in both realms, as synchronous HTTP request/response, never
-as envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
-whether it won. They carry no sequence numbers and no acks; a client that retries a write
+The same operations exist in both realms, as synchronous HTTP request/response, never as
+envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
+whether it won. There are four endpoints; the decrement rides `incr` as a negative delta,
+and the compare-and-swap rides `set` as `ifRevision`. They carry no sequence numbers and no acks; a client that retries a write
 after a network failure uses `ifRevision` when it needs to know whether the first attempt
 landed.
 
@@ -1644,8 +1648,10 @@ when a TTL was set). The body:
   mismatch is answered `409 revision_mismatch` with `details.revision` carrying the current
   revision (`0` when the key does not exist), which is what lets the loser re-read and
   retry without a second round-trip. Absent means unconditional.
-- `ttlSeconds` is OPTIONAL, an integer of at least 1. A set defines the key entirely:
-  absent means the key does not expire, whatever TTL it carried before.
+- `ttlSeconds` is OPTIONAL, an integer in `[1, 315360000]` (ten years); anything longer is
+  a no-expiry key wearing a costume, and is refused rather than silently clamped to
+  something the caller did not write. A set defines the key entirely: absent means the key
+  does not expire, whatever TTL it carried before.
 
 `ifRevision` is REQUIRED behavior, not an extension, because it is the whole concurrency
 model: the moment a mod in-game and a bot over the Admin API write the same key, one of
@@ -1657,7 +1663,8 @@ Delete is unconditional in this draft; a mod that needs a guarded delete keeps a
 value and uses `ifRevision` on the set that writes it.
 
 **incr** atomically adds an integer to a key, creating it when absent. The body is
-OPTIONAL:
+OPTIONAL, and a body of JSON `null` reads as an absent body, the same substitution
+section 6.4 makes for optional fields:
 
 ```json
 { "delta": -5 }

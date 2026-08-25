@@ -109,13 +109,17 @@ func (s *Store) KVGet(ctx context.Context, namespace, key string) (KVEntry, erro
 // (spec section 12.2). The returned entry carries the new revision and expiry
 // and no value.
 func (s *Store) KVSet(ctx context.Context, namespace, key string, value []byte, ifRevision *int64, ttl *time.Duration) (KVEntry, error) {
-	now := time.Now().UTC()
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return KVEntry{}, fmt.Errorf("begin kv set: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The clock is read after the wait for the connection, not before: a TTL
+	// measured from a timestamp that aged in the queue would sell the caller
+	// an expiry already partly (or wholly) spent, and liveness decisions made
+	// from it would misread a key that expired while this write waited.
+	now := time.Now().UTC()
 
 	current, err := kvCurrentRevision(ctx, tx, namespace, key, now)
 	if err != nil {
@@ -173,13 +177,15 @@ func (s *Store) KVDelete(ctx context.Context, namespace, key string) error {
 // otherwise the matching error is returned and nothing changes. A successful
 // incr preserves the key's TTL (spec section 12.2).
 func (s *Store) KVIncr(ctx context.Context, namespace, key string, delta int64) (KVEntry, error) {
-	now := time.Now().UTC()
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return KVEntry{}, fmt.Errorf("begin kv incr: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Read after the wait for the connection, as in KVSet: liveness must be
+	// judged at the moment this transaction runs, not at the moment it queued.
+	now := time.Now().UTC()
 
 	var (
 		value     string
