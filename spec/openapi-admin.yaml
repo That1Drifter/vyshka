@@ -7,7 +7,7 @@ info:
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.5, 7, 8.5, and 10).
+    6.5, 7, 8.3, 8.5, 10, 11, and 12).
 
     Authentication is a bearer token carrying explicit scopes (spec section
     10). The scope each endpoint requires is stated in its description; where
@@ -34,6 +34,8 @@ tags:
     description: Dispatching tracked jobs and reading their lifecycle.
   - name: events
     description: Reading the telemetry a plugin has pushed.
+  - name: state
+    description: Reading the latest state snapshots behind the live map (spec section 8.3).
   - name: tokens
     description: Minting, listing, and revoking scoped Admin API credentials.
   - name: audit
@@ -450,6 +452,89 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/servers/{serverId}/state/{stateType}:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+      - $ref: "#/components/parameters/StateType"
+    get:
+      tags: [state]
+      operationId: getState
+      summary: Read the latest state snapshot of one type.
+      description: |
+        Requires `servers:read`. `snapshot` is the accepted body verbatim; the
+        hub adds `capturedAt` and `receivedAt` beside it rather than rewriting
+        what the plugin published. The latest snapshot survives every
+        retention pass, however stale: `capturedAt` is what tells the reader
+        how stale.
+      responses:
+        "200":
+          description: The latest accepted snapshot of this type.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateSnapshot" }
+        "400":
+          description: "`stateType` is not players, vehicles, or entities (`bad_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: |
+            No such server, or no snapshot of this type has ever been accepted
+            (`not_found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/servers/{serverId}/state/{stateType}/history:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+      - $ref: "#/components/parameters/StateType"
+    get:
+      tags: [state]
+      operationId: getStateHistory
+      summary: Read recent snapshots of one type, newest first.
+      description: |
+        Requires `servers:read`. Newest first in acceptance order, the latest
+        snapshot included as the first element. History is bounded by the
+        hub's retention window (spec section 8.4; reference 24 hours, at most
+        500 snapshots per server and type), so there is no cursor.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the hub's cap rather than refused.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Recent snapshots, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [snapshots]
+                properties:
+                  snapshots:
+                    type: array
+                    items: { $ref: "#/components/schemas/StateSnapshot" }
+        "400":
+          description: "`stateType` or `limit` is unusable (`bad_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such server (`not_found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/tokens:
     get:
@@ -935,6 +1020,14 @@ components:
         maxLength: 128
         pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
       description: A key within the namespace (spec section 12.1). Case-sensitive.
+    StateType:
+      name: stateType
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [players, vehicles, entities]
+      description: Which state list to read (spec section 8.3).
 
   schemas:
     ServerRecord:
@@ -1255,6 +1348,34 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    StateSnapshot:
+      type: object
+      description: |
+        One accepted state snapshot (spec section 8.3): the body verbatim,
+        with the hub's metadata beside it.
+      required: [type, capturedAt, receivedAt, snapshot]
+      properties:
+        type:
+          type: string
+          enum: [players, vehicles, entities]
+        capturedAt:
+          type: string
+          format: date-time
+          description: |
+            When the game sampled this state: the body's capturedAt, the
+            envelope's ts, or receipt time, in that order of preference.
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the hub durably took responsibility.
+        snapshot:
+          type: object
+          additionalProperties: true
+          description: |
+            The accepted state.* body, verbatim. Its list shapes are the
+            `statePlayers`, `stateVehicles`, and `stateEntities` definitions
+            of spec/state.schema.json.
 
     KVEntry:
       type: object
