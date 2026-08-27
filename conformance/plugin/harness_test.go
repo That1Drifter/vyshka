@@ -171,6 +171,34 @@ func TestRenumberedReplayAfterASessionChangeIsAccepted(t *testing.T) {
 	}
 }
 
+// An id recycled for a different message in a later session is faulted: a
+// hub's cross-session dedup treats equal ids as the same message (section 4),
+// so it would silently drop the fresh one.
+func TestCrossSessionIDReuseForADifferentMessageIsFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.poll(testEnvelope("evt-1", 1, map[string]any{"marker": "first"}))
+	h.killSession()
+
+	// An id generator that reset with the session hands out evt-1 again, this
+	// time naming a different message.
+	p.startSession()
+	p.poll(testEnvelope("evt-1", 1, map[string]any{"marker": "second"}))
+
+	faults := faultMessages(h)
+	if !strings.Contains(faults, "reused in session") {
+		t.Fatalf("cross-session id reuse was not faulted; recorded faults:\n%s", faults)
+	}
+	if !strings.Contains(faults, "section 4") {
+		t.Fatalf("the reuse fault does not cite section 4; recorded faults:\n%s", faults)
+	}
+}
+
 func TestAChangedRetransmissionIsFaulted(t *testing.T) {
 	h, err := startMockHub("127.0.0.1:0")
 	if err != nil {

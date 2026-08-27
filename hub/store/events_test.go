@@ -3,20 +3,33 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
-// ingest appends events through the same transaction the poll handler uses, so
-// these tests exercise the durability path rather than a private shortcut.
+// batchIDs hands out unique envelope ids, because the store deduplicates event
+// batches on (server, envelope id) and a fixture reusing one would silently
+// insert nothing.
+var batchIDs atomic.Int64
+
+func nextBatchID() string {
+	return fmt.Sprintf("event-batch-envelope-%d", batchIDs.Add(1))
+}
+
+// ingest appends events, as one batch, through the same transaction the poll
+// handler uses, so these tests exercise the durability path rather than a
+// private shortcut.
 func ingest(t *testing.T, st *store.Store, sessionID string, events ...store.NewEvent) store.InboundApplied {
 	t.Helper()
 
+	batch := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: events}
 	applied, err := st.ApplyInbound(context.Background(), sessionID,
 		func(ack int64) store.InboundApplication {
-			return store.InboundApplication{Ack: ack, Events: events}
+			return store.InboundApplication{Ack: ack, EventBatches: []store.NewEventBatch{batch}}
 		}, 100)
 	if err != nil {
 		t.Fatalf("ingest events: %v", err)
@@ -75,6 +88,92 @@ func TestEventsTreatCoreAndCustomAlike(t *testing.T) {
 	}
 	if string(found[0].Data) != `{"territoryId":"t-19"}` {
 		t.Errorf("data = %s, want what the plugin sent", found[0].Data)
+	}
+}
+
+// The cross-session retransmission case of spec section 8.1: a batch whose
+// envelope id was already ingested stores nothing, however its seq was
+// renumbered on the way in.
+func TestEventBatchDedupByEnvelopeID(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "events dedup")
+	session := startSession(t, st, serverID, "events-dedup-token")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	replayed := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: []store.NewEvent{
+		event("core.player.death", now, `{"weapon":"M4A1"}`),
+		event("core.player.connect", now.Add(time.Second), `{}`),
+	}}
+	applied, err := st.ApplyInbound(ctx, session.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{replayed}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if applied.EventsStored != 2 {
+		t.Fatalf("EventsStored = %d, want 2", applied.EventsStored)
+	}
+
+	// The plugin reconnects; the buffer replay arrives on a new session with a
+	// renumbered seq and the same envelope id, alongside a genuinely new batch
+	// that must not be caught in the dedup.
+	fresh := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: []store.NewEvent{
+		event("core.player.chat", now.Add(2*time.Second), `{"message":"back"}`),
+	}}
+	second := startSession(t, st, serverID, "events-dedup-token-2")
+	applied, err = st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 2, Accepted: 2,
+				EventBatches: []store.NewEventBatch{replayed, fresh}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.EventsStored != 1 {
+		t.Errorf("replay stored %d events, want only the fresh batch's 1", applied.EventsStored)
+	}
+
+	found, err := st.Events(ctx, store.EventQuery{ServerID: serverID, Limit: 10})
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if len(found) != 3 {
+		t.Errorf("feed holds %d events after a cross-session replay, want 3", len(found))
+	}
+}
+
+// Batch dedup is keyed per server: two servers may mint the same envelope id
+// without one swallowing the other's telemetry.
+func TestEventBatchDedupIsScopedToItsServer(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	first := enrolledServer(t, st, "events dedup mine")
+	second := enrolledServer(t, st, "events dedup theirs")
+	firstSession := startSession(t, st, first, "dedup-mine-token")
+	secondSession := startSession(t, st, second, "dedup-theirs-token")
+
+	shared := nextBatchID()
+	for _, one := range []struct {
+		sessionID string
+		serverID  string
+	}{{firstSession.ID, first}, {secondSession.ID, second}} {
+		applied, err := st.ApplyInbound(ctx, one.sessionID,
+			func(int64) store.InboundApplication {
+				return store.InboundApplication{Ack: 1, Accepted: 1,
+					EventBatches: []store.NewEventBatch{{EnvelopeID: shared, Events: []store.NewEvent{
+						event("core.player.death", time.Now().UTC(), `{}`),
+					}}}}
+			}, 100)
+		if err != nil {
+			t.Fatalf("ingest for %s: %v", one.serverID, err)
+		}
+		if applied.EventsStored != 1 {
+			t.Errorf("server %s stored %d events under a shared envelope id, want 1",
+				one.serverID, applied.EventsStored)
+		}
 	}
 }
 
@@ -368,6 +467,71 @@ func TestPruneEventsRemovesOnlyExpiredRowsAndRespectsItsBound(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].Type != "core.player.chat" {
 		t.Fatalf("after pruning the feed holds %v, want only the unexpired chat event", found)
+	}
+}
+
+// The dedup-row sweep waits for the expired-event backlog to drain: sweeping a
+// marker while its expired events are still query-visible would let a replay
+// land beside them.
+func TestPruneEventsKeepsTheDedupRowWhileItsEventsRemain(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "events prune marker")
+	session := startSession(t, st, serverID, "prune-marker-token")
+
+	expired := make([]store.NewEvent, 0, 4)
+	for range 4 {
+		one := event("core.server.fps", time.Now().UTC(), `{}`)
+		one.Retention = -time.Second
+		expired = append(expired, one)
+	}
+	batch := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: expired}
+	if _, err := st.ApplyInbound(ctx, session.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{batch}}
+		}, 100); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	markers := func() int {
+		var count int
+		if err := st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM event_batches WHERE server_id = ?`, serverID).Scan(&count); err != nil {
+			t.Fatalf("count dedup rows: %v", err)
+		}
+		return count
+	}
+
+	// A bounded pass leaves one expired event standing, so the marker, itself
+	// expired, must stand with it.
+	if pruned, err := st.PruneEvents(ctx, 3); err != nil || pruned != 3 {
+		t.Fatalf("first prune = (%d, %v), want (3, nil)", pruned, err)
+	}
+	if markers() != 1 {
+		t.Fatal("the dedup row was swept while one of its events remains in the feed")
+	}
+
+	// A replay in that window still stores nothing.
+	second := startSession(t, st, serverID, "prune-marker-token-2")
+	applied, err := st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{batch}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.EventsStored != 0 {
+		t.Errorf("a replay during a partial prune stored %d events, want 0", applied.EventsStored)
+	}
+
+	// Once the backlog drains, the same pass takes the marker with it.
+	if pruned, err := st.PruneEvents(ctx, 3); err != nil || pruned != 1 {
+		t.Fatalf("second prune = (%d, %v), want (1, nil)", pruned, err)
+	}
+	if markers() != 0 {
+		t.Error("the dedup row survived the pass that drained its events")
 	}
 }
 

@@ -36,14 +36,109 @@ type NewEvent struct {
 	Retention time.Duration
 }
 
-// insertEvents appends a batch inside an open transaction, so that the ack
-// covering the envelope and the events it carried commit together: acking an
-// envelope promises its effect is already durable (spec section 9.3).
-func insertEvents(ctx context.Context, tx *sql.Tx, serverID string, events []NewEvent, now time.Time) (int, error) {
-	if len(events) == 0 {
-		return 0, nil
+// NewEventBatch is one accepted event.batch envelope's worth of events.
+type NewEventBatch struct {
+	// EnvelopeID is the id of the event.batch envelope that carried these
+	// events. It is what deduplicates a retransmission across a session
+	// change, where seq is renumbered and only the id survives (spec section
+	// 9.1); a batch whose id was already ingested stores nothing.
+	EnvelopeID string
+	Events     []NewEvent
+}
+
+// insertEventBatches appends batches inside an open transaction, so that the
+// ack covering the envelopes and the events they carried commit together:
+// acking an envelope promises its effect is already durable (spec section
+// 9.3). It reports how many events were actually stored.
+//
+// Each batch's envelope id is recorded first, ON CONFLICT DO NOTHING rather
+// than failing: a retransmission renumbered into a new session is accepted by
+// the sequence layer (its seq is fresh) and only the envelope id reveals its
+// events were already stored. Re-storing them would put every one in the feed
+// twice with fresh ids and a fresh received_at, and fire webhook fan-out twice
+// for each. The dedup row expires with the batch's longest-lived event, so it
+// cannot be pruned while a duplicate it guards against would still be visible.
+func insertEventBatches(ctx context.Context, tx *sql.Tx, serverID string, batches []NewEventBatch, now time.Time) (int, error) {
+	total := 0
+	for _, batch := range batches {
+		// An empty batch stores nothing, so a replay of it double-stores
+		// nothing either: no dedup row to burn an id on.
+		if len(batch.Events) == 0 {
+			continue
+		}
+
+		horizon := time.Duration(0)
+		for _, event := range batch.Events {
+			horizon = max(horizon, event.Retention)
+		}
+		claimed, err := tx.ExecContext(ctx,
+			`INSERT INTO event_batches (server_id, envelope_id, expires_at)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT (server_id, envelope_id) DO NOTHING`,
+			serverID, batch.EnvelopeID, formatTime(now.Add(horizon)))
+		if err != nil {
+			return 0, fmt.Errorf("record event batch: %w", err)
+		}
+		inserted, err := claimed.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("record event batch: %w", err)
+		}
+		if inserted == 0 {
+			continue
+		}
+
+		stored, err := insertEvents(ctx, tx, serverID, batch.Events, now)
+		if err != nil {
+			return 0, err
+		}
+		total += stored
+	}
+	return total, nil
+}
+
+// IngestedEventBatches reports which of the given envelope ids already have a
+// dedup record for this server. The poll handler asks before charging the
+// per-poll event budget: a batch replayed across a session change stores
+// nothing, so it must neither push a fresh batch over the budget line nor be
+// refused over events that are in fact already safe. The read is advisory and
+// runs outside the ingest transaction; the claim in insertEventBatches is what
+// arbitrates under concurrency.
+func (s *Store) IngestedEventBatches(ctx context.Context, serverID string, envelopeIDs []string) (map[string]bool, error) {
+	if len(envelopeIDs) == 0 {
+		return nil, nil
 	}
 
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(envelopeIDs)), ",")
+	args := make([]any, 0, len(envelopeIDs)+1)
+	args = append(args, serverID)
+	for _, envelopeID := range envelopeIDs {
+		args = append(args, envelopeID)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT envelope_id FROM event_batches
+		  WHERE server_id = ? AND envelope_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read ingested event batches: %w", err)
+	}
+	defer rows.Close()
+
+	ingested := make(map[string]bool)
+	for rows.Next() {
+		var envelopeID string
+		if err := rows.Scan(&envelopeID); err != nil {
+			return nil, fmt.Errorf("scan ingested event batch: %w", err)
+		}
+		ingested[envelopeID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read ingested event batches: %w", err)
+	}
+	return ingested, nil
+}
+
+// insertEvents appends one batch's rows inside an open transaction. The caller
+// has already claimed the batch's envelope id.
+func insertEvents(ctx context.Context, tx *sql.Tx, serverID string, events []NewEvent, now time.Time) (int, error) {
 	statement, err := tx.PrepareContext(ctx,
 		`INSERT INTO events (id, server_id, type, occurred_at, received_at, expires_at, data)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -236,16 +331,43 @@ func (s *Store) PruneEvents(ctx context.Context, limit int) (int, error) {
 		limit = defaultPruneBatch
 	}
 
+	now := formatTime(time.Now().UTC())
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM events
 		  WHERE id IN (SELECT id FROM events WHERE expires_at <= ? LIMIT ?)`,
-		formatTime(time.Now().UTC()), limit)
+		now, limit)
 	if err != nil {
 		return 0, fmt.Errorf("prune events: %w", err)
 	}
 	pruned, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("prune events: %w", err)
+	}
+
+	// The batch dedup rows expire on their own column and ride the same pass,
+	// bounded the same way, but only once the expired-event backlog is drained
+	// (a pass that deleted fewer rows than its bound deleted every expired row
+	// there was). A dedup row expires with its batch's longest-lived event, so
+	// at that point every event it guarded is deleted, not merely expired;
+	// sweeping it any earlier would let a replay land beside expired copies
+	// that are still query-visible. The rows are not counted in the return:
+	// the count is what the caller's loop paces event deletion by, and there
+	// is at most one of these per batch of up to 200 events.
+	//
+	// The drained-backlog inference leans on the single SQLite connection
+	// serializing this pass against ingest. A pooled Postgres backend would
+	// need both deletes in one snapshot and a single sweeper, or an uncommitted
+	// ingest could surface its marker between the two statements. That backend
+	// is refused today; see the Postgres note in resolveDSN and issue #20.
+	if int(pruned) < limit {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM event_batches
+			  WHERE (server_id, envelope_id) IN
+			        (SELECT server_id, envelope_id FROM event_batches
+			          WHERE expires_at <= ? LIMIT ?)`,
+			now, limit); err != nil {
+			return 0, fmt.Errorf("prune event batches: %w", err)
+		}
 	}
 	return int(pruned), nil
 }

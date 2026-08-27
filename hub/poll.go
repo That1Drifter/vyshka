@@ -113,6 +113,11 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	actions := prepareActions(request.Envelopes)
 	events := s.prepareEvents(request.Envelopes, now)
 	snapshots := s.prepareSnapshots(request.Envelopes, now)
+	replayedBatches, err := s.ingestedEventBatches(r.Context(), server.ID, request.Envelopes, events)
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
 
 	// The classification runs inside the store's transaction against the ack as
 	// committed, not against the copy this request authenticated with, so two
@@ -174,11 +179,24 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case prepared.reject != nil:
 					refuse(*prepared.reject)
+				case replayedBatches[request.Envelopes[index].ID]:
+					// Replayed across a session change (spec section 8.1): it
+					// stores nothing, so it spends no budget, and refusing it
+					// would send a notice claiming its events are gone while
+					// they sit in the feed. It still goes to the store, whose
+					// per-batch claim is the dedup of record.
+					application.EventBatches = append(application.EventBatches, store.NewEventBatch{
+						EnvelopeID: request.Envelopes[index].ID,
+						Events:     prepared.events,
+					})
 				case len(prepared.events) > eventBudget:
 					refuse(newEventBudgetReject(request.Envelopes[index].ID))
 				default:
 					eventBudget -= len(prepared.events)
-					application.Events = append(application.Events, prepared.events...)
+					application.EventBatches = append(application.EventBatches, store.NewEventBatch{
+						EnvelopeID: request.Envelopes[index].ID,
+						Events:     prepared.events,
+					})
 				}
 				continue
 			}

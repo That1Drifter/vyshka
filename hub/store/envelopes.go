@@ -328,11 +328,13 @@ type InboundApplication struct {
 	// states, and actions past their deadline are no-ops, never errors.
 	ActionAcks    []string
 	ActionResults []ActionResult
-	// Events are the telemetry records carried by the accepted event.batch
-	// envelopes, in arrival order, appended in this transaction for the same
-	// reason as everything else here: the ack says they are already durable
-	// (spec sections 8.1 and 9.3).
-	Events []NewEvent
+	// EventBatches are the telemetry batches carried by the accepted
+	// event.batch envelopes, in arrival order, appended in this transaction
+	// for the same reason as everything else here: the ack says they are
+	// already durable (spec sections 8.1 and 9.3). They stay grouped by
+	// envelope rather than flattened, because the envelope id is what
+	// deduplicates a batch replayed across a session change.
+	EventBatches []NewEventBatch
 }
 
 // ManifestPublish is one validated manifest to store, revision-gated.
@@ -361,7 +363,8 @@ type InboundApplied struct {
 	// against what was sent is late or duplicate traffic, which is normal.
 	ActionsStarted  int
 	ActionsFinished int
-	// EventsStored counts telemetry records appended.
+	// EventsStored counts telemetry records appended; a batch replayed across
+	// a session change (spec section 8.1) appends none.
 	EventsStored int
 	// SnapshotsStored counts state snapshots appended.
 	SnapshotsStored int
@@ -456,7 +459,7 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 			applied.ActionsFinished++
 		}
 	}
-	stored, err := insertEvents(ctx, tx, serverID, application.Events, now)
+	stored, err := insertEventBatches(ctx, tx, serverID, application.EventBatches, now)
 	if err != nil {
 		return InboundApplied{}, err
 	}

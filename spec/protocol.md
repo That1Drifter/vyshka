@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.13 (2026-08-25)
+**Status:** draft 0.14 (2026-08-27)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -270,11 +270,19 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 from the hub and OPTIONAL from a plugin, where its absence means the version the session
 negotiated as `envelopeVersion`.
 
-`id` is opaque to the receiver: it MUST be unique per message within a session and
-identical on every retransmission of that message, and a receiver MUST NOT parse it or
-require any particular format. The reference implementations mint ULIDs, and new
-implementations SHOULD, but a receiver that rejected anything else would force a ULID
-encoder into every game engine to buy nothing: deduplication only needs equality.
+`id` is opaque to the receiver: it MUST be unique per message and identical on every
+retransmission of that message, and a receiver MUST NOT parse it or require any particular
+format. The reference implementations mint ULIDs, and new implementations SHOULD, but a
+receiver that rejected anything else would force a ULID encoder into every game engine to
+buy nothing: deduplication only needs equality.
+
+Uniqueness does not end with the session. A renumbered envelope keeps its `id` across a
+session change (section 9.1), and that surviving `id` is exactly what the cross-session
+deduplication of sections 8.1 and 8.3 keys on, so a sender MUST NOT reuse an `id` for a
+different message on the same server, in any session. An id generator that resets with the
+session (a counter, a coarse timestamp) can make a fresh message equal a stored one, and a
+receiver, obliged to treat equal ids as the same message, will silently drop it. ULIDs
+satisfy the rule for free.
 
 Receivers enforce the rest unevenly, on purpose:
 
@@ -667,9 +675,10 @@ treat one as a transport error.
 
 Within a session, a retransmitted `manifest.publish` is a duplicate like any other
 (section 9.1): acked again, processed no further, and answered with no second rejection.
-Across a session change the receiver cannot tell a renumbered republication from a new
-publish, because `seq` is the one field renumbering changes and `seq` is what duplicate
-detection runs on, so a hub MAY answer it with another `manifest.reject`. The notice is
+Across a session change a hub is not obliged to retain manifest envelope ids the way
+sections 8.1 and 8.3 require for events and state, because a manifest apply is already
+idempotent through its revision gate (section 6.1), so it MAY treat a renumbered
+republication as new and answer it with another `manifest.reject`. The notice is
 at-least-once like everything else here; a plugin that cares deduplicates on `envelopeId`.
 
 ### 6.5 Reading the manifest (Admin API)
@@ -938,10 +947,21 @@ suppresses a notice under this cap MUST record the suppression where the operato
 The refusals themselves are unaffected: what is capped is how many of them are narrated. The
 bound MAY be a single budget shared with the `manifest.reject` cap of section 6.4.
 
-**Duplicates** need no special handling here. A retransmitted `event.batch` is a duplicate
-like any other envelope (section 9.1): acked again, processed no further, and therefore
-stored exactly once. Ingest is idempotent because delivery is, not because events carry
-identity of their own.
+**Duplicates** are deduplicated twice over, because `seq` alone cannot cover them; this is
+the same two-layer rule as section 8.3, and events carry no identity of their own, so the
+batch is the unit with an identity to deduplicate on. Within a session a retransmitted
+`event.batch` is a duplicate like any other envelope (section 9.1): acked again, processed
+no further. Across a session change `seq` is renumbered and only the envelope `id` survives,
+so a hub MUST deduplicate an accepted `event.batch` on its `id` (per server), storing none
+of its events when a batch under that `id` has already been stored. Without that, a restart
+with an ack in flight would put every event of the replayed batch in the feed twice and fire
+the webhook fan-out of section 11 twice for each. The dedup record MUST be kept at least as
+long as any event the batch stored, or pruning it would reopen the replay window while the
+duplicates it guards against are still visible. The obligation is bounded by retention, not
+perpetual: once every event a batch stored has passed out of retention (section 8.4), a hub
+MAY forget the batch's `id`, and a replay arriving after that horizon is a new batch to it,
+stored and fanned out again. A plugin holding a buffer across an outage longer than the
+longest retention its events resolve to is past what deduplication can promise.
 
 A machine-readable schema for both bodies is `spec/events.schema.json`, a companion to this
 section rather than a replacement for it: where the two disagree, this document wins.

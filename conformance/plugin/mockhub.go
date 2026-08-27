@@ -72,6 +72,12 @@ type mockHub struct {
 	bySeq            map[int64]*inboundEnvelope
 	idToSeq          map[string]int64
 	retransmissions  []retransmission
+	// idContent survives session changes, unlike idToSeq: section 4 makes an
+	// id name one message on this server in any session, because cross-session
+	// dedup (sections 8.1 and 8.3) treats equal ids as the same message. The
+	// same id reappearing with the same content is a legal replay; with
+	// different content it is a fresh message a hub would silently drop.
+	idContent map[string]*inboundEnvelope
 
 	// What the plugin has published and reported, decoded for the checks.
 	manifest *manifestInfo
@@ -182,6 +188,7 @@ func startMockHub(listen string) (*mockHub, error) {
 		issuedTokens:    map[string]bool{},
 		bySeq:           map[int64]*inboundEnvelope{},
 		idToSeq:         map[string]int64{},
+		idContent:       map[string]*inboundEnvelope{},
 		actions:         map[string]*actionTrack{},
 	}
 
@@ -792,12 +799,24 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 
 		case seq == h.processedTop+1:
 			if earlier, seen := h.idToSeq[id]; seen && earlier != seq {
-				h.faultLocked("4", "envelope id %s was reused at seq %d after appearing at seq %d; an id is unique per message within a session, identical only across retransmissions of that message", id, seq, earlier)
+				h.faultLocked("4", "envelope id %s was reused at seq %d after appearing at seq %d; an id is unique per message, identical only across retransmissions of that message", id, seq, earlier)
 			}
 			h.idToSeq[id] = seq
 			envelope := &inboundEnvelope{
 				Session: h.sessionOrdinal, Seq: seq, ID: id, Type: envelopeType,
 				TS: tsRaw, Body: bodyRaw, ReceivedAt: time.Now(),
+			}
+			// Reuse across sessions, which idToSeq cannot see because it resets
+			// with the session. An earlier appearance with different content
+			// means the id was recycled for a fresh message, which a hub's
+			// cross-session dedup would silently drop (section 4). Guarded to
+			// its own session by the check above, so one reuse is one fault.
+			if earlier, seen := h.idContent[id]; seen && earlier.Session != h.sessionOrdinal &&
+				(earlier.Type != envelopeType || !tsEqual(earlier.TS, tsRaw) || !jsonEqual(earlier.Body, bodyRaw)) {
+				h.faultLocked("4", "envelope id %s was reused in session %d for a different message than it named in session %d; an id names one message on this server in any session, because cross-session dedup (sections 8.1 and 8.3) treats equal ids as the same message and would silently drop this one", id, h.sessionOrdinal, earlier.Session)
+			}
+			if _, seen := h.idContent[id]; !seen {
+				h.idContent[id] = envelope
 			}
 			h.bySeq[seq] = envelope
 			h.inbound = append(h.inbound, envelope)

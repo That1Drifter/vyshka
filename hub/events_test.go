@@ -214,6 +214,37 @@ func TestEventBatchRetransmissionDoesNotDoubleStore(t *testing.T) {
 	}
 }
 
+// Across a session change seq is renumbered, so only the envelope id can
+// reveal a replayed batch (spec section 8.1): the feed holds one copy.
+func TestEventBatchReplayAcrossSessionsDoesNotDoubleStore(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created := createServer(t, server, "event cross-session dedup", "test-game")
+	credentials := enroll(t, server, created.Enrollment.Token, "test-game")
+	first := startSession(t, server, credentials, 5)
+
+	batch := eventBatchEnvelope(1, map[string]any{"t": "core.player.connect"})
+	pollNow(t, server, created.Server.ID, first.SessionToken,
+		map[string]any{"envelopes": []map[string]any{batch}})
+
+	// The game server restarts before the ack reaches the plugin: the buffer
+	// replays on the new session, renumbered per section 9.1. A fresh session
+	// counts from 1, so seq 1 with the same id, ts, and body is exactly the
+	// renumbered form.
+	second := startSession(t, server, credentials, 5)
+	result := pollNow(t, server, created.Server.ID, second.SessionToken,
+		map[string]any{"envelopes": []map[string]any{batch}})
+	if result.Ack != 1 {
+		t.Fatalf("ack = %d after the renumbered replay, want 1: a replayed batch is still envelope-level success", result.Ack)
+	}
+
+	page := queryEvents(t, server, created.Server.ID, nil)
+	if len(page.Events) != 1 {
+		t.Fatalf("the feed holds %d copies of a batch replayed across a session change, want 1",
+			len(page.Events))
+	}
+}
+
 // The query narrows by type pattern and paginates with an opaque cursor.
 func TestEventQueryFiltersAndPaginates(t *testing.T) {
 	t.Parallel()
@@ -330,6 +361,67 @@ func TestEventPollBudgetIgnoresDuplicates(t *testing.T) {
 	if len(page.Events) != 1 {
 		t.Fatalf("the new batch behind five retransmitted ones stored %d events, want 1: "+
 			"duplicates store nothing and must not spend the poll's budget", len(page.Events))
+	}
+}
+
+// The same principle with a session change in the middle: replays arrive
+// renumbered (section 9.1), so only the envelope id reveals them, and they must
+// neither spend the budget out from under a fresh batch nor be refused with a
+// notice claiming their events are gone while those events sit in the feed.
+func TestEventPollBudgetIgnoresCrossSessionReplays(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created := createServer(t, server, "event budget replay", "test-game")
+	credentials := enroll(t, server, created.Enrollment.Token, "test-game")
+	first := startSession(t, server, credentials, 5)
+
+	full := make([]map[string]any, 0, 200)
+	for range 200 {
+		full = append(full, map[string]any{"t": "core.player.damage"})
+	}
+	// Five full batches saturate the budget exactly.
+	saturating := make([]map[string]any, 0, 5)
+	for seq := range 5 {
+		saturating = append(saturating, eventBatchEnvelope(int64(seq+1), full...))
+	}
+	result := pollNow(t, server, created.Server.ID, first.SessionToken,
+		map[string]any{"envelopes": saturating})
+	if result.Ack != 5 {
+		t.Fatalf("ack = %d after five batches, want 5", result.Ack)
+	}
+
+	// The game server restarts before the ack reaches the plugin: the buffer
+	// replays on the new session (a fresh session counts from 1, so the same
+	// seqs are the renumbered form) alongside one genuinely new batch.
+	second := startSession(t, server, credentials, 5)
+	withNewTail := append(append([]map[string]any{}, saturating...),
+		eventBatchEnvelope(6, map[string]any{"t": "example-mod.raid.started"}))
+	result = pollNow(t, server, created.Server.ID, second.SessionToken,
+		map[string]any{"envelopes": withNewTail})
+	if result.Ack != 6 {
+		t.Fatalf("ack = %d after the replays and the fresh batch, want 6", result.Ack)
+	}
+
+	page := queryEvents(t, server, created.Server.ID,
+		url.Values{"type": {"example-mod.raid.started"}})
+	if len(page.Events) != 1 {
+		t.Fatalf("the fresh batch behind five cross-session replays stored %d events, want 1: "+
+			"replays store nothing and must not spend the poll's budget", len(page.Events))
+	}
+
+	// And the replays themselves were deduplicated, not double-stored.
+	total := 0
+	parameters := url.Values{"type": {"core.player.damage"}, "limit": {"500"}}
+	for {
+		page = queryEvents(t, server, created.Server.ID, parameters)
+		total += len(page.Events)
+		if page.NextCursor == "" {
+			break
+		}
+		parameters.Set("cursor", page.NextCursor)
+	}
+	if total != 1000 {
+		t.Fatalf("the feed holds %d damage events after the replay, want the original 1000", total)
 	}
 }
 
