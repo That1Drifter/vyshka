@@ -270,11 +270,19 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 from the hub and OPTIONAL from a plugin, where its absence means the version the session
 negotiated as `envelopeVersion`.
 
-`id` is opaque to the receiver: it MUST be unique per message within a session and
-identical on every retransmission of that message, and a receiver MUST NOT parse it or
-require any particular format. The reference implementations mint ULIDs, and new
-implementations SHOULD, but a receiver that rejected anything else would force a ULID
-encoder into every game engine to buy nothing: deduplication only needs equality.
+`id` is opaque to the receiver: it MUST be unique per message and identical on every
+retransmission of that message, and a receiver MUST NOT parse it or require any particular
+format. The reference implementations mint ULIDs, and new implementations SHOULD, but a
+receiver that rejected anything else would force a ULID encoder into every game engine to
+buy nothing: deduplication only needs equality.
+
+Uniqueness does not end with the session. A renumbered envelope keeps its `id` across a
+session change (section 9.1), and that surviving `id` is exactly what the cross-session
+deduplication of sections 8.1 and 8.3 keys on, so a sender MUST NOT reuse an `id` for a
+different message on the same server, in any session. An id generator that resets with the
+session (a counter, a coarse timestamp) can make a fresh message equal a stored one, and a
+receiver, obliged to treat equal ids as the same message, will silently drop it. ULIDs
+satisfy the rule for free.
 
 Receivers enforce the rest unevenly, on purpose:
 
@@ -948,7 +956,11 @@ of its events when a batch under that `id` has already been stored. Without that
 with an ack in flight would put every event of the replayed batch in the feed twice and fire
 the webhook fan-out of section 11 twice for each. The dedup record MUST be kept at least as
 long as any event the batch stored, or pruning it would reopen the replay window while the
-duplicates it guards against are still visible.
+duplicates it guards against are still visible. The obligation is bounded by retention, not
+perpetual: once every event a batch stored has passed out of retention (section 8.4), a hub
+MAY forget the batch's `id`, and a replay arriving after that horizon is a new batch to it,
+stored and fanned out again. A plugin holding a buffer across an outage longer than the
+shortest retention its events resolve to is past what deduplication can promise.
 
 A machine-readable schema for both bodies is `spec/events.schema.json`, a companion to this
 section rather than a replacement for it: where the two disagree, this document wins.

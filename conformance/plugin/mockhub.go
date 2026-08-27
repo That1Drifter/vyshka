@@ -792,7 +792,7 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 
 		case seq == h.processedTop+1:
 			if earlier, seen := h.idToSeq[id]; seen && earlier != seq {
-				h.faultLocked("4", "envelope id %s was reused at seq %d after appearing at seq %d; an id is unique per message within a session, identical only across retransmissions of that message", id, seq, earlier)
+				h.faultLocked("4", "envelope id %s was reused at seq %d after appearing at seq %d; an id is unique per message, identical only across retransmissions of that message", id, seq, earlier)
 			}
 			h.idToSeq[id] = seq
 			envelope := &inboundEnvelope{

@@ -447,7 +447,24 @@ point if needed.
   envelope `id` per server, MUST) plus the retention floor on the dedup record; spec bumped
   to draft 0.14. `plugin.events.retransmitDedup` (71 checks total) grades the hub;
   the plugin suite's `session.renumber` stage already grades the plugin half (id preserved,
-  only `seq` moves). Found by the adversarial review of the state slice. The inbound
+  only `seq` moves). Found by the adversarial review of the state slice. The adversarial
+  review of this fix then tightened four edges. A replayed batch is now recognized before
+  the per-poll budget is charged (an advisory read of the dedup table; the transactional
+  claim stays the authority), because a replay that spent budget could refuse a genuinely
+  fresh batch travelling with it, losing real events, or itself be answered with a notice
+  claiming its events are gone while they sit in the feed. The dedup-row sweep in the
+  retention pass now runs only after the expired-event backlog is drained, since sweeping a
+  marker while its expired events were still query-visible would let a replay land beside
+  them. Section 4 now states that envelope id uniqueness does not end with the session: a
+  sender MUST NOT reuse an id for a different message on the same server, in any session,
+  because cross-session dedup is obliged to treat equal ids as the same message and would
+  silently drop a fresh batch under a recycled id. Section 8.1 says plainly that the dedup
+  obligation is bounded by retention: once every event a batch stored has aged out, the hub
+  may forget the id, and a replay after that horizon stores and fans out again. One
+  limitation is accepted rather than fixed: batches stored before this migration have no
+  dedup record (the old schema kept no envelope ids), so a replay straddling the upgrade
+  itself can still double-store once.
+- 2026-08-16: an envelope whose `ts` was the wrong JSON type wedged the session. The inbound
   `ts` was decoded into a string field, so `"ts": 1755367200` failed the whole poll body at
   `encoding/json`, before any rule of the hub's own ran: `400 bad_request`, nothing in the
   poll processed, including the good envelopes travelling with it. Because a sender must

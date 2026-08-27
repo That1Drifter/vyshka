@@ -470,6 +470,71 @@ func TestPruneEventsRemovesOnlyExpiredRowsAndRespectsItsBound(t *testing.T) {
 	}
 }
 
+// The dedup-row sweep waits for the expired-event backlog to drain: sweeping a
+// marker while its expired events are still query-visible would let a replay
+// land beside them.
+func TestPruneEventsKeepsTheDedupRowWhileItsEventsRemain(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "events prune marker")
+	session := startSession(t, st, serverID, "prune-marker-token")
+
+	expired := make([]store.NewEvent, 0, 4)
+	for range 4 {
+		one := event("core.server.fps", time.Now().UTC(), `{}`)
+		one.Retention = -time.Second
+		expired = append(expired, one)
+	}
+	batch := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: expired}
+	if _, err := st.ApplyInbound(ctx, session.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{batch}}
+		}, 100); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	markers := func() int {
+		var count int
+		if err := st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM event_batches WHERE server_id = ?`, serverID).Scan(&count); err != nil {
+			t.Fatalf("count dedup rows: %v", err)
+		}
+		return count
+	}
+
+	// A bounded pass leaves one expired event standing, so the marker, itself
+	// expired, must stand with it.
+	if pruned, err := st.PruneEvents(ctx, 3); err != nil || pruned != 3 {
+		t.Fatalf("first prune = (%d, %v), want (3, nil)", pruned, err)
+	}
+	if markers() != 1 {
+		t.Fatal("the dedup row was swept while one of its events remains in the feed")
+	}
+
+	// A replay in that window still stores nothing.
+	second := startSession(t, st, serverID, "prune-marker-token-2")
+	applied, err := st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{batch}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.EventsStored != 0 {
+		t.Errorf("a replay during a partial prune stored %d events, want 0", applied.EventsStored)
+	}
+
+	// Once the backlog drains, the same pass takes the marker with it.
+	if pruned, err := st.PruneEvents(ctx, 3); err != nil || pruned != 1 {
+		t.Fatalf("second prune = (%d, %v), want (1, nil)", pruned, err)
+	}
+	if markers() != 0 {
+		t.Error("the dedup row survived the pass that drained its events")
+	}
+}
+
 // Deleting a server takes its telemetry with it: the foreign key cascades, so
 // an operator removing a server does not leave orphaned rows behind forever.
 func TestEventsCascadeWithTheirServer(t *testing.T) {
