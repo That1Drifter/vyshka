@@ -353,6 +353,12 @@ func (s *Store) PruneEvents(ctx context.Context, limit int) (int, error) {
 	// that are still query-visible. The rows are not counted in the return:
 	// the count is what the caller's loop paces event deletion by, and there
 	// is at most one of these per batch of up to 200 events.
+	//
+	// The drained-backlog inference leans on the single SQLite connection
+	// serializing this pass against ingest. A pooled Postgres backend would
+	// need both deletes in one snapshot and a single sweeper, or an uncommitted
+	// ingest could surface its marker between the two statements. That backend
+	// is refused today; see the Postgres note in resolveDSN and issue #20.
 	if int(pruned) < limit {
 		if _, err := s.db.ExecContext(ctx,
 			`DELETE FROM event_batches

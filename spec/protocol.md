@@ -675,9 +675,10 @@ treat one as a transport error.
 
 Within a session, a retransmitted `manifest.publish` is a duplicate like any other
 (section 9.1): acked again, processed no further, and answered with no second rejection.
-Across a session change the receiver cannot tell a renumbered republication from a new
-publish, because `seq` is the one field renumbering changes and `seq` is what duplicate
-detection runs on, so a hub MAY answer it with another `manifest.reject`. The notice is
+Across a session change a hub is not obliged to retain manifest envelope ids the way
+sections 8.1 and 8.3 require for events and state, because a manifest apply is already
+idempotent through its revision gate (section 6.1), so it MAY treat a renumbered
+republication as new and answer it with another `manifest.reject`. The notice is
 at-least-once like everything else here; a plugin that cares deduplicates on `envelopeId`.
 
 ### 6.5 Reading the manifest (Admin API)
@@ -960,7 +961,7 @@ duplicates it guards against are still visible. The obligation is bounded by ret
 perpetual: once every event a batch stored has passed out of retention (section 8.4), a hub
 MAY forget the batch's `id`, and a replay arriving after that horizon is a new batch to it,
 stored and fanned out again. A plugin holding a buffer across an outage longer than the
-shortest retention its events resolve to is past what deduplication can promise.
+longest retention its events resolve to is past what deduplication can promise.
 
 A machine-readable schema for both bodies is `spec/events.schema.json`, a companion to this
 section rather than a replacement for it: where the two disagree, this document wins.

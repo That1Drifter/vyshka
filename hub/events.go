@@ -254,7 +254,12 @@ func (s *Server) prepareEvents(envelopes []inboundEnvelope, now time.Time) map[i
 // charging it could refuse a fresh batch over events that are already safe, or
 // answer the replay itself with a notice claiming its events are gone when
 // they are stored. The answer is advisory; the claim inside the ingest
-// transaction is what arbitrates under concurrency.
+// transaction is what arbitrates under concurrency. The one race this
+// tolerates is a retention pass sweeping a marker between this read and that
+// transaction: the "replay" then stores unbudgeted, overshooting a bound the
+// spec makes a MAY by at most one poll's worth, with events whose stored
+// copies were deleted moments before. Accepted rather than moved into the
+// transaction, which would drag the budget's notice-minting into the store.
 func (s *Server) ingestedEventBatches(ctx context.Context, serverID string, envelopes []inboundEnvelope, prepared map[int]preparedEvents) (map[string]bool, error) {
 	var ids []string
 	for index, batch := range prepared {

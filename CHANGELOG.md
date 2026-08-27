@@ -460,10 +460,22 @@ point if needed.
   because cross-session dedup is obliged to treat equal ids as the same message and would
   silently drop a fresh batch under a recycled id. Section 8.1 says plainly that the dedup
   obligation is bounded by retention: once every event a batch stored has aged out, the hub
-  may forget the id, and a replay after that horizon stores and fans out again. One
-  limitation is accepted rather than fixed: batches stored before this migration have no
-  dedup record (the old schema kept no envelope ids), so a replay straddling the upgrade
-  itself can still double-store once.
+  may forget the id, and a replay after that horizon stores and fans out again. A second
+  review round then caught the loose ends of the first: the retention horizon in 8.1 read
+  "shortest" where the marker's lifetime is the batch's longest event retention; section
+  6.4's "the receiver cannot tell a renumbered republication from a new publish" contradicted
+  the new section 4 (ids survive the session), so it now says a hub need not retain manifest
+  envelope ids because the revision gate already makes applies idempotent; and the plugin
+  suite's mock hub now faults an id reused for a different message in a later session, which
+  its per-session id map could not see. Two narrow races are accepted and documented in
+  place: a retention sweep between the advisory budget read and the ingest transaction can
+  let one poll overshoot the MAY-bound budget, and the drained-backlog inference in the
+  prune pass leans on the single SQLite connection (the refused Postgres backend would need
+  both deletes in one snapshot; noted alongside issue #20). One limitation is accepted
+  rather than fixed: batches stored before this migration have no dedup record (the old
+  schema kept no envelope ids), so a replay straddling the upgrade itself can still
+  double-store once. The review also surfaced a pre-existing snapshot defect, filed as
+  issue #34: a snapshot replayed after history pruning can regress latest state.
 - 2026-08-16: an envelope whose `ts` was the wrong JSON type wedged the session. The inbound
   `ts` was decoded into a string field, so `"ts": 1755367200` failed the whole poll body at
   `encoding/json`, before any rule of the hub's own ran: `400 bad_request`, nothing in the
