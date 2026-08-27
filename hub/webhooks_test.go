@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -122,7 +123,9 @@ func sendEvent(t *testing.T, server *hub.Server, serverID, sessionToken, eventTy
 	t.Helper()
 	pollNow(t, server, serverID, sessionToken, map[string]any{
 		"envelopes": []map[string]any{{
-			"v": 1, "id": "evt-env-" + eventType + "-" + time.Now().Format("150405.000"),
+			// seq, not a timestamp: batch ingest dedups on the envelope id per
+			// server, and two sends inside one millisecond must stay distinct.
+			"v": 1, "id": "evt-env-" + eventType + "-" + strconv.FormatInt(seq, 10),
 			"type": "event.batch", "seq": seq, "ts": time.Now().UTC().Format(time.RFC3339),
 			"body": map[string]any{"events": []map[string]any{
 				{"t": eventType, "data": map[string]any{"probe": true}},

@@ -178,7 +178,10 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 					refuse(newEventBudgetReject(request.Envelopes[index].ID))
 				default:
 					eventBudget -= len(prepared.events)
-					application.Events = append(application.Events, prepared.events...)
+					application.EventBatches = append(application.EventBatches, store.NewEventBatch{
+						EnvelopeID: request.Envelopes[index].ID,
+						Events:     prepared.events,
+					})
 				}
 				continue
 			}

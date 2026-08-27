@@ -28,7 +28,7 @@ PASS  errors.shape                   An unrouted path answers 404 in the protoco
 ...
 PASS  kv.confinement                 Namespace access is confined on both realms
 
-70 checks, 0 failed
+71 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

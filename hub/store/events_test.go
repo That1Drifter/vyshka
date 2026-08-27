@@ -3,20 +3,33 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
-// ingest appends events through the same transaction the poll handler uses, so
-// these tests exercise the durability path rather than a private shortcut.
+// batchIDs hands out unique envelope ids, because the store deduplicates event
+// batches on (server, envelope id) and a fixture reusing one would silently
+// insert nothing.
+var batchIDs atomic.Int64
+
+func nextBatchID() string {
+	return fmt.Sprintf("event-batch-envelope-%d", batchIDs.Add(1))
+}
+
+// ingest appends events, as one batch, through the same transaction the poll
+// handler uses, so these tests exercise the durability path rather than a
+// private shortcut.
 func ingest(t *testing.T, st *store.Store, sessionID string, events ...store.NewEvent) store.InboundApplied {
 	t.Helper()
 
+	batch := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: events}
 	applied, err := st.ApplyInbound(context.Background(), sessionID,
 		func(ack int64) store.InboundApplication {
-			return store.InboundApplication{Ack: ack, Events: events}
+			return store.InboundApplication{Ack: ack, EventBatches: []store.NewEventBatch{batch}}
 		}, 100)
 	if err != nil {
 		t.Fatalf("ingest events: %v", err)
@@ -75,6 +88,92 @@ func TestEventsTreatCoreAndCustomAlike(t *testing.T) {
 	}
 	if string(found[0].Data) != `{"territoryId":"t-19"}` {
 		t.Errorf("data = %s, want what the plugin sent", found[0].Data)
+	}
+}
+
+// The cross-session retransmission case of spec section 8.1: a batch whose
+// envelope id was already ingested stores nothing, however its seq was
+// renumbered on the way in.
+func TestEventBatchDedupByEnvelopeID(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "events dedup")
+	session := startSession(t, st, serverID, "events-dedup-token")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	replayed := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: []store.NewEvent{
+		event("core.player.death", now, `{"weapon":"M4A1"}`),
+		event("core.player.connect", now.Add(time.Second), `{}`),
+	}}
+	applied, err := st.ApplyInbound(ctx, session.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				EventBatches: []store.NewEventBatch{replayed}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if applied.EventsStored != 2 {
+		t.Fatalf("EventsStored = %d, want 2", applied.EventsStored)
+	}
+
+	// The plugin reconnects; the buffer replay arrives on a new session with a
+	// renumbered seq and the same envelope id, alongside a genuinely new batch
+	// that must not be caught in the dedup.
+	fresh := store.NewEventBatch{EnvelopeID: nextBatchID(), Events: []store.NewEvent{
+		event("core.player.chat", now.Add(2*time.Second), `{"message":"back"}`),
+	}}
+	second := startSession(t, st, serverID, "events-dedup-token-2")
+	applied, err = st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 2, Accepted: 2,
+				EventBatches: []store.NewEventBatch{replayed, fresh}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.EventsStored != 1 {
+		t.Errorf("replay stored %d events, want only the fresh batch's 1", applied.EventsStored)
+	}
+
+	found, err := st.Events(ctx, store.EventQuery{ServerID: serverID, Limit: 10})
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if len(found) != 3 {
+		t.Errorf("feed holds %d events after a cross-session replay, want 3", len(found))
+	}
+}
+
+// Batch dedup is keyed per server: two servers may mint the same envelope id
+// without one swallowing the other's telemetry.
+func TestEventBatchDedupIsScopedToItsServer(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	first := enrolledServer(t, st, "events dedup mine")
+	second := enrolledServer(t, st, "events dedup theirs")
+	firstSession := startSession(t, st, first, "dedup-mine-token")
+	secondSession := startSession(t, st, second, "dedup-theirs-token")
+
+	shared := nextBatchID()
+	for _, one := range []struct {
+		sessionID string
+		serverID  string
+	}{{firstSession.ID, first}, {secondSession.ID, second}} {
+		applied, err := st.ApplyInbound(ctx, one.sessionID,
+			func(int64) store.InboundApplication {
+				return store.InboundApplication{Ack: 1, Accepted: 1,
+					EventBatches: []store.NewEventBatch{{EnvelopeID: shared, Events: []store.NewEvent{
+						event("core.player.death", time.Now().UTC(), `{}`),
+					}}}}
+			}, 100)
+		if err != nil {
+			t.Fatalf("ingest for %s: %v", one.serverID, err)
+		}
+		if applied.EventsStored != 1 {
+			t.Errorf("server %s stored %d events under a shared envelope id, want 1",
+				one.serverID, applied.EventsStored)
+		}
 	}
 }
 

@@ -2713,6 +2713,46 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "plugin.events.retransmitDedup",
+		Title:   "An event.batch replayed across a session change is stored once",
+		Section: "8.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: event cross-session dedup", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			serverID := plugin.Server.Server.ID
+
+			sent := plugin.nextOutbound("event.batch", eventBatch(
+				map[string]any{"t": "core.player.connect", "data": map[string]any{"slot": 2}},
+			))
+			if _, err := plugin.send(ctx, sent); err != nil {
+				return err
+			}
+
+			// The game server restarts before the ack reaches the plugin: the
+			// buffer replays on the next session, renumbered, everything else
+			// unchanged (section 9.1). Only the envelope id can reveal the
+			// batch was already stored.
+			if err := plugin.reconnect(ctx, shortPollTimeoutSeconds); err != nil {
+				return err
+			}
+			if _, err := plugin.send(ctx, plugin.renumber(sent)); err != nil {
+				return err
+			}
+
+			page, err := env.events(ctx, serverID, nil)
+			if err != nil {
+				return err
+			}
+			if len(page.Events) != 1 {
+				return fmt.Errorf("the feed holds %d copies of a batch replayed across a session change, want 1",
+					len(page.Events))
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "admin.events.isolation",
 		Title:   "One server's telemetry never appears in another's feed",
 		Section: "8.5",

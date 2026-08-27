@@ -214,6 +214,37 @@ func TestEventBatchRetransmissionDoesNotDoubleStore(t *testing.T) {
 	}
 }
 
+// Across a session change seq is renumbered, so only the envelope id can
+// reveal a replayed batch (spec section 8.1): the feed holds one copy.
+func TestEventBatchReplayAcrossSessionsDoesNotDoubleStore(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created := createServer(t, server, "event cross-session dedup", "test-game")
+	credentials := enroll(t, server, created.Enrollment.Token, "test-game")
+	first := startSession(t, server, credentials, 5)
+
+	batch := eventBatchEnvelope(1, map[string]any{"t": "core.player.connect"})
+	pollNow(t, server, created.Server.ID, first.SessionToken,
+		map[string]any{"envelopes": []map[string]any{batch}})
+
+	// The game server restarts before the ack reaches the plugin: the buffer
+	// replays on the new session, renumbered per section 9.1. A fresh session
+	// counts from 1, so seq 1 with the same id, ts, and body is exactly the
+	// renumbered form.
+	second := startSession(t, server, credentials, 5)
+	result := pollNow(t, server, created.Server.ID, second.SessionToken,
+		map[string]any{"envelopes": []map[string]any{batch}})
+	if result.Ack != 1 {
+		t.Fatalf("ack = %d after the renumbered replay, want 1: a replayed batch is still envelope-level success", result.Ack)
+	}
+
+	page := queryEvents(t, server, created.Server.ID, nil)
+	if len(page.Events) != 1 {
+		t.Fatalf("the feed holds %d copies of a batch replayed across a session change, want 1",
+			len(page.Events))
+	}
+}
+
 // The query narrows by type pattern and paginates with an opaque cursor.
 func TestEventQueryFiltersAndPaginates(t *testing.T) {
 	t.Parallel()

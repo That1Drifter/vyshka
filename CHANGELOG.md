@@ -429,7 +429,25 @@ point if needed.
 
 ### Fixed
 
-- 2026-08-16: an envelope whose `ts` was the wrong JSON type wedged the session. The inbound
+- 2026-08-27: an `event.batch` replayed across a session change was stored twice (issue
+  #32). Within a session `seq` deduplicates a retransmission, but section 9.1 makes a
+  plugin renumber unacked envelopes into the new session's sequence space, so a replay
+  arrived with a fresh `seq`, passed classification, and inserted every event again with
+  fresh ids and a fresh `received_at`, firing webhook fan-out twice for each; section 8.1
+  meanwhile claimed events were "stored exactly once". The same exposure was found and
+  fixed for snapshots in the state slice, and events now follow that precedent, with one
+  structural difference: a batch fans out into up to 200 rows with hub-assigned ids, so
+  the constraint cannot live on the events table. A new `event_batches` table records each
+  accepted batch's envelope id per server (`ON CONFLICT DO NOTHING`; a claimed id skips
+  the batch whole), inside the same transaction as the ack, which also suppresses the
+  duplicate webhook fan-out. Dedup rows expire with the batch's longest-lived event, so
+  pruning one cannot reopen the replay window while its duplicates would still be visible,
+  and they ride the existing event retention pass. Section 8.1's duplicates paragraph now
+  states the two-layer rule the way 8.3 does (in-session by `seq`, cross-session by
+  envelope `id` per server, MUST) plus the retention floor on the dedup record; spec bumped
+  to draft 0.14. `plugin.events.retransmitDedup` (71 checks total) grades the hub;
+  the plugin suite's `session.renumber` stage already grades the plugin half (id preserved,
+  only `seq` moves). Found by the adversarial review of the state slice. The inbound
   `ts` was decoded into a string field, so `"ts": 1755367200` failed the whole poll body at
   `encoding/json`, before any rule of the hub's own ran: `400 bad_request`, nothing in the
   poll processed, including the good envelopes travelling with it. Because a sender must

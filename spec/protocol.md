@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.13 (2026-08-25)
+**Status:** draft 0.14 (2026-08-27)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -938,10 +938,17 @@ suppresses a notice under this cap MUST record the suppression where the operato
 The refusals themselves are unaffected: what is capped is how many of them are narrated. The
 bound MAY be a single budget shared with the `manifest.reject` cap of section 6.4.
 
-**Duplicates** need no special handling here. A retransmitted `event.batch` is a duplicate
-like any other envelope (section 9.1): acked again, processed no further, and therefore
-stored exactly once. Ingest is idempotent because delivery is, not because events carry
-identity of their own.
+**Duplicates** are deduplicated twice over, because `seq` alone cannot cover them; this is
+the same two-layer rule as section 8.3, and events carry no identity of their own, so the
+batch is the unit with an identity to deduplicate on. Within a session a retransmitted
+`event.batch` is a duplicate like any other envelope (section 9.1): acked again, processed
+no further. Across a session change `seq` is renumbered and only the envelope `id` survives,
+so a hub MUST deduplicate an accepted `event.batch` on its `id` (per server), storing none
+of its events when a batch under that `id` has already been stored. Without that, a restart
+with an ack in flight would put every event of the replayed batch in the feed twice and fire
+the webhook fan-out of section 11 twice for each. The dedup record MUST be kept at least as
+long as any event the batch stored, or pruning it would reopen the replay window while the
+duplicates it guards against are still visible.
 
 A machine-readable schema for both bodies is `spec/events.schema.json`, a companion to this
 section rather than a replacement for it: where the two disagree, this document wins.
