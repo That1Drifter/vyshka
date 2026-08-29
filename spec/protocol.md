@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.14 (2026-08-27)
+**Status:** draft 0.15 (2026-08-29)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1048,7 +1048,16 @@ acked again, applied no further. Across a session change `seq` is renumbered and
 envelope `id` survives, so a hub MUST deduplicate an accepted `state.*` envelope on its
 `id` (per server), storing nothing for one it has already stored. Without that, the one
 case section 14 calls out, a restart with traffic in flight, would put the same snapshot
-in history twice with a fresh receipt time.
+in history twice with a fresh receipt time. The dedup record MUST outlive the snapshot's
+history row: history is bounded by depth as well as time, so a superseded row can leave
+history long before the window passes while the latest of its type survives every pass,
+and a hub that forgets the pruned `id` with the row will accept the replay as new and
+regress latest to a state it had already superseded, breaking the acceptance order above.
+The obligation is bounded by the history window, not perpetual: a hub MUST remember an
+accepted `state.*` `id` for at least that window counted from acceptance and MAY forget
+it after; a replay whose `id` it has forgotten is a new snapshot to it, latest again
+however stale, with `capturedAt` left to say so. A plugin holding a buffer across an
+outage longer than the history window is past what deduplication can promise.
 
 **Reading state (Admin API).** Both reads sit behind `servers:read` (section 10):
 

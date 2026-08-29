@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -272,6 +273,104 @@ func checkStateGuards(ctx context.Context, env Env) error {
 	return env.refused(ctx, http.MethodGet,
 		"/api/v1/servers/"+serverID+"/state/players/history", outsider.Secret, nil,
 		"a token without servers:read read state history")
+}
+
+// checkStateReplayAfterPrune drives the harder replay: a superseded snapshot
+// whose history row is already gone. History is bounded by depth as well as
+// time (section 8.3), so pushing one snapshot more than the configured depth
+// forces the oldest out while the latest survives; the dedup obligation must
+// outlive the row, or the replay inserts with a fresh acceptance seq and
+// "latest" regresses to a state that was already superseded. The check needs
+// the hub's configured depth to force the trim, so it takes it from the
+// runner (-state-history-depth, reference 500); against a hub configured
+// deeper, the trim never happens and the check degrades to the plain
+// cross-session dedup that state.retransmitDedup already grades.
+func checkStateReplayAfterPrune(ctx context.Context, env Env) error {
+	depth := env.StateHistoryDepth
+	if depth <= 0 {
+		depth = 500
+	}
+	plugin, err := env.newFakePlugin(ctx, "conformance: state replay after prune", shortPollTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Creds.ServerID
+
+	// The victim first, then depth fillers, so the victim is the one row the
+	// trim removes. The last filler is marked: it is what latest must still
+	// answer after the replay.
+	victim := plugin.nextOutbound("state.players", map[string]any{
+		"players": []map[string]any{{
+			"player": map[string]any{"platform": "conformance-platform", "id": "victim"},
+			"name":   "replay-victim",
+		}}})
+	batch := []envelope{victim}
+	for i := 1; i <= depth; i++ {
+		body := map[string]any{"players": []any{}}
+		if i == depth {
+			body = map[string]any{
+				"players": []map[string]any{{
+					"player": map[string]any{"platform": "conformance-platform", "id": "final"},
+					"name":   "final-state",
+				}}}
+		}
+		batch = append(batch, plugin.nextOutbound("state.players", body))
+	}
+
+	// Chunks of the 200-envelope floor every hub must accept (section 3.1.2),
+	// each poll nudged with queued work so none of them is held.
+	for start := 0; start < len(batch); start += 200 {
+		if _, err := env.queueEnvelope(ctx, serverID, unknownType(), nil); err != nil {
+			return err
+		}
+		response, err := plugin.pollAndAck(ctx, batch[start:min(start+200, len(batch))]...)
+		if err != nil {
+			return err
+		}
+		if want := batch[min(start+200, len(batch))-1].Seq; response.Ack != want {
+			return fmt.Errorf("ack = %d after a filler chunk, want %d", response.Ack, want)
+		}
+	}
+	record, err := env.latestState(ctx, serverID, "players")
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(record.Snapshot, []byte("final-state")) {
+		return fmt.Errorf("latest = %s before the replay, want the final filler", truncate(record.Snapshot))
+	}
+
+	// The game server restarts before the victim's ack reached the plugin (it
+	// did, but a lost response is indistinguishable to the plugin): the buffer
+	// is replayed on the next session, renumbered, everything else unchanged.
+	if err := plugin.reconnect(ctx, shortPollTimeoutSeconds); err != nil {
+		return err
+	}
+	if _, err := env.queueEnvelope(ctx, serverID, unknownType(), nil); err != nil {
+		return err
+	}
+	replayed := plugin.renumber(victim)
+	response, err := plugin.send(ctx, replayed)
+	if err != nil {
+		return err
+	}
+	if response.Ack != replayed.Seq {
+		return fmt.Errorf("ack = %d after the replay, want %d: a duplicate is acked, applied no further",
+			response.Ack, replayed.Seq)
+	}
+
+	record, err = env.latestState(ctx, serverID, "players")
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(record.Snapshot, []byte("replay-victim")) {
+		return fmt.Errorf("latest regressed to the replayed snapshot %s; the dedup obligation must outlive the pruned history row",
+			truncate(record.Snapshot))
+	}
+	if !bytes.Contains(record.Snapshot, []byte("final-state")) {
+		return fmt.Errorf("latest = %s after the replay, want the final filler still standing",
+			truncate(record.Snapshot))
+	}
+	return nil
 }
 
 // checkStateRetransmitDedup drives the one case section 14 singles out: a

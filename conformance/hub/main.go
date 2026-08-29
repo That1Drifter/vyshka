@@ -33,6 +33,8 @@ func main() {
 		"address the webhook checks bind their receiver on; the hub under test must be able to reach it")
 	webhookAdvertise := flag.String("webhook-advertise", "",
 		"base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels)")
+	stateHistoryDepth := flag.Int("state-history-depth", 500,
+		"snapshot history depth the hub under test is configured with (reference: 500); the state replay-after-prune check pushes one snapshot more than this to force a history trim")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
 	flag.Parse()
 
@@ -52,10 +54,11 @@ func main() {
 		// the protocol lets a hub negotiate, plus the margin a plugin must also
 		// leave (spec section 3.1.1), so a held request is never mistaken for a
 		// hung one.
-		PollClient:       &http.Client{Timeout: maxPollTimeout + 5*time.Second},
-		AdminToken:       *adminToken,
-		WebhookListen:    *webhookListen,
-		WebhookAdvertise: *webhookAdvertise,
+		PollClient:        &http.Client{Timeout: maxPollTimeout + 5*time.Second},
+		AdminToken:        *adminToken,
+		WebhookListen:     *webhookListen,
+		WebhookAdvertise:  *webhookAdvertise,
+		StateHistoryDepth: *stateHistoryDepth,
 	}
 
 	ctx := context.Background()
