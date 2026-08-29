@@ -429,6 +429,61 @@ point if needed.
 
 ### Fixed
 
+- 2026-08-29: the Admin API read request bodies before the coarse scope check, and the
+  server carried no read timeout beyond the header one (issue #30, surfaced by the
+  adversarial review of the KV slice but pre-existing since the tokens/audit slice). Any
+  authenticated token, including one holding no grant on the route at all, could keep a
+  connection and goroutine busy by trickling up to the 1 MiB body cap instead of being
+  answered 403 at the headers, and nothing on the hub side bounded how long that trickle
+  could take. The admin gate now refuses every scope check that needs no body before the
+  body is read: the coarse route check everywhere, and the exact `kv:rw:{namespace}` check
+  too (new `adminPathScoped` gate), because the namespace lives in the path, so a token
+  granted one namespace no longer buys a 1 MiB body read on another. Answering is not
+  enough by itself: net/http drains an unread body before releasing the connection, both
+  ahead of the response and again after it even on a connection it is about to close, and
+  raw-socket probes showed a stalling client holding the goroutine until the read timeout
+  either way. Every refusal that reads nothing further, the admin gate's 403s, the admin
+  realm's 401, and the plugin realm's `session_invalid` alike, now hangs up: Connection:
+  close skips the pre-response drain so the answer is delivered at the headers, and a read
+  deadline of `AdminBodyTimeout` bounds the post-response drain so a stalled body costs a
+  refusal no more than it costs an authorized request. The drain bound is deliberately not
+  an immediate expiry: a drain that fails on timeout hard-closes the socket without
+  net/http's FIN-then-wait, and the RST drops the queued response out of the client's
+  receive buffer (golang.org/issue/3595); an immediate-deadline draft of this was measured
+  losing the 403 for ordinary clients pausing as little as 50 ms between writing and
+  reading, which a protocol whose primary client is an in-game HTTP binding cannot afford.
+  Refused mutations stay audited (the entry
+  is created before any of this), with an empty `payloadDigest` because nothing was read
+  to digest; a body-dependent refusal (a dispatch outside the granted codes) keeps its
+  digest because its body had to be read for the exact check, and a path-carried value a
+  refusal echoes is truncated the way scope patterns already were. Behind the ordering,
+  the server gains a `ReadTimeout` (default 30 s covering headers and body under one
+  deadline; negative disables) and authorized admin mutations with a body a tighter
+  `AdminBodyTimeout` (default 15 s, likewise) set through `http.ResponseController`, so
+  the log middleware's wrapper now unwraps; a new `IdleTimeout` config (default 2 min)
+  pins keep-alive idling explicitly so it no longer silently rides whatever `ReadTimeout`
+  becomes. Neither
+  deadline needed sizing against the 60 s poll hold: net/http clears the connection's
+  read deadline the moment a request body reaches EOF (`startBackgroundRead`), so a
+  completed body disarms both and only a dribbling body or the drain of an unread one is
+  ever cut, which is also why the deadline is armed only when a body exists: on a
+  bodyless mutation it would bound nothing and instead cancel the request context
+  mid-handler when it fired. A test holds a poll through a `ReadTimeout` set below the
+  hold, and another proves both refusal properties on raw sockets: a prompt client that
+  paused before reading still receives its 403, and refused or unauthenticated stalls are
+  released at the drain bound, not at ReadTimeout. Three adversarial review rounds shaped
+  all of this: the first found the refused-read drain, the KV path-value ordering, and the
+  deadline-clearing semantics the initial sizing rationale had wrong; the second found the
+  post-response drain surviving Connection: close, the untouched unauthenticated path, and
+  the bodyless guillotine; the third caught the immediate-deadline RST eating the refusal
+  itself. Section 10.2 gains a fourth ordering bullet (checks that need no body
+  SHOULD precede the body read, the path-carried KV namespace included), 10.5's
+  `payloadDigest` wording admits the unread-refusal case, and section 12.3 notes that a
+  malformed namespace outside the grant may answer 403 before its grammar is ever judged;
+  spec bumped to draft 0.16. No new conformance check: the ordering is a SHOULD a
+  conforming hub may decline, and the existing audit check's refusal is body-dependent,
+  so it keeps grading the digest.
+
 - 2026-08-29: a snapshot replayed after history pruning could regress latest state across
   a session change (issue #34, surfaced by the adversarial review of the event-batch dedup
   fix but pre-existing in the state slice). Snapshots used their history row as their own

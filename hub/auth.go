@@ -37,10 +37,23 @@ const bootstrapTokenName = "bootstrap"
 //
 // The scope check here is deliberately the coarse one: it asks whether the
 // token could ever be allowed to do this, before the request body is read. The
-// routes whose answer depends on a value in the request (which action code is
-// being dispatched, which event types are being read) run a second, exact check
-// inside the handler, because that value does not exist yet at this point.
+// routes whose answer depends on a value in the request body (which action
+// code is being dispatched) run a second, exact check inside the handler,
+// because that value does not exist yet at this point; a route whose value
+// lives in the path uses adminPathScoped instead.
 func (s *Server) admin(resource, verb string, next http.HandlerFunc) http.HandlerFunc {
+	return s.adminGate(resource, verb, nil, next)
+}
+
+// adminPathScoped gates a route whose exact scope value is carried in the
+// path, the KV namespace today. Unlike a value that only exists in the body,
+// a path value is known at the headers, so the exact refusal runs there too,
+// before any body is read (spec section 10.2).
+func (s *Server) adminPathScoped(resource, verb string, pathValue func(*http.Request) string, next http.HandlerFunc) http.HandlerFunc {
+	return s.adminGate(resource, verb, pathValue, next)
+}
+
+func (s *Server) adminGate(resource, verb string, pathValue func(*http.Request) string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller, ok := s.authenticate(w, r)
 		if !ok {
@@ -61,7 +74,61 @@ func (s *Server) admin(resource, verb string, next http.HandlerFunc) http.Handle
 			// refused mutation attempt vanish from the log by hanging up.
 			entry = &auditEntry{detail: map[string]any{}}
 			r = r.WithContext(context.WithValue(r.Context(), auditKey, entry))
+		}
 
+		// Refused at the headers, the body deliberately unread: a token the
+		// scope refuses must not get to occupy the connection delivering a
+		// payload nothing will use (spec section 10.2). The refusal is still
+		// audited when it is a mutation; its record carries no payload digest
+		// because no payload was read to digest, which section 10.5 allows.
+		//
+		// 403 rather than 404: this hub is a single operator's trust
+		// boundary, so hiding a route's existence from a credential that
+		// already authenticated buys nothing and costs a debuggable answer.
+		//
+		// The scope in the message is truncated the way scope.go truncates a
+		// pattern it echoes: a path-carried value arrives here unvalidated,
+		// and a refusal must not reflect an arbitrarily long one back.
+		refuse := func(scope Scope) {
+			scope.Pattern = truncateUTF8(scope.Pattern, 64)
+			s.hangUp(recorder)
+			writeError(recorder, http.StatusForbidden, codeForbidden,
+				"this token does not carry the "+scope.String()+" scope")
+			if mutation {
+				s.recordAudit(r, caller, entry, recorder.status)
+			}
+		}
+		if !caller.allowsAny(resource, verb) {
+			refuse(Scope{Resource: resource, Verb: verb})
+			return
+		}
+		if pathValue != nil {
+			if value := pathValue(r); !caller.allows(resource, verb, value) {
+				refuse(Scope{Resource: resource, Verb: verb, Pattern: value})
+				return
+			}
+		}
+
+		// Only a caller the gate passed spends hub time on a body, and only
+		// this long. net/http clears the connection's read deadline the
+		// moment a body reaches EOF (startBackgroundRead), so this bounds
+		// exactly what needs bounding: a trickled body that never completes,
+		// and the post-handler drain of an oversized body's unread remainder,
+		// which never hits EOF inside the cap either. A complete body disarms
+		// it, so it cannot touch the handler.
+		//
+		// Armed only when a body exists. On a bodyless request net/http's
+		// background read is already parked on the connection with no
+		// deadline, and arming one would not bound a body (there is none) but
+		// cancel the request's context mid-handler when it fired, capping
+		// handler time at AdminBodyTimeout for exactly the requests that
+		// read nothing. Unsupported writers (tests driving the handler
+		// directly) are left to the server-wide ReadTimeout behind this.
+		if mutation && s.cfg.AdminBodyTimeout > 0 && r.Body != nil && r.Body != http.NoBody {
+			_ = http.NewResponseController(recorder).SetReadDeadline(
+				time.Now().Add(s.cfg.AdminBodyTimeout))
+		}
+		if mutation {
 			digest, body, ok := captureBody(recorder, r)
 			if !ok {
 				s.recordAudit(r, caller, entry, recorder.status)
@@ -71,19 +138,36 @@ func (s *Server) admin(resource, verb string, next http.HandlerFunc) http.Handle
 			r.Body = body
 		}
 
-		if caller.allowsAny(resource, verb) {
-			next(recorder, r)
-		} else {
-			// 403 rather than 404: this hub is a single operator's trust
-			// boundary, so hiding a route's existence from a credential that
-			// already authenticated buys nothing and costs a debuggable answer.
-			writeError(recorder, http.StatusForbidden, codeForbidden,
-				"this token does not carry the "+Scope{Resource: resource, Verb: verb}.String()+" scope")
-		}
+		next(recorder, r)
 
 		if mutation {
 			s.recordAudit(r, caller, entry, recorder.status)
 		}
+	}
+}
+
+// hangUp marks a refusal that will read nothing further from this request.
+// Connection: close skips the pre-response drain, so the answer is delivered
+// at once instead of when the read timeout fires; the read deadline bounds
+// the post-response drain, which net/http runs even on a connection it is
+// about to close, so a stalled body cannot park the goroutine until the
+// server-wide ReadTimeout either. Keep-alive is forgone; a refused caller's
+// next request was not worth holding a connection for.
+//
+// The deadline is a bound, deliberately NOT an immediate expiry. The drain
+// must be given time to swallow a prompt client's in-flight body, because a
+// drain that fails on timeout hard-closes the socket without the FIN-then-wait
+// of net/http's closeWriteAndWait, and the RST drops the queued response out
+// of the client's receive buffer (golang.org/issue/3595): an immediate
+// deadline was measured to lose the 403 for ordinary clients with as little
+// as 50 ms between writing their body and reading. With the bound, a prompt
+// client drains clean and reads its refusal; only a deliberate staller hits
+// the deadline, and a staller was never reading the answer.
+func (s *Server) hangUp(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	if s.cfg.AdminBodyTimeout > 0 {
+		_ = http.NewResponseController(w).SetReadDeadline(
+			time.Now().Add(s.cfg.AdminBodyTimeout))
 	}
 }
 
@@ -103,6 +187,10 @@ func (s *Server) requireScope(w http.ResponseWriter, r *http.Request, resource, 
 // itself when it cannot.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principal, bool) {
 	unauthorized := func() (*principal, bool) {
+		// The cheapest attacker of all is the one with no credential: without
+		// the hang-up, a 401 with an unread body in flight would sit behind
+		// the drain until the read timeout fired, response and goroutine both.
+		s.hangUp(w)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="vyshka-admin"`)
 		writeError(w, http.StatusUnauthorized, codeUnauthorized,
 			"a valid admin token is required")
@@ -261,7 +349,11 @@ func captureBody(w http.ResponseWriter, r *http.Request) (string, io.ReadCloser,
 
 	buffered, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "request body could not be read")
+		// Section 2.2 has no 408, so both halves of this failure share the
+		// 400; the message owns up to the hub-side deadline rather than
+		// sending an operator to debug only their client.
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"request body was not received whole: the connection failed or delivered it too slowly")
 		return "", io.NopCloser(bytes.NewReader(buffered)), false
 	}
 	if len(buffered) == 0 {

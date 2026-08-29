@@ -1261,7 +1261,10 @@ components:
             header, which is whatever the client typed.
         payloadDigest:
           type: string
-          description: SHA-256 of the request body in lowercase hex, empty when there was none.
+          description: |
+            SHA-256 of the request body in lowercase hex; empty when there was
+            none, or when the mutation was refused before its body was read
+            (spec section 10.2).
         serverId:
           type: string
           description: Present when the mutation named or created a server.

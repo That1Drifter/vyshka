@@ -241,6 +241,11 @@ func (s *Server) authenticateSession(w http.ResponseWriter, r *http.Request) (st
 }
 
 func (s *Server) rejectSession(w http.ResponseWriter, message string) {
+	// The same hang-up as the admin realm's refusals: a 401 with an unread
+	// body in flight would otherwise wait out the drain before it was
+	// delivered, holding the goroutine with it. The plugin this answers must
+	// open a new session anyway, so the keep-alive given up was already dead.
+	s.hangUp(w)
 	w.Header().Set("WWW-Authenticate", `Bearer realm="vyshka-plugin"`)
 	writeError(w, http.StatusUnauthorized, codeSessionInvalid, message)
 }
