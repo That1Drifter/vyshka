@@ -429,6 +429,37 @@ point if needed.
 
 ### Fixed
 
+- 2026-08-29: a snapshot replayed after history pruning could regress latest state across
+  a session change (issue #34, surfaced by the adversarial review of the event-batch dedup
+  fix but pre-existing in the state slice). Snapshots used their history row as their own
+  cross-session dedup record, and history is bounded by depth as well as time, so a
+  superseded row could be pruned (within minutes, via the depth trim) while the latest of
+  its type survived every pass; the pruned envelope id was forgotten with the row, and a
+  buffer replayed across a session change re-inserted the superseded snapshot with a fresh
+  acceptance seq, silently regressing latest and breaking 8.3's acceptance-order rule. A
+  new `state_snapshot_dedup` table (migration 0012, the `event_batches` shape) now claims
+  each accepted `state.*` envelope id per server inside the ingest transaction and holds
+  it for the full history window whatever happens to the row; the migration backfills
+  markers from surviving rows so an upgrade does not reopen the replay window for anything
+  still stored. Ids the old schema had already trimmed are unrecoverable, so a buffer
+  replayed across the upgrade itself keeps the old exposure for that one deployment
+  window; everything accepted after the upgrade is covered. The history table keeps its
+  unique `(server_id, envelope_id)` index as the backstop for the one row that outlives
+  every marker, the latest per (server, type), which survives retention indefinitely.
+  Expired markers ride the snapshot retention pass; sweeping one early is safe here
+  (unlike the event-batch sweep) because a still-standing row blocks the replay itself,
+  and (also unlike that sweep) swept markers count toward the pass's return, because the
+  depth trim deletes rows long before their markers expire and a pacing loop that ignored
+  markers would let an expired-marker backlog grow without bound (found by the adversarial
+  review of this fix). Section 8.3 now states the obligation the way 8.1 does: the dedup
+  record MUST outlive the history row and hold at least the history window from
+  acceptance, MAY be forgotten after, and a replay whose id the hub has forgotten is a new
+  snapshot, latest again however stale, with `capturedAt` left to say so; spec bumped to
+  draft 0.15. A new
+  `state.replayAfterPrune` check (72 total) grades it by pushing one snapshot past the
+  configured depth (new runner flag `-state-history-depth`, reference 500), replaying the
+  trimmed victim on a fresh session, and requiring latest not to regress.
+
 - 2026-08-27: an `event.batch` replayed across a session change was stored twice (issue
   #32). Within a session `seq` deduplicates a retransmission, but section 9.1 makes a
   plugin renumber unacked envelopes into the new session's sequence space, so a replay

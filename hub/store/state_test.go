@@ -137,8 +137,8 @@ func TestSnapshotPruneKeepsLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if pruned != 1 {
-		t.Errorf("pruned %d rows, want 1: only the superseded players snapshot is deletable", pruned)
+	if pruned != 4 {
+		t.Errorf("pruned %d, want 4: the one superseded players row plus all three expired dedup markers", pruned)
 	}
 
 	latest, err := st.LatestSnapshot(ctx, serverID, "players")
@@ -186,6 +186,119 @@ func TestSnapshotDedupByEnvelopeID(t *testing.T) {
 	}
 	if len(history) != 1 {
 		t.Errorf("history has %d snapshots after a replay, want 1", len(history))
+	}
+}
+
+// The defect of issue #34: history is bounded by depth as well as time, so a
+// superseded row can be trimmed while the latest of its type survives every
+// pass, and a replay of the trimmed snapshot across a session change must
+// still store nothing rather than insert with a fresh acceptance seq and
+// regress latest to a state that was already superseded.
+func TestSnapshotReplayAfterDepthTrim(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "state replay trim")
+	session := startSession(t, st, serverID, "state-replay-trim-token")
+
+	replayed := playersSnapshot(time.Hour, 1, `{"players":[{"n":"superseded"}]}`)
+	applySnapshots(t, st, session.ID, 1, replayed)
+	applySnapshots(t, st, session.ID, 2,
+		playersSnapshot(time.Hour, 1, `{"players":[{"n":"latest"}]}`))
+
+	// Depth 1: the superseded row is already gone, and with it the only
+	// history row that remembered the replayed envelope id.
+	history, err := st.SnapshotHistory(ctx, serverID, "players", 10)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history has %d rows, want the depth bound of 1", len(history))
+	}
+
+	second := startSession(t, st, serverID, "state-replay-trim-token-2")
+	applied, err := st.ApplyInbound(ctx, second.ID,
+		func(int64) store.InboundApplication {
+			return store.InboundApplication{Ack: 1, Accepted: 1,
+				Snapshots: []store.NewSnapshot{replayed}}
+		}, 100)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if applied.SnapshotsStored != 0 {
+		t.Errorf("a replay of a depth-trimmed snapshot stored %d, want 0", applied.SnapshotsStored)
+	}
+
+	latest, err := st.LatestSnapshot(ctx, serverID, "players")
+	if err != nil {
+		t.Fatalf("latest: %v", err)
+	}
+	if string(latest.Body) != `{"players":[{"n":"latest"}]}` {
+		t.Errorf("latest = %s after the replay; it regressed to a superseded snapshot", latest.Body)
+	}
+}
+
+// The dedup markers hold for the history window and no longer: past that
+// horizon a replay is a new snapshot by spec (section 8.3), while the one row
+// that outlives every marker, the latest per (server, type), still cannot
+// land in history twice thanks to its own unique index.
+func TestSnapshotDedupMarkerHorizon(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "state marker horizon")
+	session := startSession(t, st, serverID, "state-marker-token")
+
+	// Already past the window the moment they land, so the pass below can run
+	// without a sleep.
+	superseded := playersSnapshot(-time.Second, 0, `{"players":[{"n":"superseded"}]}`)
+	kept := playersSnapshot(-time.Second, 0, `{"players":[{"n":"kept"}]}`)
+	applySnapshots(t, st, session.ID, 1, superseded, kept)
+
+	markers := func() int {
+		var count int
+		if err := st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM state_snapshot_dedup WHERE server_id = ?`,
+			serverID).Scan(&count); err != nil {
+			t.Fatalf("count dedup markers: %v", err)
+		}
+		return count
+	}
+	if markers() != 2 {
+		t.Fatalf("markers = %d after two accepted snapshots, want 2", markers())
+	}
+
+	// The pass prunes the superseded row, keeps the latest standing, and
+	// sweeps both expired markers with the same call, counting all three so
+	// the caller's pacing loop sees marker backlogs too.
+	if pruned, err := st.PruneSnapshots(ctx, 100); err != nil || pruned != 3 {
+		t.Fatalf("prune = (%d, %v), want (3, nil)", pruned, err)
+	}
+	if markers() != 0 {
+		t.Errorf("markers = %d after the pass, want 0: expired markers ride the same pass", markers())
+	}
+
+	second := startSession(t, st, serverID, "state-marker-token-2")
+	apply := func(ack int64, snapshot store.NewSnapshot) int {
+		applied, err := st.ApplyInbound(ctx, second.ID,
+			func(int64) store.InboundApplication {
+				return store.InboundApplication{Ack: ack, Accepted: 1,
+					Snapshots: []store.NewSnapshot{snapshot}}
+			}, 100)
+		if err != nil {
+			t.Fatalf("replay: %v", err)
+		}
+		return applied.SnapshotsStored
+	}
+
+	// The latest row outlived its marker: a replay wins a fresh claim, but
+	// the history insert conflicts with the surviving row and stores nothing.
+	if stored := apply(1, kept); stored != 0 {
+		t.Errorf("a replay of the surviving latest stored %d, want 0", stored)
+	}
+	// The superseded snapshot lost both row and marker: past the horizon a
+	// replay is a new snapshot, accepted and latest again however stale, with
+	// capturedAt left to say so.
+	if stored := apply(2, superseded); stored != 1 {
+		t.Errorf("a replay past the dedup horizon stored %d, want 1", stored)
 	}
 }
 

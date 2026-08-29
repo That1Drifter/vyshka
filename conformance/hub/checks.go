@@ -43,6 +43,12 @@ type Env struct {
 	// that reach this machine through a container boundary or a tunnel.
 	WebhookListen    string
 	WebhookAdvertise string
+	// StateHistoryDepth is the snapshot history depth the hub under test is
+	// configured with (spec section 8.3, reference 500). The replay-after-prune
+	// check pushes one snapshot more than this to force the oldest out of
+	// history; against a hub configured deeper the trim never happens and that
+	// check degrades to plain cross-session dedup.
+	StateHistoryDepth int
 }
 
 // get issues a GET against the target hub and returns the response body.
@@ -3320,6 +3326,12 @@ var checks = []Check{
 		Title:   "A snapshot replayed across a session change is stored once",
 		Section: "8.3",
 		Run:     checkStateRetransmitDedup,
+	},
+	{
+		ID:      "state.replayAfterPrune",
+		Title:   "A replay of a pruned snapshot cannot regress latest across a session change",
+		Section: "8.3",
+		Run:     checkStateReplayAfterPrune,
 	},
 	{
 		ID:      "state.guards",

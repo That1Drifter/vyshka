@@ -28,7 +28,7 @@ PASS  errors.shape                   An unrouted path answers 404 in the protoco
 ...
 PASS  kv.confinement                 Namespace access is confined on both realms
 
-71 checks, 0 failed
+72 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite
@@ -43,6 +43,7 @@ could not run at all, so it drops straight into CI.
 | `-wait` | `0` | Poll `/healthz` for up to this long before starting, for CI |
 | `-webhook-listen` | `127.0.0.1:0` | Where the webhook checks bind their local receiver; the hub under test must be able to reach it |
 | `-webhook-advertise` | bound address | Base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels) |
+| `-state-history-depth` | `500` | Snapshot history depth the hub under test is configured with; the replay-after-prune check pushes one snapshot more than this to force a history trim. Against a hub configured deeper the trim never happens and the check degrades to plain cross-session dedup; a depth in the tens of thousands also needs a larger `-check-timeout` to fit the pushes |
 | `-json` | off | Machine-readable results instead of the text report |
 
 Long-polls get their own client, with a timeout of the protocol's maximum `pollTimeout` plus
