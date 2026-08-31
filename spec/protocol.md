@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.16 (2026-08-29)
+**Status:** draft 0.17 (2026-08-31)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -281,8 +281,23 @@ session change (section 9.1), and that surviving `id` is exactly what the cross-
 deduplication of sections 8.1 and 8.3 keys on, so a sender MUST NOT reuse an `id` for a
 different message on the same server, in any session. An id generator that resets with the
 session (a counter, a coarse timestamp) can make a fresh message equal a stored one, and a
-receiver, obliged to treat equal ids as the same message, will silently drop it. ULIDs
-satisfy the rule for free.
+receiver still holding that `id` in the matching dedup record is obliged (sections 8.1,
+8.3) to treat the fresh message as a retransmission and silently drop it. ULIDs satisfy
+the rule for free.
+
+The receiver's half of that bargain is scoped, not global. The cross-session dedup rules
+are defined one kind of envelope at a time, each over its own record: section 8.1
+deduplicates an accepted `event.batch` on its `id`, section 8.3 an accepted `state.*`
+envelope on its `id`, and no rule compares ids across the two. An `id` reused across them
+(an `event.batch` and a `state.players` under the same `id`) violates the sender's MUST
+NOT above but suspends no receiver obligation: each rule finds no match in its own record,
+so both envelopes are processed normally, both effects stored, and both acked. Global
+dedup is deliberately not on offer, and that constrains observable behavior, not storage
+layout: a receiver that treated the second envelope as a duplicate would be acking an
+envelope whose effect it never stored, which section 9.3 forbids, and one shared record
+would merge retention horizons that sections 8.1 and 8.3 set independently, all to punish
+the receiver's operator with silent data loss over the sender's bookkeeping collision. The
+reference hub keeps one dedup record per rule.
 
 Receivers enforce the rest unevenly, on purpose:
 

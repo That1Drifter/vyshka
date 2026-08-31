@@ -628,6 +628,29 @@ point if needed.
 
 ### Changed
 
+- 2026-08-31: `spec/protocol.md` draft 0.17 scopes the receiver's envelope-id dedup
+  obligation explicitly (issue #39, surfaced by the adversarial review of the
+  snapshot-replay fix; a spec-reading gap, not a code defect). Section 4's rationale said
+  the surviving `id` is what the cross-session deduplication of sections 8.1 and 8.3 keys
+  on, and read alone that could be taken to oblige a receiver to treat equal ids as the
+  same message globally, across message families. The obligations were always narrower:
+  8.1 dedups an accepted `event.batch` on its `id`, 8.3 an accepted `state.*` envelope on
+  its `id`, each within its own family, and the reference hub keeps separate dedup records
+  per family (`event_batches`, `state_snapshot_dedup`). Section 4 now says so: an `id`
+  reused across the two rules is a sender violation that suspends no receiver obligation,
+  each rule finds no match in its own record so both effects are stored and both envelopes
+  acked, and global dedup is not on offer as observable behavior, derived from section 9.3
+  rather than legislated fresh: a receiver that treated the second envelope as a duplicate
+  would be acking an envelope whose effect it never stored, and one shared record would
+  merge retention horizons that 8.1 and 8.3 set independently, silently dropping data over
+  the sender's bookkeeping collision. An adversarial review round tightened the first
+  draft of the paragraph: the rationale sentence about colliding id generators now
+  conditions the silent drop on a live dedup record instead of overstating a global
+  obligation, the paragraph names the two dedup rules concretely instead of leaning on an
+  undefined "message family" term that would have collided with section 5.5's type
+  families, and a "MAY store independently" that could have been read as licensing a
+  global-dedup hub to suppress the second effect was replaced by the 9.3 derivation.
+  Wording only; no behavior change anywhere.
 - 2026-08-16: `spec/protocol.md` draft 0.5 makes the plugin conformance suite grade a forced
   session change with envelopes still unacked, and says why that case gets its own mention:
   every other retransmission rule says "resend exactly what you sent", while this one says the
