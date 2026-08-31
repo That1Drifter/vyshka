@@ -476,7 +476,9 @@ point if needed.
   `ResponseWriteTimeout` set below the hold (arming is late, the way
   `TestHeldPollIsImmuneToReadTimeout` proves the read deadline is disarmed early); a
   deadline-recording listener sees the per-response arms and, on a 1 MiB body parsed for
-  its exact length, one arm per chunk with never more than one chunk's allowance; the
+  its exact length, one arm per chunk with never more than one chunk's allowance; a
+  stalled reader (pinned kernel buffers, nothing read until past the bound) is actually
+  cut mid-body where an unbounded server would deliver everything on the late drain; the
   derived `WriteTimeout` defaults, the follow-the-read-side disable, and the ceiling pin
   are pinned by a table test; a stale response deadline does not outlive its response
   (pinned against a malformed second request whose 400 only net/http writes);
@@ -492,8 +494,12 @@ point if needed.
   size-proportional allowance armed once per Write, was a total-transfer budget rather
   than the progress bound it claimed, letting a reader stall at a huge response's first
   byte and ride out the full hour its size earned, plus the two duration overflows; the
-  chunking is what closed it. No spec change and no conformance change: the suite
-  cannot grade connection-level bounds black-box in reasonable time.
+  chunking is what closed it, and its verification added the last residue: the chunk
+  loop honors io.Writer's short-write contract instead of silently skipping the
+  remainder, the arming sum pins to the ceiling like the derived backstop does, and the
+  stalled-reader cut is exercised for real rather than only armed. No spec change and
+  no conformance change: the suite cannot grade connection-level bounds black-box in
+  reasonable time.
   server carried no read timeout beyond the header one (issue #30, surfaced by the
   adversarial review of the KV slice but pre-existing since the tokens/audit slice). Any
   authenticated token, including one holding no grant on the route at all, could keep a

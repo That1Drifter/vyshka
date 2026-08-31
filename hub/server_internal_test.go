@@ -196,6 +196,61 @@ func TestResponseWriteTimeoutArmsPerResponse(t *testing.T) {
 	}
 }
 
+// smallWriteBufferListener pins each accepted connection's send buffer small,
+// so a kernel cannot absorb a whole test response into autotuned buffers and
+// a write genuinely blocks on the peer not reading.
+type smallWriteBufferListener struct{ net.Listener }
+
+func (l smallWriteBufferListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		_ = conn.(*net.TCPConn).SetWriteBuffer(16 << 10)
+	}
+	return conn, err
+}
+
+// The other half of the progress bound: a reader that stops draining is
+// actually cut one chunk's budget after its last progress, not merely armed
+// against. The client pins its receive buffer, requests a 1 MiB body, and
+// reads nothing until well past the bound; a server that cut the stall has
+// only the few buffered kilobytes left to deliver, while one that did not
+// would resume on the late drain and deliver the whole body.
+func TestStalledReaderIsCutAtTheProgressBound(t *testing.T) {
+	t.Parallel()
+
+	const bigSize = 1 << 20
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, bigSize))
+	})
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveOn(t, &http.Server{
+		Handler: logRequests(discardLog(), time.Second, handler),
+	}, smallWriteBufferListener{inner})
+
+	conn, err := net.Dial("tcp", inner.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.(*net.TCPConn).SetReadBuffer(4 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: hub\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// One chunk's budget is the 1 s base plus about 5 s of allowance; by 12 s
+	// the cut must have happened, so nothing read yet can unblock the server
+	// early.
+	time.Sleep(12 * time.Second)
+	if answer := readUntil(t, conn, "", 30*time.Second); len(answer) >= bigSize {
+		t.Fatalf("a reader stalled past the bound still received %d bytes; the response write was never cut", len(answer))
+	}
+}
+
 // The WriteTimeout backstop is derived from the effective read bound, because
 // net/http arms it at request start: it must clear a body legally read until
 // ReadTimeout plus a full poll hold, whatever ReadTimeout was raised to, and

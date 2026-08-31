@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -718,6 +719,12 @@ func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http
 				// are left to the server-wide WriteTimeout behind this.
 				budget := responseWriteTimeout +
 					time.Duration(pending)*time.Second/responseByteRateFloor
+				if budget < responseWriteTimeout {
+					// A configured timeout near the duration ceiling wraps
+					// the sum negative, which would expire the response on
+					// the spot; pin it instead.
+					budget = math.MaxInt64
+				}
 				_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget))
 			}
 		}
@@ -786,10 +793,16 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		n, err := r.ResponseWriter.Write(chunk)
 		total += n
 		r.written += n
+		if err == nil && n < len(chunk) {
+			// io.Writer's contract: a short write must carry an error, or
+			// this loop would skip the unwritten remainder and report the
+			// whole chunk delivered.
+			err = io.ErrShortWrite
+		}
 		if err != nil {
 			return total, err
 		}
-		b = b[len(chunk):]
+		b = b[n:]
 	}
 	return total, nil
 }
