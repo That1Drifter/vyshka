@@ -237,3 +237,54 @@ func TestHeldPollIsImmuneToReadTimeout(t *testing.T) {
 		t.Errorf("the idle poll answered after %s; a completed body must disarm ReadTimeout before the hold", held)
 	}
 }
+
+// ResponseWriteTimeout never needs sizing against the poll hold either: it is
+// armed when the response begins, and the hold ends before the response
+// begins. A bound BELOW the hold proves the arming happens late, which a bound
+// above the hold could not; the blanket WriteTimeout is set the way production
+// sizes it, above the hold, so the hold survives it too.
+func TestHeldPollIsImmuneToResponseWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	server, err := hub.New(context.Background(), hub.Config{
+		DatabaseURL:          filepath.Join(t.TempDir(), "writebound.db"),
+		AdminToken:           testAdminToken,
+		Logger:               slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		ResponseWriteTimeout: time.Second, // well under the 5 s hold
+	})
+	if err != nil {
+		t.Fatalf("boot hub: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+	_, live := enrolledSession(t, server, "response write timeout hold")
+
+	ts := httptest.NewUnstartedServer(server.Handler())
+	ts.Config.WriteTimeout = 30 * time.Second // above the hold, like production
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/plugin/v1/poll", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+live.SessionToken)
+	request.Header.Set("Content-Type", "application/json")
+
+	started := time.Now()
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("held poll: %v", err)
+	}
+	defer response.Body.Close()
+	held := time.Since(started)
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("held poll: status = %d, want 200", response.StatusCode)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("reading the held poll's body: %v", err)
+	}
+	if held < 4*time.Second {
+		t.Errorf("the idle poll answered after %s; the response deadline must arm after the hold, not before it", held)
+	}
+}

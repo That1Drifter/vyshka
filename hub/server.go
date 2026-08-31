@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -53,11 +55,46 @@ type Config struct {
 	// bodies are capped at 1 MiB and admin handlers hold nothing. It also
 	// bounds the post-response drain behind a refusal's hang-up.
 	AdminBodyTimeout time.Duration
+	// WriteTimeout bounds one response at the connection: the write-side
+	// mirror of ReadTimeout, against a client that stops reading its answer.
+	// It is a loose backstop, not the working bound, because net/http arms it
+	// at request start and nothing disarms it mid-request, so it must be
+	// sized above the worst legal request (a body trickled to ReadTimeout,
+	// then the full 60 s poll hold) or it would cut held polls at the
+	// deadline. The tight bound is ResponseWriteTimeout; this one covers the
+	// writes that bound cannot reach because no handler makes them (net/http's
+	// own error answers, its 100-continue interim line) and any future path
+	// that skips the logging middleware. Negative disables it.
+	WriteTimeout time.Duration
+	// ResponseWriteTimeout bounds a response's write-side progress. It is
+	// armed when the first header is written rather than at request start,
+	// so it needs no sizing against the poll hold (the hold ends before the
+	// response begins), and re-armed at every written chunk of the body
+	// (responseWriteChunk) with an allowance for that chunk's size at
+	// responseByteRateFloor, so it needs no sizing against the largest legal
+	// response either: a big page over a slow link earns time chunk by
+	// chunk, while a client that stops reading is cut within one chunk's
+	// budget of its last accepted byte. It cannot poison the next request on
+	// a keep-alive connection, because net/http clears the connection's
+	// write deadline after every response it finishes. Keep it comfortably
+	// above a second: the final buffered bytes flush after the last chunk's
+	// arm, on that chunk's budget. Negative disables it, leaving responses
+	// to WriteTimeout alone.
+	ResponseWriteTimeout time.Duration
 	// IdleTimeout bounds how long a keep-alive connection may sit idle
 	// between requests. Set explicitly, because net/http would otherwise
 	// reuse ReadTimeout for it and idle keep-alives would ride whatever that
 	// gets tuned to. Negative disables it.
 	IdleTimeout time.Duration
+	// MaxConns caps concurrent accepted connections. Every other bound here
+	// is per connection, so without a cap an attacker multiplies whatever a
+	// connection costs (roughly two goroutines plus buffers) by as many
+	// connections as the host will give it. At the cap, further connections
+	// wait unaccepted in the kernel's backlog until a slot frees. The cap is
+	// global rather than per source IP: the reference deployment puts a
+	// reverse proxy in front of public traffic (spec section 3.3), and that
+	// is where per-client fairness belongs. Negative disables it.
+	MaxConns int
 	// ShutdownTimeout bounds graceful shutdown before connections are cut.
 	ShutdownTimeout time.Duration
 	// EventRetention decides how long an ingested event is kept, by type
@@ -123,10 +160,48 @@ func (c *Config) withDefaults() {
 	if c.AdminBodyTimeout == 0 {
 		c.AdminBodyTimeout = 15 * time.Second
 	}
+	// Derived from the effective read bound, not from the default one: a
+	// body may legally dribble until ReadTimeout fires (measured from the
+	// connection's first byte, so at most ReadTimeout past where net/http
+	// arms this deadline), the hold may then run its full 60 s, and the
+	// response still has to go out, so the backstop is ReadTimeout plus the
+	// hold plus 30 s of write headroom: 120 s under the defaults, and still
+	// above the slowest conforming poll when an operator raises ReadTimeout
+	// for a slow link. An operator who disables ReadTimeout has declared the
+	// read side may legally take forever, and no finite write backstop is
+	// safe against a hold that begins arbitrarily late, so the default
+	// follows it off; either can still be set explicitly.
+	if c.WriteTimeout == 0 {
+		if c.ReadTimeout < 0 {
+			c.WriteTimeout = -1
+		} else {
+			c.WriteTimeout = c.ReadTimeout + MaxPollTimeout + 30*time.Second
+			if c.WriteTimeout < c.ReadTimeout {
+				// A ReadTimeout within 90 s of the duration ceiling wraps
+				// the sum negative, which would silently disable the
+				// backstop; pin it to the ceiling instead.
+				c.WriteTimeout = math.MaxInt64
+			}
+		}
+	}
+	// 10 s of progress bound per written chunk, plus the size allowance
+	// described on the field: enough that no legal response is ever cut for
+	// being large, while a client that stops reading holds the connection
+	// seconds instead of the minutes WriteTimeout would allow it.
+	if c.ResponseWriteTimeout == 0 {
+		c.ResponseWriteTimeout = 10 * time.Second
+	}
 	// Two minutes comfortably spans the gap between a plugin's back-to-back
 	// polls and a panel's sporadic requests.
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 2 * time.Minute
+	}
+	// Generous for a single-operator hub: one plugin holds one poll
+	// connection and a panel a handful, so 256 is an order of magnitude of
+	// headroom before refusal, while still refusing at a ceiling the host
+	// survives.
+	if c.MaxConns == 0 {
+		c.MaxConns = 256
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 15 * time.Second
@@ -546,7 +621,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("/", s.handleNotFound)
 
-	return logRequests(s.log, mux)
+	return logRequests(s.log, s.cfg.ResponseWriteTimeout, mux)
 }
 
 // Serve listens and serves until ctx is cancelled, then shuts down gracefully.
@@ -555,11 +630,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.Addr, err)
 	}
+	if s.cfg.MaxConns > 0 {
+		listener = capConnections(listener, s.cfg.MaxConns)
+	}
 
 	httpServer := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
 		ReadTimeout:       s.cfg.ReadTimeout,
+		WriteTimeout:      s.cfg.WriteTimeout,
 		IdleTimeout:       s.cfg.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
@@ -601,11 +680,54 @@ func (s *Server) Close() error {
 	return err
 }
 
-// logRequests emits one structured line per request once it completes.
-func logRequests(log *slog.Logger, next http.Handler) http.Handler {
+// responseByteRateFloor is the slowest reading client a response write budget
+// assumes, matching the roughly 50 KiB/s the read side's defaults grant a
+// trickled request body. Each chunk a response writes earns its size at this
+// rate on top of ResponseWriteTimeout, which is what keeps a legal
+// multi-megabyte page (a deep state history, a poll draining raw-queued
+// envelopes) deliverable over a slow link while a stalled reader still costs
+// seconds.
+const responseByteRateFloor = 50 << 10
+
+// responseWriteChunk bounds how many bytes ride one armed deadline. Handlers
+// hand writeJSON's encoder one Write per response however large, and the TCP
+// stack completes one Write under one deadline with no callback as bytes make
+// progress, so without chunking a size-proportional budget would be a
+// total-transfer allowance: a reader that stalled at the first byte of a
+// 200 MiB legal response would hold its connection for the whole hour the
+// size earned. Splitting at the recorder means each chunk gets only its own
+// budget (ResponseWriteTimeout plus about 5 s here), so a stall is cut within
+// one chunk's budget of the last accepted byte, and the arming arithmetic
+// cannot overflow whatever size a handler writes.
+const responseWriteChunk = 256 << 10
+
+// logRequests emits one structured line per request once it completes. It also
+// owns arming ResponseWriteTimeout, because it wraps every route and its
+// recorder sees every header and body write of every response: arming at the
+// first header, rather than at request start, is what lets the bound stay
+// tight without ever needing sizing against the poll hold, and re-arming per
+// written chunk is what keeps it a progress bound rather than a cap on
+// response size. Each response on a keep-alive connection arms fresh
+// deadlines for itself.
+func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		if responseWriteTimeout > 0 {
+			recorder.armWrite = func(pending int) {
+				// Unsupported writers (tests driving the handler directly)
+				// are left to the server-wide WriteTimeout behind this.
+				budget := responseWriteTimeout +
+					time.Duration(pending)*time.Second/responseByteRateFloor
+				if budget < responseWriteTimeout {
+					// A configured timeout near the duration ceiling wraps
+					// the sum negative, which would expire the response on
+					// the spot; pin it instead.
+					budget = math.MaxInt64
+				}
+				_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget))
+			}
+		}
 
 		next.ServeHTTP(recorder, r)
 
@@ -626,6 +748,13 @@ type statusRecorder struct {
 	status      int
 	written     int
 	wroteHeader bool
+	// armWrite, when set, runs as the first header is written and again
+	// before every written chunk of the body, carrying that chunk's size:
+	// the hook logRequests uses to keep a progress deadline on the response
+	// from the moment it begins. The admin middleware's inner recorder
+	// leaves it nil and the hook still runs, because that recorder delegates
+	// its writes to this one.
+	armWrite func(pending int)
 }
 
 // Unwrap lets http.ResponseController reach the connection through this
@@ -639,6 +768,9 @@ func (r *statusRecorder) WriteHeader(status int) {
 	}
 	r.status = status
 	r.wroteHeader = true
+	if r.armWrite != nil {
+		r.armWrite(0)
+	}
 	r.ResponseWriter.WriteHeader(status)
 }
 
@@ -646,7 +778,109 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
 	}
-	n, err := r.ResponseWriter.Write(b)
-	r.written += n
-	return n, err
+	if r.armWrite == nil {
+		n, err := r.ResponseWriter.Write(b)
+		r.written += n
+		return n, err
+	}
+	total := 0
+	for len(b) > 0 {
+		chunk := b
+		if len(chunk) > responseWriteChunk {
+			chunk = chunk[:responseWriteChunk]
+		}
+		r.armWrite(len(chunk))
+		n, err := r.ResponseWriter.Write(chunk)
+		total += n
+		r.written += n
+		if err == nil && n < len(chunk) {
+			// io.Writer's contract: a short write must carry an error, or
+			// this loop would skip the unwritten remainder and report the
+			// whole chunk delivered.
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return total, err
+		}
+		b = b[n:]
+	}
+	return total, nil
+}
+
+// capConnections bounds how many accepted connections may be open at once: the
+// MaxConns cap. A slot is taken before the inner Accept and returned when the
+// accepted connection closes, so at the cap the listener simply stops
+// accepting and excess connections queue in the kernel's backlog instead of
+// each buying goroutines and buffers. This is hand-rolled rather than a
+// dependency because it is the whole of what the dependency would bring.
+func capConnections(inner net.Listener, capacity int) net.Listener {
+	return &capListener{
+		Listener: inner,
+		slots:    make(chan struct{}, capacity),
+		closed:   make(chan struct{}),
+	}
+}
+
+type capListener struct {
+	net.Listener
+	slots     chan struct{}
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (l *capListener) Accept() (net.Conn, error) {
+	select {
+	case l.slots <- struct{}{}:
+	case <-l.closed:
+		// Closing the listener must unblock an Accept parked on a full house,
+		// or shutdown would hang behind the very connections it is draining.
+		// The inner Accept on a closed listener fails without blocking; a
+		// connection racing in anyway is closed, not leaked.
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		conn.Close()
+		return nil, net.ErrClosed
+	}
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.slots
+		return nil, err
+	}
+	return &capConn{Conn: conn, release: func() { <-l.slots }}, nil
+}
+
+func (l *capListener) Close() error {
+	err := l.Listener.Close()
+	l.closeOnce.Do(func() { close(l.closed) })
+	return err
+}
+
+// capConn returns its listener slot exactly once, on first Close. net/http
+// closes every connection it serves, on every exit path including a panicking
+// handler, so a slot cannot leak short of a leaked connection.
+type capConn struct {
+	net.Conn
+	releaseOnce sync.Once
+	release     func()
+}
+
+func (c *capConn) Close() error {
+	err := c.Conn.Close()
+	c.releaseOnce.Do(c.release)
+	return err
+}
+
+// CloseWrite forwards the half-close net/http reaches for when it closes a
+// connection that still has unread body bytes (closeWriteAndWait): FIN first,
+// then the full close, so the queued response is not in an RST's blast radius
+// (golang.org/issue/3595). Embedding the net.Conn interface would otherwise
+// strip the method off the wrapped *net.TCPConn, and the refusal path's
+// bounded drain depends on it.
+func (c *capConn) CloseWrite() error {
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return fmt.Errorf("connection %T does not support half-close", c.Conn)
 }
