@@ -53,11 +53,40 @@ type Config struct {
 	// bodies are capped at 1 MiB and admin handlers hold nothing. It also
 	// bounds the post-response drain behind a refusal's hang-up.
 	AdminBodyTimeout time.Duration
+	// WriteTimeout bounds one response at the connection: the write-side
+	// mirror of ReadTimeout, against a client that stops reading its answer.
+	// It is a loose backstop, not the working bound, because net/http arms it
+	// at request start and nothing disarms it mid-request, so it must be
+	// sized above the worst legal request (a body trickled to ReadTimeout,
+	// then the full 60 s poll hold) or it would cut held polls at the
+	// deadline. The tight bound is ResponseWriteTimeout; this one covers the
+	// writes that bound cannot reach because no handler makes them (net/http's
+	// own error answers, its 100-continue interim line) and any future path
+	// that skips the logging middleware. Negative disables it.
+	WriteTimeout time.Duration
+	// ResponseWriteTimeout bounds delivering one response, armed when its
+	// first header is written rather than at request start, so it needs no
+	// sizing against the poll hold: the hold ends before the response begins.
+	// Responses are small (well under 1 MiB), so this can be tight where
+	// WriteTimeout has to be loose. It cannot poison the next request on a
+	// keep-alive connection, because net/http clears the connection's write
+	// deadline after every response it finishes. Negative disables it,
+	// leaving responses to WriteTimeout alone.
+	ResponseWriteTimeout time.Duration
 	// IdleTimeout bounds how long a keep-alive connection may sit idle
 	// between requests. Set explicitly, because net/http would otherwise
 	// reuse ReadTimeout for it and idle keep-alives would ride whatever that
 	// gets tuned to. Negative disables it.
 	IdleTimeout time.Duration
+	// MaxConns caps concurrent accepted connections. Every other bound here
+	// is per connection, so without a cap an attacker multiplies whatever a
+	// connection costs (roughly two goroutines plus buffers) by as many
+	// connections as the host will give it. At the cap, further connections
+	// wait unaccepted in the kernel's backlog until a slot frees. The cap is
+	// global rather than per source IP: the reference deployment puts a
+	// reverse proxy in front of public traffic (spec section 3.3), and that
+	// is where per-client fairness belongs. Negative disables it.
+	MaxConns int
 	// ShutdownTimeout bounds graceful shutdown before connections are cut.
 	ShutdownTimeout time.Duration
 	// EventRetention decides how long an ingested event is kept, by type
@@ -123,10 +152,33 @@ func (c *Config) withDefaults() {
 	if c.AdminBodyTimeout == 0 {
 		c.AdminBodyTimeout = 15 * time.Second
 	}
+	// Sized above the worst legal request, not the typical one: a body may
+	// legally dribble until ReadTimeout fires (about 30 s past where this
+	// deadline is armed), the hold may then run its full 60 s, and the
+	// response still has to go out, so 120 s leaves the write half a minute
+	// after the slowest conforming poll. Anything shorter than about 90 s
+	// would cut correct traffic; the tight bound is ResponseWriteTimeout.
+	if c.WriteTimeout == 0 {
+		c.WriteTimeout = 120 * time.Second
+	}
+	// 10 s moves the largest response (an event page or a snapshot, well
+	// under 1 MiB) at far below any plausible link speed, while a client
+	// that stops reading holds the connection seconds instead of the two
+	// minutes WriteTimeout would allow it.
+	if c.ResponseWriteTimeout == 0 {
+		c.ResponseWriteTimeout = 10 * time.Second
+	}
 	// Two minutes comfortably spans the gap between a plugin's back-to-back
 	// polls and a panel's sporadic requests.
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 2 * time.Minute
+	}
+	// Generous for a single-operator hub: one plugin holds one poll
+	// connection and a panel a handful, so 256 is an order of magnitude of
+	// headroom before refusal, while still refusing at a ceiling the host
+	// survives.
+	if c.MaxConns == 0 {
+		c.MaxConns = 256
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 15 * time.Second
@@ -546,7 +598,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("/", s.handleNotFound)
 
-	return logRequests(s.log, mux)
+	return logRequests(s.log, s.cfg.ResponseWriteTimeout, mux)
 }
 
 // Serve listens and serves until ctx is cancelled, then shuts down gracefully.
@@ -555,11 +607,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.Addr, err)
 	}
+	if s.cfg.MaxConns > 0 {
+		listener = capConnections(listener, s.cfg.MaxConns)
+	}
 
 	httpServer := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
 		ReadTimeout:       s.cfg.ReadTimeout,
+		WriteTimeout:      s.cfg.WriteTimeout,
 		IdleTimeout:       s.cfg.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
@@ -601,11 +657,24 @@ func (s *Server) Close() error {
 	return err
 }
 
-// logRequests emits one structured line per request once it completes.
-func logRequests(log *slog.Logger, next http.Handler) http.Handler {
+// logRequests emits one structured line per request once it completes. It also
+// owns arming ResponseWriteTimeout, because it wraps every route and its
+// recorder sees the first header of every response: arming there, rather than
+// at request start, is what lets the bound stay tight without ever needing
+// sizing against the poll hold, and each response on a keep-alive connection
+// re-arms a fresh deadline for itself.
+func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		if responseWriteTimeout > 0 {
+			recorder.armWrite = func() {
+				// Unsupported writers (tests driving the handler directly)
+				// are left to the server-wide WriteTimeout behind this.
+				_ = http.NewResponseController(w).SetWriteDeadline(
+					time.Now().Add(responseWriteTimeout))
+			}
+		}
 
 		next.ServeHTTP(recorder, r)
 
@@ -626,6 +695,12 @@ type statusRecorder struct {
 	status      int
 	written     int
 	wroteHeader bool
+	// armWrite, when set, runs once as the first header is written: the hook
+	// logRequests uses to put a write deadline on the response at the moment
+	// it begins. The admin middleware's inner recorder leaves it nil and the
+	// hook still runs, because that recorder delegates its first WriteHeader
+	// to this one.
+	armWrite func()
 }
 
 // Unwrap lets http.ResponseController reach the connection through this
@@ -639,6 +714,9 @@ func (r *statusRecorder) WriteHeader(status int) {
 	}
 	r.status = status
 	r.wroteHeader = true
+	if r.armWrite != nil {
+		r.armWrite()
+	}
 	r.ResponseWriter.WriteHeader(status)
 }
 
@@ -649,4 +727,69 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)
 	r.written += n
 	return n, err
+}
+
+// capConnections bounds how many accepted connections may be open at once: the
+// MaxConns cap. A slot is taken before the inner Accept and returned when the
+// accepted connection closes, so at the cap the listener simply stops
+// accepting and excess connections queue in the kernel's backlog instead of
+// each buying goroutines and buffers. This is hand-rolled rather than a
+// dependency because it is the whole of what the dependency would bring.
+func capConnections(inner net.Listener, capacity int) net.Listener {
+	return &capListener{
+		Listener: inner,
+		slots:    make(chan struct{}, capacity),
+		closed:   make(chan struct{}),
+	}
+}
+
+type capListener struct {
+	net.Listener
+	slots     chan struct{}
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (l *capListener) Accept() (net.Conn, error) {
+	select {
+	case l.slots <- struct{}{}:
+	case <-l.closed:
+		// Closing the listener must unblock an Accept parked on a full house,
+		// or shutdown would hang behind the very connections it is draining.
+		// The inner Accept on a closed listener fails without blocking; a
+		// connection racing in anyway is closed, not leaked.
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		conn.Close()
+		return nil, net.ErrClosed
+	}
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.slots
+		return nil, err
+	}
+	return &capConn{Conn: conn, release: func() { <-l.slots }}, nil
+}
+
+func (l *capListener) Close() error {
+	err := l.Listener.Close()
+	l.closeOnce.Do(func() { close(l.closed) })
+	return err
+}
+
+// capConn returns its listener slot exactly once, on first Close. net/http
+// closes every connection it serves, on every exit path including a panicking
+// handler, so a slot cannot leak short of a leaked connection.
+type capConn struct {
+	net.Conn
+	releaseOnce sync.Once
+	release     func()
+}
+
+func (c *capConn) Close() error {
+	err := c.Conn.Close()
+	c.releaseOnce.Do(c.release)
+	return err
 }

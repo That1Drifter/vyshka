@@ -429,7 +429,39 @@ point if needed.
 
 ### Fixed
 
-- 2026-08-29: the Admin API read request bodies before the coarse scope check, and the
+- 2026-08-31: the hub had no write timeout and no connection cap (issue #38, surfaced by
+  the adversarial review of the admin body/timeout hardening but pre-existing; both were
+  declared out of scope there). The read side was fully bounded and the write side not at
+  all: a client that stopped reading its response held the connection and its goroutines
+  indefinitely, the mirror image of the slow-loris body, and nothing capped how many
+  connections one attacker could hold, which multiplied every per-connection bound by N.
+  Three new `Config` knobs, all hub configuration rather than protocol. A per-response
+  write deadline (`ResponseWriteTimeout`, default 10 s, negative disables) is armed by the
+  log middleware's recorder as each response's first header is written, through the same
+  `http.ResponseController` path the admin read deadline uses; arming at the response
+  rather than at request start is what lets it stay tight with no sizing against the 60 s
+  poll hold, since the hold ends before the response begins, and it cannot poison the next
+  keep-alive request because net/http clears the connection's write deadline after every
+  response it finishes. A blanket `WriteTimeout` (default 120 s, negative disables) backs
+  that up at the `http.Server`, sized above the worst legal request (a body trickled to
+  ReadTimeout, then the full hold) because net/http arms it at request start; it covers
+  the writes no handler makes (net/http's own 400s, the 100-continue interim line) and
+  any future path that skips the middleware. `MaxConns` (default 256, negative disables)
+  caps concurrent accepted connections with a hand-rolled semaphore listener rather than
+  a dependency: at the cap the listener stops accepting and excess connections queue in
+  the kernel backlog until a slot frees on connection close; closing the listener
+  unblocks an Accept parked on a full house so shutdown cannot hang behind the
+  connections it is draining. The cap is global, not per source IP: the reference
+  deployment puts a reverse proxy in front of public traffic (spec section 3.3), and
+  per-client fairness belongs there. Tests: a held poll survives a
+  `ResponseWriteTimeout` set below the hold (arming is late, the way
+  `TestHeldPollIsImmuneToReadTimeout` proves the read deadline is disarmed early); a
+  deadline-recording listener sees exactly one fresh deadline armed per keep-alive
+  response; a stale response deadline does not outlive its response (pinned against a
+  malformed second request whose 400 only net/http writes); and raw-socket cap tests
+  prove a connection past the cap is unanswered until a slot frees, then served, and
+  that Close unblocks a parked Accept. No spec change and no conformance change: the
+  suite cannot grade connection-level bounds black-box in reasonable time.
   server carried no read timeout beyond the header one (issue #30, surfaced by the
   adversarial review of the KV slice but pre-existing since the tokens/audit slice). Any
   authenticated token, including one holding no grant on the route at all, could keep a
