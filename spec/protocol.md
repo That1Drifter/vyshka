@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.16 (2026-08-29)
+**Status:** draft 0.17 (2026-08-31)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -281,8 +281,20 @@ session change (section 9.1), and that surviving `id` is exactly what the cross-
 deduplication of sections 8.1 and 8.3 keys on, so a sender MUST NOT reuse an `id` for a
 different message on the same server, in any session. An id generator that resets with the
 session (a counter, a coarse timestamp) can make a fresh message equal a stored one, and a
-receiver, obliged to treat equal ids as the same message, will silently drop it. ULIDs
-satisfy the rule for free.
+receiver, obliged to treat equal ids within a message family as the same message, will
+silently drop it. ULIDs satisfy the rule for free.
+
+The receiver's half of that bargain is scoped, not global. Each deduplicating message
+family compares ids within itself: section 8.1 deduplicates an accepted `event.batch` on
+its `id`, section 8.3 an accepted `state.*` envelope on its `id`, and no rule obliges a
+receiver to compare ids across families. An `id` reused across families (an `event.batch`
+and a `state.players` under the same `id`) violates the sender's MUST NOT above but
+breaches no receiver obligation: a receiver MAY store each family's effect independently,
+keeping separate deduplication records per family under each family's own retention
+horizon, and the reference hub does. Global dedup is deliberately not required: it would
+force one shared record with mixed horizons for no benefit a conforming sender ever sees,
+and it would punish the wrong party, the receiver's operator losing data over the sender's
+bookkeeping collision.
 
 Receivers enforce the rest unevenly, on purpose:
 

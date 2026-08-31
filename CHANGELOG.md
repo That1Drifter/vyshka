@@ -628,6 +628,20 @@ point if needed.
 
 ### Changed
 
+- 2026-08-31: `spec/protocol.md` draft 0.17 scopes the receiver's envelope-id dedup
+  obligation explicitly (issue #39, surfaced by the adversarial review of the
+  snapshot-replay fix; a spec-reading gap, not a code defect). Section 4's rationale said
+  the surviving `id` is what the cross-session deduplication of sections 8.1 and 8.3 keys
+  on, and read alone that could be taken to oblige a receiver to treat equal ids as the
+  same message globally, across message families. The obligations were always narrower:
+  8.1 dedups an accepted `event.batch` on its `id`, 8.3 an accepted `state.*` envelope on
+  its `id`, each within its own family, and the reference hub keeps separate dedup records
+  per family (`event_batches`, `state_snapshot_dedup`). Section 4 now says so: an `id`
+  reused across families is a sender violation that breaches no receiver obligation, a
+  receiver MAY store each family's effect independently under each family's own retention
+  horizon, and global dedup is deliberately not required, because it would force one
+  shared record with mixed horizons and would silently drop data over the sender's
+  bookkeeping collision. Wording only; no behavior change anywhere.
 - 2026-08-16: `spec/protocol.md` draft 0.5 makes the plugin conformance suite grade a forced
   session change with envelopes still unacked, and says why that case gets its own mention:
   every other retransmission rule says "resend exactly what you sent", while this one says the
