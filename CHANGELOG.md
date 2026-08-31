@@ -637,11 +637,20 @@ point if needed.
   8.1 dedups an accepted `event.batch` on its `id`, 8.3 an accepted `state.*` envelope on
   its `id`, each within its own family, and the reference hub keeps separate dedup records
   per family (`event_batches`, `state_snapshot_dedup`). Section 4 now says so: an `id`
-  reused across families is a sender violation that breaches no receiver obligation, a
-  receiver MAY store each family's effect independently under each family's own retention
-  horizon, and global dedup is deliberately not required, because it would force one
-  shared record with mixed horizons and would silently drop data over the sender's
-  bookkeeping collision. Wording only; no behavior change anywhere.
+  reused across the two rules is a sender violation that suspends no receiver obligation,
+  each rule finds no match in its own record so both effects are stored and both envelopes
+  acked, and global dedup is not on offer as observable behavior, derived from section 9.3
+  rather than legislated fresh: a receiver that treated the second envelope as a duplicate
+  would be acking an envelope whose effect it never stored, and one shared record would
+  merge retention horizons that 8.1 and 8.3 set independently, silently dropping data over
+  the sender's bookkeeping collision. An adversarial review round tightened the first
+  draft of the paragraph: the rationale sentence about colliding id generators now
+  conditions the silent drop on a live dedup record instead of overstating a global
+  obligation, the paragraph names the two dedup rules concretely instead of leaning on an
+  undefined "message family" term that would have collided with section 5.5's type
+  families, and a "MAY store independently" that could have been read as licensing a
+  global-dedup hub to suppress the second effect was replaced by the 9.3 derivation.
+  Wording only; no behavior change anywhere.
 - 2026-08-16: `spec/protocol.md` draft 0.5 makes the plugin conformance suite grade a forced
   session change with envelopes still unacked, and says why that case gets its own mention:
   every other retransmission rule says "resend exactly what you sent", while this one says the
