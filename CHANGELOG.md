@@ -436,32 +436,51 @@ point if needed.
   indefinitely, the mirror image of the slow-loris body, and nothing capped how many
   connections one attacker could hold, which multiplied every per-connection bound by N.
   Three new `Config` knobs, all hub configuration rather than protocol. A per-response
-  write deadline (`ResponseWriteTimeout`, default 10 s, negative disables) is armed by the
-  log middleware's recorder as each response's first header is written, through the same
-  `http.ResponseController` path the admin read deadline uses; arming at the response
-  rather than at request start is what lets it stay tight with no sizing against the 60 s
-  poll hold, since the hold ends before the response begins, and it cannot poison the next
-  keep-alive request because net/http clears the connection's write deadline after every
-  response it finishes. A blanket `WriteTimeout` (default 120 s, negative disables) backs
-  that up at the `http.Server`, sized above the worst legal request (a body trickled to
-  ReadTimeout, then the full hold) because net/http arms it at request start; it covers
-  the writes no handler makes (net/http's own 400s, the 100-continue interim line) and
-  any future path that skips the middleware. `MaxConns` (default 256, negative disables)
-  caps concurrent accepted connections with a hand-rolled semaphore listener rather than
-  a dependency: at the cap the listener stops accepting and excess connections queue in
-  the kernel backlog until a slot frees on connection close; closing the listener
-  unblocks an Accept parked on a full house so shutdown cannot hang behind the
-  connections it is draining. The cap is global, not per source IP: the reference
+  progress deadline (`ResponseWriteTimeout`, default 10 s, negative disables) is armed by
+  the log middleware's recorder as each response's first header is written and re-armed at
+  every body write with an allowance for that write's size at a 50 KiB/s floor (matching
+  what the read side's defaults grant a trickled body), through the same
+  `http.ResponseController` path the admin read deadline uses. Arming at the response
+  rather than at request start is what needs no sizing against the 60 s poll hold, since
+  the hold ends before the response begins; the size allowance is what needs no sizing
+  against the largest legal response, since a deep state history or a poll draining
+  raw-queued envelopes can legally run to tens of megabytes and a flat bound would cut it
+  on a slow link; and it cannot poison the next keep-alive request because net/http clears
+  the connection's write deadline after every response it finishes. A blanket
+  `WriteTimeout` (negative disables) backs that up at the `http.Server` for the writes no
+  handler makes (net/http's own 400s, the 100-continue interim line) and any future path
+  that skips the middleware; its default is derived from the effective configuration
+  rather than fixed, `ReadTimeout` plus the 60 s hold plus 30 s of write headroom (120 s
+  under the defaults), because net/http arms it at request start and a fixed default
+  would cut legal polls the moment an operator raised `ReadTimeout` for a slow link; a
+  disabled `ReadTimeout` takes the default backstop off with it, since no finite bound
+  armed at request start is safe against a hold that may legally begin arbitrarily late.
+  `MaxConns` (default 256, negative disables) caps concurrent accepted connections with a
+  hand-rolled semaphore listener rather than a dependency: at the cap the listener stops
+  accepting and excess connections queue in the kernel backlog until a slot frees on
+  connection close; closing the listener unblocks an Accept parked on a full house so
+  shutdown cannot hang behind the connections it is draining; and the wrapper forwards
+  `CloseWrite`, because embedding the `net.Conn` interface would otherwise strip the
+  half-close off the TCP connection and silently disable the FIN-before-close that keeps
+  a refused request's queued answer out of an RST's blast radius, the exact behavior the
+  refusal hardening measured for. The cap is global, not per source IP: the reference
   deployment puts a reverse proxy in front of public traffic (spec section 3.3), and
   per-client fairness belongs there. Tests: a held poll survives a
   `ResponseWriteTimeout` set below the hold (arming is late, the way
   `TestHeldPollIsImmuneToReadTimeout` proves the read deadline is disarmed early); a
-  deadline-recording listener sees exactly one fresh deadline armed per keep-alive
-  response; a stale response deadline does not outlive its response (pinned against a
-  malformed second request whose 400 only net/http writes); and raw-socket cap tests
-  prove a connection past the cap is unanswered until a slot frees, then served, and
-  that Close unblocks a parked Accept. No spec change and no conformance change: the
-  suite cannot grade connection-level bounds black-box in reasonable time.
+  deadline-recording listener sees the per-response arms and the size allowance on a
+  1 MiB body; a stale response deadline does not outlive its response (pinned against a
+  malformed second request whose 400 only net/http writes); raw-socket cap tests prove a
+  connection past the cap is unanswered until a slot frees, then served, that closing
+  the listener unparks an Accept while the slot is still provably held, and that the
+  half-close survives the wrapper on a real TCP pair. An adversarial review round shaped
+  the final form: the first cut's flat 10 s deadline would have truncated large legal
+  responses (its "responses are small" premise was false against the history and
+  raw-queue limits), its fixed 120 s backstop broke under a legally raised
+  `ReadTimeout`, its cap wrapper silently dropped `CloseWrite`, and its listener-close
+  test released the slot before asserting and so proved nothing. No spec change and no
+  conformance change: the suite cannot grade connection-level bounds black-box in
+  reasonable time.
   server carried no read timeout beyond the header one (issue #30, surfaced by the
   adversarial review of the KV slice but pre-existing since the tokens/audit slice). Any
   authenticated token, including one holding no grant on the route at all, could keep a

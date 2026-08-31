@@ -64,14 +64,18 @@ type Config struct {
 	// own error answers, its 100-continue interim line) and any future path
 	// that skips the logging middleware. Negative disables it.
 	WriteTimeout time.Duration
-	// ResponseWriteTimeout bounds delivering one response, armed when its
-	// first header is written rather than at request start, so it needs no
-	// sizing against the poll hold: the hold ends before the response begins.
-	// Responses are small (well under 1 MiB), so this can be tight where
-	// WriteTimeout has to be loose. It cannot poison the next request on a
-	// keep-alive connection, because net/http clears the connection's write
-	// deadline after every response it finishes. Negative disables it,
-	// leaving responses to WriteTimeout alone.
+	// ResponseWriteTimeout bounds a response's write-side progress. It is
+	// armed when the first header is written rather than at request start,
+	// so it needs no sizing against the poll hold (the hold ends before the
+	// response begins), and re-armed at every body write with an allowance
+	// for that write's size at responseByteRateFloor, so it needs no sizing
+	// against the largest legal response either: a big page over a slow link
+	// earns time proportional to its bytes, while a client that stops
+	// reading is cut this many seconds after its last accepted byte. It
+	// cannot poison the next request on a keep-alive connection, because
+	// net/http clears the connection's write deadline after every response
+	// it finishes. Negative disables it, leaving responses to WriteTimeout
+	// alone.
 	ResponseWriteTimeout time.Duration
 	// IdleTimeout bounds how long a keep-alive connection may sit idle
 	// between requests. Set explicitly, because net/http would otherwise
@@ -152,19 +156,28 @@ func (c *Config) withDefaults() {
 	if c.AdminBodyTimeout == 0 {
 		c.AdminBodyTimeout = 15 * time.Second
 	}
-	// Sized above the worst legal request, not the typical one: a body may
-	// legally dribble until ReadTimeout fires (about 30 s past where this
-	// deadline is armed), the hold may then run its full 60 s, and the
-	// response still has to go out, so 120 s leaves the write half a minute
-	// after the slowest conforming poll. Anything shorter than about 90 s
-	// would cut correct traffic; the tight bound is ResponseWriteTimeout.
+	// Derived from the effective read bound, not from the default one: a
+	// body may legally dribble until ReadTimeout fires (measured from the
+	// connection's first byte, so at most ReadTimeout past where net/http
+	// arms this deadline), the hold may then run its full 60 s, and the
+	// response still has to go out, so the backstop is ReadTimeout plus the
+	// hold plus 30 s of write headroom: 120 s under the defaults, and still
+	// above the slowest conforming poll when an operator raises ReadTimeout
+	// for a slow link. An operator who disables ReadTimeout has declared the
+	// read side may legally take forever, and no finite write backstop is
+	// safe against a hold that begins arbitrarily late, so the default
+	// follows it off; either can still be set explicitly.
 	if c.WriteTimeout == 0 {
-		c.WriteTimeout = 120 * time.Second
+		if c.ReadTimeout < 0 {
+			c.WriteTimeout = -1
+		} else {
+			c.WriteTimeout = c.ReadTimeout + MaxPollTimeout + 30*time.Second
+		}
 	}
-	// 10 s moves the largest response (an event page or a snapshot, well
-	// under 1 MiB) at far below any plausible link speed, while a client
-	// that stops reading holds the connection seconds instead of the two
-	// minutes WriteTimeout would allow it.
+	// 10 s of progress bound per write, plus the size allowance described on
+	// the field: enough that no legal response is ever cut for being large,
+	// while a client that stops reading holds the connection seconds instead
+	// of the minutes WriteTimeout would allow it.
 	if c.ResponseWriteTimeout == 0 {
 		c.ResponseWriteTimeout = 10 * time.Second
 	}
@@ -657,22 +670,33 @@ func (s *Server) Close() error {
 	return err
 }
 
+// responseByteRateFloor is the slowest reading client a response write budget
+// assumes, matching the roughly 50 KiB/s the read side's defaults grant a
+// trickled request body. Each write earns its size at this rate on top of
+// ResponseWriteTimeout, which is what keeps a legal multi-megabyte page (a
+// deep state history, a poll draining raw-queued envelopes) deliverable over a
+// slow link while a stalled reader still costs seconds.
+const responseByteRateFloor = 50 << 10
+
 // logRequests emits one structured line per request once it completes. It also
 // owns arming ResponseWriteTimeout, because it wraps every route and its
-// recorder sees the first header of every response: arming there, rather than
-// at request start, is what lets the bound stay tight without ever needing
-// sizing against the poll hold, and each response on a keep-alive connection
-// re-arms a fresh deadline for itself.
+// recorder sees every header and body write of every response: arming at the
+// first header, rather than at request start, is what lets the bound stay
+// tight without ever needing sizing against the poll hold, and re-arming per
+// body write is what keeps it a progress bound rather than a cap on response
+// size. Each response on a keep-alive connection arms fresh deadlines for
+// itself.
 func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		if responseWriteTimeout > 0 {
-			recorder.armWrite = func() {
+			recorder.armWrite = func(pending int) {
 				// Unsupported writers (tests driving the handler directly)
 				// are left to the server-wide WriteTimeout behind this.
-				_ = http.NewResponseController(w).SetWriteDeadline(
-					time.Now().Add(responseWriteTimeout))
+				budget := responseWriteTimeout +
+					time.Duration(pending)*time.Second/responseByteRateFloor
+				_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget))
 			}
 		}
 
@@ -695,12 +719,13 @@ type statusRecorder struct {
 	status      int
 	written     int
 	wroteHeader bool
-	// armWrite, when set, runs once as the first header is written: the hook
-	// logRequests uses to put a write deadline on the response at the moment
-	// it begins. The admin middleware's inner recorder leaves it nil and the
-	// hook still runs, because that recorder delegates its first WriteHeader
-	// to this one.
-	armWrite func()
+	// armWrite, when set, runs as the first header is written and again
+	// before every body write, carrying that write's size: the hook
+	// logRequests uses to keep a progress deadline on the response from the
+	// moment it begins. The admin middleware's inner recorder leaves it nil
+	// and the hook still runs, because that recorder delegates its writes to
+	// this one.
+	armWrite func(pending int)
 }
 
 // Unwrap lets http.ResponseController reach the connection through this
@@ -715,7 +740,7 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.wroteHeader = true
 	if r.armWrite != nil {
-		r.armWrite()
+		r.armWrite(0)
 	}
 	r.ResponseWriter.WriteHeader(status)
 }
@@ -723,6 +748,9 @@ func (r *statusRecorder) WriteHeader(status int) {
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
+	}
+	if r.armWrite != nil {
+		r.armWrite(len(b))
 	}
 	n, err := r.ResponseWriter.Write(b)
 	r.written += n
@@ -792,4 +820,17 @@ func (c *capConn) Close() error {
 	err := c.Conn.Close()
 	c.releaseOnce.Do(c.release)
 	return err
+}
+
+// CloseWrite forwards the half-close net/http reaches for when it closes a
+// connection that still has unread body bytes (closeWriteAndWait): FIN first,
+// then the full close, so the queued response is not in an RST's blast radius
+// (golang.org/issue/3595). Embedding the net.Conn interface would otherwise
+// strip the method off the wrapped *net.TCPConn, and the refusal path's
+// bounded drain depends on it.
+func (c *capConn) CloseWrite() error {
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return fmt.Errorf("connection %T does not support half-close", c.Conn)
 }

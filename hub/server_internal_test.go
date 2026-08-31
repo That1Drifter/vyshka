@@ -104,11 +104,21 @@ func readUntil(t *testing.T, conn net.Conn, want string, deadline time.Duration)
 	return got.String()
 }
 
-// ResponseWriteTimeout is armed once per response, as the response begins:
-// each request on a keep-alive connection gets its own fresh deadline, and it
-// reaches the connection through the middleware's recorder.
+// ResponseWriteTimeout is a progress bound: armed at each response's first
+// header, re-armed at each body write with an allowance for that write's
+// size, and each request on a keep-alive connection gets its own fresh
+// deadlines, reaching the connection through the middleware's recorder.
 func TestResponseWriteTimeoutArmsPerResponse(t *testing.T) {
 	t.Parallel()
+
+	const bigSize = 1 << 20
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/big" {
+			_, _ = w.Write(make([]byte, bigSize))
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -118,7 +128,7 @@ func TestResponseWriteTimeoutArmsPerResponse(t *testing.T) {
 	const timeout = 10 * time.Second
 	// WriteTimeout deliberately unset: every recorded write deadline below
 	// was therefore armed by the middleware, not by net/http.
-	serveOn(t, &http.Server{Handler: logRequests(discardLog(), timeout, okHandler)}, listener)
+	serveOn(t, &http.Server{Handler: logRequests(discardLog(), timeout, handler)}, listener)
 
 	conn, err := net.Dial("tcp", inner.Addr().String())
 	if err != nil {
@@ -136,14 +146,35 @@ func TestResponseWriteTimeoutArmsPerResponse(t *testing.T) {
 			t.Fatalf("exchange %d: answer = %q, want a 200", exchange, answer)
 		}
 		armed := listener.armed()
-		if len(armed) != exchange {
-			t.Fatalf("after exchange %d: %d write deadlines armed, want one per response", exchange, len(armed))
+		// Two per response: the header's arm and the tiny body write's.
+		if len(armed) != 2*exchange {
+			t.Fatalf("after exchange %d: %d write deadlines armed, want two per response", exchange, len(armed))
 		}
-		deadline := armed[exchange-1]
-		if deadline.Before(before.Add(timeout)) || deadline.After(time.Now().Add(timeout)) {
-			t.Errorf("exchange %d: deadline armed for %s, want about %s after the response began",
-				exchange, deadline, timeout)
+		for _, deadline := range armed[2*(exchange-1):] {
+			if deadline.Before(before.Add(timeout)) || deadline.After(time.Now().Add(timeout+time.Second)) {
+				t.Errorf("exchange %d: deadline armed for %s, want about %s after the response began",
+					exchange, deadline, timeout)
+			}
 		}
+	}
+
+	// A large body earns time proportional to its size on top of the base
+	// bound, so a legal big page over a slow link is never cut for being big.
+	before := time.Now()
+	if _, err := conn.Write([]byte("GET /big HTTP/1.1\r\nHost: hub\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if answer := readUntil(t, conn, "", 10*time.Second); len(answer) < bigSize {
+		t.Fatalf("big response delivered %d bytes, want at least %d", len(answer), bigSize)
+	}
+	armed := listener.armed()
+	if len(armed) != 6 {
+		t.Fatalf("after the big response: %d write deadlines armed, want six in total", len(armed))
+	}
+	allowance := time.Duration(bigSize) * time.Second / responseByteRateFloor
+	if last := armed[len(armed)-1]; last.Before(before.Add(timeout + allowance - time.Second)) {
+		t.Errorf("big body's deadline armed for %s, want at least %s of size allowance past the base bound",
+			last, allowance)
 	}
 }
 
@@ -237,8 +268,9 @@ func TestConnectionCapHoldsExcessConnections(t *testing.T) {
 
 // Closing the listener while every slot is taken must unblock the Accept
 // parked on the full house, or shutdown would hang behind the connections it
-// is draining. serveOn's cleanup is the assertion: it fails the test if Serve
-// has not returned within its bound.
+// is draining. The slot-holding connection stays open until after the
+// assertion, so the release path cannot unpark the Accept and mask a broken
+// close path.
 func TestConnectionCapUnblocksAcceptOnClose(t *testing.T) {
 	t.Parallel()
 
@@ -246,7 +278,14 @@ func TestConnectionCapUnblocksAcceptOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serveOn(t, &http.Server{Handler: okHandler}, capConnections(inner, 1))
+	listener := capConnections(inner, 1)
+	server := &http.Server{Handler: okHandler}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() { _ = server.Close() })
 
 	conn, err := net.Dial("tcp", inner.Addr().String())
 	if err != nil {
@@ -259,6 +298,58 @@ func TestConnectionCapUnblocksAcceptOnClose(t *testing.T) {
 	if answer := readUntil(t, conn, "\r\n\r\nok", 5*time.Second); !strings.Contains(answer, "200") {
 		t.Fatalf("the slot-holding connection answered %q, want a 200", answer)
 	}
-	// The connection idles holding the only slot; the serve loop's next
-	// Accept is now parked acquiring one. Cleanup closes the server under it.
+
+	// The connection idles on holding the only slot, so wherever the serve
+	// loop's next Accept is, the semaphore cannot let it through; closing the
+	// listener is the only thing that can end it.
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s of closing the listener under a full cap")
+	}
+}
+
+// net/http half-closes a connection it is about to close with body bytes
+// still unread (closeWriteAndWait), so the queued refusal is not lost to an
+// RST; the cap wrapper must not strip that ability off the TCP connection.
+// Driven over a real TCP pair: after CloseWrite the peer sees EOF while the
+// wrapped side can still read.
+func TestCapConnForwardsCloseWrite(t *testing.T) {
+	t.Parallel()
+
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inner.Close()
+	client, err := net.Dial("tcp", inner.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	accepted, err := inner.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &capConn{Conn: accepted, release: func() {}}
+	defer wrapped.Close()
+
+	if err := wrapped.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite through the wrapper: %v", err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := client.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("after the half-close the peer read (%d, %v), want EOF", n, err)
+	}
+	if _, err := client.Write([]byte("x")); err != nil {
+		t.Fatalf("write toward the half-closed side: %v", err)
+	}
+	_ = wrapped.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := wrapped.Read(buf); err != nil || buf[0] != 'x' {
+		t.Fatalf("read on the half-closed side: %q, %v; the read direction must survive CloseWrite", buf, err)
+	}
 }
