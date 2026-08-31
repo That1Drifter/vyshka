@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -67,15 +68,17 @@ type Config struct {
 	// ResponseWriteTimeout bounds a response's write-side progress. It is
 	// armed when the first header is written rather than at request start,
 	// so it needs no sizing against the poll hold (the hold ends before the
-	// response begins), and re-armed at every body write with an allowance
-	// for that write's size at responseByteRateFloor, so it needs no sizing
-	// against the largest legal response either: a big page over a slow link
-	// earns time proportional to its bytes, while a client that stops
-	// reading is cut this many seconds after its last accepted byte. It
-	// cannot poison the next request on a keep-alive connection, because
-	// net/http clears the connection's write deadline after every response
-	// it finishes. Negative disables it, leaving responses to WriteTimeout
-	// alone.
+	// response begins), and re-armed at every written chunk of the body
+	// (responseWriteChunk) with an allowance for that chunk's size at
+	// responseByteRateFloor, so it needs no sizing against the largest legal
+	// response either: a big page over a slow link earns time chunk by
+	// chunk, while a client that stops reading is cut within one chunk's
+	// budget of its last accepted byte. It cannot poison the next request on
+	// a keep-alive connection, because net/http clears the connection's
+	// write deadline after every response it finishes. Keep it comfortably
+	// above a second: the final buffered bytes flush after the last chunk's
+	// arm, on that chunk's budget. Negative disables it, leaving responses
+	// to WriteTimeout alone.
 	ResponseWriteTimeout time.Duration
 	// IdleTimeout bounds how long a keep-alive connection may sit idle
 	// between requests. Set explicitly, because net/http would otherwise
@@ -172,12 +175,18 @@ func (c *Config) withDefaults() {
 			c.WriteTimeout = -1
 		} else {
 			c.WriteTimeout = c.ReadTimeout + MaxPollTimeout + 30*time.Second
+			if c.WriteTimeout < c.ReadTimeout {
+				// A ReadTimeout within 90 s of the duration ceiling wraps
+				// the sum negative, which would silently disable the
+				// backstop; pin it to the ceiling instead.
+				c.WriteTimeout = math.MaxInt64
+			}
 		}
 	}
-	// 10 s of progress bound per write, plus the size allowance described on
-	// the field: enough that no legal response is ever cut for being large,
-	// while a client that stops reading holds the connection seconds instead
-	// of the minutes WriteTimeout would allow it.
+	// 10 s of progress bound per written chunk, plus the size allowance
+	// described on the field: enough that no legal response is ever cut for
+	// being large, while a client that stops reading holds the connection
+	// seconds instead of the minutes WriteTimeout would allow it.
 	if c.ResponseWriteTimeout == 0 {
 		c.ResponseWriteTimeout = 10 * time.Second
 	}
@@ -672,20 +681,33 @@ func (s *Server) Close() error {
 
 // responseByteRateFloor is the slowest reading client a response write budget
 // assumes, matching the roughly 50 KiB/s the read side's defaults grant a
-// trickled request body. Each write earns its size at this rate on top of
-// ResponseWriteTimeout, which is what keeps a legal multi-megabyte page (a
-// deep state history, a poll draining raw-queued envelopes) deliverable over a
-// slow link while a stalled reader still costs seconds.
+// trickled request body. Each chunk a response writes earns its size at this
+// rate on top of ResponseWriteTimeout, which is what keeps a legal
+// multi-megabyte page (a deep state history, a poll draining raw-queued
+// envelopes) deliverable over a slow link while a stalled reader still costs
+// seconds.
 const responseByteRateFloor = 50 << 10
+
+// responseWriteChunk bounds how many bytes ride one armed deadline. Handlers
+// hand writeJSON's encoder one Write per response however large, and the TCP
+// stack completes one Write under one deadline with no callback as bytes make
+// progress, so without chunking a size-proportional budget would be a
+// total-transfer allowance: a reader that stalled at the first byte of a
+// 200 MiB legal response would hold its connection for the whole hour the
+// size earned. Splitting at the recorder means each chunk gets only its own
+// budget (ResponseWriteTimeout plus about 5 s here), so a stall is cut within
+// one chunk's budget of the last accepted byte, and the arming arithmetic
+// cannot overflow whatever size a handler writes.
+const responseWriteChunk = 256 << 10
 
 // logRequests emits one structured line per request once it completes. It also
 // owns arming ResponseWriteTimeout, because it wraps every route and its
 // recorder sees every header and body write of every response: arming at the
 // first header, rather than at request start, is what lets the bound stay
 // tight without ever needing sizing against the poll hold, and re-arming per
-// body write is what keeps it a progress bound rather than a cap on response
-// size. Each response on a keep-alive connection arms fresh deadlines for
-// itself.
+// written chunk is what keeps it a progress bound rather than a cap on
+// response size. Each response on a keep-alive connection arms fresh
+// deadlines for itself.
 func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -720,11 +742,11 @@ type statusRecorder struct {
 	written     int
 	wroteHeader bool
 	// armWrite, when set, runs as the first header is written and again
-	// before every body write, carrying that write's size: the hook
-	// logRequests uses to keep a progress deadline on the response from the
-	// moment it begins. The admin middleware's inner recorder leaves it nil
-	// and the hook still runs, because that recorder delegates its writes to
-	// this one.
+	// before every written chunk of the body, carrying that chunk's size:
+	// the hook logRequests uses to keep a progress deadline on the response
+	// from the moment it begins. The admin middleware's inner recorder
+	// leaves it nil and the hook still runs, because that recorder delegates
+	// its writes to this one.
 	armWrite func(pending int)
 }
 
@@ -749,12 +771,27 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
 	}
-	if r.armWrite != nil {
-		r.armWrite(len(b))
+	if r.armWrite == nil {
+		n, err := r.ResponseWriter.Write(b)
+		r.written += n
+		return n, err
 	}
-	n, err := r.ResponseWriter.Write(b)
-	r.written += n
-	return n, err
+	total := 0
+	for len(b) > 0 {
+		chunk := b
+		if len(chunk) > responseWriteChunk {
+			chunk = chunk[:responseWriteChunk]
+		}
+		r.armWrite(len(chunk))
+		n, err := r.ResponseWriter.Write(chunk)
+		total += n
+		r.written += n
+		if err != nil {
+			return total, err
+		}
+		b = b[len(chunk):]
+	}
+	return total, nil
 }
 
 // capConnections bounds how many accepted connections may be open at once: the

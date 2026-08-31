@@ -437,24 +437,31 @@ point if needed.
   connections one attacker could hold, which multiplied every per-connection bound by N.
   Three new `Config` knobs, all hub configuration rather than protocol. A per-response
   progress deadline (`ResponseWriteTimeout`, default 10 s, negative disables) is armed by
-  the log middleware's recorder as each response's first header is written and re-armed at
-  every body write with an allowance for that write's size at a 50 KiB/s floor (matching
-  what the read side's defaults grant a trickled body), through the same
-  `http.ResponseController` path the admin read deadline uses. Arming at the response
-  rather than at request start is what needs no sizing against the 60 s poll hold, since
-  the hold ends before the response begins; the size allowance is what needs no sizing
-  against the largest legal response, since a deep state history or a poll draining
-  raw-queued envelopes can legally run to tens of megabytes and a flat bound would cut it
-  on a slow link; and it cannot poison the next keep-alive request because net/http clears
-  the connection's write deadline after every response it finishes. A blanket
+  the log middleware's recorder as each response's first header is written and re-armed
+  per 256 KiB chunk of the body, each chunk earning an allowance for its own size at a
+  50 KiB/s floor (matching what the read side's defaults grant a trickled body), through
+  the same `http.ResponseController` path the admin read deadline uses. Arming at the
+  response rather than at request start is what needs no sizing against the 60 s poll
+  hold, since the hold ends before the response begins; the size allowance is what needs
+  no sizing against the largest legal response, since a deep state history or a poll
+  draining raw-queued envelopes can legally run to tens of megabytes and a flat bound
+  would cut it on a slow link; the chunking is what keeps it a progress bound rather than
+  a total-transfer allowance, because a handler hands the encoder one Write however large
+  and the TCP stack completes one write under one deadline, so without the split a reader
+  stalling at the first byte of a huge legal response would hold its connection for the
+  whole allowance the size earned, and it also makes the arming arithmetic unoverflowable
+  whatever a handler writes; and it cannot poison the next keep-alive request because
+  net/http clears the connection's write deadline after every response it finishes. A blanket
   `WriteTimeout` (negative disables) backs that up at the `http.Server` for the writes no
   handler makes (net/http's own 400s, the 100-continue interim line) and any future path
   that skips the middleware; its default is derived from the effective configuration
   rather than fixed, `ReadTimeout` plus the 60 s hold plus 30 s of write headroom (120 s
-  under the defaults), because net/http arms it at request start and a fixed default
-  would cut legal polls the moment an operator raised `ReadTimeout` for a slow link; a
-  disabled `ReadTimeout` takes the default backstop off with it, since no finite bound
-  armed at request start is safe against a hold that may legally begin arbitrarily late.
+  under the defaults, pinned to the duration ceiling rather than wrapped if `ReadTimeout`
+  is raised absurdly close to it), because net/http arms it at request start and a fixed
+  default would cut legal polls the moment an operator raised `ReadTimeout` for a slow
+  link; a disabled `ReadTimeout` takes the default backstop off with it, since no finite
+  bound armed at request start is safe against a hold that may legally begin arbitrarily
+  late.
   `MaxConns` (default 256, negative disables) caps concurrent accepted connections with a
   hand-rolled semaphore listener rather than a dependency: at the cap the listener stops
   accepting and excess connections queue in the kernel backlog until a slot frees on
@@ -468,19 +475,25 @@ point if needed.
   per-client fairness belongs there. Tests: a held poll survives a
   `ResponseWriteTimeout` set below the hold (arming is late, the way
   `TestHeldPollIsImmuneToReadTimeout` proves the read deadline is disarmed early); a
-  deadline-recording listener sees the per-response arms and the size allowance on a
-  1 MiB body; a stale response deadline does not outlive its response (pinned against a
-  malformed second request whose 400 only net/http writes); raw-socket cap tests prove a
-  connection past the cap is unanswered until a slot frees, then served, that closing
-  the listener unparks an Accept while the slot is still provably held, and that the
-  half-close survives the wrapper on a real TCP pair. An adversarial review round shaped
-  the final form: the first cut's flat 10 s deadline would have truncated large legal
-  responses (its "responses are small" premise was false against the history and
-  raw-queue limits), its fixed 120 s backstop broke under a legally raised
-  `ReadTimeout`, its cap wrapper silently dropped `CloseWrite`, and its listener-close
-  test released the slot before asserting and so proved nothing. No spec change and no
-  conformance change: the suite cannot grade connection-level bounds black-box in
-  reasonable time.
+  deadline-recording listener sees the per-response arms and, on a 1 MiB body parsed for
+  its exact length, one arm per chunk with never more than one chunk's allowance; the
+  derived `WriteTimeout` defaults, the follow-the-read-side disable, and the ceiling pin
+  are pinned by a table test; a stale response deadline does not outlive its response
+  (pinned against a malformed second request whose 400 only net/http writes);
+  raw-socket cap tests prove a connection past the cap is unanswered until a slot
+  frees, then served, that closing the listener unparks an Accept while the slot is
+  still provably held, and that the half-close survives the wrapper on a real TCP pair.
+  Two adversarial review rounds shaped the final form. The first found that a flat 10 s
+  deadline would have truncated large legal responses (its "responses are small"
+  premise was false against the history and raw-queue limits), that a fixed 120 s
+  backstop broke under a legally raised `ReadTimeout`, that the cap wrapper silently
+  dropped `CloseWrite`, and that the listener-close test released the slot before
+  asserting and so proved nothing. The second found that the first round's fix, a
+  size-proportional allowance armed once per Write, was a total-transfer budget rather
+  than the progress bound it claimed, letting a reader stall at a huge response's first
+  byte and ride out the full hour its size earned, plus the two duration overflows; the
+  chunking is what closed it. No spec change and no conformance change: the suite
+  cannot grade connection-level bounds black-box in reasonable time.
   server carried no read timeout beyond the header one (issue #30, surfaced by the
   adversarial review of the KV slice but pre-existing since the tokens/audit slice). Any
   authenticated token, including one holding no grant on the route at all, could keep a

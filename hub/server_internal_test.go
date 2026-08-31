@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bufio"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -158,23 +160,68 @@ func TestResponseWriteTimeoutArmsPerResponse(t *testing.T) {
 		}
 	}
 
-	// A large body earns time proportional to its size on top of the base
-	// bound, so a legal big page over a slow link is never cut for being big.
+	// A large body is written in chunks, each earning its own size allowance
+	// on top of the base bound: a legal big page over a slow link is never
+	// cut for being big, while no single deadline ever covers more than one
+	// chunk, so a stalled reader cannot ride a whole response's allowance.
 	before := time.Now()
 	if _, err := conn.Write([]byte("GET /big HTTP/1.1\r\nHost: hub\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
-	if answer := readUntil(t, conn, "", 10*time.Second); len(answer) < bigSize {
-		t.Fatalf("big response delivered %d bytes, want at least %d", len(answer), bigSize)
+	// Parsed rather than counted raw: the big response arrives chunked, and
+	// a raw byte count would let framing bytes mask a short body.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read big response: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || len(body) != bigSize {
+		t.Fatalf("big response delivered a %d-byte body (err %v), want exactly %d", len(body), err, bigSize)
 	}
 	armed := listener.armed()
-	if len(armed) != 6 {
-		t.Fatalf("after the big response: %d write deadlines armed, want six in total", len(armed))
+	// The four arms so far, plus the header's and one per 256 KiB chunk.
+	chunks := bigSize / responseWriteChunk
+	if len(armed) != 4+1+chunks {
+		t.Fatalf("after the big response: %d write deadlines armed, want %d", len(armed), 4+1+chunks)
 	}
-	allowance := time.Duration(bigSize) * time.Second / responseByteRateFloor
-	if last := armed[len(armed)-1]; last.Before(before.Add(timeout + allowance - time.Second)) {
-		t.Errorf("big body's deadline armed for %s, want at least %s of size allowance past the base bound",
-			last, allowance)
+	allowance := time.Duration(responseWriteChunk) * time.Second / responseByteRateFloor
+	for _, deadline := range armed[5:] {
+		if deadline.Before(before.Add(timeout+allowance-time.Second)) ||
+			deadline.After(time.Now().Add(timeout+allowance+time.Second)) {
+			t.Errorf("chunk deadline armed for %s, want one chunk's allowance (%s) past the base bound, never more",
+				deadline, allowance)
+		}
+	}
+}
+
+// The WriteTimeout backstop is derived from the effective read bound, because
+// net/http arms it at request start: it must clear a body legally read until
+// ReadTimeout plus a full poll hold, whatever ReadTimeout was raised to, and
+// it follows a disabled ReadTimeout off since no finite bound armed at
+// request start is safe against a hold that begins arbitrarily late.
+func TestWriteTimeoutDefaultFollowsReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		read, write time.Duration
+		want        time.Duration
+	}{
+		{"defaults", 0, 0, 120 * time.Second},
+		{"raised read", 90 * time.Second, 0, 180 * time.Second},
+		{"disabled read disables the backstop", -1, 0, -1},
+		{"explicit write wins", 90 * time.Second, 45 * time.Second, 45 * time.Second},
+		{"explicit disable wins", 0, -1, -1},
+		{"ceiling read pins instead of wrapping", math.MaxInt64 - time.Second, 0, math.MaxInt64},
+	}
+	for _, tc := range cases {
+		cfg := Config{ReadTimeout: tc.read, WriteTimeout: tc.write}
+		cfg.withDefaults()
+		if cfg.WriteTimeout != tc.want {
+			t.Errorf("%s: WriteTimeout = %v, want %v", tc.name, cfg.WriteTimeout, tc.want)
+		}
 	}
 }
 
