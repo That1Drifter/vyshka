@@ -40,6 +40,24 @@ type Config struct {
 	EnrollmentTokenTTL time.Duration
 	// ReadHeaderTimeout bounds how long a client may take to send headers.
 	ReadHeaderTimeout time.Duration
+	// ReadTimeout bounds reading one request's headers and body on every
+	// route: the slow-loris backstop. It does not need sizing against the
+	// 60 s poll hold, because net/http clears the connection's read deadline
+	// the moment the request body reaches EOF (startBackgroundRead): a
+	// completed body disarms this before the handler holds anything, so the
+	// timeout only ever cuts a body that is still dribbling in, or the
+	// post-handler drain of one a refused or capped request left unread.
+	ReadTimeout time.Duration
+	// AdminBodyTimeout bounds how long an authorized Admin API mutation may
+	// spend delivering its body, much tighter than ReadTimeout because admin
+	// bodies are capped at 1 MiB and admin handlers hold nothing. It also
+	// bounds the post-response drain behind a refusal's hang-up.
+	AdminBodyTimeout time.Duration
+	// IdleTimeout bounds how long a keep-alive connection may sit idle
+	// between requests. Set explicitly, because net/http would otherwise
+	// reuse ReadTimeout for it and idle keep-alives would ride whatever that
+	// gets tuned to. Negative disables it.
+	IdleTimeout time.Duration
 	// ShutdownTimeout bounds graceful shutdown before connections are cut.
 	ShutdownTimeout time.Duration
 	// EventRetention decides how long an ingested event is kept, by type
@@ -87,6 +105,28 @@ func (c *Config) withDefaults() {
 	}
 	if c.ReadHeaderTimeout == 0 {
 		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	// 30 s from the connection's first byte, headers and body under one
+	// deadline: a client that spends the whole 10 s header budget still
+	// leaves a 1 MiB body 20 s (about 50 KiB/s); a prompt one leaves it
+	// nearly the full 30. Held polls are immune whatever this says: a
+	// completed body disarms the deadline (see the field comment), so this
+	// never needs to clear the hold. Negative disables it, matching what
+	// http.Server makes of a non-positive value, for an embedder whose
+	// plugins sit behind links slower than the default assumes.
+	if c.ReadTimeout == 0 {
+		c.ReadTimeout = 30 * time.Second
+	}
+	// 15 s moves the 1 MiB cap at about 70 KiB/s, generous for an operator
+	// panel and half of what the backstop would let a trickled admin body
+	// hold. Negative disables it, leaving those bodies to ReadTimeout.
+	if c.AdminBodyTimeout == 0 {
+		c.AdminBodyTimeout = 15 * time.Second
+	}
+	// Two minutes comfortably spans the gap between a plugin's back-to-back
+	// polls and a panel's sporadic requests.
+	if c.IdleTimeout == 0 {
+		c.IdleTimeout = 2 * time.Minute
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 15 * time.Second
@@ -468,14 +508,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries", methodNotAllowed("GET"))
 
 	// The key/value store (spec section 12), the same operations on both
-	// realms. The admin side layers the value-level kv:rw:{namespace} check
-	// inside adminKV, because the namespace lives in the path.
-	mux.HandleFunc("GET /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvGet)))
-	mux.HandleFunc("PUT /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvSet)))
-	mux.HandleFunc("DELETE /api/v1/kv/{namespace}/{key}", s.admin(resourceKV, verbRW, s.adminKV(kvDelete)))
+	// realms. The namespace lives in the path, so the exact kv:rw:{namespace}
+	// check runs in the gate at the headers, before any body is read; adminKV
+	// keeps its own requireScope behind it as the belt if a route is ever
+	// rewired without the path-scoped gate.
+	kvNamespace := func(r *http.Request) string { return r.PathValue("namespace") }
+	mux.HandleFunc("GET /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvGet)))
+	mux.HandleFunc("PUT /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvSet)))
+	mux.HandleFunc("DELETE /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvDelete)))
 	mux.HandleFunc("/api/v1/kv/{namespace}/{key}", methodNotAllowed("GET", "PUT", "DELETE"))
 
-	mux.HandleFunc("POST /api/v1/kv/{namespace}/{key}/incr", s.admin(resourceKV, verbRW, s.adminKV(kvIncr)))
+	mux.HandleFunc("POST /api/v1/kv/{namespace}/{key}/incr", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvIncr)))
 	mux.HandleFunc("/api/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
 
 	// Plugin API: game-server facing, a separate credential realm entirely
@@ -516,6 +559,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	httpServer := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
+		ReadTimeout:       s.cfg.ReadTimeout,
+		IdleTimeout:       s.cfg.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
 
@@ -582,6 +627,11 @@ type statusRecorder struct {
 	written     int
 	wroteHeader bool
 }
+
+// Unwrap lets http.ResponseController reach the connection through this
+// wrapper (and through logRequests' instance of it), which is how the admin
+// middleware sets its per-request read deadline.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.wroteHeader {

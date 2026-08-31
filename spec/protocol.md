@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.15 (2026-08-29)
+**Status:** draft 0.16 (2026-08-29)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1317,7 +1317,18 @@ object exists; the reference hub does not, because it is one operator's installa
 hiding a route from a credential that has already authenticated costs more in debugging than
 it buys.
 
-Ordering matters, in three places that are easy to get wrong:
+Ordering matters, in four places that are easy to get wrong:
+
+- Every check that needs no body SHOULD run **before** the request body is read, so that a
+  token it refuses is answered `403` at the headers, on reads and mutations alike, instead
+  of being allowed to occupy the connection for as long as it cares to trickle a payload
+  nothing will use. That covers the route-level check everywhere and the exact check
+  wherever its value is carried in the path, as the KV namespace is; a check whose value
+  must first be resolved from the body or from stored state (a dispatch's `code`, the code
+  on the action an idempotency key names) waits for that value, and such a caller holds a
+  grant on the resource by then. A refusal that never read the body is still recorded when
+  section 10.5 asks for it, with an empty `payloadDigest`, because nothing was read to
+  digest.
 
 - The dispatch check MUST run **before** the manifest is consulted, so that the difference
   between `forbidden` and `unknown_action` cannot be used to enumerate a manifest the token
@@ -1413,7 +1424,7 @@ Each record MUST carry:
 | `method`, `path` | the request line |
 | `status` | the HTTP status the hub answered with |
 | `sourceIp` | the peer address of the connection |
-| `payloadDigest` | SHA-256 of the request body, empty when there was none |
+| `payloadDigest` | SHA-256 of the request body; empty when there was none, or when the mutation was refused before its body was read (section 10.2) |
 
 A record MAY also carry a `serverId` and a `detail` object naming what the mutation was: the
 action code and resulting id for a dispatch, the granted scopes for a mint. A hub SHOULD
@@ -1816,7 +1827,11 @@ client outright, with no `ifRevision` in the loop.
   namespace the plugin was not granted.
 - **Admin tokens** need `kv:rw:{namespace}` (or `admin`), checked against the namespace in
   the path, likewise before the key is looked up. The verb is `rw`: this draft defines no
-  read-only KV grant, and a hub MUST NOT invent one (section 10.1's closed set).
+  read-only KV grant, and a hub MUST NOT invent one (section 10.1's closed set). Because
+  the namespace is path-carried, a hub following section 10.2's ordering runs this check
+  at the headers, so a malformed namespace *outside* the caller's grant MAY answer
+  `forbidden` rather than the `bad_request` below: the scope refusal comes first, and the
+  grammar of a name the token could never touch is not its business.
 
 | `code` | HTTP | Raised when |
 |---|---|---|
