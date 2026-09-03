@@ -41,10 +41,10 @@ class VyshkaPlugin
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
 	int m_RenewMarginSeconds;
-	int m_ExecutedAppends;
 	int m_PollTimeoutSeconds;
 	int m_InAck;               // highest contiguous hub -> plugin seq processed
 	bool m_ManifestQueued;
+	bool m_PolledThisSession;
 
 	// The executed-actionId LRU of spec section 9.2.
 	ref array<string> m_ExecutedOrder;
@@ -174,7 +174,12 @@ class VyshkaPlugin
 			return;
 		}
 
-		if (m_SessionExpiresEpoch > 0 && VyshkaClock.EpochSeconds() >= m_SessionExpiresEpoch - m_RenewMarginSeconds)
+		// Renew before expiry, but only after at least one poll on this
+		// session. The poll gate guarantees forward progress even against a
+		// hub that issues a session shorter than the renew margin (or one that
+		// floors to a zero-second lifetime), which would otherwise renew every
+		// tick and never poll.
+		if (m_PolledThisSession && m_SessionExpiresEpoch > 0 && VyshkaClock.EpochSeconds() >= m_SessionExpiresEpoch - m_RenewMarginSeconds)
 		{
 			VyshkaLog.Info("session is about to expire; starting a new one");
 			m_SessionToken = "";
@@ -394,6 +399,7 @@ class VyshkaPlugin
 		// section 9.1): the inbound ack restarts at 0, and every buffered
 		// envelope is renumbered from 1, keeping its id, type, ts and body.
 		m_InAck = 0;
+		m_PolledThisSession = false;
 		m_Outbox.Renumber();
 
 		if (!m_ManifestQueued && m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
@@ -484,11 +490,25 @@ class VyshkaPlugin
 					VyshkaLog.Warn("rejecting hub envelope seq " + seq.ToString() + ": missing id or type, or an unsupported envelope version");
 					break;
 				}
+				// Back-pressure: a dispatch produces an action.ack and an
+				// action.result, so it is only taken when the outbox can hold
+				// both. Otherwise the envelope is left undelivered (m_InAck is
+				// not advanced) and the hub re-delivers it once the outbox has
+				// drained, rather than the plugin executing an action whose
+				// outcome it could never report (section 9.4). The hub ack was
+				// already applied above, so a poll that frees space unblocks
+				// this on the same tick.
+				if (!m_Outbox.HasRoom(2))
+				{
+					VyshkaLog.Warn("outbox full; deferring hub envelope seq " + seq.ToString() + " until it drains");
+					break;
+				}
 				m_InAck = seq;
 				Handle(envelope);
 			}
 		}
 
+		m_PolledThisSession = true;
 		SetLinkState("connected");
 		ResetBackoff();
 		Advance();
@@ -505,7 +525,11 @@ class VyshkaPlugin
 		if (envelope.GetString("id", "") == "" || envelope.GetString("type", "") == "")
 			return false;
 		VyshkaJsonValue version = envelope.Get("v");
-		if (version && version.IsNumber() && version.m_Int != PROTOCOL_VERSION)
+		// A present v must be an integer equal to the version this plugin
+		// speaks. A string, boolean, fraction, or wrong integer all name a
+		// version this plugin cannot honor and are refused; only an absent v
+		// (the negotiated version) or an exact integer match passes.
+		if (version && (!version.IsNumber() || !version.m_IsInteger || version.m_Int != PROTOCOL_VERSION))
 			return false;
 		return true;
 	}
@@ -633,44 +657,60 @@ class VyshkaPlugin
 		m_Executed.Set(actionId, true);
 		m_ExecutedOrder.Insert(actionId);
 
-		VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, actionId);
-		m_ExecutedAppends++;
-		// Compact once the log has roughly doubled, so the file stays bounded
-		// at about the LRU size rather than growing for the life of the server.
-		if (m_ExecutedAppends >= EXECUTED_LRU_CAPACITY)
-			RewriteExecuted();
+		// The id is JSON-quoted so an opaque id containing a newline stays one
+		// record; a raw write would split it and let a later restart re-execute
+		// the action (section 9.2). The log is append-only at runtime, never
+		// truncated, so a crash cannot leave it half-rewritten; it is compacted
+		// only at boot. A failed append is surfaced because it widens the
+		// re-execution window the engine's lack of fsync already leaves open.
+		if (!VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, VyshkaJson.Quote(actionId)))
+			VyshkaLog.Warn("could not persist executed action id " + actionId + "; a crash before its dispatch is acked could re-execute it");
 	}
 
 	// LoadExecuted repopulates the LRU from disk on boot, keeping the most
-	// recent ids up to the cap, and compacts an oversized log.
+	// recent ids up to the cap, and compacts an oversized log once, at boot,
+	// where a truncating rewrite is safest.
 	void LoadExecuted()
 	{
-		array<string> ids = VyshkaFiles.ReadLines(VyshkaFiles.EXECUTED_PATH);
-		int start = 0;
-		if (ids.Count() > EXECUTED_LRU_CAPACITY)
-			start = ids.Count() - EXECUTED_LRU_CAPACITY;
-		for (int i = start; i < ids.Count(); i++)
+		if (FileExist(VyshkaFiles.EXECUTED_PATH))
 		{
-			string id = ids.Get(i);
+			FileHandle probe = OpenFile(VyshkaFiles.EXECUTED_PATH, FileMode.READ);
+			if (probe == 0)
+			{
+				VyshkaLog.Warn("executed-action log exists but could not be read; dedup history is unavailable and a re-delivered action may run again");
+				return;
+			}
+			CloseFile(probe);
+		}
+		array<string> lines = VyshkaFiles.ReadLines(VyshkaFiles.EXECUTED_PATH);
+		int start = 0;
+		if (lines.Count() > EXECUTED_LRU_CAPACITY)
+			start = lines.Count() - EXECUTED_LRU_CAPACITY;
+		for (int i = start; i < lines.Count(); i++)
+		{
+			VyshkaJsonValue parsed = VyshkaJson.Parse(lines.Get(i));
+			if (!parsed || !parsed.IsString())
+				continue;
+			string id = parsed.m_Text;
 			if (!m_Executed.Contains(id))
 			{
 				m_Executed.Set(id, true);
 				m_ExecutedOrder.Insert(id);
 			}
 		}
-		if (ids.Count() > 2 * EXECUTED_LRU_CAPACITY)
+		if (lines.Count() > 2 * EXECUTED_LRU_CAPACITY)
 			RewriteExecuted();
 		if (m_ExecutedOrder.Count() > 0)
 			VyshkaLog.Info("restored " + m_ExecutedOrder.Count().ToString() + " executed action id(s) from disk");
 	}
 
-	// RewriteExecuted replaces the log with exactly the current LRU contents.
+	// RewriteExecuted replaces the log with exactly the current LRU contents,
+	// each id JSON-quoted. Called only at boot.
 	void RewriteExecuted()
 	{
 		string content = "";
 		for (int i = 0; i < m_ExecutedOrder.Count(); i++)
-			content += m_ExecutedOrder.Get(i) + "\n";
-		if (VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, content))
-			m_ExecutedAppends = 0;
+			content += VyshkaJson.Quote(m_ExecutedOrder.Get(i)) + "\n";
+		VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, content);
 	}
 }

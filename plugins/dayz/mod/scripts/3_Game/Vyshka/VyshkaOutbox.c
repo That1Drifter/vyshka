@@ -70,6 +70,14 @@ class VyshkaOutbox
 		return m_Entries.Count();
 	}
 
+	// HasRoom reports whether n more envelopes fit under the capacity bound.
+	// Inbound processing consults this before taking a dispatch, so an action
+	// is never executed when its ack and result could not both be queued.
+	bool HasRoom(int n)
+	{
+		return m_Entries.Count() + n <= CAPACITY;
+	}
+
 	// Load reads every record left on disk by a previous run, in ordinal
 	// order, and leaves them unnumbered: the next session start numbers them.
 	void Load()

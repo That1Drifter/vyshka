@@ -111,7 +111,18 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   written before the envelope is first sent and deleted when the hub's ack covers it. The
   engine exposes no fsync, so a game-server crash can lose what the OS had not flushed.
   Sequence numbers are assigned at send time, never stored, which is what makes renumbering
-  across a session change (spec section 9.1) automatic.
+  across a session change (spec section 9.1) automatic. Executed action ids are persisted to
+  `executed.log` (append-only, JSON-encoded so an opaque id cannot split a record) and reloaded
+  on boot, so a crash between executing an action and acking its dispatch does not let the
+  re-delivery run it again. Two residual windows the engine cannot close, and which the hub
+  absorbs by deduplicating: if a file deletion fails (an antivirus or backup lock), an acked
+  envelope may be re-sent after a restart and the hub drops it as a duplicate; and if the OS
+  loses the tail of `executed.log` in a crash, a re-delivered action may run twice.
+- **Whole-second clock.** The engine's UTC clock is whole-second, so an action's `expiresAt`
+  is compared at second granularity. The plugin discards an action once the current second
+  reaches the deadline second, which never runs an action past its deadline but can discard one
+  up to a second early. Harmless against a TTL measured in seconds; the hub is the authority on
+  expiry regardless.
 - **Integers are 32-bit.** Sequence numbers, acks, and epoch seconds live in script ints.
   Sequence spaces restart with every session, so this is not a practical bound; epoch seconds
   are for deadline comparisons only.

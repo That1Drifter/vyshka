@@ -220,10 +220,16 @@ func runHarness(args []string) error {
 			select {
 			case <-exited:
 			case <-time.After(15 * time.Second):
-				// The server outlived the kill. Report it rather than return
-				// success, because a survivor holds the game port and breaks
-				// the next run.
-				result = fmt.Errorf("the server (pid %d) did not exit after taskkill; it may still hold the game port", cmd.Process.Pid)
+				// The server outlived the first kill. Try once more, then
+				// report failure rather than return success: a survivor holds
+				// the game port and breaks the next run.
+				fmt.Fprintln(os.Stderr, "vyshka-dayz: server still alive; retrying taskkill")
+				_ = killTree(cmd)
+				select {
+				case <-exited:
+				case <-time.After(10 * time.Second):
+					result = fmt.Errorf("the server (pid %d) did not exit after two taskkills; it may still hold the game port", cmd.Process.Pid)
+				}
 			}
 		}
 	}
@@ -249,10 +255,17 @@ func prepareMission(serverDir, base string) (string, error) {
 	}
 	name := "vyshkaHarness." + world
 	target := filepath.Join(missions, name)
-	if _, err := os.Stat(filepath.Join(target, "init.c")); err == nil {
+	if _, err := os.Stat(target); err == nil {
+		// The target is built in a temp directory and renamed into place, so
+		// its mere existence means a complete copy; no partial can be mistaken
+		// for done.
 		return name, nil
 	}
 	fmt.Fprintf(os.Stderr, "vyshka-dayz: deriving mission %s from %s\n", name, base)
+	staging := target + ".tmp"
+	if err := os.RemoveAll(staging); err != nil {
+		return "", err
+	}
 	err := filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -261,7 +274,7 @@ func prepareMission(serverDir, base string) (string, error) {
 		if err != nil {
 			return err
 		}
-		dest := filepath.Join(target, rel)
+		dest := filepath.Join(staging, rel)
 		if d.IsDir() {
 			return os.MkdirAll(dest, 0o755)
 		}
@@ -282,11 +295,12 @@ func prepareMission(serverDir, base string) (string, error) {
 		return os.WriteFile(dest, data, 0o644)
 	})
 	if err != nil {
-		// Leave no half-copied mission behind: a later run keys completeness
-		// off target/init.c existing, and a partial copy would start DayZ
-		// against a mission missing files.
-		_ = os.RemoveAll(target)
+		_ = os.RemoveAll(staging)
 		return "", fmt.Errorf("deriving %s: %w", target, err)
+	}
+	if err := os.Rename(staging, target); err != nil {
+		_ = os.RemoveAll(staging)
+		return "", fmt.Errorf("publishing %s: %w", target, err)
 	}
 	return name, nil
 }
