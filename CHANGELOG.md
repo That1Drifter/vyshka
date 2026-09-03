@@ -12,6 +12,40 @@ point if needed.
 
 ### Added
 
+- 2026-09-03: DayZ reference plugin, clean-room (issue #14), the first real game plugin and
+  the first evidence the protocol is implementable on a constrained engine rather than only
+  against a fake plugin. A server-side Enforce Script mod under `plugins/dayz/mod` speaks the
+  full Plugin API baseline: it enrolls once and persists its credentials, starts a session on
+  every boot, long-polls, publishes a one-action manifest, executes dispatched actions behind
+  an executed-actionId LRU, and answers each with an `action.ack` and `action.result`. The one
+  built-in action, `vyshka.heal`, restores a player's health, blood, and shock and clears
+  bleeding, keyed on the platform-qualified identity of protocol section 8.2 (the plain
+  Steam64 id). The plugin passes all eleven checks of the plugin conformance harness against a
+  live DayZ 1.29 dedicated server, including the forced re-delivery, the transport outage, and
+  the session-change renumbering that section 9.1 warns is the rule an author is most likely to
+  get wrong. The outbox is one file per unacked envelope under the profile directory, written
+  before an envelope is first sent and deleted only when the hub's ack covers it; sequence
+  numbers are assigned at send time and never stored, so renumbering across a session change is
+  automatic and a verbatim replay is impossible by construction. Generic JSON is hand-parsed
+  into a tree (`VyshkaJson.c`) rather than decoded through a typed serializer, because a typed
+  decoder that failed on one unexpected field would refuse a whole poll response and wedge the
+  session. A Go tool, `plugins/dayz/cmd/vyshka-dayz`, packs the mod into a PBO with a pure-Go
+  packer (`plugins/dayz/pbo`, round-trip tested against a shipped archive) and launches a
+  dedicated server as a conformance candidate; no DayZ Tools are required.
+
+  Two engine limits were measured first rather than assumed, extending the spike started for
+  the poll-timeout floor. `spikes/dayz-restapi-headers` establishes that the one request header
+  the engine exposes reaches the wire verbatim, so the bearer token of section 2.1 travels as a
+  smuggled `Authorization` line; that a non-2xx response reaches script as an opaque error code
+  with neither status nor body, so the protocol's `error.code` is unreadable on DayZ and the
+  plugin must reason from the error class alone; and that 64 KiB requests and 1 MiB responses
+  pass intact. Protocol draft 0.18: Appendix A gains implementation notes for engines that
+  expose one header and hide error bodies. The design companion records the unreadable-error
+  finding as a new pre-1.0 open question (a hub-side soft-error mode) and updates the DayZ
+  reference-plugin notes; milestone M2's remaining item is the live-player heal demo, which
+  needs a human-joined client and is a manual smoke test beyond the harness. New `plugins/dayz`
+  tree, new `spikes/dayz-restapi-headers`, no changes to the hub or the conformance suites.
+
 - 2026-08-25: state snapshots and live state endpoint (spec section 8.3, issue #12). The
   data feed for the live map: section 8.3 grows from a stub into the full contract, and
   the hub implements it. Three plugin -> hub envelope types (`state.players`,
