@@ -11,3 +11,6 @@ vyshka-spec.md
 *.db
 *.db-shm
 *.db-wal
+
+# Adversarial-review artifacts (Codex JSONL and extracted reports)
+.scratch/

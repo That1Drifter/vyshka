@@ -1,0 +1,64 @@
+---------------------------------------------
+Log C:\WorkDrive\Vyshka\spikes\dayz-restapi-headers\results\profile\script_2026-09-03_16-49-59.log started at 03.09. 16:49:59
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATION,FEAT
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+SCRIPT       : Module: Game; loaded 416x files; 1379x classes; used 3702/33554 kB (11%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATION
+SCRIPT       : ... Backlit Effects Enabled
+SCRIPT       : Module: World; loaded 2123x files; 5604x classes; used 8598/33554 kB (25%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATI
+ SCRIPT       : Module: Mission; loaded 209x files; 442x classes; used 2999/33554 kB (8%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATI
+ SCRIPT       : Module: $CurrentDir:mpmissions\vyshkaSpike.chernarusplus\init.c; loaded 1x files; 8x classes; used 37/1048 kB (3%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FE
+ SCRIPT       : VYSHKA_HPROBE	step=-1	event=boot	t=0	api=1
+ SCRIPT       : VYSHKA_HPROBE	step=-1	event=context	t=0	ctx=1	dead=1
+SCRIPT       : VYSHKA_HPROBE	step=0	event=fire	t=0	label=baseline-post	method=POST	path=post	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=0	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=0	event=success	t=12	settled=false	size=24	len=24	data={"ok":true,"bodyLen":11}
+SCRIPT       : VYSHKA_HPROBE	step=1	event=fire	t=0	label=crlf-auth	method=POST	path=post	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=1	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=1	event=success	t=62	settled=false	size=24	len=24	data={"ok":true,"bodyLen":11}
+SCRIPT       : VYSHKA_HPROBE	step=2	event=fire	t=0	label=lf-auth	method=POST	path=post	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=2	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=2	event=success	t=12	settled=false	size=24	len=24	data={"ok":true,"bodyLen":11}
+SCRIPT       : VYSHKA_HPROBE	step=3	event=fire	t=0	label=whole-header	method=POST	path=post	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=3	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=3	event=success	t=62	settled=false	size=24	len=24	data={"ok":true,"bodyLen":11}
+SCRIPT       : VYSHKA_HPROBE	step=4	event=fire	t=0	label=restore-json	method=POST	path=post	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=4	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=4	event=success	t=112	settled=false	size=24	len=24	data={"ok":true,"bodyLen":11}
+SCRIPT       : VYSHKA_HPROBE	step=5	event=fire	t=0	label=status-401	method=GET	path=status?code=401	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=5	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=5	event=error	t=65	settled=false	code=5
+SCRIPT       : VYSHKA_HPROBE	step=6	event=fire	t=0	label=status-400	method=GET	path=status?code=400	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=6	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=6	event=error	t=21	settled=false	code=5
+SCRIPT       : VYSHKA_HPROBE	step=7	event=fire	t=0	label=status-409	method=GET	path=status?code=409	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=7	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=7	event=error	t=72	settled=false	code=5
+SCRIPT       : VYSHKA_HPROBE	step=8	event=fire	t=0	label=status-500	method=GET	path=status?code=500	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=8	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=8	event=error	t=22	settled=false	code=6
+SCRIPT       : VYSHKA_HPROBE	step=9	event=fire	t=0	label=post-status-401	method=POST	path=status?code=401	bodyLen=11
+SCRIPT       : VYSHKA_HPROBE	step=9	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=9	event=error	t=72	settled=false	code=5
+SCRIPT       : VYSHKA_HPROBE	step=10	event=fire	t=0	label=post-4k-echo	method=POST	path=echo	bodyLen=4010
+SCRIPT       : VYSHKA_HPROBE	step=10	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=10	event=success	t=22	settled=false	size=4010	len=4010	data={"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SCRIPT       : VYSHKA_HPROBE	step=11	event=fire	t=0	label=post-64k	method=POST	path=post	bodyLen=65546
+SCRIPT       : VYSHKA_HPROBE	step=11	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=11	event=success	t=72	settled=false	size=27	len=27	data={"ok":true,"bodyLen":65546}
+SCRIPT       : VYSHKA_HPROBE	step=12	event=fire	t=0	label=get-256k	method=GET	path=big?n=262144	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=12	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=12	event=success	t=22	settled=false	size=262144	len=262144	data={"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SCRIPT       : VYSHKA_HPROBE	step=13	event=fire	t=0	label=get-1m	method=GET	path=big?n=1048576	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=13	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=13	event=success	t=76	settled=false	size=1048576	len=1048576	data={"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SCRIPT       : VYSHKA_HPROBE	step=14	event=fire	t=0	label=utf8-response	method=GET	path=utf8	bodyLen=0
+SCRIPT       : VYSHKA_HPROBE	step=14	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=14	event=success	t=25	settled=false	size=30	len=30	data={"text":"žluťoučký kůň"}
+SCRIPT       : VYSHKA_HPROBE	step=15	event=fire	t=0	label=refused	method=POST	path=post	bodyLen=12
+SCRIPT       : VYSHKA_HPROBE	step=15	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=15	event=error	t=2275	settled=false	code=7
+SCRIPT       : VYSHKA_HPROBE	step=16	event=fire	t=0	label=after-refused	method=POST	path=post	bodyLen=12
+SCRIPT       : VYSHKA_HPROBE	step=16	event=submitted	t=0	rc=1
+SCRIPT       : VYSHKA_HPROBE	step=16	event=success	t=75	settled=false	size=24	len=24	data={"ok":true,"bodyLen":12}
+SCRIPT       : VYSHKA_HPROBE	step=-1	event=finished	t=0	steps=17

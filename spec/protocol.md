@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.17 (2026-08-31)
+**Status:** draft 0.18 (2026-09-03)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1899,7 +1899,24 @@ notes for such environments:
 
 - Keep envelope bodies flat where possible; deep generic JSON handling is painful in some
   serializers. A plugin MAY materialize `params` as typed per-action binding classes
-  generated from manifest schemas.
+  generated from manifest schemas. A typed decoder must not be allowed to refuse a whole
+  poll response over one field it did not expect, though: the response carries every
+  envelope in the batch, section 4 obliges the receiver to accept types and fields it does
+  not understand, and a decoder that fails the batch would make the hub resend it forever.
+  The reference DayZ plugin reads responses into a small generic JSON tree for this reason.
+- Some engine HTTP clients expose no way to set a request header other than the content
+  type. Where the content-type value reaches the wire verbatim, a plugin can append a CRLF
+  and the `Authorization: Bearer ...` line to it; the reference DayZ plugin does, and the
+  measurement behind that is in its repository. A hub sees ordinary headers either way.
+- Some engine HTTP clients deliver a non-2xx response as an opaque error code, without the
+  status or the body, so the `error.code` of section 2.2 and even the status-based fallback
+  it names are out of reach. A plugin in that position reasons from the error class alone:
+  a client error on a poll is answered by starting a new session, which is legal at any
+  time (section 5.3) and is the right response to `session_invalid`; a client error on a
+  session request is treated as rejected credentials and retried slowly; a client error on
+  enrollment is surfaced to the operator, because no retry fixes a burned or unknown token.
+  Such a plugin SHOULD renew its session ahead of `sessionExpiresAt` so that an expiry never
+  has to be inferred from a refusal.
 - File-backed ring buffers get whatever fsync semantics the engine provides; document the
   loss window honestly rather than claiming durability the engine cannot deliver.
 - Engines with richer facilities (e.g. Arma Reforger's Enfusion) SHOULD still implement
