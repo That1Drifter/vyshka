@@ -214,10 +214,16 @@ func runHarness(args []string) error {
 			<-exited
 		} else {
 			fmt.Fprintln(os.Stderr, "vyshka-dayz: stdin closed; stopping the server")
-			killTree(cmd)
+			if err := killTree(cmd); err != nil {
+				fmt.Fprintf(os.Stderr, "vyshka-dayz: taskkill: %v\n", err)
+			}
 			select {
 			case <-exited:
-			case <-time.After(10 * time.Second):
+			case <-time.After(15 * time.Second):
+				// The server outlived the kill. Report it rather than return
+				// success, because a survivor holds the game port and breaks
+				// the next run.
+				result = fmt.Errorf("the server (pid %d) did not exit after taskkill; it may still hold the game port", cmd.Process.Pid)
 			}
 		}
 	}
@@ -276,6 +282,10 @@ func prepareMission(serverDir, base string) (string, error) {
 		return os.WriteFile(dest, data, 0o644)
 	})
 	if err != nil {
+		// Leave no half-copied mission behind: a later run keys completeness
+		// off target/init.c existing, and a partial copy would start DayZ
+		// against a mission missing files.
+		_ = os.RemoveAll(target)
 		return "", fmt.Errorf("deriving %s: %w", target, err)
 	}
 	return name, nil
@@ -364,6 +374,6 @@ func drain(reader *bufio.Reader, partial *string) {
 	}
 }
 
-func killTree(cmd *exec.Cmd) {
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+func killTree(cmd *exec.Cmd) error {
+	return exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 }

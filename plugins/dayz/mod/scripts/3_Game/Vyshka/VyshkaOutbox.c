@@ -166,13 +166,19 @@ class VyshkaOutbox
 	// The body is a JSON object, already serialized.
 	VyshkaOutboxEntry Append(string envelopeType, string bodyJson)
 	{
-		while (m_Entries.Count() >= CAPACITY)
+		if (m_Entries.Count() >= CAPACITY)
 		{
-			VyshkaOutboxEntry oldest = m_Entries.Get(0);
-			DeleteFile(oldest.Path());
-			m_Entries.RemoveOrdered(0);
+			// Every entry here is unacked, and section 9.3 forbids dropping an
+			// unacked envelope. Evicting the oldest would also strand the
+			// buffer: it opens a gap below the entries that keep their seq, and
+			// the hub's contiguous ack can never cross it. So the new envelope
+			// is refused instead, which keeps the sent sequence contiguous, and
+			// the refusal is counted so the blocked state is visible
+			// (section 9.4). The refused work is recovered by the hub's own
+			// re-delivery: the action stays non-terminal and the hub expires it.
 			m_Dropped++;
-			VyshkaLog.Warn("outbox: at capacity, dropped envelope " + oldest.m_Id + " (" + oldest.m_Type + "); total dropped " + m_Dropped.ToString());
+			VyshkaLog.Warn("outbox: full at " + CAPACITY.ToString() + " envelopes; refused a " + envelopeType + " (total refused " + m_Dropped.ToString() + ")");
+			return null;
 		}
 
 		VyshkaOutboxEntry entry = new VyshkaOutboxEntry();
@@ -201,7 +207,13 @@ class VyshkaOutbox
 			VyshkaOutboxEntry entry = m_Entries.Get(i);
 			if (entry.m_Seq > 0 && entry.m_Seq <= ack)
 			{
-				DeleteFile(entry.Path());
+				// A failed delete leaves the file on disk; after a restart Load
+				// would treat it as unacked and re-send it. That replay is
+				// benign because the hub deduplicates and treats a repeat of a
+				// terminal action as a no-op (sections 7, 8.1), but it is
+				// surfaced rather than hidden.
+				if (!DeleteFile(entry.Path()))
+					VyshkaLog.Warn("outbox: could not delete acked envelope " + entry.Path() + "; the hub will dedup it if a restart re-sends it");
 				m_Entries.RemoveOrdered(i);
 			}
 			else

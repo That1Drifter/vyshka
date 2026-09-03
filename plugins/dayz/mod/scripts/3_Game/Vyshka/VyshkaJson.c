@@ -733,6 +733,8 @@ class VyshkaJson
 		// can use as a sequence number.
 		int magnitude = 0;
 		bool overflow = false;
+		bool firstIsZero = (Peek() == "0");
+		int digitCount = 0;
 		while (IsDigit(Peek()))
 		{
 			int digit = Peek().ToAscii() - 48;
@@ -740,7 +742,16 @@ class VyshkaJson
 				overflow = true;
 			else
 				magnitude = magnitude * 10 + digit;
+			digitCount++;
 			m_Pos++;
+		}
+		// JSON forbids a leading zero (0 is fine, 01 is not). Rejecting it keeps
+		// a corrupt response from parsing into a plausible number, such as an
+		// ack that would delete an envelope the hub never acknowledged.
+		if (firstIsZero && digitCount > 1)
+		{
+			m_Failed = true;
+			return null;
 		}
 		if (Peek() == ".")
 		{

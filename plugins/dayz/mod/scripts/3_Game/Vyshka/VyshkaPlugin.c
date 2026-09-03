@@ -21,7 +21,7 @@ class VyshkaPlugin
 
 	static const int TICK_MS = 200;
 	static const int REQUEST_BUDGET_MS = 15000;      // enroll and session
-	static const int EXECUTED_LRU_CAPACITY = 256;
+	static const int EXECUTED_LRU_CAPACITY = 512;
 	static const int BACKOFF_MIN_MS = 1000;
 	static const int BACKOFF_MAX_MS = 30000;
 	static const int BACKOFF_CREDENTIALS_MS = 30000;  // session refused
@@ -40,6 +40,8 @@ class VyshkaPlugin
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
+	int m_RenewMarginSeconds;
+	int m_ExecutedAppends;
 	int m_PollTimeoutSeconds;
 	int m_InAck;               // highest contiguous hub -> plugin seq processed
 	bool m_ManifestQueued;
@@ -79,6 +81,7 @@ class VyshkaPlugin
 
 	void VyshkaPlugin()
 	{
+		m_RenewMarginSeconds = RENEW_MARGIN_SECONDS;
 		m_ExecutedOrder = new array<string>;
 		m_Executed = new map<string, bool>;
 		m_LinkState = "buffering";
@@ -111,6 +114,7 @@ class VyshkaPlugin
 
 		m_Outbox = new VyshkaOutbox();
 		m_Outbox.Load();
+		LoadExecuted();
 
 		m_Transport = new VyshkaTransport();
 		if (!m_Transport.Init(m_Config.m_HubUrl, this))
@@ -170,7 +174,7 @@ class VyshkaPlugin
 			return;
 		}
 
-		if (m_SessionExpiresEpoch > 0 && VyshkaClock.EpochSeconds() >= m_SessionExpiresEpoch - RENEW_MARGIN_SECONDS)
+		if (m_SessionExpiresEpoch > 0 && VyshkaClock.EpochSeconds() >= m_SessionExpiresEpoch - m_RenewMarginSeconds)
 		{
 			VyshkaLog.Info("session is about to expire; starting a new one");
 			m_SessionToken = "";
@@ -377,17 +381,23 @@ class VyshkaPlugin
 		else
 			m_SessionExpiresEpoch = 0;
 
+		// The renewal margin must be smaller than the session's own lifetime,
+		// or a hub that issues a short session (the protocol sets no minimum)
+		// would make the plugin renew on the very next tick and never poll.
+		// Cap it at half the lifetime.
+		m_RenewMarginSeconds = RENEW_MARGIN_SECONDS;
+		int lifetime = m_SessionExpiresEpoch - VyshkaClock.EpochSeconds();
+		if (lifetime > 0 && m_RenewMarginSeconds > lifetime / 2)
+			m_RenewMarginSeconds = lifetime / 2;
+
 		// A new session is a new sequence space in both directions (spec
 		// section 9.1): the inbound ack restarts at 0, and every buffered
 		// envelope is renumbered from 1, keeping its id, type, ts and body.
 		m_InAck = 0;
 		m_Outbox.Renumber();
 
-		if (!m_ManifestQueued)
-		{
-			m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION));
+		if (!m_ManifestQueued && m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
 			m_ManifestQueued = true;
-		}
 
 		VyshkaLog.Info("session started; pollTimeout " + m_PollTimeoutSeconds.ToString() + " s, " + m_Outbox.Count().ToString() + " envelope(s) to send");
 		SetLinkState("connected");
@@ -463,6 +473,17 @@ class VyshkaPlugin
 					continue;
 				if (seq != m_InAck + 1)
 					continue;
+				// Validate the framing of the next envelope before taking
+				// delivery (section 4): an envelope missing id or type, or
+				// declaring a version this plugin does not speak, is rejected,
+				// not acked. Advancing the ack past it would tell the hub the
+				// plugin processed something it could not. Unknown types are
+				// not rejected here; they are acked and ignored in Handle.
+				if (!FramingOk(envelope))
+				{
+					VyshkaLog.Warn("rejecting hub envelope seq " + seq.ToString() + ": missing id or type, or an unsupported envelope version");
+					break;
+				}
 				m_InAck = seq;
 				Handle(envelope);
 			}
@@ -474,6 +495,20 @@ class VyshkaPlugin
 	}
 
 	// ---- inbound envelopes ----
+
+	// FramingOk enforces the receiver half of section 4 on a hub -> plugin
+	// envelope: it must carry an id and a type, and its version, if stated,
+	// must be one this plugin speaks. An absent v means the negotiated
+	// version; an explicit 0 is a version no one speaks and is refused.
+	bool FramingOk(VyshkaJsonValue envelope)
+	{
+		if (envelope.GetString("id", "") == "" || envelope.GetString("type", "") == "")
+			return false;
+		VyshkaJsonValue version = envelope.Get("v");
+		if (version && version.IsNumber() && version.m_Int != PROTOCOL_VERSION)
+			return false;
+		return true;
+	}
 
 	void Handle(VyshkaJsonValue envelope)
 	{
@@ -541,7 +576,13 @@ class VyshkaPlugin
 		string referenceKey = body.GetString("referenceKey", "");
 
 		int deadline;
-		if (VyshkaClock.ParseRfc3339(body.GetString("expiresAt", ""), deadline) && VyshkaClock.EpochSeconds() > deadline)
+		// The engine clock is whole-second, and the parser floors expiresAt to
+		// its second, so the true deadline lies anywhere in [deadline,
+		// deadline+1). Discarding once the current second reaches that second
+		// (>=, not >) is the only rule that never runs an action past its real
+		// deadline; it can discard up to a second early, which is harmless
+		// against a TTL measured in seconds (section 7).
+		if (VyshkaClock.ParseRfc3339(body.GetString("expiresAt", ""), deadline) && VyshkaClock.EpochSeconds() >= deadline)
 		{
 			// Past its deadline the hub has already reported the action
 			// expired and will ignore a result (section 7), so the work is
@@ -576,6 +617,11 @@ class VyshkaPlugin
 			VyshkaLog.Info("action " + code + " (" + actionId + ") failed: " + outcome.m_Error);
 	}
 
+	// MarkExecuted records an executed actionId in the in-memory LRU and on
+	// disk. Persistence closes the cross-restart dedup hole: the hub renumbers
+	// and re-delivers a dispatch that was executed but not yet poll-acked when
+	// the server crashed (section 9.1), and without the durable record the
+	// reloaded plugin would execute it a second time (section 9.2).
 	void MarkExecuted(string actionId)
 	{
 		while (m_ExecutedOrder.Count() >= EXECUTED_LRU_CAPACITY)
@@ -586,5 +632,45 @@ class VyshkaPlugin
 		}
 		m_Executed.Set(actionId, true);
 		m_ExecutedOrder.Insert(actionId);
+
+		VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, actionId);
+		m_ExecutedAppends++;
+		// Compact once the log has roughly doubled, so the file stays bounded
+		// at about the LRU size rather than growing for the life of the server.
+		if (m_ExecutedAppends >= EXECUTED_LRU_CAPACITY)
+			RewriteExecuted();
+	}
+
+	// LoadExecuted repopulates the LRU from disk on boot, keeping the most
+	// recent ids up to the cap, and compacts an oversized log.
+	void LoadExecuted()
+	{
+		array<string> ids = VyshkaFiles.ReadLines(VyshkaFiles.EXECUTED_PATH);
+		int start = 0;
+		if (ids.Count() > EXECUTED_LRU_CAPACITY)
+			start = ids.Count() - EXECUTED_LRU_CAPACITY;
+		for (int i = start; i < ids.Count(); i++)
+		{
+			string id = ids.Get(i);
+			if (!m_Executed.Contains(id))
+			{
+				m_Executed.Set(id, true);
+				m_ExecutedOrder.Insert(id);
+			}
+		}
+		if (ids.Count() > 2 * EXECUTED_LRU_CAPACITY)
+			RewriteExecuted();
+		if (m_ExecutedOrder.Count() > 0)
+			VyshkaLog.Info("restored " + m_ExecutedOrder.Count().ToString() + " executed action id(s) from disk");
+	}
+
+	// RewriteExecuted replaces the log with exactly the current LRU contents.
+	void RewriteExecuted()
+	{
+		string content = "";
+		for (int i = 0; i < m_ExecutedOrder.Count(); i++)
+			content += m_ExecutedOrder.Get(i) + "\n";
+		if (VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, content))
+			m_ExecutedAppends = 0;
 	}
 }

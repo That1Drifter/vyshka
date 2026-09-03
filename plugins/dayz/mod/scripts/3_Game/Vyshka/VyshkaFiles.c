@@ -16,6 +16,7 @@ class VyshkaFiles
 	static const string CONFIG_PATH = "$profile:Vyshka/config.json";
 	static const string CREDENTIALS_PATH = "$profile:Vyshka/credentials.json";
 	static const string OUTBOX_DIR = "$profile:Vyshka/outbox";
+	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 
 	// EnsureLayout creates the directories, one level at a time, because
 	// MakeDirectory creates only the last path segment.
@@ -57,6 +58,38 @@ class VyshkaFiles
 		FPrint(handle, content);
 		CloseFile(handle);
 		return true;
+	}
+
+	// AppendLine adds one line to a file, creating it when absent. The close
+	// is the only flush the engine exposes.
+	static bool AppendLine(string path, string line)
+	{
+		FileHandle handle = OpenFile(path, FileMode.APPEND);
+		if (handle == 0)
+			return false;
+		FPrintln(handle, line);
+		CloseFile(handle);
+		return true;
+	}
+
+	// ReadLines returns a file's lines, empty ones dropped. Missing file is an
+	// empty list, not an error.
+	static array<string> ReadLines(string path)
+	{
+		array<string> lines = new array<string>;
+		if (!FileExist(path))
+			return lines;
+		FileHandle handle = OpenFile(path, FileMode.READ);
+		if (handle == 0)
+			return lines;
+		string line;
+		while (FGets(handle, line) >= 0)
+		{
+			if (line != "")
+				lines.Insert(line);
+		}
+		CloseFile(handle);
+		return lines;
 	}
 
 	// ReadJson parses a file's content; null when missing or malformed.
