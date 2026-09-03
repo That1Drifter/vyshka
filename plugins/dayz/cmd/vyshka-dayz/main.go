@@ -255,11 +255,15 @@ func prepareMission(serverDir, base string) (string, error) {
 	}
 	name := "vyshkaHarness." + world
 	target := filepath.Join(missions, name)
-	if _, err := os.Stat(target); err == nil {
-		// The target is built in a temp directory and renamed into place, so
-		// its mere existence means a complete copy; no partial can be mistaken
-		// for done.
+	// The target is built in a temp directory and renamed into place, so its
+	// existence normally means a complete copy. Still key completeness off
+	// init.c so a partial directory left by an older build (or an interrupted
+	// non-atomic copy) is rebuilt rather than started against.
+	if _, err := os.Stat(filepath.Join(target, "init.c")); err == nil {
 		return name, nil
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return "", err
 	}
 	fmt.Fprintf(os.Stderr, "vyshka-dayz: deriving mission %s from %s\n", name, base)
 	staging := target + ".tmp"

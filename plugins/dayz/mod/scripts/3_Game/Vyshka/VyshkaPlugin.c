@@ -688,10 +688,14 @@ class VyshkaPlugin
 			start = lines.Count() - EXECUTED_LRU_CAPACITY;
 		for (int i = start; i < lines.Count(); i++)
 		{
-			VyshkaJsonValue parsed = VyshkaJson.Parse(lines.Get(i));
-			if (!parsed || !parsed.IsString())
-				continue;
-			string id = parsed.m_Text;
+			// Records are JSON-quoted strings. A line that does not parse as
+			// one is tolerated as a bare id, so a log written in an earlier
+			// raw-line format still deduplicates rather than being discarded.
+			string line = lines.Get(i);
+			VyshkaJsonValue parsed = VyshkaJson.Parse(line);
+			string id = line;
+			if (parsed && parsed.IsString())
+				id = parsed.m_Text;
 			if (!m_Executed.Contains(id))
 			{
 				m_Executed.Set(id, true);
