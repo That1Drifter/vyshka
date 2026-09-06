@@ -94,6 +94,13 @@ it; CI runs the Go tooling's tests and the reference driver instead.
 
 ## What the engine imposes
 
+The live-player heal acceptance demo passed on 2026-09-05; [issue #14](https://github.com/That1Drifter/vyshka/issues/14)
+records the results and validation limits. Readable Plugin API transport errors are explicitly
+deferred from M2 to [issue #43](https://github.com/That1Drifter/vyshka/issues/43). The current
+error-class fallback can mistake a malformed poll batch for a lost session and repeatedly
+start sessions without correcting the data. That follow-up remains a hardening gate before
+claiming readiness for unattended operation; the successful heal does not validate this path.
+
 Measured under `spikes/` rather than assumed; the details are in each spike's findings.
 
 - **Poll hold time.** The engine aborts a request after 10 s by default, as a budget for the

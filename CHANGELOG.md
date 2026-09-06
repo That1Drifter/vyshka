@@ -12,6 +12,14 @@ point if needed.
 
 ### Added
 
+- 2026-09-05: completed the DayZ live-player heal acceptance demo for issue #14:
+  curl-to-hub dispatch returned health 100, blood 5000, and shock 100, with player visual
+  confirmation; a fresh heal also cleared bleeding. Idempotent retry, nonexistent-player
+  failure, and invalid-parameter rejection passed. Recorded the M2 decision to defer readable
+  Plugin API transport errors to issue #43, a hardening gate before claiming readiness for
+  unattended operation. The live action tests do not establish transport-error recovery.
+  No runtime or normative protocol changes; evidence and decision are recorded in #14 and #43.
+
 - 2026-09-03: DayZ reference plugin, clean-room (issue #14), the first real game plugin and
   the first evidence the protocol is implementable on a constrained engine rather than only
   against a fake plugin. A server-side Enforce Script mod under `plugins/dayz/mod` speaks the
