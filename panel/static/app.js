@@ -280,6 +280,9 @@ async function viewServers(app, seq) {
     drawServers(app, data.servers || []);
   };
   await load();
+  // A navigation during the first load has already replaced this view; a
+  // timer armed now would outlive it.
+  if (seq !== renderSeq) return;
   const timer = setInterval(() => {
     load().catch((err) => {
       if (err instanceof ApiError && err.status === 401) signOut('The hub rejected this token.');

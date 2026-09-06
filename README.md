@@ -45,7 +45,7 @@ signed webhooks deliver events and action outcomes to other systems with retries
 letter, and a per-mod key/value store serves both realms. The embedded panel at `/panel/`
 turns all of it into a page: an operator signs in with a token, picks a server and an
 action, and dispatches from a form generated from the manifest's schema, watching the
-result arrive. Seventy conformance checks grade the protocol surfaces in CI, a headless
+result arrive. Seventy-two conformance checks grade the protocol surfaces in CI, a headless
 browser test grades the panel, and a clean-room DayZ plugin under `plugins/dayz` passes the
 plugin conformance harness against a live server.
 
