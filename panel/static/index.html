@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Vyshka</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">Vyshka</a>
+    <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+    <div class="session" id="session"></div>
+  </header>
+  <main id="app" aria-live="polite">
+    <noscript>
+      <p class="notice">The panel is a thin client over the Admin API and needs JavaScript
+      to run. Everything it does is also possible with <code>curl</code> against
+      <code>/api/v1</code>.</p>
+    </noscript>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

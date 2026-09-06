@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level]
+//	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false]
 //	vyshka-hub version
 package main
 
@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/panel"
 )
 
 func main() {
@@ -65,6 +66,8 @@ func runServe(args []string) error {
 	adminToken := flags.String("admin-token", os.Getenv("VYSHKA_ADMIN_TOKEN"),
 		"bootstrap Admin API token, or file:/path/to/secret; empty generates one per boot (env VYSHKA_ADMIN_TOKEN)")
 	logLevel := flags.String("log-level", envOr("VYSHKA_LOG_LEVEL", "info"), "debug, info, warn, or error (env VYSHKA_LOG_LEVEL)")
+	servePanel := flags.Bool("panel", envOr("VYSHKA_PANEL", "true") != "false",
+		"serve the embedded web panel at /panel/ (env VYSHKA_PANEL, \"false\" disables it)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -84,12 +87,16 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	server, err := hub.New(ctx, hub.Config{
+	config := hub.Config{
 		Addr:        *addr,
 		DatabaseURL: *dsn,
 		AdminToken:  resolvedAdminToken,
 		Logger:      logger,
-	})
+	}
+	if *servePanel {
+		config.Panel = panel.Handler()
+	}
+	server, err := hub.New(ctx, config)
 	if err != nil {
 		return err
 	}

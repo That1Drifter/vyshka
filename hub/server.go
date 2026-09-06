@@ -125,6 +125,15 @@ type Config struct {
 	// enforced at insert so a fast-pushing plugin cannot outrun the retention
 	// pass. Zero means the default; the latest snapshot always survives.
 	StateHistoryDepth int
+	// Panel is the optional web UI, served under /panel/ with the prefix
+	// stripped, and reached by a redirect from /. Nil serves no panel and
+	// leaves / a 404 like any other unrouted path. The hub takes it as a
+	// handler rather than importing one so that the hub package stays free
+	// of UI: the reference binary mounts the embedded panel, an embedder can
+	// mount their own or none. Whatever is mounted is a thin client over the
+	// Admin API with no route of its own into the hub; it authenticates with
+	// the same bearer tokens as any other admin client.
+	Panel http.Handler
 }
 
 func (c *Config) withDefaults() {
@@ -618,6 +627,20 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/incr", s.pluginKV(kvIncr))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
+
+	// The panel, when one is mounted. It is a static asset surface and not
+	// part of either API realm: its responses are pages, so a missing asset
+	// is a plain 404 from the handler itself, not the protocol error shape.
+	// Only GET and HEAD reach it. The exact-match root pattern ({$}) sends a
+	// browser at / to the panel without swallowing every unrouted path into
+	// the redirect, so /nope stays the 404 an API client can parse.
+	if s.cfg.Panel != nil {
+		mux.Handle("GET /panel/", http.StripPrefix("/panel", s.cfg.Panel))
+		mux.HandleFunc("/panel/", methodNotAllowed("GET"))
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/panel/", http.StatusFound)
+		})
+	}
 
 	mux.HandleFunc("/", s.handleNotFound)
 
