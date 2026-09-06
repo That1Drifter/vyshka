@@ -90,7 +90,7 @@ send state.players '{
 
 step "Open the panel and sign in"
 echo "  $HUB_URL/"
-echo "  token: $ADMIN_TOKEN"
+echo "  sign in with the admin token you gave this script (it is not printed here)"
 echo "Pick 'Panel demo', then 'Heal player'. Every dispatch is executed below. Ctrl-C to stop."
 
 trap 'printf "\nstopping\n"; exit 0' INT TERM

@@ -13,6 +13,7 @@ package panel
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -51,12 +52,36 @@ func Handler() http.Handler {
 		// Refusing every deeper path here, before FileServer sees it, is
 		// what keeps FileServer's own behaviours off the wire: it would
 		// list a directory, and it redirects any path ending in /index.html
-		// to its directory before checking that either exists.
-		if strings.Count(r.URL.Path, "/") > 1 {
-			http.NotFound(w, r)
+		// to its directory before checking that either exists. A missing
+		// file is refused in the hub's error shape rather than FileServer's
+		// plain text, so every failure from the hub's port parses the same
+		// way whichever surface answered it.
+		if strings.Count(r.URL.Path, "/") > 1 || !shipped(root, r.URL.Path) {
+			notFound(w, r)
 			return
 		}
 		files.ServeHTTP(w, r)
+	})
+}
+
+// shipped reports whether a request path names a file in the embedded tree;
+// "/" is the index and always present.
+func shipped(root fs.FS, path string) bool {
+	if path == "/" || path == "/index.html" {
+		return true
+	}
+	info, err := fs.Stat(root, strings.TrimPrefix(path, "/"))
+	return err == nil && !info.IsDir()
+}
+
+// notFound answers in the protocol's error shape (spec section 2.2). The
+// panel is not part of either API realm, but a client that reads the hub's
+// errors should be able to read this one too.
+func notFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": "not_found", "message": "the panel has no file at " + r.URL.Path},
 	})
 }
 

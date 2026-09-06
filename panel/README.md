@@ -19,22 +19,31 @@ Tracked in issue #13 (panel v1). Live map and event feed views are follow-up tic
 - **Actions** from the server's stored manifest, grouped by namespace, with context and
   danger badges.
 - **Forms generated from the manifest schema** (protocol section 6.1's JSON Schema subset):
-  `enum` becomes a select, `boolean` a checkbox, `integer` and `number` numeric inputs with
-  their bounds, `string` a text input, `array` a one-value-per-line textarea, nested `object`
-  a fieldset, and anything without `properties` a JSON textarea. `required` and `default` are
-  honored. An optional field left empty is omitted from `params`, not sent as an empty
-  string.
-- **`x-vyshka-widget` hints**: `player` offers the identities from the latest
-  `state.players` snapshot as suggestions, `vector` renders three numeric inputs for an array
-  of numbers, `webhook` uses a URL input, `itemlist` a text input with a hint. Unknown hints
-  fall back to the field's type, as the protocol requires.
+  `enum` becomes a select, `boolean` a checkbox (or a not-set/true/false select when
+  optional with no default, so the key can stay absent), `integer` and `number` numeric
+  inputs with their bounds (an integer's exclusive or fractional bounds rounded inward onto
+  the input; a real number's exclusive bound left to the hub), `string` a text input,
+  `array` a one-value-per-line textarea, nested `object` a fieldset, and anything without
+  `properties` a JSON textarea. `required` is enforced and `default` prefilled. An optional
+  field left empty is omitted from `params`, not sent as an empty string, and an optional
+  object left entirely empty is omitted whole whatever it requires of its children. String
+  array items are taken as typed, whitespace included; an empty-string item cannot be
+  expressed in the one-per-line form.
+- **`x-vyshka-widget` hints** shape the input and never its validation: `player` offers
+  the identities from the latest `state.players` snapshot as suggestions, `vector` renders
+  x, y, z inputs for an array of numbers (z may be left blank for a flat position, and a
+  blank coordinate is never a zero), `webhook` a text input with a URL keyboard, `itemlist`
+  a text input with a hint. Unknown hints fall back to the field's type, as the protocol
+  requires.
 - **Targets**: a `player` context action gets a required player field fed by the same
   snapshot; `vehicle` and `object` get an id field; custom contexts get an optional
   reference field (enumeration arrives with custom contexts, milestone M5).
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
   Dispatch button does anything.
-- **Dispatch and live result**: one `POST /api/v1/servers/{id}/actions` with a fresh
-  idempotency key per attempt, then `GET /api/v1/actions/{id}` every second until the action
+- **Dispatch and live result**: one `POST /api/v1/servers/{id}/actions` with an idempotency
+  key bound to the exact request (resending the same request after a lost answer reuses it
+  and gets the same action back; an edited request gets a fresh key, and so does the next
+  dispatch after an accepted one), then `GET /api/v1/actions/{id}` every second until the action
   reaches a terminal state, drawn as a timeline with the result payload or error. A
   `params_invalid` refusal lands on the field the hub named.
 

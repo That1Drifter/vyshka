@@ -640,6 +640,7 @@ func (s *Server) routes() http.Handler {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/panel/", http.StatusFound)
 		})
+		mux.HandleFunc("/{$}", methodNotAllowed("GET"))
 	}
 
 	mux.HandleFunc("/", s.handleNotFound)

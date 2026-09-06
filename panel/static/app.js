@@ -56,6 +56,16 @@ function pretty(value) {
   return JSON.stringify(value, null, 2);
 }
 
+// randomKey mints an idempotency key. crypto.randomUUID exists only in
+// secure contexts, and a hub reached over plain HTTP on a LAN is not one;
+// getRandomValues is available everywhere.
+function randomKey() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function formatTime(iso) {
   if (!iso) return '';
   const date = new Date(iso);
@@ -285,6 +295,10 @@ async function viewServers(app, seq) {
   if (seq !== renderSeq) return;
   const timer = setInterval(() => {
     load().catch((err) => {
+      // A refresh that began under a token since replaced must not sign
+      // out whoever signed in after it: clearing the interval does not
+      // recall a request already in flight.
+      if (seq !== renderSeq) return;
       if (err instanceof ApiError && err.status === 401) signOut('The hub rejected this token.');
     });
   }, SERVER_LIST_REFRESH_MS);
@@ -423,6 +437,13 @@ function describe(schema) {
   return parts.join(', ');
 }
 
+// enforced says whether a required field's emptiness should stop a submit:
+// true for a required field of a present object, false for one inside an
+// optional object nobody has touched, which the object itself omits whole.
+function enforced(opts) {
+  return Boolean(opts.required) && !opts.soft;
+}
+
 function wrap(opts, control, hint, inline) {
   const errorNode = el('span', { class: 'field-error', hidden: true });
   const node = el('label', { class: 'field' + (inline ? ' inline' : ''), 'data-path': opts.path },
@@ -457,7 +478,7 @@ function buildField(schema, opts) {
 }
 
 function enumField(schema, opts) {
-  const select = el('select', { name: opts.name, id: nextId('field'), required: opts.required });
+  const select = el('select', { name: opts.name, id: nextId('field'), required: enforced(opts) });
   if (!opts.required) select.append(el('option', { value: '' }, '(not set)'));
   const wanted = schema.default !== undefined ? JSON.stringify(schema.default) : null;
   schema.enum.forEach((member, index) => {
@@ -477,6 +498,19 @@ function enumField(schema, opts) {
 }
 
 function booleanField(schema, opts) {
+  // A checkbox has no "not set". A required boolean, or one with a default,
+  // is always sent; an optional one without a default gets a three-way
+  // select so the key can stay absent, which a plugin may treat differently
+  // from false.
+  if (!opts.required && typeof schema.default !== 'boolean') {
+    const select = el('select', { name: opts.name, id: nextId('field') },
+      el('option', { value: '' }, '(not set)'), el('option', { value: 'true' }, 'true'), el('option', { value: 'false' }, 'false'));
+    const wrapped = wrap(opts, select, describe(schema));
+    return {
+      node: wrapped.node, setError: wrapped.setError,
+      read() { return select.value === '' ? undefined : select.value === 'true'; },
+    };
+  }
   const input = el('input', { type: 'checkbox', name: opts.name, id: nextId('field') });
   if (schema.default === true) input.checked = true;
   const wrapped = wrap(opts, input, describe(schema), true);
@@ -486,21 +520,37 @@ function booleanField(schema, opts) {
   };
 }
 
+// numberBounds turns the schema's bounds into what an HTML number input can
+// enforce. HTML has inclusive bounds only, so an integer's exclusive bounds
+// move inward by one and fractional bounds round inward (an integer above
+// 0.5 is at least 1); a real number's exclusive bound cannot be expressed
+// and is left to the hub's validation, which the form surfaces by path.
 function numberBounds(schema) {
   const integer = schema.type === 'integer';
-  let min = schema.minimum;
-  let max = schema.maximum;
-  // HTML has no exclusive bounds; an integer's can be shifted by one, a
-  // real number's cannot and is left to the hub's validation.
-  if (min === undefined && schema.exclusiveMinimum !== undefined && integer) min = schema.exclusiveMinimum + 1;
-  if (max === undefined && schema.exclusiveMaximum !== undefined && integer) max = schema.exclusiveMaximum - 1;
+  const finite = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+  let min = finite(schema.minimum);
+  let max = finite(schema.maximum);
+  const exclusiveMin = finite(schema.exclusiveMinimum);
+  const exclusiveMax = finite(schema.exclusiveMaximum);
+  if (integer) {
+    if (min !== undefined) min = Math.ceil(min);
+    if (max !== undefined) max = Math.floor(max);
+    if (exclusiveMin !== undefined) {
+      const shifted = Math.floor(exclusiveMin) + 1;
+      min = min === undefined ? shifted : Math.max(min, shifted);
+    }
+    if (exclusiveMax !== undefined) {
+      const shifted = Math.ceil(exclusiveMax) - 1;
+      max = max === undefined ? shifted : Math.min(max, shifted);
+    }
+  }
   return { min, max, step: integer ? '1' : 'any' };
 }
 
 function numberField(schema, opts) {
   const bounds = numberBounds(schema);
   const input = el('input', {
-    type: 'number', name: opts.name, id: nextId('field'), required: opts.required,
+    type: 'number', name: opts.name, id: nextId('field'), required: enforced(opts),
     min: bounds.min, max: bounds.max, step: bounds.step,
     value: typeof schema.default === 'number' ? String(schema.default) : undefined,
   });
@@ -538,8 +588,12 @@ function playerDatalist(players) {
 
 function stringField(schema, opts) {
   const widget = widgetOf(schema);
+  // Hints shape the input, never its validation (section 6.1: a hint does
+  // not constrain the data model), so a webhook stays a text input with a
+  // URL keyboard rather than a URL input that would refuse a relative path
+  // the schema allows.
   const attrs = {
-    type: 'text', name: opts.name, id: nextId('field'), required: opts.required,
+    type: 'text', name: opts.name, id: nextId('field'), required: enforced(opts),
     value: typeof schema.default === 'string' ? schema.default : undefined,
     spellcheck: 'false', autocomplete: 'off',
   };
@@ -551,7 +605,7 @@ function stringField(schema, opts) {
     attrs.placeholder = 'platform player id';
     hint = 'player identity (the platform id, e.g. the Steam64 id on DayZ)' + (datalist ? '; online players are suggested' : '');
   } else if (widget === 'webhook') {
-    attrs.type = 'url';
+    attrs.inputmode = 'url';
     attrs.placeholder = 'https://';
   } else if (widget === 'vector') {
     attrs.placeholder = 'x y z';
@@ -613,7 +667,8 @@ function arrayField(schema, opts) {
     if (Array.isArray(schema.default)) {
       schema.default.slice(0, 3).forEach((value, index) => { axes[index].value = String(value); });
     }
-    const wrapped = wrap(opts, el('span', { class: 'vector' }, axes), 'vector of three numbers');
+    const wrapped = wrap(opts, el('span', { class: 'vector' }, axes),
+      'vector: x, y, and z, or x and y for a flat position');
     return {
       node: wrapped.node, setError: wrapped.setError,
       read(errors) {
@@ -622,7 +677,18 @@ function arrayField(schema, opts) {
           if (opts.required) errors.push({ path: opts.path, message: 'is required' });
           return undefined;
         }
-        const values = texts.map((text, index) => coerceItem(items, text, errors, opts.path + '[' + index + ']'));
+        // A blank coordinate is never a zero. The z axis alone may be left
+        // blank, for the two-number positions section 8.3 allows.
+        const used = texts[2] === '' ? texts.slice(0, 2) : texts;
+        let complete = true;
+        used.forEach((text, index) => {
+          if (text === '') {
+            errors.push({ path: opts.path + '[' + index + ']', message: 'coordinate ' + ['x', 'y', 'z'][index] + ' is required' });
+            complete = false;
+          }
+        });
+        if (!complete) return undefined;
+        const values = used.map((text, index) => coerceItem(items, text, errors, opts.path + '[' + index + ']'));
         return values.some((value) => value === undefined) ? undefined : values;
       },
     };
@@ -632,12 +698,21 @@ function arrayField(schema, opts) {
     textarea.value = schema.default.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join('\n');
   }
   const kind = items.type ? items.type + ' items' : 'JSON items';
-  const wrapped = wrap(opts, textarea, 'one value per line, ' + kind);
+  const wrapped = wrap(opts, textarea, 'one value per line, ' + kind +
+    (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : ''));
   return {
     node: wrapped.node, setError: wrapped.setError,
     read(errors) {
-      const lines = textarea.value.split('\n').map((line) => line.trim()).filter((line) => line !== '');
-      if (lines.length === 0) return opts.required ? [] : undefined;
+      // String items are taken as typed; other kinds are trimmed before
+      // parsing. Only blank lines are dropped, so a line of spaces is a
+      // string item and an empty string cannot be expressed here (a
+      // limitation of the one-per-line form, not of the protocol).
+      const raw = textarea.value.split('\n');
+      const lines = (items.type === 'string' ? raw : raw.map((line) => line.trim())).filter((line) => line.trim() !== '');
+      // Empty: a required array of a present object is sent empty; a soft
+      // one is left to its parent, which omits itself when nothing else in
+      // it is set and otherwise lets the hub name the missing key.
+      if (lines.length === 0) return enforced(opts) ? [] : undefined;
       const values = lines.map((line, index) => coerceItem(items, line, errors, opts.path + '[' + index + ']'));
       return values.some((value) => value === undefined) ? undefined : values;
     },
@@ -648,17 +723,21 @@ function objectField(schema, opts) {
   const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : null;
   if (!properties || Object.keys(properties).length === 0) return jsonField(schema, opts);
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-  const children = [];
-  for (const [key, child] of Object.entries(properties)) {
-    children.push(buildField(child, {
-      name: opts.name + '.' + key,
-      path: opts.path ? opts.path + '.' + key : key,
-      label: key,
-      required: required.has(key),
-      players: opts.players,
-      register: opts.register,
-    }));
-  }
+  // An optional object left entirely empty is omitted whole, which is valid
+  // whatever it requires of its children; so its children's own required
+  // marks are soft: shown, and reported only once something in the object
+  // is filled in.
+  const optional = !opts.required || opts.soft;
+  const keys = Object.keys(properties);
+  const children = keys.map((key) => buildField(properties[key], {
+    name: opts.name + '.' + key,
+    path: opts.path ? opts.path + '.' + key : key,
+    label: key,
+    required: required.has(key),
+    soft: optional,
+    players: opts.players,
+    register: opts.register,
+  }));
   const errorNode = el('span', { class: 'field-error', hidden: true });
   const node = el('fieldset', { 'data-path': opts.path },
     el('legend', {}, opts.label, opts.required ? el('span', { class: 'req' }, '*') : null),
@@ -670,17 +749,21 @@ function objectField(schema, opts) {
       errorNode.hidden = !message;
     },
     read(errors) {
-      const value = {};
+      // Null prototype: a manifest may name a property __proto__, and on
+      // an ordinary object that assignment would go to the prototype
+      // setter instead of becoming a key the hub can see.
+      const value = Object.create(null);
+      const own = [];
       let any = false;
-      for (let index = 0; index < children.length; index++) {
-        const key = Object.keys(properties)[index];
-        const item = children[index].read(errors);
+      children.forEach((child, index) => {
+        const item = child.read(own);
         if (item !== undefined) {
-          value[key] = item;
+          value[keys[index]] = item;
           any = true;
         }
-      }
-      if (!any && !opts.required && opts.path !== '') return undefined;
+      });
+      if (!any && optional && opts.path !== '') return undefined;
+      errors.push(...own);
       return value;
     },
   };
@@ -689,16 +772,21 @@ function objectField(schema, opts) {
 }
 
 function nullField(schema, opts) {
-  const wrapped = wrap(opts, el('span', { class: 'muted mono' }, 'null'), describe(schema));
-  return { node: wrapped.node, setError: wrapped.setError, read() { return null; } };
+  // The only valid value is null, so a required one is sent as null and an
+  // optional one is left absent, which is the closest a form can come to
+  // "not set" for a key whose value carries no information.
+  const wrapped = wrap(opts, el('span', { class: 'muted mono' }, opts.required ? 'null' : 'not sent'), describe(schema));
+  return { node: wrapped.node, setError: wrapped.setError, read() { return opts.required ? null : undefined; } };
 }
 
 function jsonField(schema, opts) {
   const textarea = el('textarea', { name: opts.name, id: nextId('field'), spellcheck: 'false' });
   if (schema.default !== undefined) {
     textarea.value = pretty(schema.default);
-  } else if (schema.type === 'object') {
+  } else if (schema.type === 'object' && enforced(opts)) {
     textarea.value = '{}';
+  } else if (schema.type === 'object') {
+    textarea.placeholder = '{}';
   }
   const wrapped = wrap(opts, textarea, 'JSON' + (schema.type ? ', ' + schema.type : ''));
   return {
@@ -837,7 +925,13 @@ async function viewAction(app, route, seq) {
   const formErrors = el('div', { class: 'error', id: 'form-errors', role: 'alert', hidden: true });
   const submit = el('button', { type: 'submit', class: 'primary', id: 'dispatch' }, 'Dispatch');
   const result = el('div', { id: 'result' });
-  let idempotencyKey = crypto.randomUUID();
+  // The idempotency key is bound to the exact request it was minted for.
+  // Resending that request (the hub accepted it but the answer was lost)
+  // reuses the key and gets the same action back, as section 7 intends; a
+  // request that differs in any way is a different action and gets a fresh
+  // key, so an edit can never be answered with the unedited original.
+  let idempotencyKey = randomKey();
+  let keyedRequest = null;
   let stopWatching = null;
   teardown = () => { if (stopWatching) stopWatching(); };
 
@@ -855,16 +949,21 @@ async function viewAction(app, route, seq) {
         if (orphans.length > 0) listFaults(formErrors, 'Fix these before dispatching:', orphans);
         return;
       }
-      const request = { code: action.code, params: paramsValue, idempotencyKey };
+      const request = { code: action.code, params: paramsValue };
       if (action.context) request.context = action.context;
       if (referenceKey !== undefined) request.referenceKey = referenceKey;
+      const fingerprint = JSON.stringify(request);
+      if (keyedRequest !== null && keyedRequest !== fingerprint) idempotencyKey = randomKey();
+      keyedRequest = fingerprint;
+      request.idempotencyKey = idempotencyKey;
       submit.disabled = true;
       try {
         const accepted = await api('POST', '/servers/' + encodeURIComponent(server.id) + '/actions', request);
         if (seq !== renderSeq) return;
-        // A fresh key for the next dispatch: this one is now bound to the
-        // action just accepted, and a second click must not replay it.
-        idempotencyKey = crypto.randomUUID();
+        // Accepted, so this key is spent: the next dispatch, even of the
+        // same values, is a new action and must not replay this one.
+        idempotencyKey = randomKey();
+        keyedRequest = null;
         if (stopWatching) stopWatching();
         stopWatching = watchAction(result, accepted.actionId, action, request, () => { submit.disabled = false; });
       } catch (err) {

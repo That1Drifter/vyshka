@@ -63,6 +63,14 @@ var e2eManifest = map[string]any{
 				"restoreBlood": map[string]any{"type": "boolean", "default": true},
 				"position":     map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "x-vyshka-widget": "vector"},
 				"item":         map[string]any{"type": "string", "x-vyshka-widget": "itemlist"},
+				// Fractional bounds on an integer round inward onto the input.
+				"ticks": map[string]any{"type": "integer", "exclusiveMinimum": 0.5, "maximum": 9.9},
+				// An optional object with a required child: untouched, it is
+				// omitted whole and must not block the dispatch.
+				"nested": map[string]any{
+					"type": "object", "required": []string{"key"},
+					"properties": map[string]any{"key": map[string]any{"type": "string"}},
+				},
 			},
 		},
 	}},
@@ -262,6 +270,12 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := attribute(`input[name="params.item"]`, "placeholder"); got != "item class name" {
 		t.Errorf("item placeholder = %q, want the itemlist hint", got)
 	}
+	if got := attribute(`input[name="params.ticks"]`, "min") + ".." + attribute(`input[name="params.ticks"]`, "max"); got != "1..9" {
+		t.Errorf("ticks bounds = %q, want 1..9 (fractional bounds rounded inward for an integer)", got)
+	}
+	if evalString(`document.querySelector('input[name="params.nested.key"]').required ? "yes" : "no"`) != "no" {
+		t.Errorf("a required child of an optional object must not carry the HTML required flag")
+	}
 	// The player context becomes a target field fed by the players snapshot.
 	if got := evalString(`(function(){const i=document.querySelector('input[name="referenceKey"]');const l=document.getElementById(i.getAttribute("list"));return Array.from(l.options).map(o=>o.value+"="+o.textContent).join(",")})()`); got != "76561198000000001=Alice (steam)" {
 		t.Errorf("player datalist = %q", got)
@@ -270,16 +284,23 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("player target is not marked required")
 	}
 
-	// 6. A value the browser cannot refuse is refused by the hub, and the
-	// fault lands on its field.
-	run("fill in an over-bound blood value",
+	// 6a. A half-filled vector is refused on the page, coordinate by
+	// coordinate, before anything is sent: a blank axis is never a zero.
+	run("fill in a vector with a blank y",
 		chromedp.SendKeys(`input[name="referenceKey"]`, "76561198000000001", chromedp.ByQuery),
 		chromedp.SendKeys(amount, "50", chromedp.ByQuery),
-		chromedp.SendKeys(`input[name="params.blood"]`, "5000", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.position.x"]`, "1.5", chromedp.ByQuery),
-		chromedp.SendKeys(`input[name="params.position.y"]`, "2", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.position.z"]`, "3", chromedp.ByQuery),
 		chromedp.Click("#confirm-danger", chromedp.ByQuery),
+		chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("blank coordinate fault shown on the vector",
+		`(function(){const e=document.querySelector('label[data-path="position"] .field-error');return e && !e.hidden && e.textContent.includes("coordinate y")})()`)
+
+	// 6b. A value the browser cannot refuse is refused by the hub, and the
+	// fault lands on its field.
+	run("fill in an over-bound blood value",
+		chromedp.SendKeys(`input[name="params.position.y"]`, "2", chromedp.ByQuery),
+		chromedp.SendKeys(`input[name="params.blood"]`, "5000", chromedp.ByQuery),
 		chromedp.Click("#dispatch", chromedp.ByQuery))
 	waitJS("params_invalid fault shown on the blood field",
 		`(function(){const e=document.querySelector('label[data-path="blood"] .field-error');return e && !e.hidden && e.textContent.includes("blood")})()`)
@@ -316,6 +337,14 @@ func TestPanelEndToEnd(t *testing.T) {
 		if err := os.WriteFile(path, png, 0o644); err != nil {
 			t.Fatalf("write screenshot: %v", err)
 		}
+	}
+
+	// The completed round trip is the barrier that makes the earlier
+	// refusal's "never reached the plugin" claim sound: the hub delivers in
+	// order, so had it queued the refused dispatch after all, the plugin
+	// would have executed it before this one, and the count would be two.
+	if plugin.dispatches() != 1 {
+		t.Fatalf("the plugin received %d dispatches in total, want exactly the corrected one", plugin.dispatches())
 	}
 
 	// What the plugin executed is what the form built: the enum default,

@@ -29,13 +29,15 @@ point if needed.
   with their bounds (an integer's exclusive bound shifted onto the input, a real number's
   left to the hub), strings to text inputs, arrays to a one-value-per-line textarea, nested
   objects to fieldsets, `required` and `default` honored, an optional field left empty
-  omitted rather than sent as "". The `x-vyshka-widget` hints are honored where they mean
-  something in a browser: `player` suggests identities from the latest `state.players`
-  snapshot, `vector` renders three numeric inputs, `webhook` a URL input, `itemlist` a hinted
-  text input; unknown hints fall back to the type, as section 6.1 requires. A `player`
-  context adds a required target field fed by the same snapshot. `warning` and `destructive`
-  actions need an explicit confirmation checkbox. Dispatch is one `POST` with a fresh
-  idempotency key per attempt, then `GET /api/v1/actions/{id}` every second drawn as a
+  omitted rather than sent as "", an optional object left empty omitted whole. The
+  `x-vyshka-widget` hints shape inputs and never validation: `player` suggests identities
+  from the latest `state.players` snapshot, `vector` renders x, y, z numeric inputs,
+  `webhook` a text input with a URL keyboard, `itemlist` a hinted text input; unknown hints
+  fall back to the type, as section 6.1 requires. A `player` context adds a required target
+  field fed by the same snapshot. `warning` and `destructive` actions need an explicit
+  confirmation checkbox. Dispatch is one `POST` with an idempotency key bound to the exact
+  request (a resend after a lost answer reuses it, an edit or a later dispatch gets a fresh
+  one), then `GET /api/v1/actions/{id}` every second drawn as a
   lifecycle timeline with the result payload or error; a `params_invalid` refusal lands on
   the field the hub named. Every panel response carries a `Content-Security-Policy` that
   confines the page to its own origin with no inline script or style, plus `nosniff`,

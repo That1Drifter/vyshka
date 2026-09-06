@@ -1,13 +1,52 @@
 package panel_test
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/That1Drifter/vyshka/hub"
 	"github.com/That1Drifter/vyshka/panel"
 )
+
+// Mounted in a real hub, the page the browser fetches carries the policy:
+// the hub's routing must not put anything between the request and the
+// handler that answers without the headers.
+func TestMountedPanelCarriesPolicy(t *testing.T) {
+	t.Parallel()
+	server, err := hub.New(context.Background(), hub.Config{
+		DatabaseURL: filepath.Join(t.TempDir(), "mount.db"),
+		AdminToken:  e2eAdminToken,
+		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Panel:       panel.Handler(),
+	})
+	if err != nil {
+		t.Fatalf("boot hub: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+
+	for _, path := range []string{"/panel/", "/panel/app.js", "/panel/style.css"} {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, recorder.Code)
+		}
+		if csp := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+			t.Errorf("GET %s through the hub carries CSP %q", path, csp)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/panel/missing.js", nil))
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), `"not_found"`) {
+		t.Fatalf("GET /panel/missing.js = %d %q, want a protocol-shaped 404", recorder.Code, recorder.Body.String())
+	}
+}
 
 func serve(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -75,8 +114,9 @@ func TestIndexHasNoInlineScriptOrStyle(t *testing.T) {
 	}
 }
 
-// Anything that is not one of the shipped files is a 404: no directory
-// listings, no index fallback for unknown paths.
+// Anything that is not one of the shipped files is a 404 in the protocol's
+// error shape: no directory listings, no index fallback for unknown paths, no
+// plain text from FileServer.
 func TestHandlerRefusesWhatItDoesNotShip(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"/missing.js", "/nested/", "/nested/index.html", "/..%2fpanel.go"} {
@@ -84,8 +124,13 @@ func TestHandlerRefusesWhatItDoesNotShip(t *testing.T) {
 		if recorder.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", path, recorder.Code)
 		}
-		if strings.Contains(recorder.Body.String(), "<script") {
-			t.Errorf("GET %s served the index instead of a 404", path)
+		var body struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.Error.Code != "not_found" {
+			t.Errorf("GET %s body = %q, want the protocol's not_found shape", path, recorder.Body.String())
 		}
 	}
 	// FileServer answers /index.html with a redirect to the directory. It

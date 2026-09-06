@@ -90,6 +90,13 @@ func TestPanelMountedUnderPrefix(t *testing.T) {
 		t.Fatalf("POST /panel/ = %d %q, want a protocol-shaped 405", post.Code, post.Body.String())
 	}
 
+	// The root is a GET route now, so a write to it is a 405 like any other
+	// wrong method, not a 404.
+	postRoot := get(t, server, http.MethodPost, "/")
+	if postRoot.Code != http.StatusMethodNotAllowed || protocolErrorCode(t, postRoot) != "method_not_allowed" {
+		t.Fatalf("POST / = %d %q, want a protocol-shaped 405", postRoot.Code, postRoot.Body.String())
+	}
+
 	// The redirect is the exact root only. An unrouted path is still the
 	// JSON 404 an API client can parse, not a bounce into the panel.
 	missing := get(t, server, http.MethodGet, "/nope")
