@@ -1,0 +1,13 @@
+# Keep the build context to what the hub build needs. The DayZ mod build
+# tree, spike results, and local databases are large and never compiled in.
+.git
+.github
+.scratch
+bin
+*.db
+*.db-shm
+*.db-wal
+plugins/dayz/build
+spikes/*/results
+CLAUDE.md
+vyshka-spec.md

@@ -1,0 +1,29 @@
+# A single-host hub behind a reverse proxy, the reference deployment of
+# spec/protocol.md section 3.3. Run from this directory:
+#
+#   printf 'vya_%s' "$(openssl rand -hex 24)" > admin-token
+#   chmod 0400 admin-token && sudo chown 65532:65532 admin-token   # the container's user
+#   mkdir -p data && sudo chown 65532:65532 data
+#   docker compose up -d --build
+#
+# The hub listens on loopback only; TLS and the public name belong to the
+# proxy in front (see nginx-vyshka.conf.example). Read the admin token back
+# from the file when you need it; the hub never logs a configured token.
+services:
+  hub:
+    build:
+      context: ..
+    image: vyshka-hub:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
+    secrets:
+      - admin_token
+
+secrets:
+  admin_token:
+    file: ./admin-token

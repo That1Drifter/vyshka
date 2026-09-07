@@ -64,6 +64,10 @@ generated credential is first-run behavior only: once the hub holds a scoped tok
 it stops minting one, because a fresh superuser token on every boot would mean revocation
 never survived a restart. Logs are structured JSON on stdout.
 
+To run it as a container behind a reverse proxy, see [`deploy/`](deploy/README.md): a
+`Dockerfile` (static binary, distroless, non-root), a compose file, and an nginx block with
+the proxy timeouts a long-polling hub needs.
+
 To watch the protocol flows in curl:
 
 ```

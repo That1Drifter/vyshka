@@ -1,0 +1,34 @@
+# nginx in front of a hub (spec/protocol.md section 3.3). Two settings matter
+# beyond the usual proxy lines:
+#
+# - proxy_read_timeout must exceed the longest poll hold the hub will make,
+#   60 s (section 3.1), or the proxy cuts held polls short and every plugin
+#   sees a transport error once a minute.
+# - client_max_body_size must be at least the hub's own 1 MiB request cap, or
+#   the proxy answers 413 in HTML where the hub would answer in JSON.
+#
+# The hub records the peer address of the connection as the audit source and
+# never trusts a forwarded header (section 10.5), so behind a proxy the audit
+# log names the proxy; the X-Forwarded-For line below is for the proxy's own
+# access log.
+
+server {
+    listen 443 ssl;
+    server_name hub.example.net;
+
+    ssl_certificate     /etc/letsencrypt/live/hub.example.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/hub.example.net/privkey.pem;
+
+    client_max_body_size 2m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 60s;
+        proxy_buffering off;
+    }
+}
