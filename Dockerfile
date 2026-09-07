@@ -8,8 +8,10 @@
 # The admin token is best passed as a file (VYSHKA_ADMIN_TOKEN=file:/run/secrets/admin_token)
 # so it never appears in the process environment; deploy/docker-compose.yml shows the shape.
 #
-# Both base images are pinned by digest so that rebuilding a commit rebuilds
-# the same image; bump the tag and the digest together
+# Both base images are pinned by digest so that rebuilding a commit builds
+# from the same base images (the output is not byte-reproducible: layer
+# timestamps, the platform, and VERSION still vary); bump the tag and the
+# digest together
 # (docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}').
 
 FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS build

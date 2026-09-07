@@ -15,10 +15,11 @@
 #   budget below is generous for legitimate use.
 #
 # The hub records the peer address of the connection as the audit source and
-# never trusts a forwarded header (section 10.5), so behind a proxy the audit
-# log names the proxy. X-Forwarded-For below is for the hub's own request log
-# and for whoever reads it; nginx's access log should log $remote_addr, the
-# real peer, and treat any forwarded chain a client sent as untrusted input.
+# in its request log, and ignores forwarded headers entirely (section 10.5),
+# so behind a proxy both name the proxy. X-Forwarded-For below is the
+# conventional courtesy to whatever sits behind nginx and reads it; nginx's
+# own access log should log $remote_addr, the real peer, and treat any
+# forwarded chain a client sent as untrusted input.
 
 limit_conn_zone $binary_remote_addr zone=vyshka_per_ip:1m;
 limit_conn_zone $server_name        zone=vyshka_total:1m;
