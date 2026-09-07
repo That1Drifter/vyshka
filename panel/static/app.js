@@ -468,13 +468,18 @@ function requireIf(opts, present, errors) {
 // a non-empty value, standing in for the native check the form turns off
 // with novalidate; the message is the browser's.
 function constrained(input, opts, errors) {
-  if (input.checkValidity()) return true;
+  // Emptiness is the caller's (requireIf), so that a required field's
+  // message is the same whether the browser marks it required or not.
+  if (input.validity.valid || input.validity.valueMissing) return true;
   errors.push({ path: opts.path, message: input.validationMessage || 'is not valid' });
   return false;
 }
 
+// Include boxes are recognised by a marker the form sets, not by their name:
+// a manifest may legally declare a boolean property called __include, and its
+// checkbox must stay an ordinary data control.
 function isIncludeBox(node) {
-  return node instanceof HTMLInputElement && node.type === 'checkbox' && node.name.endsWith('.__include');
+  return node instanceof HTMLInputElement && node.dataset.include === 'true';
 }
 
 function wrap(opts, control, hint, inline) {
@@ -601,12 +606,14 @@ function numberField(schema, opts) {
     node: wrapped.node, setError: wrapped.setError,
     entered() { return input.value !== initial; },
     read(errors, present) {
+      // A number input holding text it cannot parse ("1e") reports an
+      // empty value with badInput set; that is a fault, not an omission.
+      if (!constrained(input, opts, errors)) return undefined;
       const text = input.value.trim();
       if (text === '') {
         requireIf(opts, present, errors);
         return undefined;
       }
-      if (!constrained(input, opts, errors)) return undefined;
       const value = Number(text);
       if (!Number.isFinite(value)) {
         errors.push({ path: opts.path, message: 'must be a number' });
@@ -720,6 +727,16 @@ function arrayField(schema, opts) {
       node: wrapped.node, setError: wrapped.setError,
       entered() { return axes.some((axis, index) => axis.value !== initial[index]); },
       read(errors, present) {
+        // Malformed text in an axis reads as empty with badInput set; it
+        // must not pass for a deliberately blank z or an untouched vector.
+        let malformed = false;
+        axes.forEach((axis, index) => {
+          if (axis.validity.badInput) {
+            errors.push({ path: opts.path + '[' + index + ']', message: 'coordinate ' + ['x', 'y', 'z'][index] + ' is not a number' });
+            malformed = true;
+          }
+        });
+        if (malformed) return undefined;
         const texts = axes.map((axis) => axis.value.trim());
         if (texts.every((text) => text === '')) {
           requireIf(opts, present, errors);
@@ -797,7 +814,7 @@ function objectField(schema, opts) {
     register: opts.register,
   }));
   const includeBox = optional && opts.path !== ''
-    ? el('input', { type: 'checkbox', name: opts.name + '.__include', 'aria-label': 'include ' + opts.label })
+    ? el('input', { type: 'checkbox', name: opts.name + '.__include', 'data-include': 'true', 'aria-label': 'include ' + opts.label })
     : null;
   const errorNode = el('span', { class: 'field-error', hidden: true });
   const node = el('fieldset', { 'data-path': opts.path },
