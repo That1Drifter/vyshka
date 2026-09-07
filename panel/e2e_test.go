@@ -69,7 +69,10 @@ var e2eManifest = map[string]any{
 				// omitted whole and must not block the dispatch.
 				"nested": map[string]any{
 					"type": "object", "required": []string{"key"},
-					"properties": map[string]any{"key": map[string]any{"type": "string"}},
+					"properties": map[string]any{
+						"key":   map[string]any{"type": "string"},
+						"count": map[string]any{"type": "integer", "minimum": 1},
+					},
 				},
 				// An optional object that does get filled in: once anything
 				// inside is entered it is present, its required empty array
@@ -296,11 +299,17 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("player target is not marked required")
 	}
 
+	// 6. The danger confirmation is the form's own check now that native
+	// validation is off: an unticked box is reported, nothing is sent.
+	run("dispatch without confirming",
+		chromedp.SendKeys(`input[name="referenceKey"]`, "76561198000000001", chromedp.ByQuery),
+		chromedp.SendKeys(amount, "50", chromedp.ByQuery),
+		chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("confirmation fault shown", `(function(){const e=document.querySelector("#form-errors");return e && !e.hidden && e.textContent.includes("confirmation")})()`)
+
 	// 6a. A half-filled vector is refused on the page, coordinate by
 	// coordinate, before anything is sent: a blank axis is never a zero.
 	run("fill in a vector with a blank y",
-		chromedp.SendKeys(`input[name="referenceKey"]`, "76561198000000001", chromedp.ByQuery),
-		chromedp.SendKeys(amount, "50", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.position.x"]`, "1.5", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.position.z"]`, "3", chromedp.ByQuery),
 		chromedp.Click("#confirm-danger", chromedp.ByQuery),
@@ -336,9 +345,12 @@ func TestPanelEndToEnd(t *testing.T) {
 
 	// 6d. A value the browser cannot refuse is refused by the hub, and the
 	// fault lands on its field. The optional object extra has its key
-	// entered and its required array left empty, which must travel as [];
-	// nested is unticked again and so omitted.
+	// entered and its required array left empty, which must travel as [].
+	// nested gets a count below its minimum typed in and is then unticked:
+	// excluded, so neither the browser's own constraint check nor the form
+	// may hold the dispatch over a value that is not being sent.
 	run("fill in an over-bound blood value",
+		chromedp.SendKeys(`input[name="params.nested.count"]`, "0", chromedp.ByQuery),
 		chromedp.Click(nestedInclude, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.extra.key"]`, "yes", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.blood"]`, "5000", chromedp.ByQuery),

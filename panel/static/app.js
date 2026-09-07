@@ -464,6 +464,19 @@ function requireIf(opts, present, errors) {
   if (opts.required && present) errors.push({ path: opts.path, message: 'is required' });
 }
 
+// constrained applies the input's own HTML constraints (min, max, step) to
+// a non-empty value, standing in for the native check the form turns off
+// with novalidate; the message is the browser's.
+function constrained(input, opts, errors) {
+  if (input.checkValidity()) return true;
+  errors.push({ path: opts.path, message: input.validationMessage || 'is not valid' });
+  return false;
+}
+
+function isIncludeBox(node) {
+  return node instanceof HTMLInputElement && node.type === 'checkbox' && node.name.endsWith('.__include');
+}
+
 function wrap(opts, control, hint, inline) {
   const errorNode = el('span', { class: 'field-error', hidden: true });
   const node = el('label', { class: 'field' + (inline ? ' inline' : ''), 'data-path': opts.path },
@@ -593,6 +606,7 @@ function numberField(schema, opts) {
         requireIf(opts, present, errors);
         return undefined;
       }
+      if (!constrained(input, opts, errors)) return undefined;
       const value = Number(text);
       if (!Number.isFinite(value)) {
         errors.push({ path: opts.path, message: 'must be a number' });
@@ -795,7 +809,12 @@ function objectField(schema, opts) {
     // Anything entered inside includes the object; the box itself is the
     // one control here that must not do that (unticking it excludes).
     const includeOnInput = (event) => {
-      if (event.target !== includeBox) includeBox.checked = true;
+      // A descendant's include box being ticked includes this object
+      // too; being unticked is an exclusion, not entered data, and must
+      // not undo an exclusion of this object made by hand.
+      if (event.target === includeBox) return;
+      if (isIncludeBox(event.target) && !event.target.checked) return;
+      includeBox.checked = true;
     };
     node.addEventListener('input', includeOnInput);
     node.addEventListener('change', includeOnInput);
@@ -999,8 +1018,12 @@ async function viewAction(app, route, seq) {
   let stopWatching = null;
   teardown = () => { if (stopWatching) stopWatching(); };
 
+  // novalidate: the browser's own constraint check has no notion of which
+  // optional objects are included, so a stray value inside an excluded one
+  // would block a dispatch that does not send it. Each field's read applies
+  // the input's constraints itself, for the fields that are present.
   const form = el('form', {
-    class: 'stack card', id: 'action-form',
+    class: 'stack card', id: 'action-form', novalidate: true,
     onsubmit: async (event) => {
       event.preventDefault();
       formErrors.hidden = true;
@@ -1009,7 +1032,10 @@ async function viewAction(app, route, seq) {
       const referenceKey = target ? target.read(errors, true) : undefined;
       const paramsValue = params.read(errors);
       const orphans = showFaults(errors, params.fieldsByPath);
-      if (errors.length > 0) {
+      if (confirmBox && !confirmBox.checked) {
+        orphans.push({ path: '', message: 'tick the confirmation box: this action is marked ' + danger + ' by its plugin' });
+      }
+      if (errors.length > 0 || orphans.length > 0) {
         if (orphans.length > 0) listFaults(formErrors, 'Fix these before dispatching:', orphans);
         return;
       }
