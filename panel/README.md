@@ -25,8 +25,10 @@ Tracked in issue #13 (panel v1). Live map and event feed views are follow-up tic
   the input; a real number's exclusive bound left to the hub), `string` a text input,
   `array` a one-value-per-line textarea, nested `object` a fieldset, and anything without
   `properties` a JSON textarea. `required` is enforced and `default` prefilled. An optional
-  field left empty is omitted from `params`, not sent as an empty string, and an optional
-  object left entirely empty is omitted whole whatever it requires of its children. String
+  field left empty is omitted from `params`, not sent as an empty string. An optional object
+  has an include checkbox in its legend: it ticks itself when anything inside is entered, can
+  be ticked by hand to send an object whose only values are its initial ones, and left
+  unticked omits the object whole whatever it requires of its children. String
   array items are taken as typed, whitespace included; an empty-string item cannot be
   expressed in the one-per-line form.
 - **`x-vyshka-widget` hints** shape the input and never its validation: `player` offers

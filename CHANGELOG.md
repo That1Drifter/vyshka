@@ -29,7 +29,8 @@ point if needed.
   with their bounds (an integer's exclusive bound shifted onto the input, a real number's
   left to the hub), strings to text inputs, arrays to a one-value-per-line textarea, nested
   objects to fieldsets, `required` and `default` honored, an optional field left empty
-  omitted rather than sent as "", an optional object left empty omitted whole. The
+  omitted rather than sent as "", an optional object sent only when included (its include
+  box ticks itself when anything inside is entered, or by hand). The
   `x-vyshka-widget` hints shape inputs and never validation: `player` suggests identities
   from the latest `state.players` snapshot, `vector` renders x, y, z numeric inputs,
   `webhook` a text input with a URL keyboard, `itemlist` a hinted text input; unknown hints

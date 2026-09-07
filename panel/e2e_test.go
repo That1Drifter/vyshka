@@ -320,11 +320,26 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("the plugin received %d dispatches; a form with a fault must not submit", plugin.dispatches())
 	}
 
-	// 6c. A value the browser cannot refuse is refused by the hub, and the
-	// fault lands on its field. The optional object now has its key entered
-	// and its required array left empty, which must travel as [].
-	run("fill in an over-bound blood value",
+	// 6c. Including an optional object by hand enforces its children even
+	// with nothing typed inside: the untouched nested.key is now a fault.
+	// Typing into extra ticked its box on its own; nested's is unticked.
+	nestedInclude := `input[name="params.nested.__include"]`
+	if evalString(`document.querySelector('input[name="params.extra.__include"]').checked ? "yes" : "no"`) != "yes" {
+		t.Fatalf("typing inside the optional object extra did not include it")
+	}
+	run("include the untouched optional object by hand",
 		setValue(`textarea[name="params.extra.payload"]`, ""),
+		chromedp.Click(nestedInclude, chromedp.ByQuery),
+		chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("required fault shown inside the hand-included object",
+		`(function(){const e=document.querySelector('label[data-path="nested.key"] .field-error');return e && !e.hidden && e.textContent.includes("required")})()`)
+
+	// 6d. A value the browser cannot refuse is refused by the hub, and the
+	// fault lands on its field. The optional object extra has its key
+	// entered and its required array left empty, which must travel as [];
+	// nested is unticked again and so omitted.
+	run("fill in an over-bound blood value",
+		chromedp.Click(nestedInclude, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.extra.key"]`, "yes", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.blood"]`, "5000", chromedp.ByQuery),
 		chromedp.Click("#dispatch", chromedp.ByQuery))

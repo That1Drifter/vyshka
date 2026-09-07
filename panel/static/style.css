@@ -227,6 +227,8 @@ fieldset {
 }
 
 legend { font-weight: 600; padding: 0 0.3rem; }
+legend .include input { margin: 0 0.2rem 0 0; vertical-align: middle; }
+legend .hint { font-weight: 400; color: var(--muted); font-size: 0.85em; }
 
 .vector { display: flex; gap: 0.5rem; max-width: 32rem; }
 .vector input { min-width: 0; }

@@ -760,39 +760,59 @@ function objectField(schema, opts) {
   const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : null;
   if (!properties || Object.keys(properties).length === 0) return jsonField(schema, opts);
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-  // An optional object left entirely empty is omitted whole, which is valid
-  // whatever it requires of its children; so its children's own required
-  // marks are soft: shown, and enforced by read once something in the
-  // object is entered (see the field contract above enforced).
-  const optional = !opts.required || opts.soft;
+  // An optional object is sent only when included, and inclusion is a
+  // control of its own (a checkbox in the legend) rather than an inference
+  // from its children: it ticks itself the moment anything inside is
+  // entered, so the common case costs nothing, and it can be ticked by hand
+  // to send an object whose only values are its initial ones (a required
+  // boolean left false, a prefilled default), which no inference from
+  // "was something typed" could express. Left unticked, the object is
+  // omitted whole, which is valid whatever it requires of its children, so
+  // their required marks are soft in the browser and enforced by read once
+  // the object is present. A required object is present whenever its parent
+  // is, whatever an optional ancestor made of its browser-side softness.
+  const optional = !opts.required;
   const keys = Object.keys(properties);
   const children = keys.map((key) => buildField(properties[key], {
     name: opts.name + '.' + key,
     path: opts.path ? opts.path + '.' + key : key,
     label: key,
     required: required.has(key),
-    soft: optional,
+    soft: optional || opts.soft,
     players: opts.players,
     register: opts.register,
   }));
+  const includeBox = optional && opts.path !== ''
+    ? el('input', { type: 'checkbox', name: opts.name + '.__include', 'aria-label': 'include ' + opts.label })
+    : null;
   const errorNode = el('span', { class: 'field-error', hidden: true });
   const node = el('fieldset', { 'data-path': opts.path },
-    el('legend', {}, opts.label, opts.required ? el('span', { class: 'req' }, '*') : null),
+    el('legend', {}, includeBox ? el('label', { class: 'include' }, includeBox, ' ') : null,
+      opts.label, opts.required ? el('span', { class: 'req' }, '*') : null,
+      includeBox ? el('span', { class: 'hint' }, ' (optional: ticked when included)') : null),
     children.map((child) => child.node), errorNode);
+  if (includeBox) {
+    // Anything entered inside includes the object; the box itself is the
+    // one control here that must not do that (unticking it excludes).
+    const includeOnInput = (event) => {
+      if (event.target !== includeBox) includeBox.checked = true;
+    };
+    node.addEventListener('input', includeOnInput);
+    node.addEventListener('change', includeOnInput);
+  }
   const field = {
     node,
     setError(message) {
       errorNode.textContent = message || '';
       errorNode.hidden = !message;
     },
-    entered() { return children.some((child) => child.entered()); },
+    entered() { return includeBox ? includeBox.checked : children.some((child) => child.entered()); },
     read(errors, present) {
-      // Decided before any child is read, from what was entered rather
-      // than from what the children would yield: the root is always sent,
-      // a required object of a present parent is sent, and an optional
-      // object is sent once anything inside it has been entered, which is
-      // also when its faults start to count.
-      const include = opts.path === '' || (!optional && present) || field.entered();
+      // Decided before any child is read: the root is always sent, a
+      // required object is sent whenever its parent is, and an optional
+      // object is sent when included, which is also when its faults start
+      // to count.
+      const include = opts.path === '' || (opts.required && present) || (includeBox !== null && includeBox.checked);
       if (!include) return undefined;
       // Null prototype: a manifest may name a property __proto__, and on
       // an ordinary object that assignment would go to the prototype
