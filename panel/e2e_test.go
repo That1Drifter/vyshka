@@ -71,6 +71,18 @@ var e2eManifest = map[string]any{
 					"type": "object", "required": []string{"key"},
 					"properties": map[string]any{"key": map[string]any{"type": "string"}},
 				},
+				// An optional object that does get filled in: once anything
+				// inside is entered it is present, its required empty array
+				// is sent as [], and invalid input inside it is a fault, not
+				// something the omission rule may swallow.
+				"extra": map[string]any{
+					"type": "object", "required": []string{"key", "items"},
+					"properties": map[string]any{
+						"key":     map[string]any{"type": "string"},
+						"items":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+						"payload": map[string]any{"type": "object"},
+					},
+				},
 			},
 		},
 	}},
@@ -296,10 +308,24 @@ func TestPanelEndToEnd(t *testing.T) {
 	waitJS("blank coordinate fault shown on the vector",
 		`(function(){const e=document.querySelector('label[data-path="position"] .field-error');return e && !e.hidden && e.textContent.includes("coordinate y")})()`)
 
-	// 6b. A value the browser cannot refuse is refused by the hub, and the
-	// fault lands on its field.
-	run("fill in an over-bound blood value",
+	// 6b. Invalid input inside an otherwise empty optional object is a fault
+	// on its field, never dropped by omitting the object.
+	run("type broken JSON into the optional object",
 		chromedp.SendKeys(`input[name="params.position.y"]`, "2", chromedp.ByQuery),
+		chromedp.SendKeys(`textarea[name="params.extra.payload"]`, "{", chromedp.ByQuery),
+		chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("invalid JSON fault shown inside the optional object",
+		`(function(){const e=document.querySelector('label[data-path="extra.payload"] .field-error');return e && !e.hidden && e.textContent.includes("JSON")})()`)
+	if plugin.dispatches() != 0 {
+		t.Fatalf("the plugin received %d dispatches; a form with a fault must not submit", plugin.dispatches())
+	}
+
+	// 6c. A value the browser cannot refuse is refused by the hub, and the
+	// fault lands on its field. The optional object now has its key entered
+	// and its required array left empty, which must travel as [].
+	run("fill in an over-bound blood value",
+		setValue(`textarea[name="params.extra.payload"]`, ""),
+		chromedp.SendKeys(`input[name="params.extra.key"]`, "yes", chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="params.blood"]`, "5000", chromedp.ByQuery),
 		chromedp.Click("#dispatch", chromedp.ByQuery))
 	waitJS("params_invalid fault shown on the blood field",
@@ -354,6 +380,7 @@ func TestPanelEndToEnd(t *testing.T) {
 	want := map[string]any{
 		"amount": float64(50), "blood": 4999.5, "reason": "event", "restoreBlood": true,
 		"position": []any{1.5, float64(2), float64(3)},
+		"extra":    map[string]any{"key": "yes", "items": []any{}},
 	}
 	if got.ReferenceKey != "76561198000000001" || got.Context != "player" {
 		t.Fatalf("dispatch target = %s/%s", got.Context, got.ReferenceKey)

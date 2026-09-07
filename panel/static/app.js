@@ -437,11 +437,31 @@ function describe(schema) {
   return parts.join(', ');
 }
 
-// enforced says whether a required field's emptiness should stop a submit:
-// true for a required field of a present object, false for one inside an
-// optional object nobody has touched, which the object itself omits whole.
+// Every field answers three questions. entered(): has the operator put
+// anything into it (a value different from what the form started with)?
+// read(errors, present): its JSON value, or undefined to omit the key, with
+// present saying whether the object it belongs to is being sent at all; a
+// required field reports emptiness only when present. setError(message):
+// show a fault from the hub or from read.
+//
+// Presence is what makes optional objects behave: an optional object with
+// nothing entered anywhere inside it is omitted whole, whatever its children
+// require, and a required child's auto-valued control (a checkbox, a select
+// with no blank option) does not count as entering anything. Once something
+// is entered, the object is present, every required child is enforced, and
+// every fault inside it is reported, so invalid input is never silently
+// dropped by the omission rule.
+//
+// enforced says whether the browser itself should refuse a submit with the
+// field empty: a required field of an object that is always present. Inside
+// an optional object the mark stays soft, and read enforces it instead once
+// the object is present.
 function enforced(opts) {
   return Boolean(opts.required) && !opts.soft;
+}
+
+function requireIf(opts, present, errors) {
+  if (opts.required && present) errors.push({ path: opts.path, message: 'is required' });
 }
 
 function wrap(opts, control, hint, inline) {
@@ -488,10 +508,15 @@ function enumField(schema, opts) {
     select.append(option);
   });
   const wrapped = wrap(opts, select, describe(schema));
+  const initial = select.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
-    read() {
-      if (select.value === '') return undefined;
+    entered() { return select.value !== initial; },
+    read(errors, present) {
+      if (select.value === '') {
+        requireIf(opts, present, errors);
+        return undefined;
+      }
       return schema.enum[Number(select.value)];
     },
   };
@@ -508,14 +533,17 @@ function booleanField(schema, opts) {
     const wrapped = wrap(opts, select, describe(schema));
     return {
       node: wrapped.node, setError: wrapped.setError,
+      entered() { return select.value !== ''; },
       read() { return select.value === '' ? undefined : select.value === 'true'; },
     };
   }
   const input = el('input', { type: 'checkbox', name: opts.name, id: nextId('field') });
   if (schema.default === true) input.checked = true;
+  const initial = input.checked;
   const wrapped = wrap(opts, input, describe(schema), true);
   return {
     node: wrapped.node, setError: wrapped.setError,
+    entered() { return input.checked !== initial; },
     read() { return input.checked; },
   };
 }
@@ -555,12 +583,14 @@ function numberField(schema, opts) {
     value: typeof schema.default === 'number' ? String(schema.default) : undefined,
   });
   const wrapped = wrap(opts, input, describe(schema));
+  const initial = input.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
-    read(errors) {
+    entered() { return input.value !== initial; },
+    read(errors, present) {
       const text = input.value.trim();
       if (text === '') {
-        if (opts.required) errors.push({ path: opts.path, message: 'is required' });
+        requireIf(opts, present, errors);
         return undefined;
       }
       const value = Number(text);
@@ -614,12 +644,14 @@ function stringField(schema, opts) {
   }
   const input = el('input', attrs);
   const wrapped = wrap(opts, datalist ? el('span', {}, input, datalist) : input, hint);
+  const initial = input.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
-    read(errors) {
+    entered() { return input.value !== initial; },
+    read(errors, present) {
       const value = input.value;
       if (value === '') {
-        if (opts.required) errors.push({ path: opts.path, message: 'is required' });
+        requireIf(opts, present, errors);
         return undefined;
       }
       return value;
@@ -669,12 +701,14 @@ function arrayField(schema, opts) {
     }
     const wrapped = wrap(opts, el('span', { class: 'vector' }, axes),
       'vector: x, y, and z, or x and y for a flat position');
+    const initial = axes.map((axis) => axis.value);
     return {
       node: wrapped.node, setError: wrapped.setError,
-      read(errors) {
+      entered() { return axes.some((axis, index) => axis.value !== initial[index]); },
+      read(errors, present) {
         const texts = axes.map((axis) => axis.value.trim());
         if (texts.every((text) => text === '')) {
-          if (opts.required) errors.push({ path: opts.path, message: 'is required' });
+          requireIf(opts, present, errors);
           return undefined;
         }
         // A blank coordinate is never a zero. The z axis alone may be left
@@ -700,19 +734,22 @@ function arrayField(schema, opts) {
   const kind = items.type ? items.type + ' items' : 'JSON items';
   const wrapped = wrap(opts, textarea, 'one value per line, ' + kind +
     (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : ''));
+  const initial = textarea.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
-    read(errors) {
-      // String items are taken as typed; other kinds are trimmed before
-      // parsing. Only blank lines are dropped, so a line of spaces is a
-      // string item and an empty string cannot be expressed here (a
-      // limitation of the one-per-line form, not of the protocol).
+    entered() { return textarea.value !== initial; },
+    read(errors, present) {
+      // String items are taken as typed, whitespace and all, and only an
+      // empty line is not an item, so an empty string cannot be expressed
+      // here (a limitation of the one-per-line form, not of the protocol).
+      // Other kinds are trimmed before parsing and blank lines dropped.
       const raw = textarea.value.split('\n');
-      const lines = (items.type === 'string' ? raw : raw.map((line) => line.trim())).filter((line) => line.trim() !== '');
-      // Empty: a required array of a present object is sent empty; a soft
-      // one is left to its parent, which omits itself when nothing else in
-      // it is set and otherwise lets the hub name the missing key.
-      if (lines.length === 0) return enforced(opts) ? [] : undefined;
+      const lines = items.type === 'string'
+        ? raw.filter((line) => line !== '')
+        : raw.map((line) => line.trim()).filter((line) => line !== '');
+      // Empty: a required array of a present object is sent empty; an
+      // optional one is omitted.
+      if (lines.length === 0) return opts.required && present ? [] : undefined;
       const values = lines.map((line, index) => coerceItem(items, line, errors, opts.path + '[' + index + ']'));
       return values.some((value) => value === undefined) ? undefined : values;
     },
@@ -725,8 +762,8 @@ function objectField(schema, opts) {
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   // An optional object left entirely empty is omitted whole, which is valid
   // whatever it requires of its children; so its children's own required
-  // marks are soft: shown, and reported only once something in the object
-  // is filled in.
+  // marks are soft: shown, and enforced by read once something in the
+  // object is entered (see the field contract above enforced).
   const optional = !opts.required || opts.soft;
   const keys = Object.keys(properties);
   const children = keys.map((key) => buildField(properties[key], {
@@ -748,22 +785,23 @@ function objectField(schema, opts) {
       errorNode.textContent = message || '';
       errorNode.hidden = !message;
     },
-    read(errors) {
+    entered() { return children.some((child) => child.entered()); },
+    read(errors, present) {
+      // Decided before any child is read, from what was entered rather
+      // than from what the children would yield: the root is always sent,
+      // a required object of a present parent is sent, and an optional
+      // object is sent once anything inside it has been entered, which is
+      // also when its faults start to count.
+      const include = opts.path === '' || (!optional && present) || field.entered();
+      if (!include) return undefined;
       // Null prototype: a manifest may name a property __proto__, and on
       // an ordinary object that assignment would go to the prototype
       // setter instead of becoming a key the hub can see.
       const value = Object.create(null);
-      const own = [];
-      let any = false;
       children.forEach((child, index) => {
-        const item = child.read(own);
-        if (item !== undefined) {
-          value[keys[index]] = item;
-          any = true;
-        }
+        const item = child.read(errors, true);
+        if (item !== undefined) value[keys[index]] = item;
       });
-      if (!any && optional && opts.path !== '') return undefined;
-      errors.push(...own);
       return value;
     },
   };
@@ -776,7 +814,11 @@ function nullField(schema, opts) {
   // optional one is left absent, which is the closest a form can come to
   // "not set" for a key whose value carries no information.
   const wrapped = wrap(opts, el('span', { class: 'muted mono' }, opts.required ? 'null' : 'not sent'), describe(schema));
-  return { node: wrapped.node, setError: wrapped.setError, read() { return opts.required ? null : undefined; } };
+  return {
+    node: wrapped.node, setError: wrapped.setError,
+    entered() { return false; },
+    read(errors, present) { return opts.required && present ? null : undefined; },
+  };
 }
 
 function jsonField(schema, opts) {
@@ -789,12 +831,14 @@ function jsonField(schema, opts) {
     textarea.placeholder = '{}';
   }
   const wrapped = wrap(opts, textarea, 'JSON' + (schema.type ? ', ' + schema.type : ''));
+  const initial = textarea.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
-    read(errors) {
+    entered() { return textarea.value !== initial; },
+    read(errors, present) {
       const text = textarea.value.trim();
       if (text === '') {
-        if (opts.required) errors.push({ path: opts.path, message: 'is required' });
+        requireIf(opts, present, errors);
         return undefined;
       }
       try {
@@ -831,7 +875,7 @@ function buildParamsForm(paramsSchema, players) {
     node: container,
     fieldsByPath,
     read(errors) {
-      const value = root.read(errors);
+      const value = root.read(errors, true);
       return value === undefined ? {} : value;
     },
   };
@@ -942,7 +986,7 @@ async function viewAction(app, route, seq) {
       formErrors.hidden = true;
       clear(formErrors);
       const errors = [];
-      const referenceKey = target ? target.read(errors) : undefined;
+      const referenceKey = target ? target.read(errors, true) : undefined;
       const paramsValue = params.read(errors);
       const orphans = showFaults(errors, params.fieldsByPath);
       if (errors.length > 0) {
