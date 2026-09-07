@@ -39,8 +39,15 @@ mod-defined events land in one append-only store with per-type retention, and op
 them at `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. All of it
 sits behind scoped Admin API tokens: a credential can be narrowed to one action code or one
 event namespace, every route enforces its scope, and every authenticated mutation lands in an
-append-only audit log at `GET /api/v1/audit`. Fifty-five conformance checks grade all of it in
-CI. State snapshots come next.
+append-only audit log at `GET /api/v1/audit`. Plugins push full-list state snapshots
+(players, vehicles, entities) that operators read at `GET /api/v1/servers/{id}/state/{type}`,
+signed webhooks deliver events and action outcomes to other systems with retries and a dead
+letter, and a per-mod key/value store serves both realms. The embedded panel at `/panel/`
+turns all of it into a page: an operator signs in with a token, picks a server and an
+action, and dispatches from a form generated from the manifest's schema, watching the
+result arrive. Seventy-two conformance checks grade the protocol surfaces in CI, a headless
+browser test grades the panel, and a clean-room DayZ plugin under `plugins/dayz` passes the
+plugin conformance harness against a live server.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -50,7 +57,8 @@ curl http://127.0.0.1:8080/healthz
 
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
 SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
-and `-log-level`. With no admin token configured the hub mints one at boot and logs it, which
+`-log-level`, and `-panel` (env `VYSHKA_PANEL`; `false` serves no panel). With no admin token
+configured the hub mints one at boot and logs it, which
 keeps first run to a single command; set the flag to keep it stable across restarts. That
 generated credential is first-run behavior only: once the hub holds a scoped token of its own
 it stops minting one, because a fresh superuser token on every boot would mean revocation
@@ -65,6 +73,7 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-manifest.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-action.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-events.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-tokens.sh
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-panel.sh    # then open http://127.0.0.1:8080/
 ```
 
 ## Why

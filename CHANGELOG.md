@@ -12,6 +12,53 @@ point if needed.
 
 ### Added
 
+- 2026-09-06: panel v1 with manifest-driven action forms (issue #13), the flagship UI of
+  milestone M4: an operator with no API knowledge signs in with an admin token, picks a
+  server and an action, fills in a form the panel generated from that action's manifest
+  schema, dispatches, and watches the result arrive. The panel is three static files
+  (`panel/static`: one HTML shell, one JavaScript module, one stylesheet, no build step)
+  embedded through a small `panel` Go package and served by the hub at `/panel/`, with `/`
+  redirecting there. The hub takes the handler through `hub.Config.Panel` and does not
+  import the panel, so the hub stays free of UI and an embedder can mount a different one or
+  none; `vyshka-hub serve -panel=false` (env `VYSHKA_PANEL=false`) serves none. Everything
+  the page does is a call any admin client could make: the token lives in the tab's
+  `sessionStorage` and rides as a bearer token, scopes apply unchanged, and there are no
+  cookies. The server list shows link state, credential state, enrolled plugin, last-seen
+  time, and the queued-envelope count, refreshed every five seconds. Forms follow section
+  6.1's schema subset: `enum` to a select, `boolean` to a checkbox, numbers to numeric inputs
+  with their bounds (an integer's exclusive bound shifted onto the input, a real number's
+  left to the hub), strings to text inputs, arrays to a one-value-per-line textarea, nested
+  objects to fieldsets, `required` and `default` honored, an optional field left empty
+  omitted rather than sent as "", an optional object sent only when included (its include
+  box ticks itself when anything inside is entered, or by hand). The
+  `x-vyshka-widget` hints shape inputs and never validation: `player` suggests identities
+  from the latest `state.players` snapshot, `vector` renders x, y, z numeric inputs,
+  `webhook` a text input with a URL keyboard, `itemlist` a hinted text input; unknown hints
+  fall back to the type, as section 6.1 requires. A `player` context adds a required target
+  field fed by the same snapshot. `warning` and `destructive` actions need an explicit
+  confirmation checkbox. Dispatch is one `POST` with an idempotency key bound to the exact
+  request (a resend after a lost answer reuses it, an edit or a later dispatch gets a fresh
+  one), then `GET /api/v1/actions/{id}` every second drawn as a
+  lifecycle timeline with the result payload or error; a `params_invalid` refusal lands on
+  the field the hub named. Every panel response carries a `Content-Security-Policy` that
+  confines the page to its own origin with no inline script or style, plus `nosniff`,
+  `frame-ancestors 'none'`, `no-referrer`, and `no-cache`; the JavaScript builds every node
+  from text, never markup, and a test fails if a markup sink appears, because manifest
+  labels and result payloads are plugin-supplied text.
+
+  The end-to-end test (`panel/e2e_test.go`) boots a real hub with the panel and a fake
+  plugin, then drives headless Chrome through sign-in (a bad token first), the server list,
+  the action list, the generated form (asserting bounds, defaults, options, widget inputs,
+  and the player suggestions), a dispatch the hub refuses with `params_invalid` (the fault
+  must land on its field and the plugin must never see it), a corrected dispatch that
+  round-trips to `completed` with the plugin's result on the page, and sign-out. It skips
+  where no Chromium-family browser exists and fails instead under `VYSHKA_E2E=required`,
+  which CI sets; the browser driver `github.com/chromedp/chromedp` is the module's first
+  dependency beyond the SQLite driver, used by tests only. `scripts/demo-panel.sh` stands up
+  a fake plugin in bash to click against. The browser-driven heal of a live DayZ player is a
+  manual smoke test beyond CI, recorded in #13 like #14's curl heal. No protocol changes.
+  Live map and event feed views are follow-up tickets.
+
 - 2026-09-05: completed the DayZ live-player heal acceptance demo for issue #14:
   curl-to-hub dispatch returned health 100, blood 5000, and shock 100, with player visual
   confirmation; a fresh heal also cleared bleeding. Idempotent retry, nonexistent-player

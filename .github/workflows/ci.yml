@@ -34,6 +34,11 @@ jobs:
         run: go vet ./...
 
       - name: Test
+        env:
+          # The panel's end-to-end test drives the headless Chrome the runner
+          # image ships. Required here so a missing browser fails the job
+          # instead of silently skipping the one test that grades the panel.
+          VYSHKA_E2E: required
         run: go test ./...
 
       - name: Build
