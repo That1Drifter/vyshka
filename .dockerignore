@@ -1,0 +1,20 @@
+# Keep the build context to what the hub build needs. The DayZ mod build
+# tree, spike results, and local databases are large and never compiled in;
+# the deployment's secret and data directory must never enter a build context
+# at all, whichever stage would copy them.
+.git
+.github
+.scratch
+bin
+*.db
+*.db-shm
+*.db-wal
+**/*.db
+**/*.db-shm
+**/*.db-wal
+deploy/admin-token
+deploy/data
+plugins/dayz/build
+spikes/*/results
+CLAUDE.md
+vyshka-spec.md

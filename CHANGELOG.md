@@ -12,6 +12,15 @@ point if needed.
 
 ### Added
 
+- 2026-09-07: the container and the reference single-host deployment. `Dockerfile` builds
+  the hub as a static binary on a distroless base running as a non-root user, with the
+  SQLite file on `/data` and the admin token read from a file rather than the environment;
+  `.dockerignore` keeps the DayZ build tree and spike results out of the context. `deploy/`
+  holds a compose file that runs the image on loopback and an nginx server block carrying
+  the two settings a hub needs from its proxy (a read timeout above the 60 s poll hold, a
+  body cap at or above the hub's 1 MiB), with a README. No public plain-HTTP port is part of
+  the layout. First used for the staging hub on the OVH dedicated box.
+
 - 2026-09-06: panel v1 with manifest-driven action forms (issue #13), the flagship UI of
   milestone M4: an operator with no API knowledge signs in with an admin token, picks a
   server and an action, fills in a form the panel generated from that action's manifest
