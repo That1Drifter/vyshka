@@ -1,16 +1,27 @@
-# nginx in front of a hub (spec/protocol.md section 3.3). Two settings matter
-# beyond the usual proxy lines:
+# nginx in front of a hub (spec/protocol.md section 3.3). Beyond the usual
+# proxy lines, four settings matter:
 #
 # - proxy_read_timeout must exceed the longest poll hold the hub will make,
 #   60 s (section 3.1), or the proxy cuts held polls short and every plugin
-#   sees a transport error once a minute.
+#   sees a transport error once a minute. It is an inactivity timeout.
 # - client_max_body_size must be at least the hub's own 1 MiB request cap, or
 #   the proxy answers 413 in HTML where the hub would answer in JSON.
+# - client_body_timeout and the limit_conn budgets bound what an anonymous
+#   client can hold at the proxy. nginx buffers request bodies before
+#   forwarding, so a client trickling a body sits in nginx's workers, never
+#   reaching the hub's own connection cap or read deadline; on a host that
+#   serves other sites from the same nginx, that is where a budget belongs.
+# - A plugin holds one poll connection and a panel a handful, so the per-IP
+#   budget below is generous for legitimate use.
 #
 # The hub records the peer address of the connection as the audit source and
 # never trusts a forwarded header (section 10.5), so behind a proxy the audit
-# log names the proxy; the X-Forwarded-For line below is for the proxy's own
-# access log.
+# log names the proxy. X-Forwarded-For below is for the hub's own request log
+# and for whoever reads it; nginx's access log should log $remote_addr, the
+# real peer, and treat any forwarded chain a client sent as untrusted input.
+
+limit_conn_zone $binary_remote_addr zone=vyshka_per_ip:1m;
+limit_conn_zone $server_name        zone=vyshka_total:1m;
 
 server {
     listen 443 ssl;
@@ -20,8 +31,13 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/hub.example.net/privkey.pem;
 
     client_max_body_size 2m;
+    client_body_timeout  15s;
+    limit_conn vyshka_per_ip 20;
+    limit_conn vyshka_total  200;
 
     location / {
+        # No URI part on the upstream, so the request path and query pass
+        # through unchanged; do not append a trailing slash here.
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
