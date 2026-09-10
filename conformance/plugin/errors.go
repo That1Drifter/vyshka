@@ -334,6 +334,9 @@ var errorStages = []Stage{
 			if err != nil {
 				return fmt.Errorf("%w; a refused batch must leave the plugin able to execute the next action", err)
 			}
+			if !sequential() {
+				return ungraded{"the candidate had more than one poll in flight during this stage, so the pause after a refusal and the count of resends of the refused envelope could not be graded (section 3.1 asks for one poll at a time); everything else passed"}
+			}
 			return nil
 		},
 	},
@@ -395,6 +398,9 @@ var errorStages = []Stage{
 			}
 			if enrollAfter != enrollBefore {
 				return fmt.Errorf("the plugin re-enrolled over a malformed 200")
+			}
+			if hub.overlappingPolls.Load() != overlapsBefore {
+				return ungraded{"the candidate had more than one poll in flight during this stage, so the pause before its retry could not be graded (section 3.1 asks for one poll at a time); everything else passed"}
 			}
 			return nil
 		},

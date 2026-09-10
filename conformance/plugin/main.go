@@ -171,10 +171,14 @@ func main() {
 			status := "PASS"
 			if !result.Passed {
 				status = "FAIL"
+			} else if result.Note != "" {
+				status = "PART"
 			}
 			fmt.Printf("%s  %-26s %s\n", status, result.ID, result.Title)
 			if !result.Passed {
 				fmt.Printf("      %s\n", result.Error)
+			} else if result.Note != "" {
+				fmt.Printf("      not graded: %s\n", result.Note)
 			}
 		}
 		fmt.Printf("\n%d checks, %d failed\n", len(results), failed)

@@ -222,7 +222,10 @@ rely on, because some game scripting environments allow nothing beyond callback-
   SHOULD respond early as soon as messages are queued for the plugin. The response body is
   a batch of envelopes.
 - The plugin SHOULD re-poll immediately after each response so a request is normally held
-  open, giving near-zero command latency over plain HTTP.
+  open, giving near-zero command latency over plain HTTP, and SHOULD keep at most one poll
+  in flight per session, sending the next only once the previous one was answered or given
+  up. The recovery rules of section 2.3 are stated for that discipline: with several polls
+  outstanding, neither side can tell a retry from a request that was already on its way.
 
 #### 3.1.1 Negotiating `pollTimeout`
 

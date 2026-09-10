@@ -1,9 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ungraded is what a stage returns when everything it could assert passed
+// but part of what it meant to grade could not be established in a black
+// box, and it wants that said rather than passed over: the result counts as
+// passed and carries the reason as a note.
+type ungraded struct{ reason string }
+
+func (u ungraded) Error() string { return u.reason }
 
 // Stage is one graded step. Unlike the hub suite's checks, stages are not
 // independent: the candidate is a single long-lived process being walked
@@ -443,11 +452,14 @@ func (h *harness) awaitMorePolls(count int, context string) error {
 
 // Result is one graded stage, in the same shape the hub suite reports.
 type Result struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Section    string `json:"section"`
-	Passed     bool   `json:"passed"`
-	Error      string `json:"error,omitempty"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Section string `json:"section"`
+	Passed  bool   `json:"passed"`
+	Error   string `json:"error,omitempty"`
+	// Note says what a passed stage could not grade, when there is such a
+	// thing; a reader should not take a pass with a note for a full pass.
+	Note       string `json:"note,omitempty"`
 	DurationMs int64  `json:"durationMs"`
 }
 
@@ -474,6 +486,12 @@ func runStages(h *harness) []Result {
 			}
 		}
 		result.DurationMs = time.Since(start).Milliseconds()
+		var partial ungraded
+		if errors.As(err, &partial) {
+			result.Passed = true
+			result.Note = partial.reason
+			err = nil
+		}
 		result.Passed = err == nil
 		if err != nil {
 			result.Error = err.Error()
