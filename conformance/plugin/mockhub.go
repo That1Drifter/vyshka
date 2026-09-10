@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -135,6 +136,17 @@ type mockHub struct {
 	// first, and timestamps can tie on a coarse clock).
 	acceptGen    uint64
 	lastAccepted map[string]uint64
+	// returned records at which seq and session a snapshotted envelope came
+	// back, so a stage can bind the seq it expects to the recovery it saw.
+	returned map[string]returnRecord
+	// pollsInFlight and overlappingPolls (atomic, outside the mutex) watch
+	// whether the candidate ever has more than one poll open at once. The
+	// timing and resend-count assertions of the error stages assume one
+	// request at a time, which is how every reference plugin works; against
+	// a candidate that overlaps polls they cannot tell a retry from a
+	// request already in flight, so they stand down.
+	pollsInFlight    atomic.Int32
+	overlappingPolls atomic.Int64
 	// expectedContent is what a provocation saw of each fresh envelope it
 	// refused or swallowed; ingest faults a later arrival of that id whose
 	// type, ts or body changed.
@@ -156,12 +168,13 @@ type mockHub struct {
 // the candidate could read it) or as an opaque 400, and how many times the
 // condemned id has been refused in all.
 type batchRejection struct {
-	ID     string
-	Type   string
-	Seq    int64
-	Index  int
-	Others []string // the other fresh envelopes of the refused batch
-	Inline bool
+	ID        string
+	Type      string
+	Seq       int64
+	Index     int
+	Others    []string // the other fresh envelopes of the refused batch
+	OtherSeqs []int64  // their seqs as sent in the refused batch
+	Inline    bool
 	// Refusals counts every refusal of the condemned id; Events records each
 	// one with the session it happened on and whether that session had
 	// polled successfully before it, and Accepted records the poll that
@@ -173,6 +186,12 @@ type batchRejection struct {
 	At       time.Time
 	PollsAt  int    // totalPolls when the batch was first refused
 	GenAt    uint64 // acceptGen when the batch was first refused
+}
+
+// returnRecord is where a snapshotted envelope was accepted again.
+type returnRecord struct {
+	Seq     int64
+	Session int
 }
 
 // contentSnapshot is what a provocation saw of a fresh envelope it did not
@@ -802,6 +821,10 @@ type pollWire struct {
 }
 
 func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
+	if h.pollsInFlight.Add(1) > 1 {
+		h.overlappingPolls.Add(1)
+	}
+	defer h.pollsInFlight.Add(-1)
 	h.abortIfSevered()
 	inline, ok := h.errorMode(w, r)
 	if !ok {
@@ -866,6 +889,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			h.rememberContentLocked(ids[firstFresh+1:], 1)
 			for _, other := range ids[firstFresh+1:] {
 				rejection.Others = append(rejection.Others, other.ID)
+				rejection.OtherSeqs = append(rejection.OtherSeqs, other.Seq)
 			}
 			h.rejected = rejection
 			trace("refusing batch: condemned %s at index %d seq %d, others %v, processedTop %d", rejection.ID, firstFresh, rejection.Seq, rejection.Others, h.processedTop)
@@ -1153,6 +1177,10 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 				if expected.Session == h.sessionOrdinal && seq != expected.Seq && seq != expected.Seq-expected.Shift {
 					h.faultLocked("9.1", "envelope %s came back at seq %d after the hub refused or garbled the batch carrying it; within a session it keeps seq %d (less one for an envelope set aside ahead of it, section 2.3), and only a new session renumbers", id, seq, expected.Seq)
 				}
+				if h.returned == nil {
+					h.returned = map[string]returnRecord{}
+				}
+				h.returned[id] = returnRecord{Seq: seq, Session: h.sessionOrdinal}
 				delete(h.expectedContent, id)
 			}
 			h.bySeq[seq] = envelope

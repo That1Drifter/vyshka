@@ -116,6 +116,15 @@ var errorStages = []Stage{
 				enrollBefore = hub.enrollCount
 			})
 
+			overlapsBefore := hub.overlappingPolls.Load()
+			// sequential reports whether the candidate kept one poll in
+			// flight at a time since the stage began. The timing and
+			// resend-count assertions below assume it: against a candidate
+			// that overlaps polls, a request already in flight when the
+			// refusal went out cannot be told from a retry made after
+			// reading it, so those assertions stand down rather than guess.
+			sequential := func() bool { return hub.overlappingPolls.Load() == overlapsBefore }
+
 			hub.armBatchRejection()
 			h.dispatch(actionRejected)
 			err := hub.await(h.checkTimeout, "a batch carrying a fresh envelope to refuse", func() bool {
@@ -169,12 +178,13 @@ var errorStages = []Stage{
 				tookResend = resent()
 				refusals = hub.rejected.Refusals
 			})
-			if rejection.Inline && refusals > 1 {
+			refusalSession := rejection.Events[0].Ordinal
+			if tookResend && rejection.Inline && sequential() {
 				// The refusal travelled inline because the plugin asked for
-				// it, so it could read details.index; sending the condemned
-				// envelope again, even once before setting it aside, is not
-				// a recovery for such a plugin, it is ignoring the refusal.
-				return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d time(s) instead of setting it aside at once (section 2.3)", rejection.Index, refusals-1)
+				// it, so it could read details.index; resending the condemned
+				// envelope until the hub relented is not a recovery for such
+				// a plugin, it is ignoring the refusal.
+				return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d time(s) until the hub relented instead of setting it aside (section 2.3)", rejection.Index, refusals-1)
 			}
 
 			if !tookResend {
@@ -184,14 +194,42 @@ var errorStages = []Stage{
 					return err
 				}
 				var condemnedBack bool
-				var ordinalAfter, enrollAfter int
+				var ordinalAfter, enrollAfter, refusals int
+				returned := map[string]returnRecord{}
 				hub.view(func() {
 					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.GenAt)
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
+					refusals = hub.rejected.Refusals
+					for _, id := range rejection.Others {
+						if record, back := hub.returned[id]; back {
+							returned[id] = record
+						}
+					}
 				})
 				if condemnedBack {
 					return fmt.Errorf("the envelope the hub refused (%s, type %s, index %d) was sent again; a plugin sets it aside and surfaces it rather than resending what the hub will refuse forever (section 2.3)", rejection.ID, rejection.Type, rejection.Index)
+				}
+				if rejection.Inline && refusals > 1 && sequential() {
+					// The refusal travelled inline because the plugin asked
+					// for it, so it could read details.index; sending the
+					// condemned envelope again, even once before setting it
+					// aside, is not a recovery for such a plugin, it is
+					// ignoring the refusal. Counted after the observation
+					// window so a late resend is seen too.
+					return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d time(s) before setting it aside (section 2.3)", rejection.Index, refusals-1)
+				}
+				// Setting the envelope aside on the same session closes the
+				// gap: everything behind it comes back one seq lower. A new
+				// session renumbers instead and is checked elsewhere.
+				for i, id := range rejection.Others {
+					record, back := returned[id]
+					if !back || record.Session != refusalSession {
+						continue
+					}
+					if want := rejection.OtherSeqs[i] - 1; record.Seq != want {
+						return fmt.Errorf("after setting aside the envelope at index %d the plugin sent %s at seq %d, want %d; the envelopes behind a set-aside envelope move down one seq to close the gap (section 2.3)", rejection.Index, id, record.Seq, want)
+					}
 				}
 				// Section 2.3 lets a plugin that cannot establish the safety of
 				// closing the gap start one new session instead; more than one
@@ -214,6 +252,7 @@ var errorStages = []Stage{
 				var events []refusalEvent
 				var accepted *refusalEvent
 				sessionStarts := map[int]time.Time{}
+				returned := map[string]returnRecord{}
 				hub.view(func() {
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
@@ -225,7 +264,20 @@ var errorStages = []Stage{
 					for ordinal, at := range hub.sessionStarts {
 						sessionStarts[ordinal] = at
 					}
+					for _, id := range rejection.Others {
+						if record, back := hub.returned[id]; back {
+							returned[id] = record
+						}
+					}
 				})
+				// A resend is an unchanged retransmission: within the refusal's
+				// session every envelope keeps the seq it was sent with.
+				for i, id := range rejection.Others {
+					record, back := returned[id]
+					if back && record.Session == refusalSession && record.Seq != rejection.OtherSeqs[i] {
+						return fmt.Errorf("the plugin resent %s at seq %d instead of %d; within a session a retransmission keeps its seq (section 9.1)", id, record.Seq, rejection.OtherSeqs[i])
+					}
+				}
 				if ordinalAfter > ordinalBefore+2 {
 					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, len(events))
 				}
@@ -238,6 +290,9 @@ var errorStages = []Stage{
 				// all, a replacement session included. Section 2.3 makes the
 				// wait at least 1 s.
 				for i, refusal := range events {
+					if !sequential() {
+						break
+					}
 					var next *refusalEvent
 					if i+1 < len(events) {
 						next = &events[i+1]
@@ -297,6 +352,7 @@ var errorStages = []Stage{
 			// The garbled answer swallows a batch the plugin is waiting on an
 			// ack for, so the stage can see both that the plugin polls again
 			// and that it still delivers what the garbage did not acknowledge.
+			overlapsBefore := hub.overlappingPolls.Load()
 			hub.armGarble()
 			h.dispatch(actionGarbled)
 			err := hub.await(h.checkTimeout, "a poll carrying a fresh envelope to answer with garbage", func() bool {
@@ -321,11 +377,12 @@ var errorStages = []Stage{
 				return fmt.Errorf("%w; the garbled answer acked nothing, so the plugin must still deliver every envelope it carried (section 9.3)", err)
 			}
 			// The pause is measured to the retry itself, the poll that carried
-			// a swallowed envelope again, not to whatever poll the plugin may
-			// already have had in flight.
+			// a swallowed envelope again, and only for a candidate that keeps
+			// one poll in flight: with overlapping polls, one carrying the
+			// same envelope may already have been on its way.
 			var retryAt time.Time
 			hub.view(func() { retryAt = hub.garbled.RetryAt })
-			if pause := retryAt.Sub(garbled.At); pause < minBackoff {
+			if pause := retryAt.Sub(garbled.At); pause < minBackoff && hub.overlappingPolls.Load() == overlapsBefore {
 				return fmt.Errorf("the plugin sent the swallowed batch again %s after a malformed 200; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
 			}
 			var ordinalAfter, enrollAfter int
