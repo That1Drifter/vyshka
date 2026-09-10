@@ -235,7 +235,8 @@ func decodeHubError(raw json.RawMessage) *hubError {
 	// instruction to remove anything: decoded separately, so a failed decode
 	// cannot leave a zero behind that looks like "the first envelope".
 	var index int
-	if len(wire.Details.Index) > 0 && json.Unmarshal(wire.Details.Index, &index) == nil {
+	rawIndex := bytes.TrimSpace(wire.Details.Index)
+	if len(rawIndex) > 0 && string(rawIndex) != "null" && json.Unmarshal(rawIndex, &index) == nil {
 		failure.Index, failure.HasIdx = index, true
 	}
 	return failure

@@ -84,18 +84,19 @@ func (h *mockHub) armGarble() {
 }
 
 // acceptedAfterLocked reports whether an envelope with this id was accepted
-// as a fresh envelope, in any session, at or after the given moment. A tie
-// counts: on Windows the monotonic clock advances in ticks of up to 15 ms,
-// and a plugin on loopback can resend inside the tick that refused it. Call
-// with the lock held (inside view or await).
-func (h *mockHub) acceptedAfterLocked(id string, after time.Time) bool {
+// as a fresh envelope, in any session, after the provocation that recorded
+// the given acceptance generation. Generations order events exactly where a
+// clock cannot: on Windows the monotonic clock advances in ticks of up to
+// 15 ms, and a plugin on loopback can resend inside the tick that refused it.
+// Call with the lock held (inside view or await).
+func (h *mockHub) acceptedAfterLocked(id string, gen uint64) bool {
 	at, seen := h.lastAccepted[id]
-	return seen && !at.Before(after)
+	return seen && at > gen
 }
 
-func (h *mockHub) allAcceptedAfterLocked(ids []string, after time.Time) bool {
+func (h *mockHub) allAcceptedAfterLocked(ids []string, gen uint64) bool {
 	for _, id := range ids {
-		if !h.acceptedAfterLocked(id, after) {
+		if !h.acceptedAfterLocked(id, gen) {
 			return false
 		}
 	}
@@ -139,13 +140,13 @@ var errorStages = []Stage{
 			// mock has ready, and delivers the whole batch once the mock
 			// relents.
 			setAside := func() bool {
-				return hub.allAcceptedAfterLocked(rejection.Others, rejection.At) &&
-					!hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
+				return hub.allAcceptedAfterLocked(rejection.Others, rejection.GenAt) &&
+					!hub.acceptedAfterLocked(rejection.ID, rejection.GenAt) &&
 					hub.totalPolls >= rejection.PollsAt+2
 			}
 			resent := func() bool {
-				return hub.rejectRemaining == 0 && hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
-					hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
+				return hub.rejectRemaining == 0 && hub.acceptedAfterLocked(rejection.ID, rejection.GenAt) &&
+					hub.allAcceptedAfterLocked(rejection.Others, rejection.GenAt)
 			}
 			err = hub.await(h.checkTimeout+slowRetryAllowance, "the plugin to recover from the refused batch", func() bool {
 				return setAside() || resent()
@@ -154,8 +155,8 @@ var errorStages = []Stage{
 				var othersBack, condemnedBack bool
 				var pollsSince, remaining int
 				hub.view(func() {
-					othersBack = hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
-					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.At)
+					othersBack = hub.allAcceptedAfterLocked(rejection.Others, rejection.GenAt)
+					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.GenAt)
 					pollsSince = hub.totalPolls - rejection.PollsAt
 					remaining = hub.rejectRemaining
 				})
@@ -168,12 +169,12 @@ var errorStages = []Stage{
 				tookResend = resent()
 				refusals = hub.rejected.Refusals
 			})
-			if tookResend && rejection.Inline {
+			if rejection.Inline && refusals > 1 {
 				// The refusal travelled inline because the plugin asked for
-				// it, so it could read details.index; resending the
-				// condemned envelope until the hub relented is not a
-				// recovery for such a plugin, it is ignoring the refusal.
-				return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d times instead of setting it aside (section 2.3)", rejection.Index, refusals-1)
+				// it, so it could read details.index; sending the condemned
+				// envelope again, even once before setting it aside, is not
+				// a recovery for such a plugin, it is ignoring the refusal.
+				return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d time(s) instead of setting it aside at once (section 2.3)", rejection.Index, refusals-1)
 			}
 
 			if !tookResend {
@@ -185,7 +186,7 @@ var errorStages = []Stage{
 				var condemnedBack bool
 				var ordinalAfter, enrollAfter int
 				hub.view(func() {
-					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.At)
+					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.GenAt)
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
 				})
@@ -313,16 +314,19 @@ var errorStages = []Stage{
 			if err != nil {
 				return fmt.Errorf("%w; a 200 whose body is not a JSON object is retried after backoff on the same session (section 2.3)", err)
 			}
-			var nextPollAt time.Time
-			hub.view(func() { nextPollAt = hub.garbled.NextPollAt })
-			if pause := nextPollAt.Sub(garbled.At); pause < minBackoff {
-				return fmt.Errorf("the plugin polled again %s after a malformed 200; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
-			}
 			err = hub.await(h.checkTimeout, "the batch the garbled answer swallowed to be sent again", func() bool {
-				return hub.allAcceptedAfterLocked(garbled.IDs, garbled.At)
+				return hub.allAcceptedAfterLocked(garbled.IDs, garbled.GenAt)
 			})
 			if err != nil {
 				return fmt.Errorf("%w; the garbled answer acked nothing, so the plugin must still deliver every envelope it carried (section 9.3)", err)
+			}
+			// The pause is measured to the retry itself, the poll that carried
+			// a swallowed envelope again, not to whatever poll the plugin may
+			// already have had in flight.
+			var retryAt time.Time
+			hub.view(func() { retryAt = hub.garbled.RetryAt })
+			if pause := retryAt.Sub(garbled.At); pause < minBackoff {
+				return fmt.Errorf("the plugin sent the swallowed batch again %s after a malformed 200; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
 			}
 			var ordinalAfter, enrollAfter int
 			hub.view(func() {

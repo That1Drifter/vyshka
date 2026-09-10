@@ -128,10 +128,13 @@ type mockHub struct {
 	rejectArmed     bool
 	rejectRemaining int
 	rejected        *batchRejection
-	// lastAccepted is when each id was last accepted as a fresh envelope, in
-	// any session, so a stage can tell an arrival after its provocation from
-	// one before it; idContent only remembers the first.
-	lastAccepted map[string]time.Time
+	// acceptGen counts fresh acceptances; lastAccepted maps each id to the
+	// generation at which it was last accepted as a fresh envelope, in any
+	// session, so a stage can tell an arrival after its provocation from one
+	// before it by order rather than by clock (idContent only remembers the
+	// first, and timestamps can tie on a coarse clock).
+	acceptGen    uint64
+	lastAccepted map[string]uint64
 	// expectedContent is what a provocation saw of each fresh envelope it
 	// refused or swallowed; ingest faults a later arrival of that id whose
 	// type, ts or body changed.
@@ -168,16 +171,22 @@ type batchRejection struct {
 	Events   []refusalEvent
 	Accepted *refusalEvent
 	At       time.Time
-	PollsAt  int // totalPolls when the batch was first refused
+	PollsAt  int    // totalPolls when the batch was first refused
+	GenAt    uint64 // acceptGen when the batch was first refused
 }
 
 // contentSnapshot is what a provocation saw of a fresh envelope it did not
 // ingest, so that when the plugin sends it again the mock can check it came
-// back unchanged (section 9.1): same type, same ts, same body.
+// back unchanged (section 9.1): same type, same ts, same body, and, within
+// the same session, the seq it had less the shift the section 2.3 quarantine
+// allows (one for every envelope refused ahead of it, none otherwise).
 type contentSnapshot struct {
-	Type string
-	TS   string
-	Body string
+	Type    string
+	TS      string
+	Body    string
+	Seq     int64
+	Session int
+	Shift   int64
 }
 
 type refusalEvent struct {
@@ -192,10 +201,12 @@ type refusalEvent struct {
 type garbleRecord struct {
 	IDs     []string
 	PollsAt int
+	GenAt   uint64
 	At      time.Time
-	// NextPollAt is when the plugin's next poll arrived after the garbled
-	// answer, so the stage can grade the pause before it.
-	NextPollAt time.Time
+	// RetryAt is when the poll carrying the swallowed envelopes again
+	// arrived, so the stage can grade the pause before the retry itself
+	// rather than before some poll the plugin already had in flight.
+	RetryAt time.Time
 }
 
 // batchField is the framing of one envelope in a batch as the provocations
@@ -208,12 +219,12 @@ type batchField struct {
 	Body json.RawMessage `json:"body"`
 }
 
-func (f batchField) snapshot() contentSnapshot {
+func (f batchField) snapshot(session int, shift int64) contentSnapshot {
 	body := "{}"
 	if len(f.Body) > 0 {
 		body = string(f.Body)
 	}
-	return contentSnapshot{Type: f.Type, TS: string(f.TS), Body: body}
+	return contentSnapshot{Type: f.Type, TS: string(f.TS), Body: body, Seq: f.Seq, Session: session, Shift: shift}
 }
 
 // batchIDs decodes the framing of every envelope in a batch, in order,
@@ -846,10 +857,13 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			now := time.Now()
 			rejection := &batchRejection{
 				ID: ids[firstFresh].ID, Type: ids[firstFresh].Type, Seq: ids[firstFresh].Seq, Index: firstFresh,
-				Inline: inline, Refusals: 1, At: now, PollsAt: h.totalPolls,
+				Inline: inline, Refusals: 1, At: now, PollsAt: h.totalPolls, GenAt: h.acceptGen,
 				Events: []refusalEvent{{At: now, Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0}},
 			}
-			h.rememberContentLocked(ids[firstFresh:])
+			// The condemned envelope may only ever come back at its own seq;
+			// everything behind it moves down by one when it is set aside.
+			h.rememberContentLocked(ids[firstFresh:firstFresh+1], 0)
+			h.rememberContentLocked(ids[firstFresh+1:], 1)
 			for _, other := range ids[firstFresh+1:] {
 				rejection.Others = append(rejection.Others, other.ID)
 			}
@@ -899,11 +913,11 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		}
 		if h.garbleArmed && firstFresh >= 0 {
 			h.garbleArmed = false
-			record := &garbleRecord{PollsAt: h.totalPolls, At: time.Now()}
+			record := &garbleRecord{PollsAt: h.totalPolls, GenAt: h.acceptGen, At: time.Now()}
 			for _, one := range ids[firstFresh:] {
 				record.IDs = append(record.IDs, one.ID)
 			}
-			h.rememberContentLocked(ids[firstFresh:])
+			h.rememberContentLocked(ids[firstFresh:], 0)
 			h.garbled = record
 			h.signalLocked()
 			h.mu.Unlock()
@@ -914,8 +928,19 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.garbled != nil && h.garbled.NextPollAt.IsZero() {
-		h.garbled.NextPollAt = time.Now()
+	if h.garbled != nil && h.garbled.RetryAt.IsZero() && len(request.Envelopes) > 0 {
+		// The retry is the poll that carries a swallowed envelope again, not
+		// whichever poll the plugin already had in flight.
+		ids := batchIDs(request.Envelopes)
+	retry:
+		for _, one := range ids {
+			for _, swallowed := range h.garbled.IDs {
+				if one.ID == swallowed {
+					h.garbled.RetryAt = time.Now()
+					break retry
+				}
+			}
+		}
 	}
 	h.pollsThisSession++
 	h.totalPolls++
@@ -1110,14 +1135,23 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 				h.idContent[id] = envelope
 			}
 			if h.lastAccepted == nil {
-				h.lastAccepted = map[string]time.Time{}
+				h.lastAccepted = map[string]uint64{}
 			}
-			h.lastAccepted[id] = envelope.ReceivedAt
+			h.acceptGen++
+			h.lastAccepted[id] = h.acceptGen
 			if expected, remembered := h.expectedContent[id]; remembered {
 				// A provocation saw this envelope and did not ingest it;
-				// coming back, it must be the same message (section 9.1).
-				if expected.Type != envelopeType || !tsEqual(expected.TS, tsRaw) || !jsonEqual(expected.Body, bodyRaw) {
+				// coming back, it must be the same message (section 9.1),
+				// and within the same session it keeps its seq less the
+				// shift the quarantine allows.
+				if expected.Type != envelopeType || !tsEqual(expected.TS, tsRaw) || !jsonEqualExact(expected.Body, bodyRaw) {
 					h.faultLocked("9.1", "envelope %s came back changed after the hub refused or garbled the batch carrying it; a retransmission keeps id, type, ts and body, and the section 2.3 recovery moves seq alone", id)
+				}
+				// Within the session two seqs are legal: the original (an
+				// unchanged retransmission, the resend path) or the original
+				// less the shift (the envelope ahead of it was set aside).
+				if expected.Session == h.sessionOrdinal && seq != expected.Seq && seq != expected.Seq-expected.Shift {
+					h.faultLocked("9.1", "envelope %s came back at seq %d after the hub refused or garbled the batch carrying it; within a session it keeps seq %d (less one for an envelope set aside ahead of it, section 2.3), and only a new session renumbers", id, seq, expected.Seq)
 				}
 				delete(h.expectedContent, id)
 			}
@@ -1151,16 +1185,31 @@ func trace(format string, args ...any) {
 }
 
 // rememberContentLocked snapshots fresh envelopes a provocation is about to
-// refuse or swallow, so their return can be checked for changes.
-func (h *mockHub) rememberContentLocked(fields []batchField) {
+// refuse or swallow, so their return can be checked for changes. shift is
+// how far down their seq may legally move within the session.
+func (h *mockHub) rememberContentLocked(fields []batchField, shift int64) {
 	if h.expectedContent == nil {
 		h.expectedContent = map[string]contentSnapshot{}
 	}
 	for _, one := range fields {
 		if one.ID != "" {
-			h.expectedContent[one.ID] = one.snapshot()
+			h.expectedContent[one.ID] = one.snapshot(h.sessionOrdinal, shift)
 		}
 	}
+}
+
+// jsonEqualExact is jsonEqual with numbers compared as written rather than
+// through float64, so a body field above 2^53 that changed by one is a change.
+func jsonEqualExact(a, b string) bool {
+	var left, right any
+	da := json.NewDecoder(strings.NewReader(a))
+	da.UseNumber()
+	db := json.NewDecoder(strings.NewReader(b))
+	db.UseNumber()
+	if da.Decode(&left) != nil || db.Decode(&right) != nil {
+		return a == b
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // gradeRenumberLocked marks off an envelope the previous session left unacked,
