@@ -27,8 +27,10 @@ PASS  health.status                  GET /healthz reports status ok
 PASS  errors.shape                   An unrouted path answers 404 in the protocol error shape
 ...
 PASS  kv.confinement                 Namespace access is confined on both realms
+...
+PASS  plugin.errors.inlineSupersededHold A held poll that opted in is answered inline the moment its session is superseded
 
-72 checks, 0 failed
+76 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite
@@ -112,7 +114,9 @@ go run ./conformance/plugin -- <command that starts your plugin>
 Or run it with no command and point a hand-started plugin at the URL and enrollment token it
 prints. Flags, the stage model, and what a candidate must declare are documented in
 `plugin/README.md`. CI runs the suite against the reference candidate in
-`plugin/driver/` on every push.
+`plugin/driver/` on every push, three times: as it is, as an older hub that ignores the
+inline-errors opt-in against a driver that sees only the class of a refusal, and against a
+driver that reads ordinary error bodies without opting in.
 
 Because the candidate is one long-lived process, the plugin suite's checks are staged rather
 than independent: each builds on the state the previous ones established, and a failed
