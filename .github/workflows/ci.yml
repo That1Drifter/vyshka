@@ -65,6 +65,13 @@ jobs:
         # leaves a plugin with. This grades the fallback path of spec Appendix A.
         run: go run ./conformance/plugin -legacy-errors -- go run ./conformance/plugin/driver -opaque
 
+      - name: Run the plugin conformance suite against a driver that reads ordinary errors without opting in
+        # The third kind of plugin: one whose HTTP client can read a 4xx body,
+        # so it never asks for inline errors and still follows the recovery
+        # table. The stages must grade what the plugin did, not how the
+        # refusal travelled.
+        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver -inline=false
+
       - name: Validate the spec documents
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml

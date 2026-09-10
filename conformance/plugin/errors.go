@@ -84,11 +84,13 @@ func (h *mockHub) armGarble() {
 }
 
 // acceptedAfterLocked reports whether an envelope with this id was accepted
-// as a fresh envelope, in any session, after the given moment. Call with the
-// lock held (inside view or await).
+// as a fresh envelope, in any session, at or after the given moment. A tie
+// counts: on Windows the monotonic clock advances in ticks of up to 15 ms,
+// and a plugin on loopback can resend inside the tick that refused it. Call
+// with the lock held (inside view or await).
 func (h *mockHub) acceptedAfterLocked(id string, after time.Time) bool {
 	at, seen := h.lastAccepted[id]
-	return seen && at.After(after)
+	return seen && !at.Before(after)
 }
 
 func (h *mockHub) allAcceptedAfterLocked(ids []string, after time.Time) bool {
@@ -124,19 +126,59 @@ var errorStages = []Stage{
 			var rejection batchRejection
 			hub.view(func() { rejection = *hub.rejected })
 
-			if rejection.Inline {
-				// The plugin could read envelope_invalid with details.index.
-				// Every other fresh envelope of the batch must come back, the
-				// condemned one must not, and the session must be the same.
-				if len(rejection.Others) > 0 {
-					err = hub.await(h.checkTimeout, "the rest of the refused batch to be resent", func() bool {
-						return hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
-					})
-					if err != nil {
-						return fmt.Errorf("%w; after envelope_invalid the plugin removes the envelope at details.index and resends the rest of the batch (section 2.3)", err)
-					}
-				}
-				// Give a plugin that resends the condemned envelope time to do so.
+			// Two recoveries are legal, and which one a plugin takes depends
+			// on what it could read of the refusal, which the mock cannot
+			// know from the outside (a plugin may read an ordinary 400 body
+			// perfectly well without ever opting in). So the stage watches
+			// for either and grades the one it sees.
+			//
+			// Setting aside: every other fresh envelope of the batch comes
+			// back, the condemned one never does, and the plugin keeps
+			// polling. Resending: the plugin could not tell the condemned
+			// envelope apart, sends it again, meets the further refusals the
+			// mock has ready, and delivers the whole batch once the mock
+			// relents.
+			setAside := func() bool {
+				return hub.allAcceptedAfterLocked(rejection.Others, rejection.At) &&
+					!hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
+					hub.totalPolls >= rejection.PollsAt+2
+			}
+			resent := func() bool {
+				return hub.rejectRemaining == 0 && hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
+					hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
+			}
+			err = hub.await(h.checkTimeout+slowRetryAllowance, "the plugin to recover from the refused batch", func() bool {
+				return setAside() || resent()
+			})
+			if err != nil {
+				var othersBack, condemnedBack bool
+				var pollsSince, remaining int
+				hub.view(func() {
+					othersBack = hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
+					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.At)
+					pollsSince = hub.totalPolls - rejection.PollsAt
+					remaining = hub.rejectRemaining
+				})
+				return fmt.Errorf("%w (rest of batch %v resent: %v, condemned envelope %s resent: %v, accepted polls since: %d, refusals still pending: %d); after envelope_invalid a plugin that can read the refusal removes the envelope at details.index and resends the rest, and one that cannot still has to deliver the batch once the hub accepts it (sections 2.3, 3.1.2 and 9.3); a candidate whose backoff exceeds this window can raise -check-timeout",
+					err, rejection.Others, othersBack, rejection.ID, condemnedBack, pollsSince, remaining)
+			}
+			var tookResend bool
+			var refusals int
+			hub.view(func() {
+				tookResend = resent()
+				refusals = hub.rejected.Refusals
+			})
+			if tookResend && rejection.Inline {
+				// The refusal travelled inline because the plugin asked for
+				// it, so it could read details.index; resending the
+				// condemned envelope until the hub relented is not a
+				// recovery for such a plugin, it is ignoring the refusal.
+				return fmt.Errorf("the plugin asked for inline errors, received envelope_invalid naming index %d, and sent the envelope again %d times instead of setting it aside (section 2.3)", rejection.Index, refusals-1)
+			}
+
+			if !tookResend {
+				// Give a plugin that resends the condemned envelope late time
+				// to show it.
 				if err := h.awaitMorePolls(2, "after the corrected batch"); err != nil {
 					return err
 				}
@@ -150,27 +192,23 @@ var errorStages = []Stage{
 				if condemnedBack {
 					return fmt.Errorf("the envelope the hub refused (%s, type %s, index %d) was sent again; a plugin sets it aside and surfaces it rather than resending what the hub will refuse forever (section 2.3)", rejection.ID, rejection.Type, rejection.Index)
 				}
-				if ordinalAfter != ordinalBefore {
-					return fmt.Errorf("the plugin started a new session over a 400; a client error other than 401 is never answered with a new session (section 2.3)")
+				// Section 2.3 lets a plugin that cannot establish the safety of
+				// closing the gap start one new session instead; more than one
+				// is churn.
+				if ordinalAfter > ordinalBefore+1 {
+					return fmt.Errorf("the plugin started %d sessions over a 400; a client error other than 401 is never answered with a session loop (section 2.3)", ordinalAfter-ordinalBefore)
 				}
 				if enrollAfter != enrollBefore {
 					return fmt.Errorf("the plugin re-enrolled over a refused batch; enrollment is never the answer to a poll refusal (section 5.3)")
 				}
 			} else {
-				// An opaque 400, refused three times in all (the batch and two
-				// more polls carrying the condemned envelope). The fallback
-				// (Appendix A) allows one new session for the first refusal
-				// and demands backoff on the replacement session's first
-				// refusal, so a compliant plugin opens at most two sessions
-				// and leaves a real pause between the second refusal and its
-				// next try. The mock then accepts the batch.
-				err = hub.await(h.checkTimeout+slowRetryAllowance, "the refused batch to be accepted after the refusals", func() bool {
-					return hub.rejectRemaining == 0 && hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
-						hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
-				})
-				if err != nil {
-					return fmt.Errorf("%w; nothing in a refused batch was applied, so a plugin that cannot read the refusal still has to deliver the batch once the hub accepts it (sections 3.1.2 and 9.3); a candidate whose backoff exceeds this window can raise -check-timeout", err)
-				}
+				// Refused four times in all (the batch and three more polls
+				// carrying the condemned envelope). The fallback (Appendix A)
+				// allows one new session for the first refusal and demands
+				// backoff after a refusal on a session that has never polled,
+				// whatever the plugin does next, so a compliant plugin opens
+				// at most two sessions and leaves a real pause after each
+				// such refusal.
 				var ordinalAfter, enrollAfter int
 				var events []refusalEvent
 				var accepted *refusalEvent
@@ -274,6 +312,11 @@ var errorStages = []Stage{
 			})
 			if err != nil {
 				return fmt.Errorf("%w; a 200 whose body is not a JSON object is retried after backoff on the same session (section 2.3)", err)
+			}
+			var nextPollAt time.Time
+			hub.view(func() { nextPollAt = hub.garbled.NextPollAt })
+			if pause := nextPollAt.Sub(garbled.At); pause < minBackoff {
+				return fmt.Errorf("the plugin polled again %s after a malformed 200; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
 			}
 			err = hub.await(h.checkTimeout, "the batch the garbled answer swallowed to be sent again", func() bool {
 				return hub.allAcceptedAfterLocked(garbled.IDs, garbled.At)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,22 @@ func TestInlineErrorWriterDropsAStaleContentLength(t *testing.T) {
 	}
 	if failure.Error.Status != http.StatusBadRequest || failure.Error.Code != codeBadRequest {
 		t.Errorf("rewritten error = %+v, want bad_request with status 400", failure.Error)
+	}
+}
+
+// Details travel unchanged: a seq above 2^53 must not be rounded through a
+// float on its way into the rewritten body.
+func TestInlineErrorWriterKeepsLargeNumbersInDetails(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	writer := &inlineErrorWriter{ResponseWriter: recorder}
+	const seq = "9007199254740993"
+	writer.WriteHeader(http.StatusBadRequest)
+	_, _ = writer.Write([]byte(`{"error":{"code":"envelope_invalid","message":"no","details":{"index":0,"seq":` + seq + `}}}`))
+	writer.finish()
+
+	if body := recorder.Body.String(); !strings.Contains(body, `"seq": `+seq) {
+		t.Errorf("details.seq was not preserved exactly: %s", body)
 	}
 }
 

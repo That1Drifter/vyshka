@@ -181,7 +181,11 @@ func (d *driver) classify(status int, body []byte) (ok bool, failure *hubError) 
 	if status >= 200 && status < 300 {
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
-			return false, &hubError{Message: "response body is not a JSON object"}
+			snippet := string(body)
+			if len(snippet) > 120 {
+				snippet = snippet[:120] + "..."
+			}
+			return false, &hubError{Message: fmt.Sprintf("response body is not a JSON object: %q", snippet)}
 		}
 		errorRaw, present := raw["error"]
 		if !present {
@@ -222,13 +226,17 @@ func decodeHubError(raw json.RawMessage) *hubError {
 		Status  int    `json:"status"`
 		Message string `json:"message"`
 		Details struct {
-			Index *int `json:"index"`
+			Index json.RawMessage `json:"index"`
 		} `json:"details"`
 	}
 	_ = json.Unmarshal(raw, &wire)
 	failure := &hubError{Code: wire.Code, Status: wire.Status, Message: wire.Message}
-	if wire.Details.Index != nil {
-		failure.Index, failure.HasIdx = *wire.Details.Index, true
+	// The index is usable only as an integer. A wrongly typed one is not an
+	// instruction to remove anything: decoded separately, so a failed decode
+	// cannot leave a zero behind that looks like "the first envelope".
+	var index int
+	if len(wire.Details.Index) > 0 && json.Unmarshal(wire.Details.Index, &index) == nil {
+		failure.Index, failure.HasIdx = index, true
 	}
 	return failure
 }
@@ -462,7 +470,7 @@ func (d *driver) recover(failure *hubError) {
 	switch {
 	case failure.Status == 0:
 		// A 200 that was not JSON: retry, touching nothing.
-		log.Println("poll: malformed answer; re-polling")
+		log.Printf("poll: malformed answer (%s); re-polling", failure.Message)
 		time.Sleep(time.Second)
 
 	case failure.Code == "session_invalid", failure.Status == http.StatusUnauthorized:
@@ -508,6 +516,11 @@ func (d *driver) recover(failure *hubError) {
 		// is more likely the batch, so back off before trying a session
 		// again, rather than looping.
 		if d.polledThisSession || d.unpolledRefusals >= 2 {
+			if !d.polledThisSession {
+				// A refusal on a session that never polled is backed off
+				// whatever comes next, a replacement session included.
+				time.Sleep(time.Second)
+			}
 			log.Println("poll refused; starting a new session")
 			d.sessionToken = ""
 			d.unpolledRefusals = 0

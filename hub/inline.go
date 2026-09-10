@@ -116,8 +116,12 @@ func (w *inlineErrorWriter) finish() {
 	if !w.capturing {
 		return
 	}
+	// Numbers in details are kept as written: a details.seq above 2^53
+	// decoded into a float would be re-encoded as a different number.
 	var failure errorResponse
-	if err := json.Unmarshal(w.body.Bytes(), &failure); err != nil || failure.Error.Code == "" {
+	decoder := json.NewDecoder(bytes.NewReader(w.body.Bytes()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&failure); err != nil || failure.Error.Code == "" {
 		// Not the protocol shape: something below the handlers answered
 		// (net/http itself, on a request it refused to route). Give it the
 		// shape so the plugin can still branch on the status.

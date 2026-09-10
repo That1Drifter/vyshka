@@ -155,7 +155,11 @@ have sent with a 4xx or 5xx status it MUST instead send with status `200`, the
   (section 5.2), a failed session request (section 5.3), a held poll the hub ends because
   the session was superseded or revoked (sections 3.1.2 and 5.4), and the generic refusals
   of section 2.2 such as `payload_too_large`. A hub SHOULD apply it to any other path under
-  `/plugin/` as well.
+  `/plugin/` as well. It covers refusals the hub itself produces: a refusal issued by the
+  HTTP layer before the request reaches the hub's routing (an `Expect` the server does not
+  support, a header block over its limit) is outside it, as is the answer to a `HEAD`
+  request, which carries no body by definition. A plugin on a constrained engine sends
+  neither.
 - Only the status line and the body change. Headers the hub would have sent with the
   error, other than those describing the body itself (`Content-Length`), the choice of
   `code`, `message`, and `details`, and the hub's own logging and metrics of the failure

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -130,7 +131,11 @@ type mockHub struct {
 	// lastAccepted is when each id was last accepted as a fresh envelope, in
 	// any session, so a stage can tell an arrival after its provocation from
 	// one before it; idContent only remembers the first.
-	lastAccepted        map[string]time.Time
+	lastAccepted map[string]time.Time
+	// expectedContent is what a provocation saw of each fresh envelope it
+	// refused or swallowed; ingest faults a later arrival of that id whose
+	// type, ts or body changed.
+	expectedContent     map[string]contentSnapshot
 	refuseSessionsArmed bool
 	refuseSessionsFor   time.Duration
 	refuseSessionsUntil time.Time
@@ -163,6 +168,16 @@ type batchRejection struct {
 	Events   []refusalEvent
 	Accepted *refusalEvent
 	At       time.Time
+	PollsAt  int // totalPolls when the batch was first refused
+}
+
+// contentSnapshot is what a provocation saw of a fresh envelope it did not
+// ingest, so that when the plugin sends it again the mock can check it came
+// back unchanged (section 9.1): same type, same ts, same body.
+type contentSnapshot struct {
+	Type string
+	TS   string
+	Body string
 }
 
 type refusalEvent struct {
@@ -178,20 +193,33 @@ type garbleRecord struct {
 	IDs     []string
 	PollsAt int
 	At      time.Time
+	// NextPollAt is when the plugin's next poll arrived after the garbled
+	// answer, so the stage can grade the pause before it.
+	NextPollAt time.Time
 }
 
-// batchIDs decodes the id, type and seq of every envelope in a batch, in
-// order, without validating anything else.
-func batchIDs(raws []json.RawMessage) []struct {
-	ID   string
-	Type string
-	Seq  int64
-} {
-	out := make([]struct {
-		ID   string
-		Type string
-		Seq  int64
-	}, len(raws))
+// batchField is the framing of one envelope in a batch as the provocations
+// read it: id, type and seq decoded, ts and body kept raw.
+type batchField struct {
+	ID   string          `json:"id"`
+	Type string          `json:"type"`
+	Seq  int64           `json:"seq"`
+	TS   json.RawMessage `json:"ts"`
+	Body json.RawMessage `json:"body"`
+}
+
+func (f batchField) snapshot() contentSnapshot {
+	body := "{}"
+	if len(f.Body) > 0 {
+		body = string(f.Body)
+	}
+	return contentSnapshot{Type: f.Type, TS: string(f.TS), Body: body}
+}
+
+// batchIDs decodes the framing of every envelope in a batch, in order,
+// without validating anything else.
+func batchIDs(raws []json.RawMessage) []batchField {
+	out := make([]batchField, len(raws))
 	for i, raw := range raws {
 		_ = json.Unmarshal(raw, &out[i])
 	}
@@ -818,16 +846,21 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			now := time.Now()
 			rejection := &batchRejection{
 				ID: ids[firstFresh].ID, Type: ids[firstFresh].Type, Seq: ids[firstFresh].Seq, Index: firstFresh,
-				Inline: inline, Refusals: 1, At: now,
+				Inline: inline, Refusals: 1, At: now, PollsAt: h.totalPolls,
 				Events: []refusalEvent{{At: now, Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0}},
 			}
+			h.rememberContentLocked(ids[firstFresh:])
 			for _, other := range ids[firstFresh+1:] {
 				rejection.Others = append(rejection.Others, other.ID)
 			}
 			h.rejected = rejection
-			if !inline {
-				h.rejectRemaining = 2
-			}
+			trace("refusing batch: condemned %s at index %d seq %d, others %v, processedTop %d", rejection.ID, firstFresh, rejection.Seq, rejection.Others, h.processedTop)
+			// Three more refusals await a plugin that sends the condemned
+			// envelope again (one that could not read the refusal): enough
+			// to reach the branch where it opens a second replacement
+			// session, which must be backed off too. A plugin that set the
+			// envelope aside never triggers them.
+			h.rejectRemaining = 3
 			h.signalLocked()
 			h.mu.Unlock()
 			answer(w, inline, http.StatusBadRequest, "envelope_invalid",
@@ -870,6 +903,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			for _, one := range ids[firstFresh:] {
 				record.IDs = append(record.IDs, one.ID)
 			}
+			h.rememberContentLocked(ids[firstFresh:])
 			h.garbled = record
 			h.signalLocked()
 			h.mu.Unlock()
@@ -880,6 +914,9 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.garbled != nil && h.garbled.NextPollAt.IsZero() {
+		h.garbled.NextPollAt = time.Now()
+	}
 	h.pollsThisSession++
 	h.totalPolls++
 	h.applyAckLocked(request.Ack)
@@ -1033,6 +1070,7 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 		}
 		previousSeq = seq
 
+		trace("ingest session %d seq %d id %s type %s (processedTop %d)", h.sessionOrdinal, seq, id, envelopeType, h.processedTop)
 		switch {
 		case seq <= h.processedTop:
 			// A duplicate. Within a session it must be byte-for-byte the same
@@ -1075,6 +1113,14 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 				h.lastAccepted = map[string]time.Time{}
 			}
 			h.lastAccepted[id] = envelope.ReceivedAt
+			if expected, remembered := h.expectedContent[id]; remembered {
+				// A provocation saw this envelope and did not ingest it;
+				// coming back, it must be the same message (section 9.1).
+				if expected.Type != envelopeType || !tsEqual(expected.TS, tsRaw) || !jsonEqual(expected.Body, bodyRaw) {
+					h.faultLocked("9.1", "envelope %s came back changed after the hub refused or garbled the batch carrying it; a retransmission keeps id, type, ts and body, and the section 2.3 recovery moves seq alone", id)
+				}
+				delete(h.expectedContent, id)
+			}
 			h.bySeq[seq] = envelope
 			h.inbound = append(h.inbound, envelope)
 			h.processedTop = seq
@@ -1091,6 +1137,28 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 			} else {
 				h.faultLocked("9.1", "envelope seq %d arrived above a gap; expected %d next", seq, h.processedTop+1)
 			}
+		}
+	}
+}
+
+// trace writes one line to stderr when VYSHKA_MOCK_TRACE is set, for
+// debugging a stage against a candidate; silent otherwise.
+func trace(format string, args ...any) {
+	if os.Getenv("VYSHKA_MOCK_TRACE") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "mock: "+format+"\n", args...)
+}
+
+// rememberContentLocked snapshots fresh envelopes a provocation is about to
+// refuse or swallow, so their return can be checked for changes.
+func (h *mockHub) rememberContentLocked(fields []batchField) {
+	if h.expectedContent == nil {
+		h.expectedContent = map[string]contentSnapshot{}
+	}
+	for _, one := range fields {
+		if one.ID != "" {
+			h.expectedContent[one.ID] = one.snapshot()
 		}
 	}
 }
