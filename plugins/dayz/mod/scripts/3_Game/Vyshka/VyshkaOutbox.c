@@ -106,7 +106,15 @@ class VyshkaOutbox
 		// Ordinals restart after a reboot (Load derives the next one from the
 		// outbox alone), so the file name carries the time as well; otherwise
 		// a later run's ordinal 1 would overwrite an earlier run's record.
-		string rejectedPath = VyshkaFiles.REJECTED_DIR + "/" + VyshkaClock.EpochSeconds().ToString() + "-" + entry.m_Ordinal.ToString() + ".json";
+		string rejectedBase = VyshkaFiles.REJECTED_DIR + "/" + VyshkaClock.EpochSeconds().ToString() + "-" + entry.m_Ordinal.ToString();
+		string rejectedPath = rejectedBase + ".json";
+		// A clock set back can still repeat a name; never overwrite a record.
+		int collision = 0;
+		while (FileExist(rejectedPath))
+		{
+			collision++;
+			rejectedPath = rejectedBase + "-" + collision.ToString() + ".json";
+		}
 		string record = "{\"rejected\":" + VyshkaJson.Quote(reason) + ",\"envelope\":" + entry.Record() + "}";
 		if (!VyshkaFiles.WriteAll(rejectedPath, record))
 			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Record());

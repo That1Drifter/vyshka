@@ -188,6 +188,11 @@ func (d *driver) classify(status int, body []byte) (ok bool, failure *hubError) 
 			return true, nil
 		}
 		failure = decodeHubError(errorRaw)
+		if failure.Code == "" {
+			// Present but unusable: malformed, not a refusal to act on
+			// (section 2.3), so nothing changes and the request is retried.
+			return false, &hubError{Message: "the error member is not an object with a code"}
+		}
 		if failure.Status == 0 {
 			failure.Status = http.StatusInternalServerError
 		}
@@ -229,7 +234,11 @@ func decodeHubError(raw json.RawMessage) *hubError {
 }
 
 func (d *driver) enroll(token, game string) error {
-	for attempt := 0; attempt < 50; attempt++ {
+	// Transport and hub failures are retried for a while rather than a
+	// number of times, so a hub that is down for a stretch but comes back
+	// is not given up on early.
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
 		status, body, err := d.post("/plugin/v1/enroll", "", map[string]any{
 			"enrollmentToken": token,
 			"game":            game,

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,9 +124,13 @@ type mockHub struct {
 	// garbleArmed answers the next poll that carries envelopes with a 200
 	// whose body is not JSON, without ingesting them, recording in garbled
 	// what the plugin will have to send again.
-	rejectArmed         bool
-	rejectRemaining     int
-	rejected            *batchRejection
+	rejectArmed     bool
+	rejectRemaining int
+	rejected        *batchRejection
+	// lastAccepted is when each id was last accepted as a fresh envelope, in
+	// any session, so a stage can tell an arrival after its provocation from
+	// one before it; idContent only remembers the first.
+	lastAccepted        map[string]time.Time
 	refuseSessionsArmed bool
 	refuseSessionsFor   time.Duration
 	refuseSessionsUntil time.Time
@@ -140,13 +145,18 @@ type mockHub struct {
 // the candidate could read it) or as an opaque 400, and how many times the
 // condemned id has been refused in all.
 type batchRejection struct {
-	ID       string
-	Type     string
-	Seq      int64
-	Others   []string
-	Inline   bool
-	Refusals int
-	At       time.Time
+	ID     string
+	Type   string
+	Seq    int64
+	Index  int
+	Others []string // the other fresh envelopes of the refused batch
+	Inline bool
+	// Refusals counts every refusal of the condemned id; RefusedAt records
+	// when each happened, so a stage can see whether the plugin backed off
+	// between them.
+	Refusals  int
+	RefusedAt []time.Time
+	At        time.Time
 }
 
 // garbleRecord is what a garbled poll answer swallowed: the ids of the batch
@@ -776,16 +786,25 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// as if it never arrived.
 	if len(request.Envelopes) > 0 {
 		ids := batchIDs(request.Envelopes)
-		if h.rejectArmed && ids[0].Seq > h.processedTop {
-			// Only a fresh first envelope is condemned: refusing a legal
-			// retransmission of something already accepted would contradict
-			// section 9.1 and confuse the stage's own bookkeeping.
-			h.rejectArmed = false
-			rejection := &batchRejection{
-				ID: ids[0].ID, Type: ids[0].Type, Seq: ids[0].Seq,
-				Inline: inline, Refusals: 1, At: time.Now(),
+		// The fresh envelopes of the batch: those above the accepted top.
+		// Everything below it is a legal retransmission of something already
+		// accepted (section 9.1), which a provocation must neither condemn
+		// nor count on being sent again.
+		firstFresh := -1
+		for index, one := range ids {
+			if one.Seq > h.processedTop {
+				firstFresh = index
+				break
 			}
-			for _, other := range ids[1:] {
+		}
+		if h.rejectArmed && firstFresh >= 0 {
+			h.rejectArmed = false
+			now := time.Now()
+			rejection := &batchRejection{
+				ID: ids[firstFresh].ID, Type: ids[firstFresh].Type, Seq: ids[firstFresh].Seq, Index: firstFresh,
+				Inline: inline, Refusals: 1, RefusedAt: []time.Time{now}, At: now,
+			}
+			for _, other := range ids[firstFresh+1:] {
 				rejection.Others = append(rejection.Others, other.ID)
 			}
 			h.rejected = rejection
@@ -795,8 +814,8 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			h.signalLocked()
 			h.mu.Unlock()
 			answer(w, inline, http.StatusBadRequest, "envelope_invalid",
-				"this harness declares the envelope at index 0 malformed to grade recovery; nothing in the batch was applied",
-				map[string]any{"index": 0, "seq": rejection.Seq})
+				"this harness declares the envelope at index "+strconv.Itoa(firstFresh)+" malformed to grade recovery; nothing in the batch was applied",
+				map[string]any{"index": firstFresh, "seq": rejection.Seq})
 			return
 		}
 		if h.rejectRemaining > 0 && h.rejected != nil {
@@ -806,6 +825,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 				}
 				h.rejectRemaining--
 				h.rejected.Refusals++
+				h.rejected.RefusedAt = append(h.rejected.RefusedAt, time.Now())
 				h.signalLocked()
 				h.mu.Unlock()
 				answer(w, inline, http.StatusBadRequest, "envelope_invalid",
@@ -814,10 +834,10 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if h.garbleArmed {
+		if h.garbleArmed && firstFresh >= 0 {
 			h.garbleArmed = false
 			record := &garbleRecord{PollsAt: h.totalPolls, At: time.Now()}
-			for _, one := range ids {
+			for _, one := range ids[firstFresh:] {
 				record.IDs = append(record.IDs, one.ID)
 			}
 			h.garbled = record
@@ -1021,6 +1041,10 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 			if _, seen := h.idContent[id]; !seen {
 				h.idContent[id] = envelope
 			}
+			if h.lastAccepted == nil {
+				h.lastAccepted = map[string]time.Time{}
+			}
+			h.lastAccepted[id] = envelope.ReceivedAt
 			h.bySeq[seq] = envelope
 			h.inbound = append(h.inbound, envelope)
 			h.processedTop = seq

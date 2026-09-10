@@ -490,6 +490,7 @@ components:
       type: object
       required:
         [sessionId, expiresAt, protocolVersion, envelopeVersion, pollTimeoutSeconds, transports, features, server]
+      not: { required: [error] }
       properties:
         sessionId: { type: string }
         sessionToken:
@@ -522,6 +523,7 @@ components:
       type: object
       description: One key of the section 12 store, with its value.
       required: [namespace, key, value, revision]
+      not: { required: [error] }
       properties:
         namespace: { type: string }
         key: { type: string }
@@ -541,6 +543,7 @@ components:
       type: object
       description: A set's answer; the value is not echoed back.
       required: [namespace, key, revision]
+      not: { required: [error] }
       properties:
         namespace: { type: string }
         key: { type: string }
@@ -611,6 +614,10 @@ components:
     PollResponse:
       type: object
       required: [envelopes, ack, pollTimeoutSeconds, sessionExpiresAt]
+      # A success never carries a top-level error (spec section 2.3); saying so
+      # keeps the union with InlineError unambiguous while leaving every other
+      # unknown field tolerated.
+      not: { required: [error] }
       properties:
         envelopes:
           type: array

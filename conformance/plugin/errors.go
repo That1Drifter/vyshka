@@ -17,6 +17,10 @@ import (
 // stand in for an older hub), so a 400 and a 401 look the same to it; it is
 // held to the fallback the appendix describes: one new session, then
 // backoff, and no re-enrollment ever.
+//
+// Every "did it arrive" question below is asked about arrivals after the
+// provocation, never about the mock's lifetime history: an id the plugin had
+// legitimately delivered before the stage began must not count as a resend.
 
 const (
 	actionRejected    = "conformance-act-rejected"
@@ -32,19 +36,26 @@ const (
 	// counts as hammering. A compliant plugin retries slowly (section 2.3);
 	// the reference DayZ plugin waits 30 s, the reference driver 2 s doubling.
 	maxSessionAttemptsInWindow = 4
-	// How long a plugin that backs off after an opaque refusal, or after a
-	// credential refusal, is given to come back. The reference DayZ plugin
-	// waits 30 s in both cases; a candidate that waits longer can raise
-	// -check-timeout.
-	slowRetryAllowance = 40 * time.Second
+	// How long a plugin that backs off after opaque refusals, or after a
+	// credential refusal, is given to come back, on top of -check-timeout.
+	// The reference DayZ plugin waits 30 s before each retry on a fresh
+	// session and meets two such refusals in the opaque stage, so it needs
+	// a little over a minute plus session overhead; a candidate that waits
+	// longer can raise -check-timeout.
+	slowRetryAllowance = 90 * time.Second
+	// The least a plugin must wait before retrying a session whose first poll
+	// was refused opaquely (Appendix A: back off rather than loop). The
+	// reference driver waits 1 s, the DayZ plugin 30 s; a plugin that
+	// retries within this is looping.
+	minOpaqueBackoff = 500 * time.Millisecond
 )
 
 func init() {
 	stages = append(stages, errorStages...)
 }
 
-// armBatchRejection makes the next poll batch whose first envelope is fresh
-// fail with envelope_invalid at index 0.
+// armBatchRejection makes the next poll batch that carries a fresh envelope
+// fail with envelope_invalid at that envelope's index.
 func (h *mockHub) armBatchRejection() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -72,16 +83,17 @@ func (h *mockHub) armGarble() {
 	h.garbled = nil
 }
 
-// seenIDLocked reports whether an envelope with this id has ever been
-// accepted, in any session. Call with the lock held (inside view or await).
-func (h *mockHub) seenIDLocked(id string) bool {
-	_, seen := h.idContent[id]
-	return seen
+// acceptedAfterLocked reports whether an envelope with this id was accepted
+// as a fresh envelope, in any session, after the given moment. Call with the
+// lock held (inside view or await).
+func (h *mockHub) acceptedAfterLocked(id string, after time.Time) bool {
+	at, seen := h.lastAccepted[id]
+	return seen && at.After(after)
 }
 
-func (h *mockHub) allSeenLocked(ids []string) bool {
+func (h *mockHub) allAcceptedAfterLocked(ids []string, after time.Time) bool {
 	for _, id := range ids {
-		if !h.seenIDLocked(id) {
+		if !h.acceptedAfterLocked(id, after) {
 			return false
 		}
 	}
@@ -103,7 +115,7 @@ var errorStages = []Stage{
 
 			hub.armBatchRejection()
 			h.dispatch(actionRejected)
-			err := hub.await(h.checkTimeout, "a batch with a fresh first envelope to refuse", func() bool {
+			err := hub.await(h.checkTimeout, "a batch carrying a fresh envelope to refuse", func() bool {
 				return hub.rejected != nil
 			})
 			if err != nil {
@@ -114,13 +126,11 @@ var errorStages = []Stage{
 
 			if rejection.Inline {
 				// The plugin could read envelope_invalid with details.index.
-				// Everything else in the batch must come back, the condemned
-				// envelope must not, and the session must be the same one.
-				// Nothing in the batch had been accepted before (the mock only
-				// condemns a fresh first envelope), so "seen" means "resent".
+				// Every other fresh envelope of the batch must come back, the
+				// condemned one must not, and the session must be the same.
 				if len(rejection.Others) > 0 {
 					err = hub.await(h.checkTimeout, "the rest of the refused batch to be resent", func() bool {
-						return hub.allSeenLocked(rejection.Others)
+						return hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
 					})
 					if err != nil {
 						return fmt.Errorf("%w; after envelope_invalid the plugin removes the envelope at details.index and resends the rest of the batch (section 2.3)", err)
@@ -133,12 +143,12 @@ var errorStages = []Stage{
 				var condemnedBack bool
 				var ordinalAfter, enrollAfter int
 				hub.view(func() {
-					condemnedBack = hub.seenIDLocked(rejection.ID)
+					condemnedBack = hub.acceptedAfterLocked(rejection.ID, rejection.At)
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
 				})
 				if condemnedBack {
-					return fmt.Errorf("the envelope the hub refused (%s, type %s) was sent again; a plugin sets it aside and surfaces it rather than resending what the hub will refuse forever (section 2.3)", rejection.ID, rejection.Type)
+					return fmt.Errorf("the envelope the hub refused (%s, type %s, index %d) was sent again; a plugin sets it aside and surfaces it rather than resending what the hub will refuse forever (section 2.3)", rejection.ID, rejection.Type, rejection.Index)
 				}
 				if ordinalAfter != ordinalBefore {
 					return fmt.Errorf("the plugin started a new session over a 400; a client error other than 401 is never answered with a new session (section 2.3)")
@@ -148,26 +158,33 @@ var errorStages = []Stage{
 				}
 			} else {
 				// An opaque 400, refused three times in all (the batch and two
-				// more polls carrying the condemned envelope), so a plugin that
-				// answers every opaque client error with a new session opens
-				// three of them. The fallback (Appendix A) allows one new
-				// session for the first refusal and demands backoff on the
-				// next, so a compliant plugin opens at most two, and the mock
-				// then accepts the batch.
+				// more polls carrying the condemned envelope). The fallback
+				// (Appendix A) allows one new session for the first refusal
+				// and demands backoff on the replacement session's first
+				// refusal, so a compliant plugin opens at most two sessions
+				// and leaves a real pause between the second refusal and its
+				// next try. The mock then accepts the batch.
 				err = hub.await(h.checkTimeout+slowRetryAllowance, "the refused batch to be accepted after the refusals", func() bool {
-					return hub.rejectRemaining == 0 && hub.seenIDLocked(rejection.ID) && hub.allSeenLocked(rejection.Others)
+					return hub.rejectRemaining == 0 && hub.acceptedAfterLocked(rejection.ID, rejection.At) &&
+						hub.allAcceptedAfterLocked(rejection.Others, rejection.At)
 				})
 				if err != nil {
 					return fmt.Errorf("%w; nothing in a refused batch was applied, so a plugin that cannot read the refusal still has to deliver the batch once the hub accepts it (sections 3.1.2 and 9.3); a candidate whose backoff exceeds this window can raise -check-timeout", err)
 				}
-				var ordinalAfter, enrollAfter, refusals int
+				var ordinalAfter, enrollAfter int
+				var refusedAt []time.Time
 				hub.view(func() {
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
-					refusals = hub.rejected.Refusals
+					refusedAt = append([]time.Time(nil), hub.rejected.RefusedAt...)
 				})
 				if ordinalAfter > ordinalBefore+2 {
-					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, refusals)
+					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, len(refusedAt))
+				}
+				if len(refusedAt) >= 3 {
+					if pause := refusedAt[2].Sub(refusedAt[1]); pause < minOpaqueBackoff {
+						return fmt.Errorf("the plugin retried %s after its replacement session's first poll was refused; a client error on a session that has never polled is backed off, not retried at once (Appendix A)", pause)
+					}
 				}
 				if enrollAfter != enrollBefore {
 					return fmt.Errorf("the plugin re-enrolled over a refused poll; enrollment is never the answer to a poll refusal (section 5.3)")
@@ -203,11 +220,11 @@ var errorStages = []Stage{
 			// and that it still delivers what the garbage did not acknowledge.
 			hub.armGarble()
 			h.dispatch(actionGarbled)
-			err := hub.await(h.checkTimeout, "a poll carrying envelopes to answer with garbage", func() bool {
+			err := hub.await(h.checkTimeout, "a poll carrying a fresh envelope to answer with garbage", func() bool {
 				return hub.garbled != nil
 			})
 			if err != nil {
-				return fmt.Errorf("%w; harness error: the plugin sent nothing after a dispatch, so no garbled answer could be served", err)
+				return fmt.Errorf("%w; harness error: the plugin sent nothing new after a dispatch, so no garbled answer could be served", err)
 			}
 			var garbled garbleRecord
 			hub.view(func() { garbled = *hub.garbled })
@@ -219,7 +236,7 @@ var errorStages = []Stage{
 				return fmt.Errorf("%w; a 200 whose body is not a JSON object is retried after backoff on the same session (section 2.3)", err)
 			}
 			err = hub.await(h.checkTimeout, "the batch the garbled answer swallowed to be sent again", func() bool {
-				return hub.allSeenLocked(garbled.IDs)
+				return hub.allAcceptedAfterLocked(garbled.IDs, garbled.At)
 			})
 			if err != nil {
 				return fmt.Errorf("%w; the garbled answer acked nothing, so the plugin must still deliver every envelope it carried (section 9.3)", err)
