@@ -299,7 +299,9 @@ func (d *driver) startSession(game string) error {
 		if failure.Status == http.StatusUnauthorized || failure.Code == "credentials_invalid" || failure.Code == "credentials_revoked" || failure.Code == "protocol_version_unsupported" || opaqueClientError {
 			return errRefused{failure}
 		}
-		return fmt.Errorf("session: %s (status %d): %s", failure.Code, failure.Status, failure.Message)
+		// A hub failure or a malformed answer: retried after the section 2.3
+		// minimum, unlike a transport failure, which is not a refusal.
+		return errRetry{failure}
 	}
 	var session struct {
 		SessionToken       string `json:"sessionToken"`
@@ -351,6 +353,14 @@ func (e errRefused) Error() string {
 	return fmt.Sprintf("session refused: %s (status %d): %s", e.failure.Code, e.failure.Status, e.failure.Message)
 }
 
+// errRetry is a session answer to back off from and try again: a hub failure
+// or a malformed body.
+type errRetry struct{ failure *hubError }
+
+func (e errRetry) Error() string {
+	return fmt.Sprintf("session: %s (status %d): %s", e.failure.Code, e.failure.Status, e.failure.Message)
+}
+
 func (d *driver) run(game string) {
 	for {
 		if d.sessionToken == "" {
@@ -366,6 +376,12 @@ func (d *driver) run(game string) {
 					}
 					log.Printf("%v; retrying in %s", err, d.sessionBackoff)
 					time.Sleep(d.sessionBackoff)
+					continue
+				}
+				var retry errRetry
+				if errors.As(err, &retry) {
+					log.Printf("%v; retrying", err)
+					time.Sleep(time.Second)
 					continue
 				}
 				if d.transportFailed() {

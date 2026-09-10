@@ -136,8 +136,11 @@ type mockHub struct {
 	refuseSessionsUntil time.Time
 	sessionAttempts     []time.Time
 	refusedSessions     int
-	garbleArmed         bool
-	garbled             *garbleRecord
+	// sessionStarts is when each session ordinal was issued, so a stage can
+	// measure the pause between a refusal and a replacement session.
+	sessionStarts map[int]time.Time
+	garbleArmed   bool
+	garbled       *garbleRecord
 }
 
 // batchRejection is what the mock refused: the condemned envelope at index 0,
@@ -712,6 +715,10 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	// Unacked outbound items lose their seq here; delivery under the new
 	// session renumbers them, which is the hub's own section 9.1 duty.
 	h.sessionOrdinal++
+	if h.sessionStarts == nil {
+		h.sessionStarts = map[int]time.Time{}
+	}
+	h.sessionStarts[h.sessionOrdinal] = time.Now()
 	h.sessionToken = fmt.Sprintf("conformance-session-%d-%s", h.sessionOrdinal, randomHex())
 	h.issuedTokens[h.sessionToken] = true
 	h.sessionLive = true

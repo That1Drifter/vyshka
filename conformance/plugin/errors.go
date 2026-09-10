@@ -174,6 +174,7 @@ var errorStages = []Stage{
 				var ordinalAfter, enrollAfter int
 				var events []refusalEvent
 				var accepted *refusalEvent
+				sessionStarts := map[int]time.Time{}
 				hub.view(func() {
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
@@ -182,28 +183,47 @@ var errorStages = []Stage{
 						copied := *hub.rejected.Accepted
 						accepted = &copied
 					}
+					for ordinal, at := range hub.sessionStarts {
+						sessionStarts[ordinal] = at
+					}
 				})
 				if ordinalAfter > ordinalBefore+2 {
 					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, len(events))
 				}
-				// A refusal that the plugin answers on the same session is a
-				// retry of the same request, and section 2.3 makes it wait at
-				// least 1 s first, whether the session had polled before or
-				// not. A refusal answered with a new session is the other
-				// branch of the fallback and is bounded by the count above.
-				// Whatever the next request on the same session was, another
-				// refusal or the successful delivery, it must have waited.
+				// What may follow a refusal without a pause is one thing only:
+				// a new session after a refusal on a session that had polled
+				// (the first branch of the fallback, bounded by the count
+				// above). Everything else is a retry the plugin backs off
+				// from: another attempt on the same session, or, after a
+				// refusal on a session that had never polled, any attempt at
+				// all, a replacement session included. Section 2.3 makes the
+				// wait at least 1 s.
 				for i, refusal := range events {
 					var next *refusalEvent
-					if i+1 < len(events) && events[i+1].Ordinal == refusal.Ordinal {
+					if i+1 < len(events) {
 						next = &events[i+1]
-					} else if i+1 == len(events) && accepted != nil && accepted.Ordinal == refusal.Ordinal {
+					} else if accepted != nil {
 						next = accepted
 					}
-					if next != nil {
-						if pause := next.At.Sub(refusal.At); pause < minBackoff {
+					if next == nil {
+						continue
+					}
+					sameSession := next.Ordinal == refusal.Ordinal
+					if !sameSession && refusal.Polled {
+						continue
+					}
+					nextAt := next.At
+					if !sameSession {
+						// The replacement session's own start is the attempt.
+						if at, known := sessionStarts[next.Ordinal]; known {
+							nextAt = at
+						}
+					}
+					if pause := nextAt.Sub(refusal.At); pause < minBackoff {
+						if sameSession {
 							return fmt.Errorf("the plugin retried %s after a refused poll on the same session; a plugin that backs off waits at least 1 s before its next attempt at the same request (section 2.3)", pause)
 						}
+						return fmt.Errorf("the plugin opened another session %s after a refused poll on a session that had never polled; that refusal is backed off for at least 1 s, not answered with yet another session (section 2.3, Appendix A)", pause)
 					}
 				}
 				if enrollAfter != enrollBefore {
