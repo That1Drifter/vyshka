@@ -103,6 +103,13 @@ claiming readiness for unattended operation; the successful heal does not valida
 
 Measured under `spikes/` rather than assumed; the details are in each spike's findings.
 
+- **TLS works.** The engine's REST client speaks HTTPS to a TLS-terminating reverse proxy
+  with a publicly trusted certificate and needs nothing configured for it; the `deploy/`
+  layout, which exposes no plain-HTTP port, was exercised end to end on 2026-09-10 (issue
+  #13). Whether it accepts a private CA is unmeasured. When testing with a local client on
+  the same machine, launch it through `DayZ_BE.exe`: starting `DayZ_x64.exe` directly gets
+  the player kicked by BattlEye about 20 s after joining, even with `BattlEye = 0;` in the
+  server config.
 - **Poll hold time.** The engine aborts a request after 10 s by default, as a budget for the
   whole response. The plugin raises the read timeout to `pollTimeout` + 5 s at session start
   (`spikes/dayz-restapi-poll-timeout`).

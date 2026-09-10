@@ -12,6 +12,17 @@ point if needed.
 
 ### Added
 
+- 2026-09-10: completed the browser-driven heal of a live DayZ player, the last box on issue
+  #13, against the staging hub over the public internet: an operator signed in to the panel
+  with a scoped token, opened the server's Heal player form, typed the Steam64 id, dispatched,
+  and watched action `01M25VMH9X1W8VQX2HDH73EXRX` reach `completed` with health 100, blood
+  5000, and shock 100, confirmed on the player's in-game status monitor. Two findings from the
+  run, both recorded in `plugins/dayz/README.md`: the DayZ 1.29 REST client speaks HTTPS to a
+  TLS-terminating proxy with no extra configuration, so the reference deployment's TLS-only
+  layout works for the plugin unchanged; and the client must be launched through the
+  BattlEye wrapper or it is kicked shortly after joining. Issue #13 is closed; the live map
+  and event feed views are filed as #46 and #47. No protocol or runtime changes.
+
 - 2026-09-07: the container and the reference single-host deployment. `Dockerfile` builds
   the hub as a static binary on a distroless base running as a non-root user, with the
   SQLite file on `/data` and the admin token read from a file rather than the environment;
