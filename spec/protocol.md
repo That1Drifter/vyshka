@@ -198,9 +198,12 @@ it. Each is stated once here rather than with its endpoint.
 | Unrecognized code with a 401 `status` | As `session_invalid`. |
 | Unrecognized code with any other 4xx `status` | The request was wrong and a new session does not make it right: log, back off, and retry; MUST NOT start a new session over it. |
 
-The rule the table exists for: a client error is never answered by churning sessions. A
-plugin that meets `session_invalid` starts one new session, and a plugin that meets a
-malformed-batch refusal corrects the batch; neither loops.
+Where the table says back off, the plugin MUST wait at least 1 s before its next attempt
+at the same request and SHOULD lengthen the wait on repeated refusals; retrying a refused
+request faster than that serves no one. The rule the table exists for: a client error is
+never answered by churning sessions. A plugin that meets `session_invalid` starts one new
+session, and a plugin that meets a malformed-batch refusal corrects the batch; neither
+loops.
 
 ## 3. Transport
 
@@ -2012,7 +2015,8 @@ notes for such environments:
   error class alone, and conservatively. A client error on a poll is answered by starting
   one new session, which is legal at any time (section 5.3) and is the right response to
   `session_invalid`; if the new session's first poll fails the same way, the plugin backs
-  off rather than loops, because the cause is then almost certainly its own batch. A client
+  off (at least the 1 s of section 2.3) rather than loops, because the cause is then almost
+  certainly its own batch. A client
   error on a session request is treated as rejected credentials and retried slowly; a
   client error on enrollment is surfaced to the operator, because no retry fixes a burned
   or unknown token. The reference DayZ plugin takes the query parameter through the same

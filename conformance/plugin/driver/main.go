@@ -234,11 +234,10 @@ func decodeHubError(raw json.RawMessage) *hubError {
 }
 
 func (d *driver) enroll(token, game string) error {
-	// Transport and hub failures are retried for a while rather than a
-	// number of times, so a hub that is down for a stretch but comes back
-	// is not given up on early.
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
+	// Transport and hub failures are retried until the harness shuts the
+	// driver down (stdin closing exits the process), so the driver's
+	// patience is the harness's -enroll-wait and nothing of its own.
+	for {
 		status, body, err := d.post("/plugin/v1/enroll", "", map[string]any{
 			"enrollmentToken": token,
 			"game":            game,
@@ -255,7 +254,7 @@ func (d *driver) enroll(token, game string) error {
 			// operator, so it reports and exits.
 			if failure.Status == 0 || failure.Status >= 500 {
 				log.Printf("enroll: %s (status %d): %s; retrying", failure.Code, failure.Status, failure.Message)
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(time.Second)
 				continue
 			}
 			return fmt.Errorf("refused: %s (status %d): %s", failure.Code, failure.Status, failure.Message)
@@ -272,7 +271,6 @@ func (d *driver) enroll(token, game string) error {
 		log.Println("enrolled as", d.serverID)
 		return nil
 	}
-	return fmt.Errorf("hub unreachable")
 }
 
 // startSession trades the stored credentials for a session and renumbers the
@@ -413,7 +411,7 @@ func (d *driver) run(game string) {
 		var response pollResponse
 		if err := json.Unmarshal(body, &response); err != nil {
 			log.Println("poll: bad response body:", err)
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(time.Second)
 			continue
 		}
 
@@ -449,7 +447,7 @@ func (d *driver) recover(failure *hubError) {
 	case failure.Status == 0:
 		// A 200 that was not JSON: retry, touching nothing.
 		log.Println("poll: malformed answer; re-polling")
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(time.Second)
 
 	case failure.Code == "session_invalid", failure.Status == http.StatusUnauthorized:
 		// Named or not, a 401 on a poll says the session is gone (section
@@ -464,7 +462,7 @@ func (d *driver) recover(failure *hubError) {
 			d.batchLimit /= 2
 		}
 		log.Printf("poll refused: %s; retrying with a batch of %d", failure.Message, d.batchLimit)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Second)
 
 	case failure.Code == "envelope_invalid":
 		// The hub applied nothing. Take the named envelope out, keep it where
@@ -473,7 +471,7 @@ func (d *driver) recover(failure *hubError) {
 		// safe because none of them was accepted either.
 		if !failure.HasIdx || failure.Index < 0 || failure.Index >= len(d.buffer) || failure.Index >= d.batchLimit {
 			log.Printf("poll: envelope_invalid without a usable details.index (%v); backing off", failure.HasIdx)
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(time.Second)
 			return
 		}
 		condemned := d.buffer[failure.Index]
@@ -501,17 +499,17 @@ func (d *driver) recover(failure *hubError) {
 		}
 		d.unpolledRefusals++
 		log.Println("poll refused again on a fresh session; backing off before retrying it")
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 
 	case failure.Status >= 500:
 		log.Printf("poll: hub error %s: %s; retrying", failure.Code, failure.Message)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Second)
 
 	default:
 		// bad_request, or a code this driver does not know with a 4xx
 		// status: the request was wrong, a new session does not fix it.
 		log.Printf("poll refused: %s (status %d): %s; backing off", failure.Code, failure.Status, failure.Message)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Second)
 	}
 }
 

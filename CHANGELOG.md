@@ -26,7 +26,8 @@ point if needed.
   also states the recovery table every plugin follows whichever way a refusal arrives (one
   new session for `session_invalid`, the named envelope set aside for `envelope_invalid`,
   slow operator-facing retries for credential refusals, never a new session over any other
-  client error) and the conservative fallback for opaque errors. In the hub the rewrite is
+  client error, a backoff of at least 1 s wherever the table says to back off) and the
+  conservative fallback for opaque errors. In the hub the rewrite is
   one `ResponseWriter` wrapper in front of the Plugin API, placed outside the request log so
   the log still records the real status. The hub conformance suite gains four checks (76
   total); the plugin conformance mock honors the opt-in, gains three recovery stages (a

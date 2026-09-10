@@ -110,12 +110,12 @@ type mockHub struct {
 
 	// Provocations the error stages arm.
 	//
-	// rejectArmed refuses the next poll batch whose first envelope is fresh
+	// rejectArmed refuses the next poll batch that carries a fresh envelope
 	// (above processedTop, so not a legal retransmission of something already
-	// accepted) with envelope_invalid at index 0, recording it in rejected.
-	// When that refusal was opaque, rejectRemaining further batches carrying
-	// the condemned id are refused as well, so a plugin that answers every
-	// opaque 4xx with a new session shows itself.
+	// accepted) with envelope_invalid at the first fresh envelope's index,
+	// recording it in rejected. When that refusal was opaque, rejectRemaining
+	// further batches carrying the condemned id are refused as well, so a
+	// plugin that answers every opaque 4xx with a new session shows itself.
 	//
 	// refuseSessionsArmed starts a window, on the next session request, in
 	// which every session request is answered credentials_revoked; attempts
@@ -151,12 +151,21 @@ type batchRejection struct {
 	Index  int
 	Others []string // the other fresh envelopes of the refused batch
 	Inline bool
-	// Refusals counts every refusal of the condemned id; RefusedAt records
-	// when each happened, so a stage can see whether the plugin backed off
-	// between them.
-	Refusals  int
-	RefusedAt []time.Time
-	At        time.Time
+	// Refusals counts every refusal of the condemned id; Events records each
+	// one with the session it happened on and whether that session had
+	// polled successfully before it, and Accepted records the poll that
+	// finally carried the batch through, so a stage can grade the pause the
+	// plugin left after each refusal on a never-polled session.
+	Refusals int
+	Events   []refusalEvent
+	Accepted *refusalEvent
+	At       time.Time
+}
+
+type refusalEvent struct {
+	At      time.Time
+	Ordinal int
+	Polled  bool // the session had at least one accepted poll before this
 }
 
 // garbleRecord is what a garbled poll answer swallowed: the ids of the batch
@@ -802,7 +811,8 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			now := time.Now()
 			rejection := &batchRejection{
 				ID: ids[firstFresh].ID, Type: ids[firstFresh].Type, Seq: ids[firstFresh].Seq, Index: firstFresh,
-				Inline: inline, Refusals: 1, RefusedAt: []time.Time{now}, At: now,
+				Inline: inline, Refusals: 1, At: now,
+				Events: []refusalEvent{{At: now, Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0}},
 			}
 			for _, other := range ids[firstFresh+1:] {
 				rejection.Others = append(rejection.Others, other.ID)
@@ -825,13 +835,26 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 				}
 				h.rejectRemaining--
 				h.rejected.Refusals++
-				h.rejected.RefusedAt = append(h.rejected.RefusedAt, time.Now())
+				h.rejected.Events = append(h.rejected.Events, refusalEvent{
+					At: time.Now(), Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0,
+				})
 				h.signalLocked()
 				h.mu.Unlock()
 				answer(w, inline, http.StatusBadRequest, "envelope_invalid",
 					"this harness still declares that envelope malformed; nothing in the batch was applied",
 					map[string]any{"index": index, "seq": one.Seq})
 				return
+			}
+		}
+		if h.rejected != nil && h.rejected.Accepted == nil && h.rejectRemaining == 0 {
+			// The poll that finally carries the condemned id through.
+			for _, one := range ids {
+				if one.ID == h.rejected.ID {
+					h.rejected.Accepted = &refusalEvent{
+						At: time.Now(), Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0,
+					}
+					break
+				}
 			}
 		}
 		if h.garbleArmed && firstFresh >= 0 {

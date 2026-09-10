@@ -43,11 +43,11 @@ const (
 	// a little over a minute plus session overhead; a candidate that waits
 	// longer can raise -check-timeout.
 	slowRetryAllowance = 90 * time.Second
-	// The least a plugin must wait before retrying a session whose first poll
-	// was refused opaquely (Appendix A: back off rather than loop). The
-	// reference driver waits 1 s, the DayZ plugin 30 s; a plugin that
-	// retries within this is looping.
-	minOpaqueBackoff = 500 * time.Millisecond
+	// The least a plugin must wait before its next attempt after a refusal
+	// it backs off from: section 2.3 makes 1 s normative. Measured between
+	// the refusal and the next request on the same session, less a small
+	// allowance for timer and scheduling granularity.
+	minBackoff = 950 * time.Millisecond
 )
 
 func init() {
@@ -172,18 +172,38 @@ var errorStages = []Stage{
 					return fmt.Errorf("%w; nothing in a refused batch was applied, so a plugin that cannot read the refusal still has to deliver the batch once the hub accepts it (sections 3.1.2 and 9.3); a candidate whose backoff exceeds this window can raise -check-timeout", err)
 				}
 				var ordinalAfter, enrollAfter int
-				var refusedAt []time.Time
+				var events []refusalEvent
+				var accepted *refusalEvent
 				hub.view(func() {
 					ordinalAfter = hub.sessionOrdinal
 					enrollAfter = hub.enrollCount
-					refusedAt = append([]time.Time(nil), hub.rejected.RefusedAt...)
+					events = append([]refusalEvent(nil), hub.rejected.Events...)
+					if hub.rejected.Accepted != nil {
+						copied := *hub.rejected.Accepted
+						accepted = &copied
+					}
 				})
 				if ordinalAfter > ordinalBefore+2 {
-					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, len(refusedAt))
+					return fmt.Errorf("the plugin opened %d sessions over %d opaque client errors on its batch; the fallback is one new session and then backoff, not a session per refusal (Appendix A)", ordinalAfter-ordinalBefore, len(events))
 				}
-				if len(refusedAt) >= 3 {
-					if pause := refusedAt[2].Sub(refusedAt[1]); pause < minOpaqueBackoff {
-						return fmt.Errorf("the plugin retried %s after its replacement session's first poll was refused; a client error on a session that has never polled is backed off, not retried at once (Appendix A)", pause)
+				// A refusal that the plugin answers on the same session is a
+				// retry of the same request, and section 2.3 makes it wait at
+				// least 1 s first, whether the session had polled before or
+				// not. A refusal answered with a new session is the other
+				// branch of the fallback and is bounded by the count above.
+				// Whatever the next request on the same session was, another
+				// refusal or the successful delivery, it must have waited.
+				for i, refusal := range events {
+					var next *refusalEvent
+					if i+1 < len(events) && events[i+1].Ordinal == refusal.Ordinal {
+						next = &events[i+1]
+					} else if i+1 == len(events) && accepted != nil && accepted.Ordinal == refusal.Ordinal {
+						next = accepted
+					}
+					if next != nil {
+						if pause := next.At.Sub(refusal.At); pause < minBackoff {
+							return fmt.Errorf("the plugin retried %s after a refused poll on the same session; a plugin that backs off waits at least 1 s before its next attempt at the same request (section 2.3)", pause)
+						}
 					}
 				}
 				if enrollAfter != enrollBefore {
