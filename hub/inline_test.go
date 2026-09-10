@@ -113,6 +113,11 @@ func TestInlineErrorsCoverEnrollmentSessionAndPoll(t *testing.T) {
 		t.Errorf("details.index = %v, want 1", failure.Error.Details["index"])
 	}
 
+	// A refusal from the KV realm: no manifest declares a namespace, so the
+	// read is forbidden.
+	recorder = rawCall(t, server, http.MethodGet, "/plugin/v1/kv/some-mod/key?errors=inline", live.SessionToken, nil)
+	inlineError(t, recorder, "forbidden", http.StatusForbidden)
+
 	// The generic refusals of section 2.2 too: a body that is not JSON.
 	request := httptest.NewRequest(http.MethodPost, "/plugin/v1/session?errors=inline", strings.NewReader("<xml/>"))
 	request.Header.Set("Content-Type", "text/xml")
@@ -190,7 +195,10 @@ func TestInlineErrorsRefuseUnknownModesAndIgnoreTheAdminAPI(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)
 
-	for _, query := range []string{"errors=loud", "errors=", "errors=inline&errors=inline", "errors=inline&errors=loud"} {
+	// A malformed query string is refused too, whether or not it also carries
+	// a well-formed opt-in: r.URL.Query() would have dropped the bad pair and
+	// let the rest through.
+	for _, query := range []string{"errors=loud", "errors=", "errors=inline&errors=inline", "errors=inline&errors=loud", "errors=%ZZ", "errors=inline&errors=%ZZ"} {
 		recorder := rawCall(t, server, http.MethodPost, "/plugin/v1/poll?"+query, "vyt_unknown", map[string]any{})
 		if recorder.Code != http.StatusBadRequest {
 			t.Errorf("?%s: status = %d, want an ordinary 400", query, recorder.Code)

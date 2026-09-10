@@ -3,8 +3,11 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // Inline errors (spec section 2.3): a Plugin API request that carries
@@ -26,10 +29,27 @@ const (
 	inlineErrorsMode  = "inline"
 )
 
-// inlineErrors is the middleware in front of every /plugin/ path.
-func (s *Server) inlineErrors(next http.Handler) http.Handler {
+// inlineErrors is the middleware in front of every /plugin/ path. next is the
+// logged handler chain; refusals the middleware itself produces go through the
+// same logging and response deadline as any other, so that a bad query string
+// is neither invisible in the request log nor a way past the write budget.
+func (s *Server) inlineErrors(log *slog.Logger, responseWriteTimeout time.Duration, next http.Handler) http.Handler {
+	refuse := func(message string) http.Handler {
+		return logRequests(log, responseWriteTimeout, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, http.StatusBadRequest, codeBadRequest, message)
+		}))
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		modes := r.URL.Query()[inlineErrorsParam]
+		// Parsed explicitly: r.URL.Query() drops the pairs it cannot parse
+		// and ignores the error, which would let a malformed opt-in slip
+		// through as an ordinary request, or a malformed second value past
+		// the one-occurrence rule.
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			refuse("the query string is malformed: "+err.Error()).ServeHTTP(w, r)
+			return
+		}
+		modes := query[inlineErrorsParam]
 		switch {
 		case len(modes) == 0:
 			next.ServeHTTP(w, r)
@@ -40,9 +60,8 @@ func (s *Server) inlineErrors(next http.Handler) http.Handler {
 		default:
 			// The hub cannot know what a client asking for a mode it does not
 			// offer expects, so it refuses in ordinary form (section 2.3).
-			writeError(w, http.StatusBadRequest, codeBadRequest,
-				inlineErrorsParam+"="+strings.Join(modes, ",")+" is not a mode this hub offers; only "+
-					inlineErrorsMode+" exists")
+			refuse(inlineErrorsParam+"="+strings.Join(modes, ",")+" is not a mode this hub offers; only one "+
+				inlineErrorsParam+"="+inlineErrorsMode+" is accepted").ServeHTTP(w, r)
 		}
 	})
 }
@@ -51,7 +70,8 @@ func (s *Server) inlineErrors(next http.Handler) http.Handler {
 // so that its status can be moved into the body. The header write of a failure
 // is deferred until finish, when the rewritten body is known; headers set on
 // the way (Connection: close, WWW-Authenticate) are on the underlying map and
-// go out then, so nothing but the status line changes.
+// go out then, so nothing but the status line and the body's own length
+// changes.
 type inlineErrorWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
@@ -110,6 +130,9 @@ func (w *inlineErrorWriter) finish() {
 		}
 	}
 	failure.Error.Status = w.status
+	// The rewritten body is longer than the one a handler may have measured;
+	// a stale length would make the real response writer cut the body short.
+	w.ResponseWriter.Header().Del("Content-Length")
 	writeJSON(w.ResponseWriter, http.StatusOK, failure)
 }
 

@@ -119,6 +119,11 @@ var inlineChecks = []Check{
 				map[string]any{"ack": 50}, "ack_out_of_range", http.StatusBadRequest); err != nil {
 				return err
 			}
+			// The KV realm: no manifest declares a namespace yet.
+			if _, err := env.expectInline(ctx, env.Client, http.MethodGet, "/plugin/v1/kv/conformance-inline/key"+inlineQuery, plugin.Session.SessionToken,
+				nil, "forbidden", http.StatusForbidden); err != nil {
+				return err
+			}
 
 			// Revoked credentials, on the session request the plugin retries.
 			if err := env.expect(ctx, http.MethodDelete,
@@ -203,7 +208,7 @@ var inlineChecks = []Check{
 		Title:   "An unknown errors mode is refused in ordinary form, and the Admin API ignores the parameter",
 		Section: "2.3",
 		Run: func(ctx context.Context, env Env) error {
-			for _, query := range []string{"?errors=loud", "?errors=inline&errors=inline"} {
+			for _, query := range []string{"?errors=loud", "?errors=inline&errors=inline", "?errors=%ZZ"} {
 				if err := env.expectError(ctx, http.MethodPost, "/plugin/v1/poll"+query, "conformance-no-such-session",
 					map[string]any{}, http.StatusBadRequest, "bad_request"); err != nil {
 					return fmt.Errorf("%w; a mode the hub does not offer is refused with an ordinary 400 bad_request", err)

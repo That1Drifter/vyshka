@@ -132,7 +132,8 @@ the script log with the hub's own message.
 | Refusal | What the plugin does |
 |---|---|
 | `session_invalid` on a poll (superseded, expired, revoked) | Starts one new session. The outbox is kept and renumbered. |
-| `envelope_invalid` on a poll | The hub applied nothing. The envelope at `details.index` is moved from `outbox/` to `rejected/<n>.json` with the hub's reason, the rest of the batch closes the gap and is resent at once. An `ERROR` line names the envelope and the file. It is never resent and never counted as delivered. |
+| `envelope_invalid` on a poll | The hub applied nothing. The envelope at `details.index` is moved from `outbox/` to `rejected/<time>-<n>.json` with the hub's reason, the rest of the batch closes the gap and is resent at once. An `ERROR` line names the envelope and the file. It is never resent and never counted as delivered. |
+| A `200` whose `error` member is not an object with a code | Treated as malformed, not as success: no ack applied, same session, retry after backoff. |
 | `ack_out_of_range` on a poll | Starts a new session, which resets the sequence space. |
 | `bad_request` on a poll | Halves the batch size and retries the same session. |
 | `credentials_invalid`, `credentials_revoked` | Stays on the same credentials and retries every 30 s, logging that a fresh enrollment token in `config.json` is the fix. Never re-enrolls on its own. |

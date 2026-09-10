@@ -103,7 +103,10 @@ class VyshkaOutbox
 			return false;
 
 		VyshkaOutboxEntry entry = m_Entries.Get(index);
-		string rejectedPath = VyshkaFiles.REJECTED_DIR + "/" + entry.m_Ordinal.ToString() + ".json";
+		// Ordinals restart after a reboot (Load derives the next one from the
+		// outbox alone), so the file name carries the time as well; otherwise
+		// a later run's ordinal 1 would overwrite an earlier run's record.
+		string rejectedPath = VyshkaFiles.REJECTED_DIR + "/" + VyshkaClock.EpochSeconds().ToString() + "-" + entry.m_Ordinal.ToString() + ".json";
 		string record = "{\"rejected\":" + VyshkaJson.Quote(reason) + ",\"envelope\":" + entry.Record() + "}";
 		if (!VyshkaFiles.WriteAll(rejectedPath, record))
 			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Record());

@@ -82,6 +82,11 @@ type driver struct {
 	unpolledRefusals  int
 	sessionBackoff    time.Duration
 
+	// batchLimit caps how much of the buffer one poll carries. It starts at
+	// the 200 every hub must accept (section 3.1.2), halves on a poll
+	// bad_request (section 2.3), and is restored by a new session.
+	batchLimit int
+
 	// inAck is the highest contiguous hub -> plugin seq processed; outSeq the
 	// last seq assigned to an envelope of the driver's own. buffer holds every
 	// outbound envelope the hub has not acked, in seq order.
@@ -236,8 +241,14 @@ func (d *driver) enroll(token, game string) error {
 			continue
 		}
 		if ok, failure := d.classify(status, body); !ok {
-			// Enrollment refusals are the operator's to fix; the driver has
-			// no operator, so it reports and exits.
+			// A hub failure or a malformed answer is retried like a transport
+			// failure. A refusal is the operator's to fix; the driver has no
+			// operator, so it reports and exits.
+			if failure.Status == 0 || failure.Status >= 500 {
+				log.Printf("enroll: %s (status %d): %s; retrying", failure.Code, failure.Status, failure.Message)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
 			return fmt.Errorf("refused: %s (status %d): %s", failure.Code, failure.Status, failure.Message)
 		}
 		var enrolled struct {
@@ -292,6 +303,7 @@ func (d *driver) startSession(game string) error {
 	}
 	d.sessionToken = session.SessionToken
 	d.polledThisSession = false
+	d.batchLimit = 200
 
 	// The client-side response timeout must beat the hub's hold by 5 s
 	// (spec section 3.1.1).
@@ -363,9 +375,13 @@ func (d *driver) run(game string) {
 			}
 		}
 
+		batch := d.buffer
+		if len(batch) > d.batchLimit {
+			batch = batch[:d.batchLimit]
+		}
 		status, body, err := d.post("/plugin/v1/poll", d.sessionToken, map[string]any{
 			"ack":       d.inAck,
-			"envelopes": d.buffer,
+			"envelopes": batch,
 		})
 		if err != nil {
 			// A transport failure is not a delivery failure: the buffer holds
@@ -426,16 +442,27 @@ func (d *driver) recover(failure *hubError) {
 		log.Println("poll: malformed answer; re-polling")
 		time.Sleep(150 * time.Millisecond)
 
-	case failure.Code == "session_invalid", failure.Code == "" && failure.Status == http.StatusUnauthorized:
+	case failure.Code == "session_invalid", failure.Status == http.StatusUnauthorized:
+		// Named or not, a 401 on a poll says the session is gone (section
+		// 2.3: an unrecognized code with a 401 status is session_invalid).
 		log.Println("session invalid; starting a new one")
 		d.sessionToken = ""
+
+	case failure.Code == "bad_request":
+		// Usually the batch is over the hub's cap: send less next time. The
+		// limit never drops below one envelope.
+		if d.batchLimit > 1 {
+			d.batchLimit /= 2
+		}
+		log.Printf("poll refused: %s; retrying with a batch of %d", failure.Message, d.batchLimit)
+		time.Sleep(200 * time.Millisecond)
 
 	case failure.Code == "envelope_invalid":
 		// The hub applied nothing. Take the named envelope out, keep it where
 		// an operator could find it (here, the log), and resend the rest with
 		// the gap closed: the entries after it move down one seq, which is
 		// safe because none of them was accepted either.
-		if !failure.HasIdx || failure.Index < 0 || failure.Index >= len(d.buffer) {
+		if !failure.HasIdx || failure.Index < 0 || failure.Index >= len(d.buffer) || failure.Index >= d.batchLimit {
 			log.Printf("poll: envelope_invalid without a usable details.index (%v); backing off", failure.HasIdx)
 			time.Sleep(500 * time.Millisecond)
 			return

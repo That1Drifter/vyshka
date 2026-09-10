@@ -13,18 +13,32 @@ class VyshkaHubError
 	string m_Message;
 	int m_Index;   // details.index of an envelope_invalid refusal; -1 when absent
 	int m_Seq;     // details.seq of the same, 0 when absent
+	bool m_Malformed;   // the error member was present but unusable: no object, or no code
 
 	// FromBody returns the refusal a response body carries, or null when the
-	// body is a success (no top-level "error" object).
+	// body is a success (no top-level "error" member at all). An "error"
+	// member that is present but is not an object with a code is still not a
+	// success: section 2.3 makes the member's presence the test, so it comes
+	// back as a malformed refusal, which changes no state and is retried.
 	static VyshkaHubError FromBody(VyshkaJsonValue root)
 	{
-		if (!root || !root.IsObject())
+		if (!root || !root.IsObject() || !root.Has("error"))
 			return null;
 		VyshkaJsonValue failure = root.Get("error");
-		if (!failure || !failure.IsObject())
-			return null;
+		if (!failure || !failure.IsObject() || failure.GetString("code", "") == "")
+		{
+			VyshkaHubError malformed = new VyshkaHubError();
+			malformed.m_Code = "";
+			malformed.m_Status = 0;
+			malformed.m_Message = "the response carries an error member that is not an object with a code";
+			malformed.m_Index = -1;
+			malformed.m_Seq = 0;
+			malformed.m_Malformed = true;
+			return malformed;
+		}
 
 		VyshkaHubError refusal = new VyshkaHubError();
+		refusal.m_Malformed = false;
 		refusal.m_Code = failure.GetString("code", "");
 		refusal.m_Status = failure.GetInt("status", 0);
 		refusal.m_Message = failure.GetString("message", "");
@@ -39,6 +53,11 @@ class VyshkaHubError
 			refusal.m_Seq = details.GetInt("seq", 0);
 		}
 		return refusal;
+	}
+
+	bool IsMalformed()
+	{
+		return m_Malformed;
 	}
 
 	bool IsUnauthorized()

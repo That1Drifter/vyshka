@@ -358,7 +358,12 @@ class VyshkaPlugin
 	void OnEnrollRefused(VyshkaHubError refusal)
 	{
 		string code = refusal.m_Code;
-		if (code == "enrollment_token_invalid" || code == "enrollment_token_used" || code == "game_mismatch")
+		if (refusal.IsMalformed())
+		{
+			VyshkaLog.Warn("enrollment answered with an unusable error member; retrying");
+			Backoff();
+		}
+		else if (code == "enrollment_token_invalid" || code == "enrollment_token_used" || code == "game_mismatch")
 		{
 			VyshkaLog.Error("enrollment refused, " + refusal.Describe() + ". No retry fixes this: issue a fresh enrollment token and put it in " + VyshkaFiles.CONFIG_PATH);
 			Delay(BACKOFF_ENROLL_REFUSED_MS);
@@ -463,7 +468,12 @@ class VyshkaPlugin
 	{
 		string code = refusal.m_Code;
 		SetLinkState("buffering");
-		if (code == "credentials_invalid" || code == "credentials_revoked" || (code != "protocol_version_unsupported" && refusal.IsUnauthorized()))
+		if (refusal.IsMalformed())
+		{
+			VyshkaLog.Warn("session answered with an unusable error member; retrying");
+			Backoff();
+		}
+		else if (code == "credentials_invalid" || code == "credentials_revoked" || (code != "protocol_version_unsupported" && refusal.IsUnauthorized()))
 		{
 			WarnThrottled("session refused, " + refusal.Describe() + ". Issue a fresh enrollment token and put it in " + VyshkaFiles.CONFIG_PATH + "; retrying every " + (BACKOFF_CREDENTIALS_MS / 1000).ToString() + " s meanwhile");
 			Delay(BACKOFF_CREDENTIALS_MS);
@@ -594,7 +604,13 @@ class VyshkaPlugin
 	void OnPollRefused(VyshkaHubError refusal)
 	{
 		string code = refusal.m_Code;
-		if (code == "session_invalid" || (code != "ack_out_of_range" && code != "envelope_invalid" && code != "bad_request" && refusal.IsUnauthorized()))
+		if (refusal.IsMalformed())
+		{
+			// Same session, same outbox, no ack applied: re-poll after backoff.
+			VyshkaLog.Warn("poll answered with an unusable error member; re-polling");
+			Backoff();
+		}
+		else if (code == "session_invalid" || (code != "ack_out_of_range" && code != "envelope_invalid" && code != "bad_request" && refusal.IsUnauthorized()))
 		{
 			// Superseded, expired, or revoked: one new session, which is
 			// legal at any time (section 5.3). The outbox is kept and

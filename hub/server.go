@@ -652,7 +652,7 @@ func (s *Server) routes() http.Handler {
 	// the status the handler chose, so a refusal a plugin asked to receive as
 	// a 200 is still logged as the failure it is (spec section 2.3). Only the
 	// Plugin API offers the mode; the Admin API answers in ordinary form.
-	inline := s.inlineErrors(logged)
+	inline := s.inlineErrors(s.log, s.cfg.ResponseWriteTimeout, logged)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/plugin/") {
 			inline.ServeHTTP(w, r)

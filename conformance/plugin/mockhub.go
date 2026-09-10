@@ -107,29 +107,73 @@ type mockHub struct {
 	legacyErrors bool
 	inlineSeen   bool
 
-	// Provocations the error stages arm. rejectNextBatch refuses the next
-	// non-empty poll batch with envelope_invalid at index 0 and records what
-	// was refused in rejected. refuseSessionsUntil answers session requests
-	// with credentials_revoked until it passes, with every attempt logged in
-	// sessionAttempts. garbleNextPoll answers the next poll with a 200 whose
-	// body is not JSON, garbled recording that it did.
-	rejectNextBatch     bool
+	// Provocations the error stages arm.
+	//
+	// rejectArmed refuses the next poll batch whose first envelope is fresh
+	// (above processedTop, so not a legal retransmission of something already
+	// accepted) with envelope_invalid at index 0, recording it in rejected.
+	// When that refusal was opaque, rejectRemaining further batches carrying
+	// the condemned id are refused as well, so a plugin that answers every
+	// opaque 4xx with a new session shows itself.
+	//
+	// refuseSessionsArmed starts a window, on the next session request, in
+	// which every session request is answered credentials_revoked; attempts
+	// are logged in sessionAttempts and refusals counted in refusedSessions.
+	//
+	// garbleArmed answers the next poll that carries envelopes with a 200
+	// whose body is not JSON, without ingesting them, recording in garbled
+	// what the plugin will have to send again.
+	rejectArmed         bool
+	rejectRemaining     int
 	rejected            *batchRejection
+	refuseSessionsArmed bool
+	refuseSessionsFor   time.Duration
 	refuseSessionsUntil time.Time
 	sessionAttempts     []time.Time
-	garbleNextPoll      bool
-	garbled             bool
+	refusedSessions     int
+	garbleArmed         bool
+	garbled             *garbleRecord
 }
 
 // batchRejection is what the mock refused: the condemned envelope at index 0,
-// the ids of the rest of the batch, and whether the refusal travelled inline
-// (so the candidate could read it) or as an opaque 400.
+// the ids of the rest of the batch, whether the refusal travelled inline (so
+// the candidate could read it) or as an opaque 400, and how many times the
+// condemned id has been refused in all.
 type batchRejection struct {
-	ID     string
-	Type   string
-	Seq    int64
-	Others []string
-	Inline bool
+	ID       string
+	Type     string
+	Seq      int64
+	Others   []string
+	Inline   bool
+	Refusals int
+	At       time.Time
+}
+
+// garbleRecord is what a garbled poll answer swallowed: the ids of the batch
+// the plugin sent and did not get an ack for, and the poll count at the time,
+// so the stage can tell a re-poll after the garble from one before it.
+type garbleRecord struct {
+	IDs     []string
+	PollsAt int
+	At      time.Time
+}
+
+// batchIDs decodes the id, type and seq of every envelope in a batch, in
+// order, without validating anything else.
+func batchIDs(raws []json.RawMessage) []struct {
+	ID   string
+	Type string
+	Seq  int64
+} {
+	out := make([]struct {
+		ID   string
+		Type string
+		Seq  int64
+	}, len(raws))
+	for i, raw := range raws {
+		_ = json.Unmarshal(raw, &out[i])
+	}
+	return out
 }
 
 // fault is a protocol violation the plugin committed. Faults are recorded
@@ -615,9 +659,17 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 		answer(w, inline, http.StatusBadRequest, "protocol_version_unsupported", "this harness speaks protocol version 1", nil)
 		return
 	}
+	if h.refuseSessionsArmed {
+		// The window opens on the first attempt, not when the stage armed
+		// it, so a plugin that waits before retrying still meets the refusal.
+		h.refuseSessionsArmed = false
+		h.refuseSessionsUntil = time.Now().Add(h.refuseSessionsFor)
+	}
 	if time.Now().Before(h.refuseSessionsUntil) {
 		// The credentials-refused stage: the operator revoked this server,
 		// and the plugin is expected to retry slowly rather than hammer.
+		h.refusedSessions++
+		h.signalLocked()
 		h.mu.Unlock()
 		answer(w, inline, http.StatusUnauthorized, "credentials_revoked",
 			"these credentials were revoked; enroll again with a new enrollment token", nil)
@@ -722,39 +774,60 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// request takes effect: a refused batch changes nothing, including its
 	// ack (section 3.1.2), and a garbled answer is one the plugin must treat
 	// as if it never arrived.
-	if h.rejectNextBatch && len(request.Envelopes) > 0 {
-		h.rejectNextBatch = false
-		rejection := &batchRejection{Inline: inline}
-		for index, raw := range request.Envelopes {
-			var fields struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
-				Seq  int64  `json:"seq"`
+	if len(request.Envelopes) > 0 {
+		ids := batchIDs(request.Envelopes)
+		if h.rejectArmed && ids[0].Seq > h.processedTop {
+			// Only a fresh first envelope is condemned: refusing a legal
+			// retransmission of something already accepted would contradict
+			// section 9.1 and confuse the stage's own bookkeeping.
+			h.rejectArmed = false
+			rejection := &batchRejection{
+				ID: ids[0].ID, Type: ids[0].Type, Seq: ids[0].Seq,
+				Inline: inline, Refusals: 1, At: time.Now(),
 			}
-			_ = json.Unmarshal(raw, &fields)
-			if index == 0 {
-				rejection.ID, rejection.Type, rejection.Seq = fields.ID, fields.Type, fields.Seq
-				continue
+			for _, other := range ids[1:] {
+				rejection.Others = append(rejection.Others, other.ID)
 			}
-			rejection.Others = append(rejection.Others, fields.ID)
+			h.rejected = rejection
+			if !inline {
+				h.rejectRemaining = 2
+			}
+			h.signalLocked()
+			h.mu.Unlock()
+			answer(w, inline, http.StatusBadRequest, "envelope_invalid",
+				"this harness declares the envelope at index 0 malformed to grade recovery; nothing in the batch was applied",
+				map[string]any{"index": 0, "seq": rejection.Seq})
+			return
 		}
-		h.rejected = rejection
-		h.signalLocked()
-		h.mu.Unlock()
-		answer(w, inline, http.StatusBadRequest, "envelope_invalid",
-			"this harness declares the envelope at index 0 malformed to grade recovery; nothing in the batch was applied",
-			map[string]any{"index": 0, "seq": rejection.Seq})
-		return
-	}
-	if h.garbleNextPoll {
-		h.garbleNextPoll = false
-		h.garbled = true
-		h.signalLocked()
-		h.mu.Unlock()
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
-		return
+		if h.rejectRemaining > 0 && h.rejected != nil {
+			for index, one := range ids {
+				if one.ID != h.rejected.ID {
+					continue
+				}
+				h.rejectRemaining--
+				h.rejected.Refusals++
+				h.signalLocked()
+				h.mu.Unlock()
+				answer(w, inline, http.StatusBadRequest, "envelope_invalid",
+					"this harness still declares that envelope malformed; nothing in the batch was applied",
+					map[string]any{"index": index, "seq": one.Seq})
+				return
+			}
+		}
+		if h.garbleArmed {
+			h.garbleArmed = false
+			record := &garbleRecord{PollsAt: h.totalPolls, At: time.Now()}
+			for _, one := range ids {
+				record.IDs = append(record.IDs, one.ID)
+			}
+			h.garbled = record
+			h.signalLocked()
+			h.mu.Unlock()
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
+			return
+		}
 	}
 
 	h.pollsThisSession++

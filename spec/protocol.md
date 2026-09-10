@@ -126,12 +126,12 @@ the plugin cannot branch on `error.code` and cannot even see the status it would
 on. Inline errors let a plugin ask, per request, for the hub's error responses to arrive
 where its HTTP client can read them.
 
-**Opt-in.** A Plugin API request opts in by carrying the query parameter `errors=inline`,
-for example `POST /plugin/v1/poll?errors=inline`. The opt-in covers that request only and
-nothing else; a plugin that wants it everywhere sends it on every request. It is a request
-option, not a session property, so it works on the requests a session cannot cover:
-enrollment, a session request that fails, and a request presenting a session token the hub
-does not recognize.
+**Opt-in.** A Plugin API request opts in by carrying the query parameter `errors=inline`
+exactly once, for example `POST /plugin/v1/poll?errors=inline`. The opt-in covers that
+request only and nothing else; a plugin that wants it everywhere sends it on every request.
+It is a request option, not a session property, so it works on the requests a session
+cannot cover: enrollment, a session request that fails, and a request presenting a session
+token the hub does not recognize.
 
 **What the hub does.** For a request that opted in, every response the hub would otherwise
 have sent with a 4xx or 5xx status it MUST instead send with status `200`, the
@@ -156,21 +156,25 @@ have sent with a 4xx or 5xx status it MUST instead send with status `200`, the
   the session was superseded or revoked (sections 3.1.2 and 5.4), and the generic refusals
   of section 2.2 such as `payload_too_large`. A hub SHOULD apply it to any other path under
   `/plugin/` as well.
-- Only the status line changes. Headers the hub would have sent with the error, the choice
-  of `code`, `message`, and `details`, and the hub's own logging and metrics of the failure
+- Only the status line and the body change. Headers the hub would have sent with the
+  error, other than those describing the body itself (`Content-Length`), the choice of
+  `code`, `message`, and `details`, and the hub's own logging and metrics of the failure
   are unchanged: an inline error is still a failed request.
 - Successful responses are unchanged: `201` for enrollment stays `201`.
-- A value of `errors` other than `inline` MUST be refused with `400 bad_request` in
-  ordinary form, since the hub cannot know what such a client expects. The parameter has no
-  meaning on the Admin API, which always answers with ordinary statuses.
+- A value of `errors` other than `inline`, more than one occurrence of the parameter, or a
+  query string the hub cannot parse MUST be refused with `400 bad_request` in ordinary
+  form, since the hub cannot know what such a client expects. The parameter has no meaning
+  on the Admin API, which always answers with ordinary statuses.
 - A hub that implements inline errors MUST report `"inlineErrors": true` in the `features`
   object of the session response (section 5.3).
 
 **What the plugin does.** A success body from any Plugin API endpoint never carries a
 top-level `error` member; hubs MUST NOT add one. A plugin that opted in MUST therefore treat
 a `200` whose body is a JSON object with an `error` member as the failure it describes, and
-MUST NOT treat it as success. A `200` whose body is not a JSON object is a malformed
-response: the plugin retries after backoff and changes no session or delivery state over it.
+MUST NOT treat it as success. A `200` whose body is not a JSON object, or whose `error`
+member is present but is not an object carrying a `code`, is a malformed response: the
+plugin retries after backoff and changes no session or delivery state over it. In
+particular it MUST NOT apply an `ack` from such a body.
 
 A hub that predates this section, or one that does not implement it, ignores the parameter
 and answers with ordinary statuses, as do proxies and other intermediaries that answer in
@@ -187,7 +191,7 @@ it. Each is stated once here rather than with its endpoint.
 | `credentials_invalid`, `credentials_revoked` (401) | Do not start a session loop: retry slowly and surface the message to the operator, who has to issue a fresh enrollment token (section 5.4). |
 | `enrollment_token_invalid`, `enrollment_token_used`, `game_mismatch` | Surface to the operator and retry slowly; no retry fixes these. |
 | `protocol_version_unsupported` | Surface to the operator; the plugin and hub need upgrading, not retrying. |
-| `envelope_invalid` (400) | The hub applied nothing, including the `ack`. The plugin MUST take the envelope at `details.index` out of the batch before retrying, MUST NOT count it as delivered, and MUST surface it (log it, set it aside on disk) rather than discard it silently. It closes the gap by moving the envelopes behind the removed one down one `seq` each; that is safe because a refused batch was applied in no part, so nothing behind the removed envelope has been accepted under its old number (section 9.1). |
+| `envelope_invalid` (400) | The hub applied nothing, including the `ack`. The plugin MUST take the envelope at `details.index` out of its outbox before retrying, MUST NOT count it as delivered, and MUST surface it (log it, set it aside on disk) rather than discard it silently. It closes the gap by moving every queued envelope behind the removed one, in the batch or not yet sent, down one `seq` each. That shift is the one exception to sections 9.1 and 9.3, and it is safe only under the sending discipline this document already requires: a batch is a contiguous run of the outbox in ascending `seq`, and framing validity depends on the envelope's content alone, so an envelope behind the refused one can have been accepted by an earlier poll only if the refused one was too, which its refusal rules out. A plugin that cannot establish that (one that sends batches which are not such a run) MUST start a new session instead, which renumbers the whole outbox. |
 | `ack_out_of_range` (400) | The plugin's inbound ack is ahead of anything the hub sent on this session, which no retry reconciles. Start a new session, whose sequence space begins at 0. |
 | `bad_request` on a poll (400) | Usually the batch is over the hub's cap: retry with a smaller batch. Do not start a new session. |
 | `internal` (5xx), or any unrecognized code with a 5xx `status` | Retry the same request after backoff, on the same session. |
@@ -1278,7 +1282,8 @@ plugin and a hub implement one mechanism twice rather than two mechanisms once.
   several requests concurrently MUST derive each reported ack from committed state rather
   than from a value read before the other requests committed.
 - **Within a session**, a sender MUST retransmit every envelope above the receiver's ack
-  unchanged: same `id`, same `seq`, same `ts`, same `body`. Only then can the receiver
+  unchanged: same `id`, same `seq`, same `ts`, same `body` (the one exception is the gap
+  closed behind an envelope the hub refused as malformed, section 2.3). Only then can the receiver
   deduplicate.
 - **Across a session change**, `seq` is the one field that MUST change. Sequence spaces do
   not survive their session, so an envelope still unacked when a session ends MUST be
@@ -1320,8 +1325,11 @@ plugin and a hub implement one mechanism twice rather than two mechanisms once.
 
 - The plugin MUST persist an outbound ring buffer (file-backed where the engine allows,
   memory otherwise; reference default 5 000 envelopes) and MUST NOT drop an envelope until
-  the hub has acked its `seq`. A game-server crash loses at most the unflushed tail; a hub
-  restart loses nothing, because acks are only sent after durable writes.
+  the hub has acked its `seq`. An envelope the hub refused as malformed (`envelope_invalid`,
+  section 2.3) will never be acked; it leaves the ring buffer by being set aside where the
+  operator can find it, never by being discarded. A game-server crash loses at most the
+  unflushed tail; a hub restart loses nothing, because acks are only sent after durable
+  writes.
 - A hub MUST NOT ack an envelope it has not durably processed. Answering a poll is not an
   ack: the number in the response body is.
 - **Durably processed** means the envelope's effect has been committed to storage that
