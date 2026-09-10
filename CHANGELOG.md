@@ -12,6 +12,37 @@ point if needed.
 
 ### Added
 
+- 2026-09-10: inline errors (issue #43), protocol draft 0.19, new section 2.3. Some engine
+  HTTP clients hand script an opaque error code for any non-2xx response, with neither the
+  status nor the body, which made section 2.2 unreadable on DayZ and left the plugin
+  guessing from the error class: a malformed batch looked like a lost session and became a
+  session loop. A Plugin API request can now carry `?errors=inline`, and the hub answers
+  every refusal it would have sent as a 4xx or 5xx as a `200` carrying the same error body
+  with `error.status` added; success bodies are guaranteed never to carry a top-level
+  `error`, an unknown mode is refused in ordinary form, the Admin API ignores the parameter,
+  and the session response advertises `features.inlineErrors`. It is a request option
+  rather than a session feature so it covers enrollment, a failed session request, and a
+  token the hub no longer knows, and a hub that predates it simply ignores it. The section
+  also states the recovery table every plugin follows whichever way a refusal arrives (one
+  new session for `session_invalid`, the named envelope set aside for `envelope_invalid`,
+  slow operator-facing retries for credential refusals, never a new session over any other
+  client error, a backoff of at least 1 s wherever the table says to back off) and the
+  conservative fallback for opaque errors. In the hub the rewrite is
+  one `ResponseWriter` wrapper in front of the Plugin API, placed outside the request log so
+  the log still records the real status. The hub conformance suite gains four checks (76
+  total); the plugin conformance mock honors the opt-in, gains three recovery stages (a
+  refused batch, a garbled `200`, revoked credentials), and a `-legacy-errors` mode that
+  behaves like an older hub; the reference driver implements the table and gains `-opaque`,
+  which discards everything but the class of a non-2xx, and CI runs the plugin suite in
+  both configurations. The DayZ plugin opts in on every request, reads inline refusals in
+  `OnSuccess`, quarantines a refused envelope under `rejected/` with the hub's reason and
+  closes the gap in the batch, retries credential refusals every 30 s with the hub's
+  message in the log, and never opens more than one session a minute over an opaque
+  refusal. Exercised on DayZ 1.29 against both the new hub and the unchanged staging hub;
+  the evidence is recorded in issue #43. The OpenAPI document carries the parameter and the
+  `status` field; `spikes/dayz-restapi-headers` gains the finding that query strings pass
+  through the engine's client, read off its 2026-09-03 logs.
+
 - 2026-09-10: completed the browser-driven heal of a live DayZ player, the last box on issue
   #13, against the staging hub over the public internet: an operator signed in to the panel
   with a scoped token, opened the server's Heal player form, typed the Steam64 id, dispatched,

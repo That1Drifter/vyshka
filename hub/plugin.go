@@ -209,7 +209,7 @@ func newSessionResponse(session store.Session, server store.Server) sessionRespo
 		EnvelopeVersion:    EnvelopeVersion,
 		PollTimeoutSeconds: session.PollTimeoutSeconds,
 		Transports:         supportedTransports,
-		Features:           map[string]any{},
+		Features:           map[string]any{"inlineErrors": true},
 		Server:             newServerIdentity(server),
 	}
 }

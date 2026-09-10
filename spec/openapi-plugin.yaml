@@ -41,6 +41,8 @@ tags:
 
 paths:
   /plugin/v1/enroll:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [enrollment]
       operationId: enroll
@@ -91,6 +93,7 @@ paths:
                     type: string
                     description: Persist this. It is not retrievable again.
                   server: { $ref: "#/components/schemas/ServerIdentity" }
+        "200": { $ref: "#/components/responses/InlineError" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401":
           description: |
@@ -107,6 +110,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
 
   /plugin/v1/session:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [session]
       operationId: createSession
@@ -145,10 +150,16 @@ paths:
                   items: { type: string, enum: [poll, ws] }
       responses:
         "200":
-          description: A live session.
+          description: |
+            A live session. With `?errors=inline`, a refusal arrives here too,
+            as an InlineError; the presence of a top-level `error` tells them
+            apart (spec section 2.3).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Session" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Session"
+                  - $ref: "#/components/schemas/InlineError"
         "400":
           description: |
             Missing credentials (`bad_request`), or a protocol version this hub
@@ -174,13 +185,18 @@ paths:
         - sessionToken: []
       responses:
         "200":
-          description: The live session.
+          description: The live session, or an InlineError under `?errors=inline`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Session" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Session"
+                  - $ref: "#/components/schemas/InlineError"
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
   /plugin/v1/poll:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [transport]
       operationId: poll
@@ -248,27 +264,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [envelopes, ack, pollTimeoutSeconds, sessionExpiresAt]
-                properties:
-                  envelopes:
-                    type: array
-                    description: |
-                      Ascending by `seq`. Always present; an empty batch is `[]`,
-                      never `null`. Anything above the plugin's ack is repeated
-                      here unchanged until it is acked.
-                    items: { $ref: "#/components/schemas/HubEnvelope" }
-                  ack:
-                    type: integer
-                    minimum: 0
-                    description: |
-                      Highest contiguous plugin -> hub `seq` the hub has durably
-                      processed. The plugin drops its buffer up to this.
-                  pollTimeoutSeconds:
-                    type: integer
-                    minimum: 5
-                    maximum: 60
-                  sessionExpiresAt: { type: string, format: date-time }
+                oneOf:
+                  - $ref: "#/components/schemas/PollResponse"
+                  - $ref: "#/components/schemas/InlineError"
         "400":
           description: |
             An inbound envelope is missing `id`, `type` or `seq`, carries a
@@ -287,6 +285,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/KVNamespace"
       - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
     get:
       tags: [kv]
       operationId: kvGet
@@ -295,10 +294,13 @@ paths:
         - sessionToken: []
       responses:
         "200":
-          description: The key, its value, and its revision.
+          description: The key, its value, and its revision, or an InlineError under `?errors=inline`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/KVEntry" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/KVEntry"
+                  - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
@@ -323,10 +325,13 @@ paths:
             schema: { $ref: "#/components/schemas/KVSetRequest" }
       responses:
         "200":
-          description: The key's new revision.
+          description: The key's new revision, or an InlineError under `?errors=inline`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/KVWriteResult" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/KVWriteResult"
+                  - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
@@ -343,6 +348,7 @@ paths:
       responses:
         "204":
           description: The key was deleted.
+        "200": { $ref: "#/components/responses/InlineError" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
@@ -352,6 +358,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/KVNamespace"
       - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [kv]
       operationId: kvIncr
@@ -371,10 +378,13 @@ paths:
             schema: { $ref: "#/components/schemas/KVIncrRequest" }
       responses:
         "200":
-          description: The key with its new value and revision.
+          description: The key with its new value and revision, or an InlineError under `?errors=inline`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/KVEntry" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/KVEntry"
+                  - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
@@ -480,6 +490,7 @@ components:
       type: object
       required:
         [sessionId, expiresAt, protocolVersion, envelopeVersion, pollTimeoutSeconds, transports, features, server]
+      not: { required: [error] }
       properties:
         sessionId: { type: string }
         sessionToken:
@@ -512,6 +523,7 @@ components:
       type: object
       description: One key of the section 12 store, with its value.
       required: [namespace, key, value, revision]
+      not: { required: [error] }
       properties:
         namespace: { type: string }
         key: { type: string }
@@ -531,6 +543,7 @@ components:
       type: object
       description: A set's answer; the value is not echoed back.
       required: [namespace, key, revision]
+      not: { required: [error] }
       properties:
         namespace: { type: string }
         key: { type: string }
@@ -582,6 +595,15 @@ components:
             code:
               type: string
               description: Stable machine-readable identifier; branch on this.
+            status:
+              type: integer
+              minimum: 400
+              maximum: 599
+              description: |
+                The HTTP status the hub would have sent. Present only when the
+                error travels inline in a 200 because the request carried
+                `?errors=inline` (spec section 2.3); the fallback for a `code`
+                the client does not recognize.
             message:
               type: string
               description: Human-readable. Never parse it.
@@ -589,7 +611,71 @@ components:
               type: object
               additionalProperties: true
 
+    PollResponse:
+      type: object
+      required: [envelopes, ack, pollTimeoutSeconds, sessionExpiresAt]
+      # A success never carries a top-level error (spec section 2.3); saying so
+      # keeps the union with InlineError unambiguous while leaving every other
+      # unknown field tolerated.
+      not: { required: [error] }
+      properties:
+        envelopes:
+          type: array
+          description: |
+            Ascending by `seq`. Always present; an empty batch is `[]`,
+            never `null`. Anything above the plugin's ack is repeated
+            here unchanged until it is acked.
+          items: { $ref: "#/components/schemas/HubEnvelope" }
+        ack:
+          type: integer
+          minimum: 0
+          description: |
+            Highest contiguous plugin -> hub `seq` the hub has durably
+            processed. The plugin drops its buffer up to this.
+        pollTimeoutSeconds:
+          type: integer
+          minimum: 5
+          maximum: 60
+        sessionExpiresAt: { type: string, format: date-time }
+
+    InlineError:
+      description: |
+        A refusal delivered in a 200 because the request carried
+        `?errors=inline` (spec section 2.3). The same shape as Error with
+        `status` required. A success body never has a top-level `error`.
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, status, message]
+          properties:
+            code: { type: string }
+            status:
+              type: integer
+              minimum: 400
+              maximum: 599
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+
   parameters:
+    InlineErrors:
+      name: errors
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [inline]
+      description: |
+        Ask for this request's refusals inline (spec section 2.3): every
+        response the hub would have sent as a 4xx or 5xx arrives instead as a
+        200 whose body is the Error schema with `error.status` filled in.
+        Successes are unchanged, and a success body never carries a top-level
+        `error` member. For engines whose HTTP client hides the status and
+        body of a non-2xx response. Any value other than `inline` is refused
+        with an ordinary 400. A hub that predates the option ignores it.
     KVNamespace:
       name: namespace
       in: path
@@ -612,6 +698,14 @@ components:
       description: A key within the namespace (spec section 12.1). Case-sensitive.
 
   responses:
+    InlineError:
+      description: |
+        Only when the request carried `?errors=inline`: the refusal the hub
+        would otherwise have sent as a 4xx or 5xx, with its status inside
+        (spec section 2.3).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InlineError" }
     BadRequest:
       description: Malformed body, or a field missing, wrongly typed, or out of range.
       content:

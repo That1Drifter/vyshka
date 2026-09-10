@@ -9,6 +9,9 @@
 //   $profile:Vyshka/config.json        operator-written: hub URL, enrollment token
 //   $profile:Vyshka/credentials.json   plugin-written after enrollment (spec section 5.2)
 //   $profile:Vyshka/outbox/<n>.json    one unacked envelope per file (section 9.3)
+//   $profile:Vyshka/rejected/<n>.json  an envelope the hub refused as malformed, set
+//                                      aside with the hub's reason for the operator
+//                                      (section 2.3); never sent again
 
 class VyshkaFiles
 {
@@ -16,6 +19,7 @@ class VyshkaFiles
 	static const string CONFIG_PATH = "$profile:Vyshka/config.json";
 	static const string CREDENTIALS_PATH = "$profile:Vyshka/credentials.json";
 	static const string OUTBOX_DIR = "$profile:Vyshka/outbox";
+	static const string REJECTED_DIR = "$profile:Vyshka/rejected";
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 
 	// EnsureLayout creates the directories, one level at a time, because
@@ -26,6 +30,8 @@ class VyshkaFiles
 			MakeDirectory(ROOT);
 		if (!FileExist(OUTBOX_DIR))
 			MakeDirectory(OUTBOX_DIR);
+		if (!FileExist(REJECTED_DIR))
+			MakeDirectory(REJECTED_DIR);
 	}
 
 	// ReadAll returns the whole file as one string, lines joined with "\n".

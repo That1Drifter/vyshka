@@ -56,6 +56,8 @@ class VyshkaOutbox
 	int m_NextOrdinal;
 	int m_NextSeq;
 	int m_Dropped;
+	int m_BatchLimit;   // envelopes per poll; lowered when a hub refuses a batch as too large
+	int m_Rejected;     // envelopes the hub refused as malformed and this outbox set aside
 
 	void VyshkaOutbox()
 	{
@@ -63,6 +65,78 @@ class VyshkaOutbox
 		m_NextOrdinal = 1;
 		m_NextSeq = 0;
 		m_Dropped = 0;
+		m_BatchLimit = BATCH_LIMIT;
+		m_Rejected = 0;
+	}
+
+	int BatchLimit()
+	{
+		return m_BatchLimit;
+	}
+
+	// ShrinkBatch halves the batch size after a hub refused a poll as too
+	// large (bad_request, spec section 2.3); it never drops below one
+	// envelope, and the limit grows back on the next session.
+	void ShrinkBatch()
+	{
+		int shrunk = m_BatchLimit / 2;
+		if (shrunk < 1)
+			shrunk = 1;
+		if (shrunk != m_BatchLimit)
+			VyshkaLog.Warn("outbox: lowering the poll batch from " + m_BatchLimit.ToString() + " to " + shrunk.ToString() + " envelope(s)");
+		m_BatchLimit = shrunk;
+	}
+
+	// Quarantine takes the envelope at a batch index out of the outbox after
+	// the hub refused the batch over it (envelope_invalid, spec section 2.3).
+	// The record is moved, not deleted: it lands under rejected/ with the
+	// hub's reason, where an operator can read what could not be delivered.
+	// The entries behind it move down one seq to close the gap, which is
+	// safe because a refused batch was applied in no part. Returns false when
+	// the index names nothing in the last batch.
+	bool Quarantine(int index, string reason)
+	{
+		int count = m_Entries.Count();
+		if (count > m_BatchLimit)
+			count = m_BatchLimit;
+		if (index < 0 || index >= count)
+			return false;
+
+		VyshkaOutboxEntry entry = m_Entries.Get(index);
+		// Ordinals restart after a reboot (Load derives the next one from the
+		// outbox alone), so the file name carries the time as well; otherwise
+		// a later run's ordinal 1 would overwrite an earlier run's record.
+		string rejectedBase = VyshkaFiles.REJECTED_DIR + "/" + VyshkaClock.EpochSeconds().ToString() + "-" + entry.m_Ordinal.ToString();
+		string rejectedPath = rejectedBase + ".json";
+		// A clock set back can still repeat a name; never overwrite a record.
+		int collision = 0;
+		while (FileExist(rejectedPath))
+		{
+			collision++;
+			rejectedPath = rejectedBase + "-" + collision.ToString() + ".json";
+		}
+		string record = "{\"rejected\":" + VyshkaJson.Quote(reason) + ",\"envelope\":" + entry.Record() + "}";
+		if (!VyshkaFiles.WriteAll(rejectedPath, record))
+			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Record());
+		if (!DeleteFile(entry.Path()))
+			VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		m_Entries.RemoveOrdered(index);
+		m_Rejected++;
+
+		int seq = entry.m_Seq;
+		for (int i = index; i < m_Entries.Count(); i++)
+		{
+			VyshkaOutboxEntry later = m_Entries.Get(i);
+			if (later.m_Seq > 0)
+			{
+				later.m_Seq = seq;
+				seq++;
+			}
+		}
+		if (m_NextSeq > 0)
+			m_NextSeq--;
+		VyshkaLog.Error("outbox: the hub refused envelope " + entry.m_Id + " (" + entry.m_Type + ", seq " + entry.m_Seq.ToString() + ") as malformed: " + reason + "; set aside at " + rejectedPath + ", " + m_Entries.Count().ToString() + " envelope(s) still queued");
+		return true;
 	}
 
 	int Count()
@@ -242,16 +316,17 @@ class VyshkaOutbox
 			m_NextSeq++;
 			m_Entries.Get(i).m_Seq = m_NextSeq;
 		}
+		m_BatchLimit = BATCH_LIMIT;
 	}
 
-	// BatchJson frames the first BATCH_LIMIT unacked envelopes, in ascending
+	// BatchJson frames the first m_BatchLimit unacked envelopes, in ascending
 	// seq order, as the poll request's envelopes array.
 	string BatchJson()
 	{
 		string result = "[";
 		int count = m_Entries.Count();
-		if (count > BATCH_LIMIT)
-			count = BATCH_LIMIT;
+		if (count > m_BatchLimit)
+			count = m_BatchLimit;
 		for (int i = 0; i < count; i++)
 		{
 			if (i > 0)

@@ -8,9 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -97,6 +100,160 @@ type mockHub struct {
 
 	pluginExited  bool
 	pluginExitMsg string
+
+	// Inline errors (spec section 2.3). legacyErrors makes this hub behave
+	// like one that predates the option: the parameter is ignored and every
+	// refusal is an ordinary status, which is how a candidate's opaque-error
+	// fallback gets graded. inlineSeen records whether the candidate ever
+	// asked; the error stages read it to decide what a compliant candidate
+	// could have known.
+	legacyErrors bool
+	inlineSeen   bool
+
+	// Provocations the error stages arm.
+	//
+	// rejectArmed refuses the next poll batch that carries a fresh envelope
+	// (above processedTop, so not a legal retransmission of something already
+	// accepted) with envelope_invalid at the first fresh envelope's index,
+	// recording it in rejected. When that refusal was opaque, rejectRemaining
+	// further batches carrying the condemned id are refused as well, so a
+	// plugin that answers every opaque 4xx with a new session shows itself.
+	//
+	// refuseSessionsArmed starts a window, on the next session request, in
+	// which every session request is answered credentials_revoked; attempts
+	// are logged in sessionAttempts and refusals counted in refusedSessions.
+	//
+	// garbleArmed answers the next poll that carries envelopes with a 200
+	// whose body is not JSON, without ingesting them, recording in garbled
+	// what the plugin will have to send again.
+	rejectArmed     bool
+	rejectRemaining int
+	rejected        *batchRejection
+	// acceptGen counts fresh acceptances; lastAccepted maps each id to the
+	// generation at which it was last accepted as a fresh envelope, in any
+	// session, so a stage can tell an arrival after its provocation from one
+	// before it by order rather than by clock (idContent only remembers the
+	// first, and timestamps can tie on a coarse clock).
+	acceptGen    uint64
+	lastAccepted map[string]uint64
+	// returned records at which seq and session a snapshotted envelope came
+	// back, so a stage can bind the seq it expects to the recovery it saw.
+	returned map[string]returnRecord
+	// pollsInFlight and overlappingPolls (atomic, outside the mutex) watch
+	// whether the candidate ever has more than one poll open at once. The
+	// timing and resend-count assertions of the error stages assume one
+	// request at a time, which is how every reference plugin works; against
+	// a candidate that overlaps polls they cannot tell a retry from a
+	// request already in flight, so they stand down.
+	pollsInFlight    atomic.Int32
+	overlappingPolls atomic.Int64
+	// expectedContent is what a provocation saw of each fresh envelope it
+	// refused or swallowed; ingest faults a later arrival of that id whose
+	// type, ts or body changed.
+	expectedContent     map[string]contentSnapshot
+	refuseSessionsArmed bool
+	refuseSessionsFor   time.Duration
+	refuseSessionsUntil time.Time
+	sessionAttempts     []time.Time
+	refusedSessions     int
+	// sessionStarts is when each session ordinal was issued, so a stage can
+	// measure the pause between a refusal and a replacement session.
+	sessionStarts map[int]time.Time
+	garbleArmed   bool
+	garbled       *garbleRecord
+}
+
+// batchRejection is what the mock refused: the condemned envelope at index 0,
+// the ids of the rest of the batch, whether the refusal travelled inline (so
+// the candidate could read it) or as an opaque 400, and how many times the
+// condemned id has been refused in all.
+type batchRejection struct {
+	ID        string
+	Type      string
+	Seq       int64
+	Index     int
+	Others    []string // the other fresh envelopes of the refused batch
+	OtherSeqs []int64  // their seqs as sent in the refused batch
+	Inline    bool
+	// Refusals counts every refusal of the condemned id; Events records each
+	// one with the session it happened on and whether that session had
+	// polled successfully before it, and Accepted records the poll that
+	// finally carried the batch through, so a stage can grade the pause the
+	// plugin left after each refusal on a never-polled session.
+	Refusals int
+	Events   []refusalEvent
+	Accepted *refusalEvent
+	At       time.Time
+	PollsAt  int    // totalPolls when the batch was first refused
+	GenAt    uint64 // acceptGen when the batch was first refused
+}
+
+// returnRecord is where a snapshotted envelope was accepted again.
+type returnRecord struct {
+	Seq     int64
+	Session int
+}
+
+// contentSnapshot is what a provocation saw of a fresh envelope it did not
+// ingest, so that when the plugin sends it again the mock can check it came
+// back unchanged (section 9.1): same type, same ts, same body, and, within
+// the same session, the seq it had less the shift the section 2.3 quarantine
+// allows (one for every envelope refused ahead of it, none otherwise).
+type contentSnapshot struct {
+	Type    string
+	TS      string
+	Body    string
+	Seq     int64
+	Session int
+	Shift   int64
+}
+
+type refusalEvent struct {
+	At      time.Time
+	Ordinal int
+	Polled  bool // the session had at least one accepted poll before this
+}
+
+// garbleRecord is what a garbled poll answer swallowed: the ids of the batch
+// the plugin sent and did not get an ack for, and the poll count at the time,
+// so the stage can tell a re-poll after the garble from one before it.
+type garbleRecord struct {
+	IDs     []string
+	PollsAt int
+	GenAt   uint64
+	At      time.Time
+	// RetryAt is when the poll carrying the swallowed envelopes again
+	// arrived, so the stage can grade the pause before the retry itself
+	// rather than before some poll the plugin already had in flight.
+	RetryAt time.Time
+}
+
+// batchField is the framing of one envelope in a batch as the provocations
+// read it: id, type and seq decoded, ts and body kept raw.
+type batchField struct {
+	ID   string          `json:"id"`
+	Type string          `json:"type"`
+	Seq  int64           `json:"seq"`
+	TS   json.RawMessage `json:"ts"`
+	Body json.RawMessage `json:"body"`
+}
+
+func (f batchField) snapshot(session int, shift int64) contentSnapshot {
+	body := "{}"
+	if len(f.Body) > 0 {
+		body = string(f.Body)
+	}
+	return contentSnapshot{Type: f.Type, TS: string(f.TS), Body: body, Seq: f.Seq, Session: session, Shift: shift}
+}
+
+// batchIDs decodes the framing of every envelope in a batch, in order,
+// without validating anything else.
+func batchIDs(raws []json.RawMessage) []batchField {
+	out := make([]batchField, len(raws))
+	for i, raw := range raws {
+		_ = json.Unmarshal(raw, &out[i])
+	}
+	return out
 }
 
 // fault is a protocol violation the plugin committed. Faults are recorded
@@ -438,6 +595,43 @@ func writeProtocolError(w http.ResponseWriter, status int, code, message string)
 	})
 }
 
+// errorMode reads the request's ?errors= parameter (spec section 2.3). It
+// answers false when the request asked for a mode this hub does not offer,
+// which is a candidate fault and an ordinary 400. Call without the lock.
+func (h *mockHub) errorMode(w http.ResponseWriter, r *http.Request) (inline bool, ok bool) {
+	modes := r.URL.Query()["errors"]
+	if len(modes) == 0 {
+		return false, true
+	}
+	if len(modes) != 1 || modes[0] != "inline" {
+		h.mu.Lock()
+		h.faultLocked("2.3", "a request carried errors=%s; the only mode defined is inline", strings.Join(modes, ","))
+		h.mu.Unlock()
+		writeProtocolError(w, http.StatusBadRequest, "bad_request", "errors="+strings.Join(modes, ",")+" is not a mode this hub offers")
+		return false, false
+	}
+	h.mu.Lock()
+	h.inlineSeen = true
+	legacy := h.legacyErrors
+	h.mu.Unlock()
+	return !legacy, true
+}
+
+// answer writes a refusal the way the request asked for it: inline as a 200
+// with error.status, or as an ordinary status.
+func answer(w http.ResponseWriter, inline bool, status int, code, message string, details map[string]any) {
+	failure := map[string]any{"code": code, "message": message}
+	if details != nil {
+		failure["details"] = details
+	}
+	if inline {
+		failure["status"] = status
+		writeJSONBody(w, http.StatusOK, map[string]any{"error": failure})
+		return
+	}
+	writeJSONBody(w, status, map[string]any{"error": failure})
+}
+
 func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
@@ -448,9 +642,13 @@ func readBody(r *http.Request) ([]byte, error) {
 
 func (h *mockHub) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request struct {
@@ -498,14 +696,18 @@ func (h *mockHub) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSONBody(w, http.StatusCreated, response)
 		return
 	}
-	writeProtocolError(w, status, code, message)
+	answer(w, inline, status, code, message, nil)
 }
 
 func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request struct {
@@ -517,23 +719,40 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	decodeErr := json.Unmarshal(raw, &request)
 
 	h.mu.Lock()
+	h.sessionAttempts = append(h.sessionAttempts, time.Now())
 
 	if decodeErr != nil {
 		h.faultLocked("5.3", "the session request body was not a JSON object")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "body is not JSON")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "body is not JSON", nil)
 		return
 	}
 	if !h.enrollBurned || request.ServerID != h.serverID || request.ServerSecret != h.serverSecret {
 		h.faultLocked("5.3", "the session request did not carry the serverId and serverSecret that enrollment issued")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusUnauthorized, "credentials_invalid", "unknown server credentials")
+		answer(w, inline, http.StatusUnauthorized, "credentials_invalid", "unknown server credentials", nil)
 		return
 	}
 	if request.ProtocolVersion != nil && *request.ProtocolVersion != 1 {
 		h.faultLocked("5.3", "the plugin requested protocol version %d; this harness speaks version 1", *request.ProtocolVersion)
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "protocol_version_unsupported", "this harness speaks protocol version 1")
+		answer(w, inline, http.StatusBadRequest, "protocol_version_unsupported", "this harness speaks protocol version 1", nil)
+		return
+	}
+	if h.refuseSessionsArmed {
+		// The window opens on the first attempt, not when the stage armed
+		// it, so a plugin that waits before retrying still meets the refusal.
+		h.refuseSessionsArmed = false
+		h.refuseSessionsUntil = time.Now().Add(h.refuseSessionsFor)
+	}
+	if time.Now().Before(h.refuseSessionsUntil) {
+		// The credentials-refused stage: the operator revoked this server,
+		// and the plugin is expected to retry slowly rather than hammer.
+		h.refusedSessions++
+		h.signalLocked()
+		h.mu.Unlock()
+		answer(w, inline, http.StatusUnauthorized, "credentials_revoked",
+			"these credentials were revoked; enroll again with a new enrollment token", nil)
 		return
 	}
 
@@ -554,6 +773,10 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	// Unacked outbound items lose their seq here; delivery under the new
 	// session renumbers them, which is the hub's own section 9.1 duty.
 	h.sessionOrdinal++
+	if h.sessionStarts == nil {
+		h.sessionStarts = map[int]time.Time{}
+	}
+	h.sessionStarts[h.sessionOrdinal] = time.Now()
 	h.sessionToken = fmt.Sprintf("conformance-session-%d-%s", h.sessionOrdinal, randomHex())
 	h.issuedTokens[h.sessionToken] = true
 	h.sessionLive = true
@@ -583,7 +806,7 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 		"envelopeVersion":    1,
 		"pollTimeoutSeconds": effective,
 		"transports":         []string{"poll"},
-		"features":           map[string]any{},
+		"features":           map[string]any{"inlineErrors": !h.legacyErrors},
 		"server": map[string]any{
 			"id": h.serverID, "name": "conformance-candidate", "game": h.enrolledGame,
 		},
@@ -598,11 +821,19 @@ type pollWire struct {
 }
 
 func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
+	if h.pollsInFlight.Add(1) > 1 {
+		h.overlappingPolls.Add(1)
+	}
+	defer h.pollsInFlight.Add(-1)
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	token := bearer(r)
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request pollWire
@@ -617,16 +848,124 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			h.faultLocked("5.3", "a poll carried a bearer token this harness never issued")
 		}
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusUnauthorized, "session_invalid", "session is not live")
+		answer(w, inline, http.StatusUnauthorized, "session_invalid", "session is not live", nil)
 		return
 	}
 	if decodeErr != nil {
 		h.faultLocked("3.1.2", "a poll request body was not a JSON object")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "body is not JSON")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "body is not JSON", nil)
 		return
 	}
 
+	// The provocations of the error stages, applied before anything in the
+	// request takes effect: a refused batch changes nothing, including its
+	// ack (section 3.1.2), and a garbled answer is one the plugin must treat
+	// as if it never arrived.
+	if len(request.Envelopes) > 0 {
+		ids := batchIDs(request.Envelopes)
+		// The fresh envelopes of the batch: those above the accepted top.
+		// Everything below it is a legal retransmission of something already
+		// accepted (section 9.1), which a provocation must neither condemn
+		// nor count on being sent again.
+		firstFresh := -1
+		for index, one := range ids {
+			if one.Seq > h.processedTop {
+				firstFresh = index
+				break
+			}
+		}
+		if h.rejectArmed && firstFresh >= 0 {
+			h.rejectArmed = false
+			now := time.Now()
+			rejection := &batchRejection{
+				ID: ids[firstFresh].ID, Type: ids[firstFresh].Type, Seq: ids[firstFresh].Seq, Index: firstFresh,
+				Inline: inline, Refusals: 1, At: now, PollsAt: h.totalPolls, GenAt: h.acceptGen,
+				Events: []refusalEvent{{At: now, Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0}},
+			}
+			// The condemned envelope may only ever come back at its own seq;
+			// everything behind it moves down by one when it is set aside.
+			h.rememberContentLocked(ids[firstFresh:firstFresh+1], 0)
+			h.rememberContentLocked(ids[firstFresh+1:], 1)
+			for _, other := range ids[firstFresh+1:] {
+				rejection.Others = append(rejection.Others, other.ID)
+				rejection.OtherSeqs = append(rejection.OtherSeqs, other.Seq)
+			}
+			h.rejected = rejection
+			trace("refusing batch: condemned %s at index %d seq %d, others %v, processedTop %d", rejection.ID, firstFresh, rejection.Seq, rejection.Others, h.processedTop)
+			// Three more refusals await a plugin that sends the condemned
+			// envelope again (one that could not read the refusal): enough
+			// to reach the branch where it opens a second replacement
+			// session, which must be backed off too. A plugin that set the
+			// envelope aside never triggers them.
+			h.rejectRemaining = 3
+			h.signalLocked()
+			h.mu.Unlock()
+			answer(w, inline, http.StatusBadRequest, "envelope_invalid",
+				"this harness declares the envelope at index "+strconv.Itoa(firstFresh)+" malformed to grade recovery; nothing in the batch was applied",
+				map[string]any{"index": firstFresh, "seq": rejection.Seq})
+			return
+		}
+		if h.rejectRemaining > 0 && h.rejected != nil {
+			for index, one := range ids {
+				if one.ID != h.rejected.ID {
+					continue
+				}
+				h.rejectRemaining--
+				h.rejected.Refusals++
+				h.rejected.Events = append(h.rejected.Events, refusalEvent{
+					At: time.Now(), Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0,
+				})
+				h.signalLocked()
+				h.mu.Unlock()
+				answer(w, inline, http.StatusBadRequest, "envelope_invalid",
+					"this harness still declares that envelope malformed; nothing in the batch was applied",
+					map[string]any{"index": index, "seq": one.Seq})
+				return
+			}
+		}
+		if h.rejected != nil && h.rejected.Accepted == nil && h.rejectRemaining == 0 {
+			// The poll that finally carries the condemned id through.
+			for _, one := range ids {
+				if one.ID == h.rejected.ID {
+					h.rejected.Accepted = &refusalEvent{
+						At: time.Now(), Ordinal: h.sessionOrdinal, Polled: h.pollsThisSession > 0,
+					}
+					break
+				}
+			}
+		}
+		if h.garbleArmed && firstFresh >= 0 {
+			h.garbleArmed = false
+			record := &garbleRecord{PollsAt: h.totalPolls, GenAt: h.acceptGen, At: time.Now()}
+			for _, one := range ids[firstFresh:] {
+				record.IDs = append(record.IDs, one.ID)
+			}
+			h.rememberContentLocked(ids[firstFresh:], 0)
+			h.garbled = record
+			h.signalLocked()
+			h.mu.Unlock()
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
+			return
+		}
+	}
+
+	if h.garbled != nil && h.garbled.RetryAt.IsZero() && len(request.Envelopes) > 0 {
+		// The retry is the poll that carries a swallowed envelope again, not
+		// whichever poll the plugin already had in flight.
+		ids := batchIDs(request.Envelopes)
+	retry:
+		for _, one := range ids {
+			for _, swallowed := range h.garbled.IDs {
+				if one.ID == swallowed {
+					h.garbled.RetryAt = time.Now()
+					break retry
+				}
+			}
+		}
+	}
 	h.pollsThisSession++
 	h.totalPolls++
 	h.applyAckLocked(request.Ack)
@@ -641,7 +980,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	for {
 		if !h.sessionLive || h.sessionToken != token {
 			h.mu.Unlock()
-			writeProtocolError(w, http.StatusUnauthorized, "session_invalid", "session is not live")
+			answer(w, inline, http.StatusUnauthorized, "session_invalid", "session is not live", nil)
 			return
 		}
 		if h.severed {
@@ -780,6 +1119,7 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 		}
 		previousSeq = seq
 
+		trace("ingest session %d seq %d id %s type %s (processedTop %d)", h.sessionOrdinal, seq, id, envelopeType, h.processedTop)
 		switch {
 		case seq <= h.processedTop:
 			// A duplicate. Within a session it must be byte-for-byte the same
@@ -818,6 +1158,31 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 			if _, seen := h.idContent[id]; !seen {
 				h.idContent[id] = envelope
 			}
+			if h.lastAccepted == nil {
+				h.lastAccepted = map[string]uint64{}
+			}
+			h.acceptGen++
+			h.lastAccepted[id] = h.acceptGen
+			if expected, remembered := h.expectedContent[id]; remembered {
+				// A provocation saw this envelope and did not ingest it;
+				// coming back, it must be the same message (section 9.1),
+				// and within the same session it keeps its seq less the
+				// shift the quarantine allows.
+				if expected.Type != envelopeType || !tsEqual(expected.TS, tsRaw) || !jsonEqualExact(expected.Body, bodyRaw) {
+					h.faultLocked("9.1", "envelope %s came back changed after the hub refused or garbled the batch carrying it; a retransmission keeps id, type, ts and body, and the section 2.3 recovery moves seq alone", id)
+				}
+				// Within the session two seqs are legal: the original (an
+				// unchanged retransmission, the resend path) or the original
+				// less the shift (the envelope ahead of it was set aside).
+				if expected.Session == h.sessionOrdinal && seq != expected.Seq && seq != expected.Seq-expected.Shift {
+					h.faultLocked("9.1", "envelope %s came back at seq %d after the hub refused or garbled the batch carrying it; within a session it keeps seq %d (less one for an envelope set aside ahead of it, section 2.3), and only a new session renumbers", id, seq, expected.Seq)
+				}
+				if h.returned == nil {
+					h.returned = map[string]returnRecord{}
+				}
+				h.returned[id] = returnRecord{Seq: seq, Session: h.sessionOrdinal}
+				delete(h.expectedContent, id)
+			}
 			h.bySeq[seq] = envelope
 			h.inbound = append(h.inbound, envelope)
 			h.processedTop = seq
@@ -836,6 +1201,43 @@ func (h *mockHub) ingestLocked(raws []json.RawMessage) {
 			}
 		}
 	}
+}
+
+// trace writes one line to stderr when VYSHKA_MOCK_TRACE is set, for
+// debugging a stage against a candidate; silent otherwise.
+func trace(format string, args ...any) {
+	if os.Getenv("VYSHKA_MOCK_TRACE") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "mock: "+format+"\n", args...)
+}
+
+// rememberContentLocked snapshots fresh envelopes a provocation is about to
+// refuse or swallow, so their return can be checked for changes. shift is
+// how far down their seq may legally move within the session.
+func (h *mockHub) rememberContentLocked(fields []batchField, shift int64) {
+	if h.expectedContent == nil {
+		h.expectedContent = map[string]contentSnapshot{}
+	}
+	for _, one := range fields {
+		if one.ID != "" {
+			h.expectedContent[one.ID] = one.snapshot(h.sessionOrdinal, shift)
+		}
+	}
+}
+
+// jsonEqualExact is jsonEqual with numbers compared as written rather than
+// through float64, so a body field above 2^53 that changed by one is a change.
+func jsonEqualExact(a, b string) bool {
+	var left, right any
+	da := json.NewDecoder(strings.NewReader(a))
+	da.UseNumber()
+	db := json.NewDecoder(strings.NewReader(b))
+	db.UseNumber()
+	if da.Decode(&left) != nil || db.Decode(&right) != nil {
+		return a == b
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // gradeRenumberLocked marks off an envelope the previous session left unacked,

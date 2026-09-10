@@ -92,6 +92,12 @@ the same request. Raw logs: `probe-script.log` (script side), `stub.log` (socket
    same `RestContext` served the next request normally (step 16), so an outage needs no
    context rebuild, only a re-poll after backoff.
 
+7. **Query strings pass through on GET and POST.** Added 2026-09-10 from the same logs while
+   designing the inline-errors opt-in (issue #43): every step whose path carried a query
+   string reached the stub with it intact, including the POST in step 9
+   (`>> POST /status?code=401` in `stub.log`, request 010). A per-request opt-in expressed as a
+   query parameter therefore works from script without touching the header smuggle.
+
 6. **Callback latency is 12 to 112 ms**, consistent with the tick-dispatched callbacks
    measured in the earlier spike.
 

@@ -30,9 +30,18 @@ PASS  enroll.exchange            The plugin exchanges the one-time token for cre
 PASS  session.start              The plugin trades its credentials for a session
 ...
 PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
+PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
+PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
+PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
-11 checks, 0 failed
+14 checks, 0 failed
 ```
+
+A stage can also report `PART`: it passed everything it could assert but says, in a note
+that the JSON report carries too, what it could not grade. Today that happens only when the
+candidate had more than one poll in flight during an error-recovery stage, which makes the
+pause before a retry and the count of resends impossible to attribute (spec section 3.1
+asks for one poll at a time). A `PART` is not a full pass.
 
 Exit code is 0 when every check passes, 1 when any check fails, and 2 when the suite could
 not run at all.
@@ -42,6 +51,7 @@ not run at all.
 | `-listen` | `127.0.0.1:0` | Address the mock hub listens on |
 | `-enroll-wait` | `60s` | How long to wait for the candidate to enroll |
 | `-check-timeout` | `20s` | Budget for each wait inside a check |
+| `-legacy-errors` | off | Behave like a hub that predates inline errors (spec section 2.3): ignore `?errors=inline` and answer every refusal with an ordinary status, so the candidate's opaque-error fallback is what gets graded |
 | `-json` | off | Machine-readable results on stdout instead of the text report |
 
 The candidate's own output is forwarded to stderr, so a `-json` report on stdout stays
@@ -71,6 +81,19 @@ past that deadline for the result, so a slow action is never failed while still 
 deadline it was given. A candidate whose action legitimately needs longer, or whose
 reconnect backoff is longer than the default window, should raise `-check-timeout`.
 
+The three error-recovery stages (spec section 2.3) provoke a refusal the way a real hub
+would and watch what the candidate does: a batch refused as `envelope_invalid`, a `200`
+whose body is not JSON, and `credentials_revoked` on a session request. A candidate that
+can read the refusal (it asked for inline errors, or its HTTP client shows it a 4xx body)
+is expected to set the named envelope aside and resend the rest; one that cannot (run the
+harness with `-legacy-errors` to stand in for such a hub) is expected to open at most one
+replacement session and then back off. Either way it must never re-enroll, must keep every
+envelope the refusal or the garbage did not acknowledge, and must wait at least 1 s before
+retrying the same request. The mock keeps a copy of what it refused or swallowed and faults
+a return whose type, ts or body changed. The reference DayZ plugin waits 30 s between
+retries on a fresh session, which these stages allow for; a candidate that waits longer can
+raise `-check-timeout`.
+
 ## How the checks work
 
 Unlike the hub suite, the checks here are **stages**: the candidate is one long-lived
@@ -98,8 +121,12 @@ replay explicitly in the report.
 
 `driver/` is a minimal but correct autonomous plugin: it enrolls, keeps a session, polls,
 publishes a one-action manifest, executes dispatches behind an executed-actionId LRU,
-buffers unacked envelopes across outages, and renumbers them across session changes. CI runs
-the harness against it on every push, which is what keeps the suite honest in the green
+buffers unacked envelopes across outages, renumbers them across session changes, and
+follows the recovery table of spec section 2.3. It asks for inline errors unless started
+with `-inline=false`, and with `-opaque` it discards the status and body of every non-2xx,
+keeping only the class, which is what an engine like DayZ's leaves a plugin with. CI runs
+the harness against it on every push in three configurations (as is, `-legacy-errors`
+against `-opaque`, and `-inline=false`), which is what keeps the suite honest in the green
 direction; `harness_test.go` points deliberately broken clients at the mock hub to keep it
 honest in the red direction.
 
