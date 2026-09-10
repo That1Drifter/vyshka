@@ -51,6 +51,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "address the mock hub listens on")
 	enrollWait := flag.Duration("enroll-wait", 60*time.Second, "how long to wait for the candidate to enroll")
 	checkTimeout := flag.Duration("check-timeout", 20*time.Second, "budget for each wait inside a check")
+	legacyErrors := flag.Bool("legacy-errors", false,
+		"behave like a hub that predates inline errors (spec section 2.3): ignore ?errors=inline and answer every refusal with an ordinary status, so the candidate's opaque-error fallback is what gets graded")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
 	flag.Parse()
 	command := flag.Args()
@@ -61,6 +63,7 @@ func main() {
 		os.Exit(2)
 	}
 	defer hub.Close()
+	hub.legacyErrors = *legacyErrors
 
 	fmt.Fprintf(os.Stderr, "conformance: mock hub listening at %s\n", hub.baseURL)
 

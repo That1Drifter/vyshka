@@ -97,6 +97,39 @@ type mockHub struct {
 
 	pluginExited  bool
 	pluginExitMsg string
+
+	// Inline errors (spec section 2.3). legacyErrors makes this hub behave
+	// like one that predates the option: the parameter is ignored and every
+	// refusal is an ordinary status, which is how a candidate's opaque-error
+	// fallback gets graded. inlineSeen records whether the candidate ever
+	// asked; the error stages read it to decide what a compliant candidate
+	// could have known.
+	legacyErrors bool
+	inlineSeen   bool
+
+	// Provocations the error stages arm. rejectNextBatch refuses the next
+	// non-empty poll batch with envelope_invalid at index 0 and records what
+	// was refused in rejected. refuseSessionsUntil answers session requests
+	// with credentials_revoked until it passes, with every attempt logged in
+	// sessionAttempts. garbleNextPoll answers the next poll with a 200 whose
+	// body is not JSON, garbled recording that it did.
+	rejectNextBatch     bool
+	rejected            *batchRejection
+	refuseSessionsUntil time.Time
+	sessionAttempts     []time.Time
+	garbleNextPoll      bool
+	garbled             bool
+}
+
+// batchRejection is what the mock refused: the condemned envelope at index 0,
+// the ids of the rest of the batch, and whether the refusal travelled inline
+// (so the candidate could read it) or as an opaque 400.
+type batchRejection struct {
+	ID     string
+	Type   string
+	Seq    int64
+	Others []string
+	Inline bool
 }
 
 // fault is a protocol violation the plugin committed. Faults are recorded
@@ -438,6 +471,43 @@ func writeProtocolError(w http.ResponseWriter, status int, code, message string)
 	})
 }
 
+// errorMode reads the request's ?errors= parameter (spec section 2.3). It
+// answers false when the request asked for a mode this hub does not offer,
+// which is a candidate fault and an ordinary 400. Call without the lock.
+func (h *mockHub) errorMode(w http.ResponseWriter, r *http.Request) (inline bool, ok bool) {
+	modes := r.URL.Query()["errors"]
+	if len(modes) == 0 {
+		return false, true
+	}
+	if len(modes) != 1 || modes[0] != "inline" {
+		h.mu.Lock()
+		h.faultLocked("2.3", "a request carried errors=%s; the only mode defined is inline", strings.Join(modes, ","))
+		h.mu.Unlock()
+		writeProtocolError(w, http.StatusBadRequest, "bad_request", "errors="+strings.Join(modes, ",")+" is not a mode this hub offers")
+		return false, false
+	}
+	h.mu.Lock()
+	h.inlineSeen = true
+	legacy := h.legacyErrors
+	h.mu.Unlock()
+	return !legacy, true
+}
+
+// answer writes a refusal the way the request asked for it: inline as a 200
+// with error.status, or as an ordinary status.
+func answer(w http.ResponseWriter, inline bool, status int, code, message string, details map[string]any) {
+	failure := map[string]any{"code": code, "message": message}
+	if details != nil {
+		failure["details"] = details
+	}
+	if inline {
+		failure["status"] = status
+		writeJSONBody(w, http.StatusOK, map[string]any{"error": failure})
+		return
+	}
+	writeJSONBody(w, status, map[string]any{"error": failure})
+}
+
 func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
@@ -448,9 +518,13 @@ func readBody(r *http.Request) ([]byte, error) {
 
 func (h *mockHub) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request struct {
@@ -498,14 +572,18 @@ func (h *mockHub) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSONBody(w, http.StatusCreated, response)
 		return
 	}
-	writeProtocolError(w, status, code, message)
+	answer(w, inline, status, code, message, nil)
 }
 
 func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request struct {
@@ -517,23 +595,32 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 	decodeErr := json.Unmarshal(raw, &request)
 
 	h.mu.Lock()
+	h.sessionAttempts = append(h.sessionAttempts, time.Now())
 
 	if decodeErr != nil {
 		h.faultLocked("5.3", "the session request body was not a JSON object")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "body is not JSON")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "body is not JSON", nil)
 		return
 	}
 	if !h.enrollBurned || request.ServerID != h.serverID || request.ServerSecret != h.serverSecret {
 		h.faultLocked("5.3", "the session request did not carry the serverId and serverSecret that enrollment issued")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusUnauthorized, "credentials_invalid", "unknown server credentials")
+		answer(w, inline, http.StatusUnauthorized, "credentials_invalid", "unknown server credentials", nil)
 		return
 	}
 	if request.ProtocolVersion != nil && *request.ProtocolVersion != 1 {
 		h.faultLocked("5.3", "the plugin requested protocol version %d; this harness speaks version 1", *request.ProtocolVersion)
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "protocol_version_unsupported", "this harness speaks protocol version 1")
+		answer(w, inline, http.StatusBadRequest, "protocol_version_unsupported", "this harness speaks protocol version 1", nil)
+		return
+	}
+	if time.Now().Before(h.refuseSessionsUntil) {
+		// The credentials-refused stage: the operator revoked this server,
+		// and the plugin is expected to retry slowly rather than hammer.
+		h.mu.Unlock()
+		answer(w, inline, http.StatusUnauthorized, "credentials_revoked",
+			"these credentials were revoked; enroll again with a new enrollment token", nil)
 		return
 	}
 
@@ -583,7 +670,7 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 		"envelopeVersion":    1,
 		"pollTimeoutSeconds": effective,
 		"transports":         []string{"poll"},
-		"features":           map[string]any{},
+		"features":           map[string]any{"inlineErrors": !h.legacyErrors},
 		"server": map[string]any{
 			"id": h.serverID, "name": "conformance-candidate", "game": h.enrolledGame,
 		},
@@ -599,10 +686,14 @@ type pollWire struct {
 
 func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	h.abortIfSevered()
+	inline, ok := h.errorMode(w, r)
+	if !ok {
+		return
+	}
 	token := bearer(r)
 	raw, err := readBody(r)
 	if err != nil {
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "unreadable body")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "unreadable body", nil)
 		return
 	}
 	var request pollWire
@@ -617,13 +708,52 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			h.faultLocked("5.3", "a poll carried a bearer token this harness never issued")
 		}
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusUnauthorized, "session_invalid", "session is not live")
+		answer(w, inline, http.StatusUnauthorized, "session_invalid", "session is not live", nil)
 		return
 	}
 	if decodeErr != nil {
 		h.faultLocked("3.1.2", "a poll request body was not a JSON object")
 		h.mu.Unlock()
-		writeProtocolError(w, http.StatusBadRequest, "bad_request", "body is not JSON")
+		answer(w, inline, http.StatusBadRequest, "bad_request", "body is not JSON", nil)
+		return
+	}
+
+	// The provocations of the error stages, applied before anything in the
+	// request takes effect: a refused batch changes nothing, including its
+	// ack (section 3.1.2), and a garbled answer is one the plugin must treat
+	// as if it never arrived.
+	if h.rejectNextBatch && len(request.Envelopes) > 0 {
+		h.rejectNextBatch = false
+		rejection := &batchRejection{Inline: inline}
+		for index, raw := range request.Envelopes {
+			var fields struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+				Seq  int64  `json:"seq"`
+			}
+			_ = json.Unmarshal(raw, &fields)
+			if index == 0 {
+				rejection.ID, rejection.Type, rejection.Seq = fields.ID, fields.Type, fields.Seq
+				continue
+			}
+			rejection.Others = append(rejection.Others, fields.ID)
+		}
+		h.rejected = rejection
+		h.signalLocked()
+		h.mu.Unlock()
+		answer(w, inline, http.StatusBadRequest, "envelope_invalid",
+			"this harness declares the envelope at index 0 malformed to grade recovery; nothing in the batch was applied",
+			map[string]any{"index": 0, "seq": rejection.Seq})
+		return
+	}
+	if h.garbleNextPoll {
+		h.garbleNextPoll = false
+		h.garbled = true
+		h.signalLocked()
+		h.mu.Unlock()
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
 		return
 	}
 
@@ -641,7 +771,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	for {
 		if !h.sessionLive || h.sessionToken != token {
 			h.mu.Unlock()
-			writeProtocolError(w, http.StatusUnauthorized, "session_invalid", "session is not live")
+			answer(w, inline, http.StatusUnauthorized, "session_invalid", "session is not live", nil)
 			return
 		}
 		if h.severed {

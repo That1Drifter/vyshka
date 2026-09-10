@@ -59,6 +59,12 @@ jobs:
       - name: Run the plugin conformance suite against the reference driver
         run: go run ./conformance/plugin -- go run ./conformance/plugin/driver
 
+      - name: Run the plugin conformance suite as an older hub against an opaque-error driver
+        # The mock ignores the inline-errors opt-in and the driver discards the
+        # status and body of every non-2xx, which is what an engine like DayZ's
+        # leaves a plugin with. This grades the fallback path of spec Appendix A.
+        run: go run ./conformance/plugin -legacy-errors -- go run ./conformance/plugin/driver -opaque
+
       - name: Validate the spec documents
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml

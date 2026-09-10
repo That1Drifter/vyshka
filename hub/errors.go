@@ -48,7 +48,10 @@ type errorResponse struct {
 }
 
 type errorDetail struct {
-	Code    string         `json:"code"`
+	Code string `json:"code"`
+	// Status is the HTTP status the error would have carried, present only
+	// when the error travels inline in a 200 (spec section 2.3).
+	Status  int            `json:"status,omitempty"`
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
 }

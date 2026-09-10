@@ -18,6 +18,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -45,13 +46,41 @@ type pollResponse struct {
 
 const executedLRUCap = 128
 
+// hubError is a refusal as the driver understands it, whichever way it
+// arrived: from the status and body of a 4xx or 5xx, from the body of a 200
+// that carried error.status (spec section 2.3), or, in opaque mode, from the
+// status class alone with no code at all.
+type hubError struct {
+	Code    string
+	Status  int
+	Message string
+	Index   int
+	HasIdx  bool
+}
+
 type driver struct {
 	baseURL string
 	client  *http.Client
 
+	// inline asks for inline errors on every request; opaque discards the
+	// status and body of every non-2xx response, keeping only whether it was
+	// a client or a server error, which is what an engine like DayZ's leaves
+	// a plugin with. Together they let CI grade both recovery paths.
+	inline bool
+	opaque bool
+
 	serverID     string
 	serverSecret string
 	sessionToken string
+
+	// polledThisSession and unpolledRefusals drive the opaque fallback: a
+	// refused poll on a session that has polled successfully means the
+	// session is gone; a refused poll on a session that never polled is more
+	// likely the driver's own batch, so a new session is not the answer twice
+	// in a row.
+	polledThisSession bool
+	unpolledRefusals  int
+	sessionBackoff    time.Duration
 
 	// inAck is the highest contiguous hub -> plugin seq processed; outSeq the
 	// last seq assigned to an envelope of the driver's own. buffer holds every
@@ -73,6 +102,8 @@ func main() {
 	url := flag.String("url", os.Getenv("VYSHKA_HUB_URL"), "hub base URL (env VYSHKA_HUB_URL)")
 	token := flag.String("token", os.Getenv("VYSHKA_ENROLLMENT_TOKEN"), "one-time enrollment token (env VYSHKA_ENROLLMENT_TOKEN)")
 	game := flag.String("game", "conformance", "game id to enroll as")
+	inline := flag.Bool("inline", true, "ask for inline errors (?errors=inline) on every request")
+	opaque := flag.Bool("opaque", false, "discard the status and body of every non-2xx response, keeping only its class, like a constrained engine's HTTP client")
 	flag.Parse()
 
 	log.SetOutput(os.Stderr)
@@ -95,6 +126,8 @@ func main() {
 		baseURL:  *url,
 		client:   &http.Client{Timeout: 10 * time.Second},
 		executed: map[string]bool{},
+		inline:   *inline,
+		opaque:   *opaque,
 	}
 	if err := d.enroll(*token, *game); err != nil {
 		log.Println("enroll:", err)
@@ -103,10 +136,15 @@ func main() {
 	d.run(*game)
 }
 
+// post sends one request. The status and body come back as the transport
+// delivered them; classify turns them into a success or a hubError.
 func (d *driver) post(path, bearer string, body any) (int, []byte, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return 0, nil, err
+	}
+	if d.inline {
+		path += "?errors=inline"
 	}
 	request, err := http.NewRequest(http.MethodPost, d.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
@@ -128,6 +166,63 @@ func (d *driver) post(path, bearer string, body any) (int, []byte, error) {
 	return response.StatusCode, responseBody, nil
 }
 
+// classify decides what a response was. A 2xx whose body is a JSON object
+// without a top-level error member is a success. A 2xx carrying an error
+// member is an inline refusal. A non-2xx is a refusal read from its body, or,
+// in opaque mode, from its class alone. A 2xx whose body is not a JSON
+// object is reported as a refusal with no code and status 0: malformed, to
+// be retried without touching any state.
+func (d *driver) classify(status int, body []byte) (ok bool, failure *hubError) {
+	if status >= 200 && status < 300 {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+			return false, &hubError{Message: "response body is not a JSON object"}
+		}
+		errorRaw, present := raw["error"]
+		if !present {
+			return true, nil
+		}
+		failure = decodeHubError(errorRaw)
+		if failure.Status == 0 {
+			failure.Status = http.StatusInternalServerError
+		}
+		return false, failure
+	}
+	if d.opaque {
+		class := http.StatusBadRequest
+		if status >= 500 {
+			class = http.StatusInternalServerError
+		}
+		return false, &hubError{Status: class, Message: fmt.Sprintf("opaque %dxx", status/100)}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if errorRaw, present := raw["error"]; present {
+			failure = decodeHubError(errorRaw)
+			failure.Status = status
+			return false, failure
+		}
+	}
+	return false, &hubError{Status: status, Message: string(body)}
+}
+
+func decodeHubError(raw json.RawMessage) *hubError {
+	var wire struct {
+		Code    string `json:"code"`
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+		Details struct {
+			Index *int `json:"index"`
+		} `json:"details"`
+	}
+	_ = json.Unmarshal(raw, &wire)
+	failure := &hubError{Code: wire.Code, Status: wire.Status, Message: wire.Message}
+	if wire.Details.Index != nil {
+		failure.Index, failure.HasIdx = *wire.Details.Index, true
+	}
+	return failure
+}
+
 func (d *driver) enroll(token, game string) error {
 	for attempt := 0; attempt < 50; attempt++ {
 		status, body, err := d.post("/plugin/v1/enroll", "", map[string]any{
@@ -140,8 +235,10 @@ func (d *driver) enroll(token, game string) error {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		if status != http.StatusCreated {
-			return fmt.Errorf("status %d: %s", status, body)
+		if ok, failure := d.classify(status, body); !ok {
+			// Enrollment refusals are the operator's to fix; the driver has
+			// no operator, so it reports and exits.
+			return fmt.Errorf("refused: %s (status %d): %s", failure.Code, failure.Status, failure.Message)
 		}
 		var enrolled struct {
 			ServerID     string `json:"serverId"`
@@ -173,8 +270,18 @@ func (d *driver) startSession(game string) error {
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("session: status %d: %s", status, body)
+	if ok, failure := d.classify(status, body); !ok {
+		// Refused credentials are retried slowly: nothing but the operator
+		// fixes them, and hammering the hub helps no one (section 2.3). A
+		// server error or a malformed answer is an ordinary retry.
+		// An opaque client error on a session request is treated the same way
+		// (Appendix A): the class is all the driver has, and rejected
+		// credentials are its likeliest meaning.
+		opaqueClientError := failure.Code == "" && failure.Status >= 400 && failure.Status < 500
+		if failure.Status == http.StatusUnauthorized || failure.Code == "credentials_invalid" || failure.Code == "credentials_revoked" || failure.Code == "protocol_version_unsupported" || opaqueClientError {
+			return errRefused{failure}
+		}
+		return fmt.Errorf("session: %s (status %d): %s", failure.Code, failure.Status, failure.Message)
 	}
 	var session struct {
 		SessionToken       string `json:"sessionToken"`
@@ -184,6 +291,7 @@ func (d *driver) startSession(game string) error {
 		return err
 	}
 	d.sessionToken = session.SessionToken
+	d.polledThisSession = false
 
 	// The client-side response timeout must beat the hub's hold by 5 s
 	// (spec section 3.1.1).
@@ -217,10 +325,30 @@ func (d *driver) send(envelopeType string, body any) {
 	})
 }
 
+// errRefused is a session refusal that no quick retry fixes.
+type errRefused struct{ failure *hubError }
+
+func (e errRefused) Error() string {
+	return fmt.Sprintf("session refused: %s (status %d): %s", e.failure.Code, e.failure.Status, e.failure.Message)
+}
+
 func (d *driver) run(game string) {
 	for {
 		if d.sessionToken == "" {
 			if err := d.startSession(game); err != nil {
+				var refused errRefused
+				if errors.As(err, &refused) {
+					// Slow retry, doubling to a ceiling: the operator has to
+					// act, and a plugin that hammers the hub is not helping.
+					if d.sessionBackoff < 2*time.Second {
+						d.sessionBackoff = 2 * time.Second
+					} else if d.sessionBackoff < 8*time.Second {
+						d.sessionBackoff *= 2
+					}
+					log.Printf("%v; retrying in %s", err, d.sessionBackoff)
+					time.Sleep(d.sessionBackoff)
+					continue
+				}
 				if d.transportFailed() {
 					return
 				}
@@ -228,6 +356,7 @@ func (d *driver) run(game string) {
 				continue
 			}
 			d.firstFailure = time.Time{}
+			d.sessionBackoff = 0
 			if !d.manifestSent {
 				d.send("manifest.publish", d.manifest(game))
 				d.manifestSent = true
@@ -249,17 +378,12 @@ func (d *driver) run(game string) {
 		}
 		d.firstFailure = time.Time{}
 
-		if status == http.StatusUnauthorized {
-			// session_invalid: request a new session, never re-enroll.
-			log.Println("session invalid; starting a new one")
-			d.sessionToken = ""
+		if ok, failure := d.classify(status, body); !ok {
+			d.recover(failure)
 			continue
 		}
-		if status != http.StatusOK {
-			log.Printf("poll: status %d: %s", status, body)
-			time.Sleep(150 * time.Millisecond)
-			continue
-		}
+		d.polledThisSession = true
+		d.unpolledRefusals = 0
 
 		var response pollResponse
 		if err := json.Unmarshal(body, &response); err != nil {
@@ -291,6 +415,67 @@ func (d *driver) run(game string) {
 			d.inAck = delivered.Seq
 			d.handle(delivered)
 		}
+	}
+}
+
+// recover applies the recovery table of spec section 2.3 to a refused poll.
+func (d *driver) recover(failure *hubError) {
+	switch {
+	case failure.Status == 0:
+		// A 200 that was not JSON: retry, touching nothing.
+		log.Println("poll: malformed answer; re-polling")
+		time.Sleep(150 * time.Millisecond)
+
+	case failure.Code == "session_invalid", failure.Code == "" && failure.Status == http.StatusUnauthorized:
+		log.Println("session invalid; starting a new one")
+		d.sessionToken = ""
+
+	case failure.Code == "envelope_invalid":
+		// The hub applied nothing. Take the named envelope out, keep it where
+		// an operator could find it (here, the log), and resend the rest with
+		// the gap closed: the entries after it move down one seq, which is
+		// safe because none of them was accepted either.
+		if !failure.HasIdx || failure.Index < 0 || failure.Index >= len(d.buffer) {
+			log.Printf("poll: envelope_invalid without a usable details.index (%v); backing off", failure.HasIdx)
+			time.Sleep(500 * time.Millisecond)
+			return
+		}
+		condemned := d.buffer[failure.Index]
+		log.Printf("hub refused envelope %s (type %s, seq %d): %s; setting it aside", condemned.ID, condemned.Type, condemned.Seq, failure.Message)
+		d.buffer = append(d.buffer[:failure.Index], d.buffer[failure.Index+1:]...)
+		for i := failure.Index; i < len(d.buffer); i++ {
+			d.buffer[i].Seq--
+		}
+		d.outSeq--
+
+	case failure.Code == "ack_out_of_range":
+		log.Println("poll: ack out of range; starting a new session to reset the sequence space")
+		d.sessionToken = ""
+
+	case failure.Code == "" && failure.Status >= 400 && failure.Status < 500:
+		// The opaque fallback (Appendix A): a client error on a session that
+		// has polled means the session is gone; on one that never polled it
+		// is more likely the batch, so back off before trying a session
+		// again, rather than looping.
+		if d.polledThisSession || d.unpolledRefusals >= 2 {
+			log.Println("poll refused; starting a new session")
+			d.sessionToken = ""
+			d.unpolledRefusals = 0
+			return
+		}
+		d.unpolledRefusals++
+		log.Println("poll refused again on a fresh session; backing off before retrying it")
+		time.Sleep(time.Second)
+
+	case failure.Status >= 500:
+		log.Printf("poll: hub error %s: %s; retrying", failure.Code, failure.Message)
+		time.Sleep(500 * time.Millisecond)
+
+	default:
+		// bad_request, or a code this driver does not know with a 4xx
+		// status: the request was wrong, a new session does not fix it.
+		log.Printf("poll refused: %s (status %d): %s; backing off", failure.Code, failure.Status, failure.Message)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 

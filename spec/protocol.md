@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.18 (2026-09-03)
+**Status:** draft 0.19 (2026-09-10)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -84,7 +84,8 @@ Both realms are JSON over HTTP:
 
 ### 2.2 Error model
 
-Every 4xx and 5xx response from either realm carries this body:
+Every 4xx and 5xx response from either realm carries this body (a Plugin API request can
+also ask for it inside a `200`, section 2.3):
 
 ```json
 {
@@ -116,6 +117,86 @@ General codes, usable by any endpoint:
 | `internal` | 500 | The hub failed; the client MAY retry |
 
 Endpoint-specific codes are defined with the endpoints that raise them (section 5).
+
+### 2.3 Inline errors (Plugin API)
+
+Some engine HTTP clients deliver a non-2xx response to script as an opaque error, with
+neither the status nor the body (Appendix A). On such an engine section 2.2 is unreadable:
+the plugin cannot branch on `error.code` and cannot even see the status it would fall back
+on. Inline errors let a plugin ask, per request, for the hub's error responses to arrive
+where its HTTP client can read them.
+
+**Opt-in.** A Plugin API request opts in by carrying the query parameter `errors=inline`,
+for example `POST /plugin/v1/poll?errors=inline`. The opt-in covers that request only and
+nothing else; a plugin that wants it everywhere sends it on every request. It is a request
+option, not a session property, so it works on the requests a session cannot cover:
+enrollment, a session request that fails, and a request presenting a session token the hub
+does not recognize.
+
+**What the hub does.** For a request that opted in, every response the hub would otherwise
+have sent with a 4xx or 5xx status it MUST instead send with status `200`, the
+`application/json` content type, and the section 2.2 body extended with one field:
+
+```json
+{
+  "error": {
+    "code": "session_invalid",
+    "status": 401,
+    "message": "session token is expired, unknown, or superseded",
+    "details": { }
+  }
+}
+```
+
+- `error.status` is REQUIRED in an inline error and carries the HTTP status the hub would
+  have used. It is the fallback for a `code` the client does not recognize, exactly as the
+  real status is in section 2.2.
+- The obligation covers every Plugin API endpoint in this document, including enrollment
+  (section 5.2), a failed session request (section 5.3), a held poll the hub ends because
+  the session was superseded or revoked (sections 3.1.2 and 5.4), and the generic refusals
+  of section 2.2 such as `payload_too_large`. A hub SHOULD apply it to any other path under
+  `/plugin/` as well.
+- Only the status line changes. Headers the hub would have sent with the error, the choice
+  of `code`, `message`, and `details`, and the hub's own logging and metrics of the failure
+  are unchanged: an inline error is still a failed request.
+- Successful responses are unchanged: `201` for enrollment stays `201`.
+- A value of `errors` other than `inline` MUST be refused with `400 bad_request` in
+  ordinary form, since the hub cannot know what such a client expects. The parameter has no
+  meaning on the Admin API, which always answers with ordinary statuses.
+- A hub that implements inline errors MUST report `"inlineErrors": true` in the `features`
+  object of the session response (section 5.3).
+
+**What the plugin does.** A success body from any Plugin API endpoint never carries a
+top-level `error` member; hubs MUST NOT add one. A plugin that opted in MUST therefore treat
+a `200` whose body is a JSON object with an `error` member as the failure it describes, and
+MUST NOT treat it as success. A `200` whose body is not a JSON object is a malformed
+response: the plugin retries after backoff and changes no session or delivery state over it.
+
+A hub that predates this section, or one that does not implement it, ignores the parameter
+and answers with ordinary statuses, as do proxies and other intermediaries that answer in
+the hub's place. Opting in therefore adds information when the hub provides it and changes
+nothing when it does not: a plugin MUST keep whatever handling it has for an opaque error
+alongside its handling of inline ones.
+
+**Recovery.** Whichever way an error arrives, these rules govern what a plugin does about
+it. Each is stated once here rather than with its endpoint.
+
+| Error | Plugin obligation |
+|---|---|
+| `session_invalid` (401) | Start a new session (section 5.3). The outbox is kept and renumbered (section 9.1). |
+| `credentials_invalid`, `credentials_revoked` (401) | Do not start a session loop: retry slowly and surface the message to the operator, who has to issue a fresh enrollment token (section 5.4). |
+| `enrollment_token_invalid`, `enrollment_token_used`, `game_mismatch` | Surface to the operator and retry slowly; no retry fixes these. |
+| `protocol_version_unsupported` | Surface to the operator; the plugin and hub need upgrading, not retrying. |
+| `envelope_invalid` (400) | The hub applied nothing, including the `ack`. The plugin MUST take the envelope at `details.index` out of the batch before retrying, MUST NOT count it as delivered, and MUST surface it (log it, set it aside on disk) rather than discard it silently. It closes the gap by moving the envelopes behind the removed one down one `seq` each; that is safe because a refused batch was applied in no part, so nothing behind the removed envelope has been accepted under its old number (section 9.1). |
+| `ack_out_of_range` (400) | The plugin's inbound ack is ahead of anything the hub sent on this session, which no retry reconciles. Start a new session, whose sequence space begins at 0. |
+| `bad_request` on a poll (400) | Usually the batch is over the hub's cap: retry with a smaller batch. Do not start a new session. |
+| `internal` (5xx), or any unrecognized code with a 5xx `status` | Retry the same request after backoff, on the same session. |
+| Unrecognized code with a 401 `status` | As `session_invalid`. |
+| Unrecognized code with any other 4xx `status` | The request was wrong and a new session does not make it right: log, back off, and retry; MUST NOT start a new session over it. |
+
+The rule the table exists for: a client error is never answered by churning sessions. A
+plugin that meets `session_invalid` starts one new session, and a plugin that meets a
+malformed-batch refusal corrects the batch; neither loops.
 
 ## 3. Transport
 
@@ -216,6 +297,8 @@ Rules:
   landed.
 - A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops
   being live (superseded, revoked, or expired) rather than letting the hold run to term.
+  When the poll opted in to inline errors (section 2.3), that answer is a `200` carrying
+  the same error, still sent at once.
 - A hub MUST accept at least 200 envelopes in one poll request. It MAY cap the batch above
   that, and MUST reject anything over its cap with `bad_request` rather than truncate it
   silently: a plugin that believes an envelope was delivered will never resend it.
@@ -482,7 +565,8 @@ POST /plugin/v1/session
   3.1.1. `envelopeVersion` is the `v` the hub will send on envelopes (section 4).
 - `transports` in the response lists what the hub offers; `features` is an object of
   hub-declared flags, which plugins MUST tolerate not recognizing. Both MAY be extended
-  without a version bump.
+  without a version bump. The one flag this document defines is `inlineErrors: true`,
+  which a hub implementing section 2.3 MUST report.
 - A hub MUST hold **at most one live session per server**. Issuing a session MUST invalidate
   any earlier session for the same server, so a restarted game server never contends with
   the sequence state of its own previous session (section 9).
@@ -503,9 +587,10 @@ POST /plugin/v1/session
 
 Revoking a server's credentials MUST take effect immediately, not at the next session
 boundary: the current session is invalidated at once, and a long-poll already held open
-MUST be answered with `401 session_invalid` rather than being left to expire. The plugin
-then enters `buffering` (section 9) and retries its session, which fails with
-`credentials_revoked` until the operator issues a fresh enrollment token.
+MUST be answered with `401 session_invalid` rather than being left to expire (inline, per
+section 2.3, when the poll asked for that). The plugin then enters `buffering` (section 9)
+and retries its session, which fails with `credentials_revoked` until the operator issues a
+fresh enrollment token.
 
 ### 5.5 Queueing an envelope (Admin API)
 
@@ -1871,7 +1956,8 @@ client outright, with no `ifRevision` in the loop.
 
 Two black-box suites accompany this document:
 
-- **Hub conformance** runs against any hub URL and answers "is this hub compliant?".
+- **Hub conformance** runs against any hub URL and answers "is this hub compliant?",
+  including whether every Plugin API refusal arrives inline when asked for (section 2.3).
 - **Plugin conformance** is a mock hub that drives a candidate plugin through enrollment,
   manifest publish, action round-trips (including a forced re-delivery to verify dedup), a
   simulated network outage (to verify buffering), a forced session change with envelopes
@@ -1910,13 +1996,20 @@ notes for such environments:
   measurement behind that is in its repository. A hub sees ordinary headers either way.
 - Some engine HTTP clients deliver a non-2xx response as an opaque error code, without the
   status or the body, so the `error.code` of section 2.2 and even the status-based fallback
-  it names are out of reach. A plugin in that position reasons from the error class alone:
-  a client error on a poll is answered by starting a new session, which is legal at any
-  time (section 5.3) and is the right response to `session_invalid`; a client error on a
-  session request is treated as rejected credentials and retried slowly; a client error on
-  enrollment is surfaced to the operator, because no retry fixes a burned or unknown token.
-  Such a plugin SHOULD renew its session ahead of `sessionExpiresAt` so that an expiry never
-  has to be inferred from a refusal.
+  it names are out of reach. Such a plugin SHOULD opt in to inline errors (section 2.3) on
+  every request, which brings the code and the status back within reach of the success
+  callback, and SHOULD renew its session ahead of `sessionExpiresAt` so that an expiry never
+  has to be inferred from a refusal. It still needs a fallback for the opaque case, because
+  an older hub or a proxy answering in the hub's place will produce one: reason from the
+  error class alone, and conservatively. A client error on a poll is answered by starting
+  one new session, which is legal at any time (section 5.3) and is the right response to
+  `session_invalid`; if the new session's first poll fails the same way, the plugin backs
+  off rather than loops, because the cause is then almost certainly its own batch. A client
+  error on a session request is treated as rejected credentials and retried slowly; a
+  client error on enrollment is surfaced to the operator, because no retry fixes a burned
+  or unknown token. The reference DayZ plugin takes the query parameter through the same
+  `POST` path as everything else; the measurement that it survives the engine's client is
+  in its repository.
 - File-backed ring buffers get whatever fsync semantics the engine provides; document the
   loss window honestly rather than claiming durability the engine cannot deliver.
 - Engines with richer facilities (e.g. Arma Reforger's Enfusion) SHOULD still implement

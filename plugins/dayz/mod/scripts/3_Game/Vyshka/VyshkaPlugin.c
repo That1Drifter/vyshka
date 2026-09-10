@@ -26,7 +26,15 @@ class VyshkaPlugin
 	static const int BACKOFF_MAX_MS = 30000;
 	static const int BACKOFF_CREDENTIALS_MS = 30000;  // session refused
 	static const int BACKOFF_ENROLL_REFUSED_MS = 60000;
+	static const int BACKOFF_REQUEST_MS = 60000;      // the plugin's own request was refused (a bug, not a cadence problem)
+	static const int BACKOFF_PROTOCOL_MS = 300000;    // protocol version refused: something needs upgrading
 	static const int RENEW_MARGIN_SECONDS = 60;      // start a new session this long before expiry
+
+	// Every request asks for its refusals inline (spec section 2.3): the
+	// engine delivers a non-2xx as an opaque code with no body, so this is
+	// the only way the protocol's error codes reach the plugin. A hub that
+	// predates the option ignores it, and the opaque handling below remains.
+	static const string INLINE_ERRORS = "?errors=inline";
 
 	static const int REQUEST_ENROLL = 1;
 	static const int REQUEST_SESSION = 2;
@@ -45,6 +53,7 @@ class VyshkaPlugin
 	int m_InAck;               // highest contiguous hub -> plugin seq processed
 	bool m_ManifestQueued;
 	bool m_PolledThisSession;
+	int m_UnpolledRefusals;    // opaque poll refusals on a session that has never polled (see OnPollResponse)
 
 	// The executed-actionId LRU of spec section 9.2.
 	ref array<string> m_ExecutedOrder;
@@ -256,7 +265,7 @@ class VyshkaPlugin
 		body.Set("plugin", PluginDescriptor());
 		body.Set("transports", Transports());
 		VyshkaLog.Info("enrolling with the hub");
-		m_Transport.Post(REQUEST_ENROLL, "enroll", "", body.Serialize(), REQUEST_BUDGET_MS);
+		m_Transport.Post(REQUEST_ENROLL, "enroll" + INLINE_ERRORS, "", body.Serialize(), REQUEST_BUDGET_MS);
 	}
 
 	void StartSession()
@@ -268,7 +277,7 @@ class VyshkaPlugin
 		body.Set("pollTimeoutSeconds", VyshkaJsonValue.NewInt(m_Config.m_PollTimeoutSeconds));
 		body.Set("plugin", PluginDescriptor());
 		body.Set("transports", Transports());
-		m_Transport.Post(REQUEST_SESSION, "session", "", body.Serialize(), REQUEST_BUDGET_MS);
+		m_Transport.Post(REQUEST_SESSION, "session" + INLINE_ERRORS, "", body.Serialize(), REQUEST_BUDGET_MS);
 	}
 
 	void Poll()
@@ -276,7 +285,7 @@ class VyshkaPlugin
 		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson() + "}";
 		// The hub answers within pollTimeout; the engine's read timeout is
 		// pollTimeout + 5 s; the watchdog sits behind both.
-		m_Transport.Post(REQUEST_POLL, "poll", m_SessionToken, body, (m_PollTimeoutSeconds + 10) * 1000);
+		m_Transport.Post(REQUEST_POLL, "poll" + INLINE_ERRORS, m_SessionToken, body, (m_PollTimeoutSeconds + 10) * 1000);
 	}
 
 	// ---- responses ----
@@ -320,6 +329,12 @@ class VyshkaPlugin
 			Backoff();
 			return;
 		}
+		VyshkaHubError refusal = VyshkaHubError.FromBody(root);
+		if (refusal)
+		{
+			OnEnrollRefused(refusal);
+			return;
+		}
 		VyshkaCredentials credentials = new VyshkaCredentials();
 		credentials.m_ServerId = root.GetString("serverId", "");
 		credentials.m_ServerSecret = root.GetString("serverSecret", "");
@@ -336,6 +351,30 @@ class VyshkaPlugin
 		VyshkaLog.Info("enrolled as server " + credentials.m_ServerId);
 		ResetBackoff();
 		Advance();
+	}
+
+	// OnEnrollRefused applies the recovery table of spec section 2.3 to an
+	// enrollment refusal the plugin could read.
+	void OnEnrollRefused(VyshkaHubError refusal)
+	{
+		string code = refusal.m_Code;
+		if (code == "enrollment_token_invalid" || code == "enrollment_token_used" || code == "game_mismatch")
+		{
+			VyshkaLog.Error("enrollment refused, " + refusal.Describe() + ". No retry fixes this: issue a fresh enrollment token and put it in " + VyshkaFiles.CONFIG_PATH);
+			Delay(BACKOFF_ENROLL_REFUSED_MS);
+		}
+		else if (refusal.IsServerError())
+		{
+			WarnThrottled("enrollment failed at the hub, " + refusal.Describe() + "; retrying");
+			Backoff();
+		}
+		else
+		{
+			// bad_request, or a code this plugin does not know with a client
+			// status: the request itself is wrong, which no cadence fixes.
+			VyshkaLog.Error("enrollment refused, " + refusal.Describe() + "; this looks like a plugin or hub defect, retrying slowly");
+			Delay(BACKOFF_REQUEST_MS);
+		}
 	}
 
 	void OnSessionResponse(bool ok, int code, string data)
@@ -365,6 +404,12 @@ class VyshkaPlugin
 		{
 			VyshkaLog.Warn("session answered with a body that is not a JSON object; retrying");
 			Backoff();
+			return;
+		}
+		VyshkaHubError refusal = VyshkaHubError.FromBody(root);
+		if (refusal)
+		{
+			OnSessionRefused(refusal);
 			return;
 		}
 		string token = root.GetString("sessionToken", "");
@@ -411,21 +456,41 @@ class VyshkaPlugin
 		Advance();
 	}
 
+	// OnSessionRefused applies the recovery table of spec section 2.3 to a
+	// session refusal the plugin could read. Nothing here starts a loop: the
+	// refusals that matter need the operator, and the plugin says so.
+	void OnSessionRefused(VyshkaHubError refusal)
+	{
+		string code = refusal.m_Code;
+		SetLinkState("buffering");
+		if (code == "credentials_invalid" || code == "credentials_revoked" || (code != "protocol_version_unsupported" && refusal.IsUnauthorized()))
+		{
+			WarnThrottled("session refused, " + refusal.Describe() + ". Issue a fresh enrollment token and put it in " + VyshkaFiles.CONFIG_PATH + "; retrying every " + (BACKOFF_CREDENTIALS_MS / 1000).ToString() + " s meanwhile");
+			Delay(BACKOFF_CREDENTIALS_MS);
+		}
+		else if (code == "protocol_version_unsupported")
+		{
+			VyshkaLog.Error("session refused, " + refusal.Describe() + ". This plugin speaks protocol version " + PROTOCOL_VERSION.ToString() + " and the hub does not; upgrade the hub or the plugin");
+			Delay(BACKOFF_PROTOCOL_MS);
+		}
+		else if (refusal.IsServerError())
+		{
+			WarnThrottled("session request failed at the hub, " + refusal.Describe() + "; retrying");
+			Backoff();
+		}
+		else
+		{
+			VyshkaLog.Error("session refused, " + refusal.Describe() + "; this looks like a plugin or hub defect, retrying slowly");
+			Delay(BACKOFF_REQUEST_MS);
+		}
+	}
+
 	void OnPollResponse(bool ok, int code, string data)
 	{
 		if (!ok)
 		{
 			if (code == VyshkaTransport.ERROR_CLIENT)
-			{
-				// 401 session_invalid is the expected reason (superseded,
-				// expired, or revoked). A 400 over the plugin's own batch
-				// looks the same from here; either way a fresh session is
-				// legal and is the right answer to the common case.
-				VyshkaLog.Info("poll refused; starting a new session");
-				m_SessionToken = "";
-				SetLinkState("degraded");
-				Backoff();
-			}
+				OnPollRefusedOpaque();
 			else
 			{
 				WarnThrottled("poll failed: " + VyshkaTransport.DescribeError(code) + "; " + m_Outbox.Count().ToString() + " envelope(s) buffered");
@@ -438,8 +503,16 @@ class VyshkaPlugin
 		VyshkaJsonValue root = VyshkaJson.Parse(data);
 		if (!root || !root.IsObject())
 		{
+			// A malformed answer changes nothing: same session, same outbox,
+			// re-poll after backoff (spec section 2.3).
 			VyshkaLog.Warn("poll answered with a body that is not a JSON object; re-polling");
 			Backoff();
+			return;
+		}
+		VyshkaHubError refusal = VyshkaHubError.FromBody(root);
+		if (refusal)
+		{
+			OnPollRefused(refusal);
 			return;
 		}
 
@@ -509,9 +582,103 @@ class VyshkaPlugin
 		}
 
 		m_PolledThisSession = true;
+		m_UnpolledRefusals = 0;
 		SetLinkState("connected");
 		ResetBackoff();
 		Advance();
+	}
+
+	// OnPollRefused applies the recovery table of spec section 2.3 to a poll
+	// refusal the plugin could read. The rule the table exists for: a client
+	// error is never answered by churning sessions.
+	void OnPollRefused(VyshkaHubError refusal)
+	{
+		string code = refusal.m_Code;
+		if (code == "session_invalid" || (code != "ack_out_of_range" && code != "envelope_invalid" && code != "bad_request" && refusal.IsUnauthorized()))
+		{
+			// Superseded, expired, or revoked: one new session, which is
+			// legal at any time (section 5.3). The outbox is kept and
+			// renumbered when the session starts.
+			VyshkaLog.Info("poll refused, " + refusal.Describe() + "; starting a new session");
+			m_SessionToken = "";
+			SetLinkState("degraded");
+			Backoff();
+		}
+		else if (code == "envelope_invalid")
+		{
+			// The hub applied nothing, so the batch can be corrected and sent
+			// again at once. The refused envelope is set aside on disk with
+			// the hub's reason; it is never resent and never counted as
+			// delivered.
+			if (refusal.m_Index < 0 || !m_Outbox.Quarantine(refusal.m_Index, refusal.m_Message))
+			{
+				VyshkaLog.Error("poll refused, " + refusal.Describe() + ", but details.index names nothing in the batch; backing off");
+				SetLinkState("degraded");
+				Backoff();
+				return;
+			}
+			ResetBackoff();
+			Advance();
+		}
+		else if (code == "ack_out_of_range")
+		{
+			// The plugin's inbound ack is ahead of anything the hub sent on
+			// this session, which no retry reconciles: a new session starts
+			// the sequence space over.
+			VyshkaLog.Warn("poll refused, " + refusal.Describe() + "; starting a new session to reset the sequence space");
+			m_SessionToken = "";
+			SetLinkState("degraded");
+			Backoff();
+		}
+		else if (code == "bad_request")
+		{
+			WarnThrottled("poll refused, " + refusal.Describe() + "; retrying with a smaller batch");
+			m_Outbox.ShrinkBatch();
+			SetLinkState("degraded");
+			Backoff();
+		}
+		else if (refusal.IsServerError())
+		{
+			WarnThrottled("poll failed at the hub, " + refusal.Describe() + "; retrying, " + m_Outbox.Count().ToString() + " envelope(s) buffered");
+			SetLinkState("buffering");
+			Backoff();
+		}
+		else
+		{
+			// A code this plugin does not know with a client status: the
+			// request was wrong and a new session does not make it right.
+			WarnThrottled("poll refused, " + refusal.Describe() + "; backing off and retrying the same session");
+			SetLinkState("degraded");
+			Backoff();
+		}
+	}
+
+	// OnPollRefusedOpaque is the fallback for a hub that did not deliver the
+	// refusal inline (one that predates spec section 2.3, or a proxy
+	// answering in its place): script sees a client error and nothing else.
+	// A 401 session_invalid is the common cause and a new session is its
+	// answer, but a 400 over the plugin's own batch looks identical, and a
+	// new session would not fix that. So: a refusal on a session that has
+	// polled successfully means the session is gone, and one new session is
+	// started; a refusal on a session that has never polled is more likely
+	// the batch, so the plugin backs off and retries the same session first,
+	// and only opens another session after a second refusal there. Worst
+	// case is one new session a minute with a log line, not a loop.
+	void OnPollRefusedOpaque()
+	{
+		if (m_PolledThisSession || m_UnpolledRefusals >= 2)
+		{
+			VyshkaLog.Info("poll refused (client error, no details from this hub); starting a new session");
+			m_SessionToken = "";
+			m_UnpolledRefusals = 0;
+			SetLinkState("degraded");
+			Backoff();
+			return;
+		}
+		m_UnpolledRefusals++;
+		WarnThrottled("poll refused on a session that has not polled yet (client error, no details from this hub); the hub may be refusing this batch rather than the session, so backing off " + (BACKOFF_MAX_MS / 1000).ToString() + " s before retrying it. A hub that supports inline errors (spec section 2.3) would say which; " + m_Outbox.Count().ToString() + " envelope(s) buffered");
+		SetLinkState("degraded");
+		Delay(BACKOFF_MAX_MS);
 	}
 
 	// ---- inbound envelopes ----

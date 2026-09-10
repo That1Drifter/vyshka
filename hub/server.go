@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -645,7 +646,20 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("/", s.handleNotFound)
 
-	return logRequests(s.log, s.cfg.ResponseWriteTimeout, mux)
+	logged := logRequests(s.log, s.cfg.ResponseWriteTimeout, mux)
+
+	// Inline errors sit outside the request log on purpose: the log records
+	// the status the handler chose, so a refusal a plugin asked to receive as
+	// a 200 is still logged as the failure it is (spec section 2.3). Only the
+	// Plugin API offers the mode; the Admin API answers in ordinary form.
+	inline := s.inlineErrors(logged)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/plugin/") {
+			inline.ServeHTTP(w, r)
+			return
+		}
+		logged.ServeHTTP(w, r)
+	})
 }
 
 // Serve listens and serves until ctx is cancelled, then shuts down gracefully.

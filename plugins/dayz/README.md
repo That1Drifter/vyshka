@@ -95,11 +95,9 @@ it; CI runs the Go tooling's tests and the reference driver instead.
 ## What the engine imposes
 
 The live-player heal acceptance demo passed on 2026-09-05; [issue #14](https://github.com/That1Drifter/vyshka/issues/14)
-records the results and validation limits. Readable Plugin API transport errors are explicitly
-deferred from M2 to [issue #43](https://github.com/That1Drifter/vyshka/issues/43). The current
-error-class fallback can mistake a malformed poll batch for a lost session and repeatedly
-start sessions without correcting the data. That follow-up remains a hardening gate before
-claiming readiness for unattended operation; the successful heal does not validate this path.
+records the results and validation limits. Readable Plugin API errors landed on 2026-09-10
+([issue #43](https://github.com/That1Drifter/vyshka/issues/43)); see "Errors and recovery"
+below for what the plugin does with each refusal and what an operator will find in the log.
 
 Measured under `spikes/` rather than assumed; the details are in each spike's findings.
 
@@ -117,10 +115,45 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   verbatim, so the plugin appends a CRLF and the `Authorization` line to it. Undocumented
   engine behavior; a patch that changed it would make every poll fail with `401`, which the
   log shows as "poll refused" (`spikes/dayz-restapi-headers`).
-- **Error bodies are invisible.** A 4xx reaches script as error code 5 with no body, a 5xx
-  as code 6, an unreachable hub as 7, a timeout as 8. The plugin cannot read the protocol's
-  `error.code`, so a client error on a poll means "start a new session", on a session request
-  "credentials rejected, retry slowly", on enrollment "token refused, tell the operator".
+- **Error bodies are invisible, so the plugin asks for them inline.** A 4xx reaches script as
+  error code 5 with no body, a 5xx as code 6, an unreachable hub as 7, a timeout as 8. Every
+  request therefore carries `?errors=inline` (protocol section 2.3), which makes a hub deliver
+  its refusals as a `200` whose body is the protocol error with the status inside; the query
+  string survives the engine's client on both `GET` and `POST` (`spikes/dayz-restapi-headers`,
+  finding 7). Against a hub that predates the option, or a proxy answering in its place, the
+  refusal is still opaque and the plugin falls back to reasoning from the error class. Both
+  paths are described under "Errors and recovery".
+
+## Errors and recovery
+
+What the plugin does with each refusal, per protocol section 2.3. Every line below goes to
+the script log with the hub's own message.
+
+| Refusal | What the plugin does |
+|---|---|
+| `session_invalid` on a poll (superseded, expired, revoked) | Starts one new session. The outbox is kept and renumbered. |
+| `envelope_invalid` on a poll | The hub applied nothing. The envelope at `details.index` is moved from `outbox/` to `rejected/<n>.json` with the hub's reason, the rest of the batch closes the gap and is resent at once. An `ERROR` line names the envelope and the file. It is never resent and never counted as delivered. |
+| `ack_out_of_range` on a poll | Starts a new session, which resets the sequence space. |
+| `bad_request` on a poll | Halves the batch size and retries the same session. |
+| `credentials_invalid`, `credentials_revoked` | Stays on the same credentials and retries every 30 s, logging that a fresh enrollment token in `config.json` is the fix. Never re-enrolls on its own. |
+| `enrollment_token_invalid`, `enrollment_token_used`, `game_mismatch` | Logs that the token needs replacing and retries every 60 s. |
+| `protocol_version_unsupported` | Logs that the hub or the plugin needs upgrading and retries every 5 min. |
+| Any 5xx | Retries the same request with backoff (1 s doubling to 30 s). |
+| A `200` that is not JSON | Retries after backoff on the same session; nothing changes. |
+| An unrecognized code | By status: 401 as `session_invalid`; any other 4xx is backed off and retried on the same session; 5xx as above. |
+
+**Opaque refusals** (an older hub, or a proxy's own error page): script sees "client error"
+and nothing else. A poll refused on a session that has already polled successfully is taken
+as a lost session and answered with one new session. A poll refused on a session that has
+never polled is more likely the plugin's own batch, so the plugin backs off 30 s and retries
+the same session, and only opens another session after a second refusal there. The worst
+case is one new session a minute with a log line saying why; a malformed envelope cannot be
+identified without the inline error, so it stays in the outbox until the hub is upgraded.
+Session and enrollment refusals are handled as before: credentials rejected, retry every
+30 s; token refused, tell the operator, retry every 60 s.
+
+The `rejected/` directory is never read by the plugin. Delete its files once you have looked
+at them.
 - **Durability.** The outbox is one file per unacked envelope under the profile directory,
   written before the envelope is first sent and deleted when the hub's ack covers it. The
   engine exposes no fsync, so a game-server crash can lose what the OS had not flushed.

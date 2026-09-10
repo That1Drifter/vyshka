@@ -41,6 +41,8 @@ tags:
 
 paths:
   /plugin/v1/enroll:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [enrollment]
       operationId: enroll
@@ -107,6 +109,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
 
   /plugin/v1/session:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [session]
       operationId: createSession
@@ -181,6 +185,8 @@ paths:
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
   /plugin/v1/poll:
+    parameters:
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [transport]
       operationId: poll
@@ -287,6 +293,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/KVNamespace"
       - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
     get:
       tags: [kv]
       operationId: kvGet
@@ -352,6 +359,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/KVNamespace"
       - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
     post:
       tags: [kv]
       operationId: kvIncr
@@ -582,6 +590,15 @@ components:
             code:
               type: string
               description: Stable machine-readable identifier; branch on this.
+            status:
+              type: integer
+              minimum: 400
+              maximum: 599
+              description: |
+                The HTTP status the hub would have sent. Present only when the
+                error travels inline in a 200 because the request carried
+                `?errors=inline` (spec section 2.3); the fallback for a `code`
+                the client does not recognize.
             message:
               type: string
               description: Human-readable. Never parse it.
@@ -590,6 +607,21 @@ components:
               additionalProperties: true
 
   parameters:
+    InlineErrors:
+      name: errors
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [inline]
+      description: |
+        Ask for this request's refusals inline (spec section 2.3): every
+        response the hub would have sent as a 4xx or 5xx arrives instead as a
+        200 whose body is the Error schema with `error.status` filled in.
+        Successes are unchanged, and a success body never carries a top-level
+        `error` member. For engines whose HTTP client hides the status and
+        body of a non-2xx response. Any value other than `inline` is refused
+        with an ordinary 400. A hub that predates the option ignores it.
     KVNamespace:
       name: namespace
       in: path
