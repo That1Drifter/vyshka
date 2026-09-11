@@ -1,9 +1,10 @@
 // Vyshka DayZ plugin: the link to the hub.
 //
-// One object drives the whole lifecycle of spec sections 5, 6, 7 and 9:
+// One object drives the whole lifecycle of spec sections 5, 6, 7, 8 and 9:
 // enroll once, start a session on every boot, long-poll forever, publish the
-// manifest, execute dispatched actions behind an executed-actionId LRU, keep
-// unacked envelopes in the outbox, and renumber them across session changes.
+// manifest, execute dispatched actions behind an executed-actionId LRU, flush
+// events and snapshots into the outbox, keep unacked envelopes there, and
+// renumber them across session changes.
 //
 // Everything runs on the script tick. A repeating call-queue timer wakes the
 // plugin, and the transport's callbacks land on the same thread, so there is
@@ -16,7 +17,7 @@ class VyshkaPlugin
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.1.0";
+	static const string PLUGIN_VERSION = "0.2.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -29,6 +30,8 @@ class VyshkaPlugin
 	static const int BACKOFF_REQUEST_MS = 60000;      // the plugin's own request was refused (a bug, not a cadence problem)
 	static const int BACKOFF_PROTOCOL_MS = 300000;    // protocol version refused: something needs upgrading
 	static const int RENEW_MARGIN_SECONDS = 60;      // start a new session this long before expiry
+	static const int SNAPSHOTS_HELD_LOG_AFTER = 12;  // consecutive held snapshot ticks before the first log line (2 min at the default cadence)
+	static const int SNAPSHOTS_HELD_LOG_EVERY = 60;  // and then every this many (10 min)
 
 	// Every request asks for its refusals inline (spec section 2.3): the
 	// engine delivers a non-2xx as an opaque code with no body, so this is
@@ -45,6 +48,10 @@ class VyshkaPlugin
 	ref VyshkaOutbox m_Outbox;
 	ref VyshkaTransport m_Transport;
 	ref VyshkaActionRegistry m_Actions;
+	ref VyshkaEventBuffer m_Events;
+	ref VyshkaSnapshotSource m_Snapshots;
+	int m_NextSnapshotMs;
+	int m_SnapshotsHeld;       // snapshot ticks skipped because the last one is still unacked
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -65,12 +72,23 @@ class VyshkaPlugin
 	string m_LinkState;        // connected | degraded | buffering (section 9.4)
 	int m_LastWarnMs;
 
-	static void Start(VyshkaActionRegistry actions)
+	static void Start(VyshkaActionRegistry actions, VyshkaSnapshotSource snapshots)
 	{
 		if (s_Instance)
 			return;
 		s_Instance = new VyshkaPlugin();
-		s_Instance.Boot(actions);
+		s_Instance.Boot(actions, snapshots);
+	}
+
+	// Emit queues one telemetry event (spec section 8.1) from anywhere in the
+	// mod. t is a {namespace}.{name} type, data the payload object or null.
+	// Before the plugin has started, or after it stopped, the event is
+	// dropped: there is nothing to carry it and no session it could belong to.
+	static void Emit(string t, VyshkaJsonValue data)
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return;
+		s_Instance.m_Events.Add(t, data);
 	}
 
 	static void Stop()
@@ -95,13 +113,15 @@ class VyshkaPlugin
 		m_Executed = new map<string, bool>;
 		m_LinkState = "buffering";
 		m_PollTimeoutSeconds = 25;
+		m_Events = new VyshkaEventBuffer();
 	}
 
-	void Boot(VyshkaActionRegistry actions)
+	void Boot(VyshkaActionRegistry actions, VyshkaSnapshotSource snapshots)
 	{
 		if (!GetGame().IsServer())
 			return;
 		m_Actions = actions;
+		m_Snapshots = snapshots;
 
 		VyshkaFiles.EnsureLayout();
 		m_Config = VyshkaConfig.Load();
@@ -131,17 +151,43 @@ class VyshkaPlugin
 		m_Transport.SetReadTimeout(m_Config.m_PollTimeoutSeconds + 5);
 
 		m_Running = true;
+		if (m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots)
+			m_NextSnapshotMs = VyshkaClock.MonotonicMs() + m_Config.m_SnapshotIntervalSeconds * 1000;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
-		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared");
+		string snapshotNote = "snapshots off";
+		if (m_NextSnapshotMs > 0)
+			snapshotNote = "state.players every " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s";
+		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared, " + snapshotNote);
+		Emit("core.server.start", ServerEventData());
 	}
 
 	void Shutdown()
 	{
 		if (!m_Running)
 			return;
+		// The stop event cannot be sent by this process, which is going away;
+		// it is flushed to the outbox so the next boot delivers it, stamped
+		// with the time it happened, ahead of that boot's own start event.
+		Emit("core.server.stop", ServerEventData());
+		FlushEvents();
 		m_Running = false;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(Tick);
 		VyshkaLog.Info("stopped with " + m_Outbox.Count().ToString() + " unacked envelope(s) on disk");
+	}
+
+	// ServerEventData is the payload of core.server.start and core.server.stop:
+	// enough for a feed to say which server and world came up, and which
+	// plugin build says so.
+	VyshkaJsonValue ServerEventData()
+	{
+		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+		data.Set("game", VyshkaJsonValue.NewString(m_Config.m_Game));
+		data.Set("plugin", PluginDescriptor());
+		string world;
+		GetGame().GetWorldName(world);
+		if (world != "")
+			data.Set("world", VyshkaJsonValue.NewString(world));
+		return data;
 	}
 
 	// ---- scheduling ----
@@ -150,12 +196,69 @@ class VyshkaPlugin
 	{
 		if (!m_Running)
 			return;
+		// Telemetry goes into the outbox whether or not a request is in
+		// flight; whatever is queued rides the next poll.
+		PublishTelemetry();
 		m_Transport.CheckWatchdog();
 		if (m_Transport.IsInFlight())
 			return;
 		if (VyshkaClock.MonotonicMs() < m_NextAttemptMs)
 			return;
 		Advance();
+	}
+
+	// ---- telemetry (spec section 8) ----
+
+	void PublishTelemetry()
+	{
+		if (m_Events.Due())
+			FlushEvents();
+		if (m_NextSnapshotMs > 0 && VyshkaClock.MonotonicMs() >= m_NextSnapshotMs)
+		{
+			PublishSnapshot();
+			m_NextSnapshotMs = VyshkaClock.MonotonicMs() + m_Config.m_SnapshotIntervalSeconds * 1000;
+		}
+	}
+
+	// FlushEvents moves every pending event into event.batch envelopes of at
+	// most 200 events each (section 8.1). An outbox refusal (it is full)
+	// drops the batch; the outbox counts and logs the refusal, which is the
+	// visible counter section 9.4 asks for.
+	void FlushEvents()
+	{
+		while (m_Events.Count() > 0)
+		{
+			int count = m_Events.Count();
+			if (count > VyshkaEventBuffer.FLUSH_COUNT)
+				count = VyshkaEventBuffer.FLUSH_COUNT;
+			string body = m_Events.TakeBatch();
+			if (!m_Outbox.Append("event.batch", body))
+				VyshkaLog.Warn("dropped " + count.ToString() + " event(s) the outbox could not hold");
+		}
+	}
+
+	// PublishSnapshot queues one state.players envelope unless the previous
+	// one is still unacked, in which case this tick is skipped: the map
+	// wants the latest state, and a queue of stale snapshots behind an
+	// outage serves no one (section 8.3 keeps the latest per type anyway).
+	// Skipping is ordinary on a healthy link, because an ack arrives only
+	// when the held poll returns (up to pollTimeout later), so the effective
+	// cadence is the longer of the configured interval and the poll cycle;
+	// it is logged only once it has gone on long enough to mean an outage.
+	void PublishSnapshot()
+	{
+		if (m_Outbox.HasUnacked("state.players"))
+		{
+			m_SnapshotsHeld++;
+			if (m_SnapshotsHeld == SNAPSHOTS_HELD_LOG_AFTER || m_SnapshotsHeld % SNAPSHOTS_HELD_LOG_EVERY == 0)
+				VyshkaLog.Info("state.players snapshot held back: the previous one is still unacked (" + m_SnapshotsHeld.ToString() + " skipped)");
+			return;
+		}
+		m_SnapshotsHeld = 0;
+		string body = m_Snapshots.CapturePlayers();
+		if (body == "")
+			return;
+		m_Outbox.Append("state.players", body);
 	}
 
 	// Advance issues whichever request the link needs next. The name matters:

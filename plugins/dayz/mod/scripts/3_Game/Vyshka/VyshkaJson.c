@@ -64,6 +64,43 @@ class VyshkaJsonValue : Managed
 		return v;
 	}
 
+	// NewFloat carries a game measurement (a position, a distance) as a JSON
+	// number with two decimals. The text is built from integer arithmetic
+	// rather than the engine's float formatting, whose output form (exponent
+	// notation, locale) is not specified to be a JSON number.
+	static VyshkaJsonValue NewFloat(float value)
+	{
+		VyshkaJsonValue v = new VyshkaJsonValue();
+		v.m_Kind = VyshkaJsonKind.NUMBER_VALUE;
+		v.m_Number = value;
+		v.m_Int = (int)value;
+		v.m_IsInteger = false;
+		v.m_Text = FormatFloat(value);
+		return v;
+	}
+
+	// FormatFloat renders a float as [-]whole.hh, rounded to the hundredth.
+	static string FormatFloat(float value)
+	{
+		bool negative = value < 0;
+		if (negative)
+			value = -value;
+		int whole = (int)value;
+		int hundredths = (int)Math.Round((value - whole) * 100);
+		if (hundredths >= 100)
+		{
+			whole += 1;
+			hundredths -= 100;
+		}
+		string text = whole.ToString() + ".";
+		if (hundredths < 10)
+			text += "0";
+		text += hundredths.ToString();
+		if (negative && (whole > 0 || hundredths > 0))
+			text = "-" + text;
+		return text;
+	}
+
 	static VyshkaJsonValue NewString(string value)
 	{
 		VyshkaJsonValue v = new VyshkaJsonValue();

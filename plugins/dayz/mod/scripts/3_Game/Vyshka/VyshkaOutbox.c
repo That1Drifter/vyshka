@@ -152,6 +152,22 @@ class VyshkaOutbox
 		return m_Entries.Count() + n <= CAPACITY;
 	}
 
+	// HasUnacked reports whether an envelope of the given type is still
+	// waiting for the hub's ack. Snapshot publishing consults this so a
+	// state.* envelope is only queued when the previous one has landed: a
+	// snapshot says what is, so a stale one waiting behind an outage is
+	// worth nothing, and a buffer full of them would crowd out the action
+	// results and events that are worth keeping.
+	bool HasUnacked(string envelopeType)
+	{
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			if (m_Entries.Get(i).m_Type == envelopeType)
+				return true;
+		}
+		return false;
+	}
+
 	// Load reads every record left on disk by a previous run, in ordinal
 	// order, and leaves them unnumbered: the next session start numbers them.
 	void Load()

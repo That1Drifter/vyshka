@@ -144,6 +144,7 @@ var stages = []Stage{
 			return nil
 		},
 	},
+	telemetryStage,
 	{
 		ID:      "action.roundTrip",
 		Title:   "A dispatched action is acked and answered with a result",

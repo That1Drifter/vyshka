@@ -1,9 +1,10 @@
 # Vyshka DayZ plugin
 
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
-dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, and
-executes dispatched actions. It ships one built-in action, `vyshka.heal`, so an operator can
-heal a player from a `curl` against the hub. Protocol: `spec/protocol.md`.
+dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
+dispatched actions, and publishes telemetry: the core player events a feed needs and the
+`state.players` snapshots a live map needs. It ships one built-in action, `vyshka.heal`, so
+an operator can heal a player from a `curl` against the hub. Protocol: `spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -13,9 +14,9 @@ Clean-room: written from the engine's public script headers and the measurements
 | Path | What it is |
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
-| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry |
-| `mod/scripts/4_World/Vyshka/` | Game-facing actions (`VyshkaHealAction`) |
-| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hook that starts and stops the plugin |
+| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
+| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects and disconnects |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
 
@@ -46,7 +47,8 @@ for a server-side mod; clients never load it.
    ```
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60). `game` is optional
-   and defaults to `dayz`.
+   and defaults to `dayz`. `snapshotIntervalSeconds` is optional (default 10, honored between
+   2 and 600; `0` turns `state.players` snapshots off).
 4. Start the server with the mod as a server mod:
 
    ```
@@ -76,6 +78,57 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 The `referenceKey` is the player's plain Steam64 id. The result carries the player's health,
 blood, and shock after the heal; `restoreBlood: false` in `params` leaves blood alone.
 
+## Telemetry
+
+The plugin publishes events (protocol section 8.1) and `state.players` snapshots (section
+8.3) as soon as it is running; nothing needs configuring. Player identity everywhere is
+`{ "platform": "steam", "id": "<Steam64>" }` (section 8.2), the same id the heal action
+takes as its `referenceKey`.
+
+**Events.** Buffered and flushed as one `event.batch` every 2 s or at 200 events, then
+persisted, acked, and renumbered like every other envelope. Up to 2 s of events can be lost
+to a crash before the flush.
+
+| Type | When | `data` |
+|---|---|---|
+| `core.server.start` | The plugin starts with the mission | `game`, `plugin { name, version }`, `world` |
+| `core.server.stop` | The mission finishes; written to the outbox and delivered by the next boot, ahead of that boot's start event | same |
+| `core.player.connect` | A character is attached to a newly connected identity (first join); a respawn or a reconnect inside the logout window is not a second connect | `player`, `name` |
+| `core.player.disconnect` | The logout is final (a cancelled logout never fires it) | `player`, `name` |
+| `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType` |
+
+`cause` is one of `player` (another player, bare hands or a held item; `killer` names them,
+`weapon` is the item's display name, `distance` in metres is present for a ranged weapon),
+`self` (the engine names the character as its own killer: starvation, dehydration, bleeding
+out, drowning, a fall), `infected`, `animal`, `explosion` (`weapon` is the device),
+`vehicle`, `other` (with `killerType`, the engine class of the killer), or `unknown`. This
+reading of the killer object matches the one the engine's own admin log makes.
+
+**Snapshots.** Every `snapshotIntervalSeconds` (default 10) the plugin publishes the full
+list of characters with an identity attached, alive or not:
+
+```json
+{ "capturedAt": "2026-09-11T14:00:00Z",
+  "players": [ { "player": { "platform": "steam", "id": "7656..." }, "name": "Survivor",
+                 "position": [4231.5, 300.2, 10620.0],
+                 "data": { "alive": true, "health": 100, "blood": 5000 } } ] }
+```
+
+A snapshot is only queued when the previous one has been acked. A snapshot says what *is*,
+so a stale one waiting behind an outage is worth nothing, and a buffer full of them would
+crowd out the events and action results that are worth keeping; the hub keeps the latest
+per type regardless, with `capturedAt` saying how stale it is. Because an ack only arrives
+when the held poll returns, the effective cadence on a healthy link is the longer of the
+configured interval and the poll cycle (with `pollTimeout` 25 that is roughly one snapshot
+per 25 to 35 s); a run of held-back ticks long enough to mean an outage is logged.
+
+`core.server.stop` is emitted when the mission finishes, which a graceful shutdown reaches
+and a process kill does not: a server killed from the outside leaves no stop event.
+
+**Positions** are the engine's own vector, `[x, y, z]` with `y` the elevation in metres, so
+a DayZ map plots `x` against `z`. That is the game's own map frame of section 8.3; the hub
+never interprets it and a map view has to know the game.
+
 ## Conformance
 
 The plugin conformance harness (`conformance/plugin`) can drive a real DayZ server:
@@ -90,7 +143,9 @@ a fresh profile directory under `plugins/dayz/build/`, starts the server from it
 install location (`-server` overrides it) with the built mod, mirrors the plugin's log lines
 to stderr, and stops the server when the harness closes its stdin. The `-enroll-wait` covers
 the server's boot time. This needs a local DayZ dedicated server install, so CI does not run
-it; CI runs the Go tooling's tests and the reference driver instead.
+it; CI runs the Go tooling's tests and the reference driver instead. With no player on the
+server the telemetry stage grades the start event and the empty snapshots; the player events
+need a client to join, which the staging demo in issue #49 covers.
 
 ## What the engine imposes
 

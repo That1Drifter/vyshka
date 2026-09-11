@@ -85,6 +85,15 @@ type mockHub struct {
 	// What the plugin has published and reported, decoded for the checks.
 	manifest *manifestInfo
 	actions  map[string]*actionTrack
+	// Telemetry (spec section 8): validated on arrival, counted for the
+	// telemetry stage. Faults found before that stage has run are held for
+	// it rather than charged to whatever stage the first poll landed in, so
+	// the report names the telemetry rather than the poll; once the stage
+	// has run, later telemetry faults fail the stage they arrive in like any
+	// other fault.
+	telemetry       telemetryStats
+	telemetryFaults []fault
+	telemetryGraded bool
 
 	// Session-change grading (spec section 9.1). killSession records every
 	// plugin envelope above the reported ack; ingest marks each one off as it
@@ -1307,6 +1316,14 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 			}
 			track.results++
 		}
+
+	case "event.batch":
+		h.telemetry.batches++
+		h.telemetry.events += h.validateEventBatchLocked(envelope)
+
+	case "state.players", "state.vehicles", "state.entities":
+		h.telemetry.snapshots++
+		h.validateSnapshotLocked(envelope)
 	}
 }
 
