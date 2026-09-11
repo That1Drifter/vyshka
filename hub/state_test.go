@@ -248,6 +248,8 @@ func TestStateValidationEdges(t *testing.T) {
 			map[string]any{"vehicles": []map[string]any{{"kind": "car"}}}},
 		{"one-coordinate position", "state.entities",
 			map[string]any{"entities": []map[string]any{{"id": "e-1", "position": []float64{1}}}}},
+		{"null coordinate", "state.entities",
+			map[string]any{"entities": []map[string]any{{"id": "e-1", "position": []any{nil, 2}}}}},
 		{"data not an object", "state.players",
 			map[string]any{"players": []map[string]any{{
 				"player": map[string]any{"platform": "steam", "id": "1"}, "data": "words"}}}},

@@ -12,6 +12,35 @@ point if needed.
 
 ### Added
 
+- 2026-09-11: DayZ plugin telemetry (issue #49), plugin 0.2.0. The plugin now publishes the
+  core player events a feed needs and the `state.players` snapshots a live map needs, which
+  plugin 0.1.0 never did. Events: `core.player.connect` from the mission's connect hook (a
+  respawn or a reconnect inside the logout window is not a second connect, thanks to a roster
+  keyed by Steam64 id), `core.player.disconnect` once a logout is final (the roster also
+  answers the identity the engine has let go of by then), `core.player.death` from the
+  character's death hook with the killer read the way the engine's own admin log reads it
+  (a player with weapon and distance, bare hands, infected, animal, explosion, vehicle, the
+  character itself for starvation and the like), and `core.server.start` and `core.server.stop`
+  from the plugin's own lifecycle, the stop event flushed to the outbox for the next boot to
+  deliver. Events are buffered and flushed as one `event.batch` every 2 s or at 200, riding
+  the existing outbox, ack, and renumbering rules. Snapshots go out every
+  `snapshotIntervalSeconds` (new config key, default 10) with identity, name, engine-order
+  position, and alive, health, and blood, and only when the previous snapshot has been acked,
+  so an outage never fills the outbox with stale state. The plugin conformance mock now
+  validates every `event.batch` and `state.*` body it receives to the bounds of sections 8.1
+  and 8.3 and records violations as faults; a new `telemetry.wellFormed` stage (15 checks)
+  waits for the first telemetry to arrive and reports `PART` for a candidate that publishes
+  none; the reference driver publishes one batch and one snapshot so CI exercises the
+  validation; the red-direction tests cover the malformed cases. No protocol changes. One
+  hub fix found by the review: a snapshot `position` carrying a `null` coordinate decoded to
+  0 and passed; it is now rejected as section 8.3 requires. The review also bounded the
+  plugin's poll to 1000 events across its batches (the hub's per-poll budget would otherwise
+  refuse, and ack, a sixth backlog batch), made it log `event.reject` and `state.reject`,
+  and taught it to report a death by the victim's own weapon as `self` with the weapon named.
+  The second round found that telemetry appended while a poll is in flight let a hub's
+  out-of-range `details.index` quarantine an envelope that was never sent; the outbox now
+  validates the index against the batch as it was framed.
+
 - 2026-09-10: inline errors (issue #43), protocol draft 0.19, new section 2.3. Some engine
   HTTP clients hand script an opaque error code for any non-2xx response, with neither the
   status nor the body, which made section 2.2 unreadable on DayZ and left the plugin

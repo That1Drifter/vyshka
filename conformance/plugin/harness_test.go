@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -90,21 +91,37 @@ func (p *testPlugin) poll(envelopes ...map[string]any) {
 	p.post("/plugin/v1/poll", p.sessionToken, body, http.StatusOK, nil)
 }
 
+// testEnvelope frames a well-formed event.batch: an empty one for a nil
+// body, otherwise one event carrying the given map as its data, so two
+// different maps make two different envelopes while the batch itself stays
+// valid under the section 8.1 grading.
 func testEnvelope(id string, seq int64, body map[string]any) map[string]any {
-	if body == nil {
-		body = map[string]any{}
+	events := []map[string]any{}
+	if body != nil {
+		events = append(events, map[string]any{"t": "conformance.test", "data": body})
 	}
+	return typedEnvelope(id, seq, "event.batch", map[string]any{"events": events})
+}
+
+func typedEnvelope(id string, seq int64, envelopeType string, body map[string]any) map[string]any {
 	return map[string]any{
-		"v": 1, "id": id, "type": "event.batch", "seq": seq,
+		"v": 1, "id": id, "type": envelopeType, "seq": seq,
 		"ts": "2026-08-20T12:00:00Z", "body": body,
 	}
 }
 
-func faultMessages(h *mockHub) string {
+// allFaults returns every fault the mock recorded, including the telemetry
+// faults it holds for the telemetry stage.
+func allFaults(h *mockHub) []fault {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	messages := make([]string, 0, len(h.faults))
-	for _, f := range h.faults {
+	return append(append([]fault{}, h.faults...), h.telemetryFaults...)
+}
+
+func faultMessages(h *mockHub) string {
+	faults := allFaults(h)
+	messages := make([]string, 0, len(faults))
+	for _, f := range faults {
 		messages = append(messages, f.String())
 	}
 	return strings.Join(messages, "\n")
@@ -286,6 +303,152 @@ func TestFaultSectionsLookLikeSpecClauses(t *testing.T) {
 		}
 		if !strings.ContainsAny(f.Section, "0123456789") {
 			t.Fatalf("fault section %q does not look like a spec clause", f.Section)
+		}
+	}
+}
+
+func TestWellFormedTelemetryIsNotFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.poll(
+		typedEnvelope("tel-1", 1, "event.batch", map[string]any{"events": []map[string]any{
+			{"t": "core.player.connect", "ts": "2026-09-11T10:00:00+02:00", "data": map[string]any{"player": map[string]any{"platform": "steam", "id": "1"}}},
+			{"t": "my-mod.raid.started"},
+			{"t": "my-mod.raid.ended", "data": nil},
+		}}),
+		typedEnvelope("tel-2", 2, "state.players", map[string]any{"capturedAt": "2026-09-11T10:00:00Z", "players": []map[string]any{
+			{"player": map[string]any{"platform": "steam", "id": "1"}, "name": "Survivor", "position": []float64{1, 2, 3}, "data": map[string]any{"health": 100}},
+			{"player": map[string]any{"platform": "steam", "id": "2"}, "position": []float64{1, 2}},
+		}}),
+		typedEnvelope("tel-3", 3, "state.vehicles", map[string]any{"vehicles": []map[string]any{{"id": "v-1", "kind": "car"}}}),
+		typedEnvelope("tel-4", 4, "state.entities", map[string]any{"entities": []any{}}),
+		// Optional fields set to null read as absent (section 2.1): a hub
+		// fills the timestamps with receipt time and never refuses over them.
+		typedEnvelope("tel-5", 5, "event.batch", map[string]any{"events": []map[string]any{{"t": "core.server.fps", "ts": nil}}}),
+		typedEnvelope("tel-6", 6, "state.players", map[string]any{"capturedAt": nil, "players": []map[string]any{
+			{"player": map[string]any{"platform": "steam", "id": "1"}, "position": nil},
+		}}),
+	)
+
+	if faults := faultMessages(h); faults != "" {
+		t.Fatalf("well-formed telemetry was faulted:\n%s", faults)
+	}
+	h.mu.Lock()
+	stats := h.telemetry
+	h.mu.Unlock()
+	if stats.batches != 2 || stats.events != 4 || stats.snapshots != 4 {
+		t.Fatalf("telemetry counted as %+v, want 2 batches, 4 events, 4 snapshots", stats)
+	}
+}
+
+func TestHeldTelemetryFaultsSurviveAFatalStage(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.poll(typedEnvelope("held-1", 1, "event.batch", map[string]any{}))
+
+	failing := Stage{ID: "test.fatal", Title: "fails first", Section: "0", Fatal: true,
+		Run: func(*harness) error { return errors.New("boom") }}
+	results := runStages(&harness{hub: h, checkTimeout: time.Second}, []Stage{failing, telemetryStage})
+	if len(results) != 2 || results[1].ID != telemetryStage.ID || results[1].Passed {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if !strings.Contains(results[1].Error, "prerequisite failed") || !strings.Contains(results[1].Error, "held-1 carries no events array") {
+		t.Fatalf("the skipped telemetry stage did not report the held fault: %q", results[1].Error)
+	}
+}
+
+func TestMalformedEventBatchesAreFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	tooMany := make([]map[string]any, 201)
+	for i := range tooMany {
+		tooMany[i] = map[string]any{"t": "core.server.fps"}
+	}
+	p := newTestPlugin(t, h)
+	p.poll(
+		typedEnvelope("bad-1", 1, "event.batch", map[string]any{}),
+		typedEnvelope("bad-2", 2, "event.batch", map[string]any{"events": []map[string]any{{"t": "noNamespace"}}}),
+		typedEnvelope("bad-3", 3, "event.batch", map[string]any{"events": []map[string]any{{"t": "server.start"}}}),
+		typedEnvelope("bad-4", 4, "event.batch", map[string]any{"events": []map[string]any{{"t": "core.player.chat", "data": "hello"}}}),
+		typedEnvelope("bad-5", 5, "event.batch", map[string]any{"events": []map[string]any{{"t": "core.player.chat", "ts": "yesterday"}}}),
+		typedEnvelope("bad-6", 6, "event.batch", map[string]any{"events": tooMany}),
+		typedEnvelope("bad-7", 7, "event.batch", map[string]any{"events": []map[string]any{{"data": map[string]any{}}}}),
+	)
+
+	faults := faultMessages(h)
+	for _, want := range []string{
+		"bad-1 carries no events array",
+		`bad-2 events[0].t "noNamespace" is outside`,
+		`bad-3 events[0].t "server.start" begins with a namespace reserved`,
+		"bad-4 events[0].data is not an object",
+		"bad-5 events[0].ts",
+		"bad-6 carries 201 events",
+		"bad-7 events[0] carries no t",
+	} {
+		if !strings.Contains(faults, want) {
+			t.Errorf("expected a fault containing %q; recorded faults:\n%s", want, faults)
+		}
+	}
+	for _, f := range allFaults(h) {
+		if f.Section != "8.1" {
+			t.Errorf("fault %q cites section %s, want 8.1", f.Message, f.Section)
+		}
+	}
+}
+
+func TestMalformedSnapshotsAreFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.poll(
+		typedEnvelope("snap-1", 1, "state.players", map[string]any{"capturedAt": "2026-09-11T10:00:00Z"}),
+		typedEnvelope("snap-2", 2, "state.players", map[string]any{"players": []map[string]any{{"name": "Nobody"}}}),
+		typedEnvelope("snap-3", 3, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": ""}}}}),
+		typedEnvelope("snap-4", 4, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "position": []any{1}}}}),
+		typedEnvelope("snap-5", 5, "state.vehicles", map[string]any{"vehicles": []map[string]any{{"kind": "car"}}}),
+		typedEnvelope("snap-6", 6, "state.entities", map[string]any{"entities": nil}),
+		typedEnvelope("snap-7", 7, "state.players", map[string]any{"capturedAt": 12345, "players": []any{}}),
+		typedEnvelope("snap-8", 8, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "data": []any{}}}}),
+		typedEnvelope("snap-9", 9, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "position": []any{nil, 2}}}}),
+	)
+
+	faults := faultMessages(h)
+	for _, want := range []string{
+		"snap-1 carries no players list",
+		"snap-2 players[0] carries no player",
+		"snap-3 players[0].player.id must be a non-empty string",
+		"snap-4 players[0].position must be an array of two or three numbers",
+		"snap-5 vehicles[0].id must be a non-empty string",
+		"snap-6: entities is not an array",
+		"snap-7: capturedAt 12345 is not an RFC 3339 timestamp",
+		"snap-8 players[0].data is not an object",
+		"snap-9 players[0].position[0] is not a number",
+	} {
+		if !strings.Contains(faults, want) {
+			t.Errorf("expected a fault containing %q; recorded faults:\n%s", want, faults)
+		}
+	}
+	for _, f := range allFaults(h) {
+		if f.Section != "8.3" {
+			t.Errorf("fault %q cites section %s, want 8.3", f.Message, f.Section)
 		}
 	}
 }

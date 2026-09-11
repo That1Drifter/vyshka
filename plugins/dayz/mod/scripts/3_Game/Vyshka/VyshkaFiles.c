@@ -116,6 +116,14 @@ class VyshkaConfig
 	string m_EnrollmentToken;
 	int m_PollTimeoutSeconds;
 	string m_Game;
+	// How often a state.players snapshot is published (spec section 8.3);
+	// 0 turns snapshots off. Bounded below so a typo cannot make the plugin
+	// sample every tick, and above so a stale map is still a map.
+	int m_SnapshotIntervalSeconds;
+
+	static const int SNAPSHOT_INTERVAL_DEFAULT = 10;
+	static const int SNAPSHOT_INTERVAL_MIN = 2;
+	static const int SNAPSHOT_INTERVAL_MAX = 600;
 
 	static VyshkaConfig Load()
 	{
@@ -127,6 +135,13 @@ class VyshkaConfig
 		config.m_EnrollmentToken = root.GetString("enrollmentToken", "");
 		config.m_PollTimeoutSeconds = root.GetInt("pollTimeoutSeconds", 25);
 		config.m_Game = root.GetString("game", "dayz");
+		config.m_SnapshotIntervalSeconds = root.GetInt("snapshotIntervalSeconds", SNAPSHOT_INTERVAL_DEFAULT);
+		if (config.m_SnapshotIntervalSeconds < 0)
+			config.m_SnapshotIntervalSeconds = 0;
+		if (config.m_SnapshotIntervalSeconds > 0 && config.m_SnapshotIntervalSeconds < SNAPSHOT_INTERVAL_MIN)
+			config.m_SnapshotIntervalSeconds = SNAPSHOT_INTERVAL_MIN;
+		if (config.m_SnapshotIntervalSeconds > SNAPSHOT_INTERVAL_MAX)
+			config.m_SnapshotIntervalSeconds = SNAPSHOT_INTERVAL_MAX;
 		if (config.m_HubUrl == "")
 			return null;
 		// The plugin appends the Plugin API path itself, so accept the hub's

@@ -250,7 +250,9 @@ func validatePosition(raw json.RawMessage, path string) []schema.Fault {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
-	var coordinates []float64
+	// Pointers, because a null coordinate would otherwise decode to 0 without
+	// an error and pass as a number.
+	var coordinates []*float64
 	if err := json.Unmarshal(raw, &coordinates); err != nil {
 		return []schema.Fault{{Path: path, Message: "position must be an array of numbers"}}
 	}
@@ -258,9 +260,12 @@ func validatePosition(raw json.RawMessage, path string) []schema.Fault {
 		return []schema.Fault{{Path: path, Message: "position carries two or three coordinates"}}
 	}
 	for _, c := range coordinates {
+		if c == nil {
+			return []schema.Fault{{Path: path, Message: "position must be an array of numbers"}}
+		}
 		// NaN and infinities cannot arrive through JSON; what can is a number
 		// so large it decoded to +Inf.
-		if math.IsInf(c, 0) || math.IsNaN(c) {
+		if math.IsInf(*c, 0) || math.IsNaN(*c) {
 			return []schema.Fault{{Path: path, Message: "position coordinates must be finite"}}
 		}
 	}

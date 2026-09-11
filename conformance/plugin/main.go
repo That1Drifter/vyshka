@@ -110,7 +110,7 @@ func main() {
 		hub:          hub,
 		enrollWait:   *enrollWait,
 		checkTimeout: *checkTimeout,
-	})
+	}, stages)
 
 	// A candidate that died on its own is a failure even when every stage's
 	// assertion had already passed by the time it died: a plugin that crashes

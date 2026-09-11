@@ -98,9 +98,10 @@ type driver struct {
 	executed      map[string]bool
 	executedOrder []string
 
-	idCounter    int64
-	manifestSent bool
-	firstFailure time.Time
+	idCounter     int64
+	manifestSent  bool
+	telemetrySent bool
+	firstFailure  time.Time
 }
 
 func main() {
@@ -404,6 +405,26 @@ func (d *driver) run(game string) {
 			if !d.manifestSent {
 				d.send("manifest.publish", d.manifest(game))
 				d.manifestSent = true
+			}
+			if !d.telemetrySent {
+				// One batch and one snapshot, once per process, so the
+				// harness has telemetry to grade (spec section 8). A real
+				// plugin publishes as its game produces them.
+				now := time.Now().UTC().Format(time.RFC3339)
+				d.send("event.batch", map[string]any{"events": []map[string]any{
+					{"t": "core.server.start", "ts": now, "data": map[string]any{"game": game}},
+					{"t": "conformance-driver.hello", "ts": now},
+				}})
+				d.send("state.players", map[string]any{
+					"capturedAt": now,
+					"players": []map[string]any{{
+						"player":   map[string]any{"platform": "conformance", "id": "driver-1"},
+						"name":     "Driver",
+						"position": []float64{100.5, 12, 200.25},
+						"data":     map[string]any{"health": 100},
+					}},
+				})
+				d.telemetrySent = true
 			}
 		}
 
