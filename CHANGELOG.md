@@ -37,6 +37,9 @@ point if needed.
   plugin's poll to 1000 events across its batches (the hub's per-poll budget would otherwise
   refuse, and ack, a sixth backlog batch), made it log `event.reject` and `state.reject`,
   and taught it to report a death by the victim's own weapon as `self` with the weapon named.
+  The second round found that telemetry appended while a poll is in flight let a hub's
+  out-of-range `details.index` quarantine an envelope that was never sent; the outbox now
+  validates the index against the batch as it was framed.
 
 - 2026-09-10: inline errors (issue #43), protocol draft 0.19, new section 2.3. Some engine
   HTTP clients hand script an opaque error code for any non-2xx response, with neither the

@@ -66,6 +66,7 @@ class VyshkaOutbox
 	int m_Dropped;
 	int m_BatchLimit;   // envelopes per poll; lowered when a hub refuses a batch as too large
 	int m_Rejected;     // envelopes the hub refused as malformed and this outbox set aside
+	int m_SentCount;    // how many leading entries the poll in flight carried (see Quarantine)
 
 	void VyshkaOutbox()
 	{
@@ -75,6 +76,7 @@ class VyshkaOutbox
 		m_Dropped = 0;
 		m_BatchLimit = BATCH_LIMIT;
 		m_Rejected = 0;
+		m_SentCount = 0;
 	}
 
 	int BatchLimit()
@@ -101,11 +103,14 @@ class VyshkaOutbox
 	// hub's reason, where an operator can read what could not be delivered.
 	// The entries behind it move down one seq to close the gap, which is
 	// safe because a refused batch was applied in no part. Returns false when
-	// the index names nothing in the last batch.
+	// the index names nothing in the batch as it was sent: telemetry can be
+	// appended while a poll is in flight, so the bound is the count recorded
+	// when the batch was framed, not what a fresh framing would carry now.
 	bool Quarantine(int index, string reason)
 	{
-		if (index < 0 || index >= BatchCount())
+		if (index < 0 || index >= m_SentCount)
 			return false;
+		m_SentCount = 0;
 
 		VyshkaOutboxEntry entry = m_Entries.Get(index);
 		// Ordinals restart after a reboot (Load derives the next one from the
@@ -339,6 +344,7 @@ class VyshkaOutbox
 	void Renumber()
 	{
 		m_NextSeq = 0;
+		m_SentCount = 0;
 		for (int i = 0; i < m_Entries.Count(); i++)
 		{
 			m_NextSeq++;
@@ -367,11 +373,12 @@ class VyshkaOutbox
 	}
 
 	// BatchJson frames the leading unacked envelopes, in ascending seq order,
-	// as the poll request's envelopes array.
+	// as the poll request's envelopes array, and records how many it framed.
 	string BatchJson()
 	{
 		string result = "[";
 		int count = BatchCount();
+		m_SentCount = count;
 		for (int i = 0; i < count; i++)
 		{
 			if (i > 0)
