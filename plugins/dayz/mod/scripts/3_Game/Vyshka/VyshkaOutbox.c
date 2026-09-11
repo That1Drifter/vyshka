@@ -21,6 +21,7 @@ class VyshkaOutboxEntry
 	string m_Ts;
 	string m_Body;   // serialized JSON object, re-emitted verbatim
 	int m_Seq;       // in the current session's space; 0 until numbered
+	int m_Events;    // events carried, for an event.batch; 0 otherwise
 
 	string Path()
 	{
@@ -51,6 +52,13 @@ class VyshkaOutbox
 	// How many envelopes one poll may carry (section 3.1.2 guarantees a hub
 	// accepts at least this many).
 	static const int BATCH_LIMIT = 200;
+
+	// How many events one poll may carry across all of its event.batch
+	// envelopes. Section 8.1 lets a hub refuse the batches past a per-poll
+	// budget (reference cap 1000) while acking them, which would lose the
+	// events of a backlog flushed after an outage; staying under the
+	// reference cap keeps every batch inside what the hub will store.
+	static const int EVENTS_PER_POLL = 1000;
 
 	ref array<ref VyshkaOutboxEntry> m_Entries;
 	int m_NextOrdinal;
@@ -96,10 +104,7 @@ class VyshkaOutbox
 	// the index names nothing in the last batch.
 	bool Quarantine(int index, string reason)
 	{
-		int count = m_Entries.Count();
-		if (count > m_BatchLimit)
-			count = m_BatchLimit;
-		if (index < 0 || index >= count)
+		if (index < 0 || index >= BatchCount())
 			return false;
 
 		VyshkaOutboxEntry entry = m_Entries.Get(index);
@@ -231,7 +236,12 @@ class VyshkaOutbox
 		entry.m_Type = root.GetString("type", "");
 		entry.m_Ts = root.GetString("ts", "");
 		if (body && body.IsObject())
+		{
 			entry.m_Body = body.Serialize();
+			VyshkaJsonValue events = body.Get("events");
+			if (entry.m_Type == "event.batch" && events && events.IsArray())
+				entry.m_Events = events.Count();
+		}
 		else
 			entry.m_Body = "{}";
 		if (entry.m_Id == "" || entry.m_Type == "")
@@ -261,8 +271,9 @@ class VyshkaOutbox
 	}
 
 	// Append persists a new envelope and numbers it into the current session.
-	// The body is a JSON object, already serialized.
-	VyshkaOutboxEntry Append(string envelopeType, string bodyJson)
+	// The body is a JSON object, already serialized; events is how many
+	// events an event.batch body carries, for the per-poll budget.
+	VyshkaOutboxEntry Append(string envelopeType, string bodyJson, int events = 0)
 	{
 		if (m_Entries.Count() >= CAPACITY)
 		{
@@ -286,6 +297,7 @@ class VyshkaOutbox
 		entry.m_Type = envelopeType;
 		entry.m_Ts = VyshkaClock.NowRfc3339();
 		entry.m_Body = bodyJson;
+		entry.m_Events = events;
 		m_NextSeq++;
 		entry.m_Seq = m_NextSeq;
 
@@ -335,14 +347,31 @@ class VyshkaOutbox
 		m_BatchLimit = BATCH_LIMIT;
 	}
 
-	// BatchJson frames the first m_BatchLimit unacked envelopes, in ascending
-	// seq order, as the poll request's envelopes array.
+	// BatchCount is how many leading entries the next poll carries: at most
+	// m_BatchLimit envelopes, and at most EVENTS_PER_POLL events across them.
+	// The first entry always goes, whatever it carries, so a batch can never
+	// be stuck behind the budget.
+	int BatchCount()
+	{
+		int count = 0;
+		int events = 0;
+		while (count < m_Entries.Count() && count < m_BatchLimit)
+		{
+			int carried = m_Entries.Get(count).m_Events;
+			if (count > 0 && events + carried > EVENTS_PER_POLL)
+				break;
+			events += carried;
+			count++;
+		}
+		return count;
+	}
+
+	// BatchJson frames the leading unacked envelopes, in ascending seq order,
+	// as the poll request's envelopes array.
 	string BatchJson()
 	{
 		string result = "[";
-		int count = m_Entries.Count();
-		if (count > m_BatchLimit)
-			count = m_BatchLimit;
+		int count = BatchCount();
 		for (int i = 0; i < count; i++)
 		{
 			if (i > 0)

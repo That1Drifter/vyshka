@@ -51,14 +51,9 @@ var telemetryStage = Stage{
 		})
 		// From here on, telemetry faults are charged to the stage they
 		// arrive in; everything held so far is this stage's to report.
-		var held []fault
+		held := hub.drainTelemetryFaults()
 		var exited bool
-		hub.view(func() {
-			held = hub.telemetryFaults
-			hub.telemetryFaults = nil
-			hub.telemetryGraded = true
-			exited = hub.pluginExited
-		})
+		hub.view(func() { exited = hub.pluginExited })
 		if err != nil {
 			if exited {
 				return err
@@ -73,6 +68,17 @@ var telemetryStage = Stage{
 		}
 		return nil
 	},
+}
+
+// drainTelemetryFaults hands back every held telemetry fault and switches
+// the hub to charging later ones to the stage they arrive in.
+func (h *mockHub) drainTelemetryFaults() []fault {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	held := h.telemetryFaults
+	h.telemetryFaults = nil
+	h.telemetryGraded = true
+	return held
 }
 
 func telemetryFaultError(held []fault) error {
@@ -98,6 +104,12 @@ func (h *mockHub) telemetryFaultLocked(section, format string, args ...any) {
 func isJSONObject(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return strings.HasPrefix(trimmed, "{")
+}
+
+// isJSONNull reports whether raw is the JSON null, which for an OPTIONAL
+// field reads as absent (section 2.1) rather than as a value to validate.
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 // rfc3339String reads raw as a JSON string holding an RFC 3339 timestamp in
@@ -152,10 +164,13 @@ func (h *mockHub) validateEventBatchLocked(envelope *inboundEnvelope) int {
 		case strings.HasPrefix(eventType, "action.") || strings.HasPrefix(eventType, "server."):
 			h.telemetryFaultLocked("8.1", "%s.t %q begins with a namespace reserved for the hub's own notifications; a hub refuses it (core server telemetry lives under core.server.*)", path, eventType)
 		}
-		if event.TS != nil && !rfc3339String(event.TS) {
+		// A present ts is a sender obligation (RFC 3339); a null one is an
+		// absent one, which a hub fills with its receipt time and never
+		// refuses.
+		if event.TS != nil && !isJSONNull(event.TS) && !rfc3339String(event.TS) {
 			h.telemetryFaultLocked("8.1", "%s.ts %s is not an RFC 3339 timestamp; a hub would substitute its receipt time and the event would land at the wrong moment", path, string(event.TS))
 		}
-		if event.Data != nil && strings.TrimSpace(string(event.Data)) != "null" {
+		if event.Data != nil && !isJSONNull(event.Data) {
 			if !isJSONObject(event.Data) {
 				h.telemetryFaultLocked("8.1", "%s.data is not an object; a hub refuses the whole batch over it", path)
 			} else if len(event.Data) > maxEventDataBytes {
@@ -178,7 +193,7 @@ func (h *mockHub) validateSnapshotLocked(envelope *inboundEnvelope) {
 		h.telemetryFaultLocked("8.3", "%s: the body is not an object", label)
 		return
 	}
-	if raw, present := fields["capturedAt"]; present && !rfc3339String(raw) {
+	if raw, present := fields["capturedAt"]; present && !isJSONNull(raw) && !rfc3339String(raw) {
 		h.telemetryFaultLocked("8.3", "%s: capturedAt %s is not an RFC 3339 timestamp; a hub would fall back to the envelope ts", label, string(raw))
 	}
 	listRaw, present := fields[listField]
@@ -187,7 +202,7 @@ func (h *mockHub) validateSnapshotLocked(envelope *inboundEnvelope) {
 		return
 	}
 	var entries []json.RawMessage
-	if strings.TrimSpace(string(listRaw)) == "null" || json.Unmarshal(listRaw, &entries) != nil {
+	if isJSONNull(listRaw) || json.Unmarshal(listRaw, &entries) != nil {
 		h.telemetryFaultLocked("8.3", "%s: %s is not an array", label, listField)
 		return
 	}
@@ -240,20 +255,23 @@ func (h *mockHub) validateSnapshotLocked(envelope *inboundEnvelope) {
 				}
 			}
 		}
-		if positionRaw, hasPosition := entry["position"]; hasPosition {
+		// position is OPTIONAL: null is absent. Present, it is two or three
+		// numbers, and a null coordinate is not a number however the decoder
+		// would like to read it.
+		if positionRaw, hasPosition := entry["position"]; hasPosition && !isJSONNull(positionRaw) {
 			var position []json.RawMessage
-			if strings.TrimSpace(string(positionRaw)) == "null" || json.Unmarshal(positionRaw, &position) != nil || len(position) < 2 || len(position) > 3 {
+			if json.Unmarshal(positionRaw, &position) != nil || len(position) < 2 || len(position) > 3 {
 				h.telemetryFaultLocked("8.3", "%s.position must be an array of two or three numbers", path)
 			} else {
 				for axis, component := range position {
 					var number float64
-					if json.Unmarshal(component, &number) != nil {
+					if isJSONNull(component) || json.Unmarshal(component, &number) != nil {
 						h.telemetryFaultLocked("8.3", "%s.position[%d] is not a number", path, axis)
 					}
 				}
 			}
 		}
-		if dataRaw, hasData := entry["data"]; hasData && strings.TrimSpace(string(dataRaw)) != "null" && !isJSONObject(dataRaw) {
+		if dataRaw, hasData := entry["data"]; hasData && !isJSONNull(dataRaw) && !isJSONObject(dataRaw) {
 			h.telemetryFaultLocked("8.3", "%s.data is not an object", path)
 		}
 	}

@@ -51,12 +51,19 @@ class VyshkaPlayers
 		return identity;
 	}
 
+	// Position renders a world position as [x, y, z], or null when a
+	// component is not a number NewFloat can carry (section 8.3 wants finite
+	// numbers, and a snapshot with a bad position is rejected whole).
 	static VyshkaJsonValue Position(vector pos)
 	{
 		VyshkaJsonValue position = VyshkaJsonValue.NewArray();
-		position.Add(VyshkaJsonValue.NewFloat(pos[0]));
-		position.Add(VyshkaJsonValue.NewFloat(pos[1]));
-		position.Add(VyshkaJsonValue.NewFloat(pos[2]));
+		for (int axis = 0; axis < 3; axis++)
+		{
+			VyshkaJsonValue component = VyshkaJsonValue.NewFloat(pos[axis]);
+			if (!component)
+				return null;
+			position.Add(component);
+		}
 		return position;
 	}
 
@@ -155,7 +162,9 @@ class VyshkaPlayers
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("player", Identity(id));
 		data.Set("name", VyshkaJsonValue.NewString(name));
-		data.Set("position", Position(player.GetPosition()));
+		VyshkaJsonValue position = Position(player.GetPosition());
+		if (position)
+			data.Set("position", position);
 		DescribeKiller(player, killer, data);
 		VyshkaPlugin.Emit("core.player.death", data);
 	}
@@ -183,7 +192,16 @@ class VyshkaPlayers
 		if (!killerPlayer && killerEntity)
 			killerPlayer = PlayerBase.Cast(killerEntity.GetHierarchyRootPlayer());
 
-		if (killerPlayer && killerPlayer != victim)
+		if (killerPlayer == victim)
+		{
+			// The victim's own item did it (a firearm in hand, a grenade
+			// still held): self-inflicted, and the item is worth naming.
+			data.Set("cause", VyshkaJsonValue.NewString("self"));
+			data.Set("weapon", VyshkaJsonValue.NewString(killer.GetDisplayName()));
+			return;
+		}
+
+		if (killerPlayer)
 		{
 			data.Set("cause", VyshkaJsonValue.NewString("player"));
 			VyshkaRosterEntry killerEntry = FindByPlayer(killerPlayer);
@@ -202,7 +220,11 @@ class VyshkaPlayers
 			{
 				data.Set("weapon", VyshkaJsonValue.NewString(killer.GetDisplayName()));
 				if (killer.IsWeapon())
-					data.Set("distance", VyshkaJsonValue.NewFloat(vector.Distance(victim.GetPosition(), killerPlayer.GetPosition())));
+				{
+					VyshkaJsonValue distance = VyshkaJsonValue.NewFloat(vector.Distance(victim.GetPosition(), killerPlayer.GetPosition()));
+					if (distance)
+						data.Set("distance", distance);
+				}
 			}
 			return;
 		}
@@ -258,7 +280,9 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 			VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
 			entry.Set("player", VyshkaPlayers.Identity(identity.GetPlainId()));
 			entry.Set("name", VyshkaJsonValue.NewString(identity.GetName()));
-			entry.Set("position", VyshkaPlayers.Position(player.GetPosition()));
+			VyshkaJsonValue position = VyshkaPlayers.Position(player.GetPosition());
+			if (position)
+				entry.Set("position", position);
 			VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 			data.Set("alive", VyshkaJsonValue.NewBool(player.IsAlive()));
 			data.Set("health", VyshkaJsonValue.NewInt((int)player.GetHealth("", "Health")));

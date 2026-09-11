@@ -31,7 +31,12 @@ point if needed.
   and 8.3 and records violations as faults; a new `telemetry.wellFormed` stage (15 checks)
   waits for the first telemetry to arrive and reports `PART` for a candidate that publishes
   none; the reference driver publishes one batch and one snapshot so CI exercises the
-  validation; the red-direction tests cover the malformed cases. No protocol or hub changes.
+  validation; the red-direction tests cover the malformed cases. No protocol changes. One
+  hub fix found by the review: a snapshot `position` carrying a `null` coordinate decoded to
+  0 and passed; it is now rejected as section 8.3 requires. The review also bounded the
+  plugin's poll to 1000 events across its batches (the hub's per-poll budget would otherwise
+  refuse, and ack, a sixth backlog batch), made it log `event.reject` and `state.reject`,
+  and taught it to report a death by the victim's own weapon as `self` with the weapon named.
 
 - 2026-09-10: inline errors (issue #43), protocol draft 0.19, new section 2.3. Some engine
   HTTP clients hand script an opaque error code for any non-2xx response, with neither the

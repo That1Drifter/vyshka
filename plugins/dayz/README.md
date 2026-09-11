@@ -87,7 +87,10 @@ takes as its `referenceKey`.
 
 **Events.** Buffered and flushed as one `event.batch` every 2 s or at 200 events, then
 persisted, acked, and renumbered like every other envelope. Up to 2 s of events can be lost
-to a crash before the flush.
+to a crash before the flush. A poll carries at most 1000 events across its batches, the
+reference hub's per-poll budget, so a backlog flushed after an outage is never refused
+over it. A batch or snapshot the hub does refuse (`event.reject`, `state.reject`) is gone;
+the plugin logs the hub's reasons as `ERROR` lines and carries on.
 
 | Type | When | `data` |
 |---|---|---|

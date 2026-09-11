@@ -464,13 +464,20 @@ type Result struct {
 	DurationMs int64  `json:"durationMs"`
 }
 
-func runStages(h *harness) []Result {
-	results := make([]Result, 0, len(stages))
+func runStages(h *harness, sequence []Stage) []Result {
+	results := make([]Result, 0, len(sequence))
 	fatal := ""
-	for _, stage := range stages {
+	for _, stage := range sequence {
 		result := Result{ID: stage.ID, Title: stage.Title, Section: stage.Section}
 		if fatal != "" {
 			result.Error = "prerequisite failed: " + fatal
+			// Telemetry faults held for a telemetry stage that never runs
+			// would otherwise vanish from the report; say what was seen.
+			if stage.ID == telemetryStage.ID {
+				if held := h.hub.drainTelemetryFaults(); len(held) > 0 {
+					result.Error += "; also, " + telemetryFaultError(held).Error()
+				}
+			}
 			results = append(results, result)
 			continue
 		}

@@ -64,12 +64,23 @@ class VyshkaJsonValue : Managed
 		return v;
 	}
 
+	// The magnitude FormatFloat can render: the whole part has to fit the
+	// engine's 32-bit int, and nothing measured in metres on a game map comes
+	// anywhere near it.
+	static const float FLOAT_MAGNITUDE_MAX = 2000000000.0;
+
 	// NewFloat carries a game measurement (a position, a distance) as a JSON
-	// number with two decimals. The text is built from integer arithmetic
-	// rather than the engine's float formatting, whose output form (exponent
-	// notation, locale) is not specified to be a JSON number.
+	// number with two decimals, or returns null for a value it cannot render
+	// as one (NaN, infinite, or beyond FLOAT_MAGNITUDE_MAX), so a caller can
+	// leave the field out rather than emit something a hub would reject. The
+	// text is built from integer arithmetic rather than the engine's float
+	// formatting, whose output form (exponent notation, locale) is not
+	// specified to be a JSON number.
 	static VyshkaJsonValue NewFloat(float value)
 	{
+		// A NaN is the one float that is not equal to itself.
+		if (!(value == value) || Math.AbsFloat(value) > FLOAT_MAGNITUDE_MAX)
+			return null;
 		VyshkaJsonValue v = new VyshkaJsonValue();
 		v.m_Kind = VyshkaJsonKind.NUMBER_VALUE;
 		v.m_Number = value;

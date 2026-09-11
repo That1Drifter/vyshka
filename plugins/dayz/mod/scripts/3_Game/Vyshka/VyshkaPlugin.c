@@ -232,7 +232,7 @@ class VyshkaPlugin
 			if (count > VyshkaEventBuffer.FLUSH_COUNT)
 				count = VyshkaEventBuffer.FLUSH_COUNT;
 			string body = m_Events.TakeBatch();
-			if (!m_Outbox.Append("event.batch", body))
+			if (!m_Outbox.Append("event.batch", body, count))
 				VyshkaLog.Warn("dropped " + count.ToString() + " event(s) the outbox could not hold");
 		}
 	}
@@ -828,7 +828,37 @@ class VyshkaPlugin
 			HandleDispatch(body);
 		else if (envelopeType == "manifest.reject")
 			HandleManifestReject(body);
+		else if (envelopeType == "event.reject" || envelopeType == "state.reject")
+			HandleTelemetryReject(envelopeType, body);
 		// Anything else is acked and ignored (spec section 4).
+	}
+
+	// HandleTelemetryReject surfaces a refused event.batch or state.*
+	// envelope (spec sections 8.1 and 8.3). The refusal is envelope-level
+	// success: the batch was acked and its events, or the snapshot, are gone,
+	// and this log line is the visible counter section 9.4 asks for. It is
+	// never a transport error and changes nothing about the session.
+	void HandleTelemetryReject(string envelopeType, VyshkaJsonValue body)
+	{
+		string what = "an event.batch";
+		if (envelopeType == "state.reject")
+			what = "a state snapshot";
+		if (!body || !body.IsObject())
+		{
+			VyshkaLog.Error("the hub refused " + what + " (no details given); what it carried is not stored");
+			return;
+		}
+		VyshkaLog.Error("the hub refused " + what + " (envelope " + body.GetString("envelopeId", "?") + "); what it carried is not stored:");
+		VyshkaJsonValue errors = body.Get("errors");
+		if (!errors || !errors.IsArray())
+			return;
+		for (int i = 0; i < errors.Count(); i++)
+		{
+			VyshkaJsonValue fault = errors.At(i);
+			if (!fault || !fault.IsObject())
+				continue;
+			VyshkaLog.Error("  " + fault.GetString("path", "") + ": " + fault.GetString("message", ""));
+		}
 	}
 
 	void HandleManifestReject(VyshkaJsonValue body)

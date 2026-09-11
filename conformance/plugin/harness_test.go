@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -326,6 +327,12 @@ func TestWellFormedTelemetryIsNotFaulted(t *testing.T) {
 		}}),
 		typedEnvelope("tel-3", 3, "state.vehicles", map[string]any{"vehicles": []map[string]any{{"id": "v-1", "kind": "car"}}}),
 		typedEnvelope("tel-4", 4, "state.entities", map[string]any{"entities": []any{}}),
+		// Optional fields set to null read as absent (section 2.1): a hub
+		// fills the timestamps with receipt time and never refuses over them.
+		typedEnvelope("tel-5", 5, "event.batch", map[string]any{"events": []map[string]any{{"t": "core.server.fps", "ts": nil}}}),
+		typedEnvelope("tel-6", 6, "state.players", map[string]any{"capturedAt": nil, "players": []map[string]any{
+			{"player": map[string]any{"platform": "steam", "id": "1"}, "position": nil},
+		}}),
 	)
 
 	if faults := faultMessages(h); faults != "" {
@@ -334,8 +341,29 @@ func TestWellFormedTelemetryIsNotFaulted(t *testing.T) {
 	h.mu.Lock()
 	stats := h.telemetry
 	h.mu.Unlock()
-	if stats.batches != 1 || stats.events != 3 || stats.snapshots != 3 {
-		t.Fatalf("telemetry counted as %+v, want 1 batch, 3 events, 3 snapshots", stats)
+	if stats.batches != 2 || stats.events != 4 || stats.snapshots != 4 {
+		t.Fatalf("telemetry counted as %+v, want 2 batches, 4 events, 4 snapshots", stats)
+	}
+}
+
+func TestHeldTelemetryFaultsSurviveAFatalStage(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.poll(typedEnvelope("held-1", 1, "event.batch", map[string]any{}))
+
+	failing := Stage{ID: "test.fatal", Title: "fails first", Section: "0", Fatal: true,
+		Run: func(*harness) error { return errors.New("boom") }}
+	results := runStages(&harness{hub: h, checkTimeout: time.Second}, []Stage{failing, telemetryStage})
+	if len(results) != 2 || results[1].ID != telemetryStage.ID || results[1].Passed {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if !strings.Contains(results[1].Error, "prerequisite failed") || !strings.Contains(results[1].Error, "held-1 carries no events array") {
+		t.Fatalf("the skipped telemetry stage did not report the held fault: %q", results[1].Error)
 	}
 }
 
@@ -399,6 +427,7 @@ func TestMalformedSnapshotsAreFaulted(t *testing.T) {
 		typedEnvelope("snap-6", 6, "state.entities", map[string]any{"entities": nil}),
 		typedEnvelope("snap-7", 7, "state.players", map[string]any{"capturedAt": 12345, "players": []any{}}),
 		typedEnvelope("snap-8", 8, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "data": []any{}}}}),
+		typedEnvelope("snap-9", 9, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "position": []any{nil, 2}}}}),
 	)
 
 	faults := faultMessages(h)
@@ -411,6 +440,7 @@ func TestMalformedSnapshotsAreFaulted(t *testing.T) {
 		"snap-6: entities is not an array",
 		"snap-7: capturedAt 12345 is not an RFC 3339 timestamp",
 		"snap-8 players[0].data is not an object",
+		"snap-9 players[0].position[0] is not a number",
 	} {
 		if !strings.Contains(faults, want) {
 			t.Errorf("expected a fault containing %q; recorded faults:\n%s", want, faults)
