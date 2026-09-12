@@ -203,10 +203,14 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 	// intermediates beside the manifest. The link check follows the open
 	// rather than preceding it, and the opened file must be the one the
 	// name denotes now, so a name swapped for a link in between refuses
-	// rather than serves. A directory link beneath the tiles is followed
-	// by the root only while it stays inside the tiles.
+	// rather than serves. Identity is the filesystem's, and a filesystem
+	// that reports none (some network shares answer every file with the
+	// same zero id) would equate any two files, so the size and
+	// modification time must agree as well. A directory link beneath the
+	// tiles is followed by the root only while it stays inside the tiles.
 	denoted, err := root.Lstat(name)
-	if err != nil || denoted.Mode()&fs.ModeSymlink != 0 || !os.SameFile(denoted, info) {
+	if err != nil || denoted.Mode()&fs.ModeSymlink != 0 || !os.SameFile(denoted, info) ||
+		denoted.Size() != info.Size() || !denoted.ModTime().Equal(info.ModTime()) {
 		notFound(w, r)
 		return
 	}

@@ -175,10 +175,12 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	if err := os.Symlink(built, filepath.Join(dir, "sakhal")); err == nil {
 		wantWorlds = "chernarusplus,enoch,sakhal"
 		linked = true
-		// Links are honoured at the world and at its tiles directory, and
-		// nowhere below: a link under tiles is refused whatever it points
-		// at, a build intermediate beside the tiles, a file outside the
-		// maps directory, or even a tile inside them.
+		// Links are honoured at the world and at its tiles directory. Below
+		// that, the root refuses any link that leaves the tiles (to a build
+		// intermediate beside them, to a file outside the maps directory)
+		// and any absolute link at all, and the handler refuses a tile that
+		// is itself a link; only a relative directory link inside the tiles
+		// is followed, as an alias.
 		outside := filepath.Join(t.TempDir(), "secret.txt")
 		if err := os.WriteFile(outside, []byte("not a tile"), 0o644); err != nil {
 			t.Fatal(err)
