@@ -801,10 +801,11 @@ async function viewEvents(app, route, seq) {
       // what keeps a finished walk from being offered again on every new
       // event. The case this misses is a late event landing below the
       // first page of a hub already past the boundary. The false alarms
-      // are a late event landing exactly at the page's edge, and a feed
-      // of exactly one page growing by one at the top; each offers one
-      // walk that finds nothing new, and a hub unchanged after it offers
-      // no more.
+      // include a late event landing exactly at the page's edge, a feed
+      // of exactly one page growing by one at the top, and exactly a
+      // page of new events over walked history; each offers one walk
+      // that finds nothing new, and a hub unchanged after it offers no
+      // more.
       const tail = events.length > 0 ? events[events.length - 1] : null;
       const tailUnseen = tail !== null && typeof tail.id === 'string' && !feed.byId.has(tail.id);
       const crossed = Boolean(latest.nextCursor) && !feed.topHadCursor;
