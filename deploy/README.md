@@ -22,7 +22,12 @@ curl -s http://127.0.0.1:8080/healthz
 `65532` is the distroless `nonroot` user: the secret file must be readable by it and the
 data directory writable and searchable by it (the hub creates the database and its WAL
 files there). Both are ignored by git and by the Docker build context, so neither can end
-up in a commit or an image layer. Read the token back with `sudo cat admin-token` when
+up in a commit or an image layer. The compose file also mounts `./maps` read-only as the
+panel's map tileset directory (`panel/README.md`, "Map tilesets"): put a world's
+`manifest.json` and `tiles/` under `maps/<world>/` and the live map draws on it; leave it
+empty (compose creates it) and the map view lists players without imagery. It is ignored
+like the data directory, because a tileset is large and derived from game assets whose
+redistribution is the operator's call, not the repository's. Read the token back with `sudo cat admin-token` when
 signing in to the panel or calling the Admin API; the hub never logs a configured token.
 
 The compose file also sets what a shared host needs from a guest: a stop grace period above

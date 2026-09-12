@@ -24,8 +24,13 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/data
+      # Map tilesets for the panel's live map, one directory per world
+      # (deploy/README.md). Empty, or absent and created by compose, means
+      # no maps: the map view lists players without imagery.
+      - ./maps:/maps:ro
     environment:
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
+      VYSHKA_MAPS_DIR: /maps
     secrets:
       - admin_token
     # The hub drains held polls for up to 15 s on SIGTERM; compose's default

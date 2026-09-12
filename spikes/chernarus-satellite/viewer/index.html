@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chernarus satellite inspection viewer</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Vyshka local prototype</p>
+          <h1>Chernarus satellite inspection</h1>
+        </div>
+        <p id="registration-note" class="prototype-note">
+          Local asset viewer · asset registration pending verification. Landmark and
+          live-player alignment remain untested.
+        </p>
+      </header>
+
+      <section class="workspace" aria-label="Map workspace">
+        <aside class="controls" aria-label="Map controls">
+          <section class="control-group">
+            <h2>View</h2>
+            <div class="button-row">
+              <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+              <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+              <button id="fit-map" type="button">Fit map</button>
+            </div>
+            <div class="button-row presets" aria-label="Preset views">
+              <button id="preset-overview" type="button">Overview</button>
+            </div>
+            <div class="preset-jump">
+              <label for="inspection-area">Inspection area</label>
+              <select id="inspection-area">
+                <option value="">Choose an approximate label anchor…</option>
+                <option value="4827,9595">NW airfield</option>
+                <option value="6778.6191,2321.7739">Chernogorsk</option>
+                <option value="11339.77,14391.05">Novodmitrovsk</option>
+                <option value="2796,5166">Zelenogorsk</option>
+                <option value="12372.383,9760.9814">Berezino</option>
+                <option value="3477.1689,12931.243">Novaya Petrovka</option>
+              </select>
+              <button id="go-inspection" type="button">Go</button>
+            </div>
+            <p class="preset-note">Preset centres are approximate label anchors, not surveyed landmarks.</p>
+            <p class="hint">
+              Drag to pan. Use the wheel or buttons to zoom. Arrow keys pan the focused map;
+              <kbd>+</kbd>, <kbd>−</kbd>, and <kbd>0</kbd> control zoom.
+            </p>
+          </section>
+
+          <section class="control-group">
+            <h2>Go to coordinate</h2>
+            <form id="coordinate-form">
+              <div class="coordinate-fields">
+                <label for="coordinate-x">World x (m)</label>
+                <input id="coordinate-x" name="x" type="number" min="0" max="15360" step="any" required>
+                <label for="coordinate-z">World z (m)</label>
+                <input id="coordinate-z" name="z" type="number" min="0" max="15360" step="any" required>
+              </div>
+              <div class="button-row">
+                <button class="primary" type="submit">Place marker</button>
+                <button id="clear-marker" type="button">Clear</button>
+              </div>
+              <p id="coordinate-error" class="form-error" role="alert"></p>
+            </form>
+          </section>
+
+          <section class="control-group source-control">
+            <h2>Dataset</h2>
+            <form id="manifest-form">
+              <label for="manifest-url">Manifest URL</label>
+              <input id="manifest-url" name="manifest" type="text" spellcheck="false" value="/data/manifest.json">
+              <button type="submit">Load map</button>
+            </form>
+          </section>
+        </aside>
+
+        <section class="map-panel" aria-label="Satellite map">
+          <canvas
+            id="map-canvas"
+            tabindex="0"
+            role="img"
+            aria-label="Interactive Chernarus satellite map. Drag or use arrow keys to pan."
+          ></canvas>
+          <div id="map-message" class="map-message" role="alert" hidden></div>
+          <div class="map-hud" aria-hidden="true">
+            <output id="cursor-coordinate">x - · z -</output>
+            <div class="scale-wrap">
+              <span id="scale-label">-</span>
+              <span id="scale-bar" class="scale-bar"></span>
+            </div>
+          </div>
+          <output id="load-status" class="load-status" aria-live="polite">Loading manifest…</output>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./viewer.mjs"></script>
+  </body>
+</html>

@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false]
+//	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
 //	vyshka-hub version
 package main
 
@@ -68,8 +68,19 @@ func runServe(args []string) error {
 	logLevel := flags.String("log-level", envOr("VYSHKA_LOG_LEVEL", "info"), "debug, info, warn, or error (env VYSHKA_LOG_LEVEL)")
 	servePanel := flags.Bool("panel", envOr("VYSHKA_PANEL", "true") != "false",
 		"serve the embedded web panel at /panel/ (env VYSHKA_PANEL, \"false\" disables it)")
+	mapsDir := flags.String("maps-dir", os.Getenv("VYSHKA_MAPS_DIR"),
+		"directory of map tilesets for the panel's live map, one subdirectory per world (env VYSHKA_MAPS_DIR); empty serves none")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *mapsDir != "" {
+		info, err := os.Stat(*mapsDir)
+		if err != nil {
+			return fmt.Errorf("maps dir: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("maps dir: %s is not a directory", *mapsDir)
+		}
 	}
 
 	level, err := parseLevel(*logLevel)
@@ -94,7 +105,10 @@ func runServe(args []string) error {
 		Logger:      logger,
 	}
 	if *servePanel {
-		config.Panel = panel.Handler()
+		config.Panel = panel.NewHandler(panel.Config{MapsDir: *mapsDir})
+		if *mapsDir != "" {
+			logger.Info("panel maps enabled", "dir", *mapsDir)
+		}
 	}
 	server, err := hub.New(ctx, config)
 	if err != nil {

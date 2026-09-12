@@ -57,7 +57,9 @@ curl http://127.0.0.1:8080/healthz
 
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
 SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
-`-log-level`, and `-panel` (env `VYSHKA_PANEL`; `false` serves no panel). With no admin token
+`-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
+`VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
+`panel/README.md`). With no admin token
 configured the hub mints one at boot and logs it, which
 keeps first run to a single command; set the flag to keep it stable across restarts. That
 generated credential is first-run behavior only: once the hub holds a scoped token of its own

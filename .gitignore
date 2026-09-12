@@ -15,6 +15,7 @@ vyshka-spec.md
 # Adversarial-review artifacts (Codex JSONL and extracted reports)
 .scratch/
 
-# The reference deployment's secret and database (deploy/README.md)
+# The reference deployment's secret, database, and map tilesets (deploy/README.md)
 /deploy/admin-token
 /deploy/data/
+/deploy/maps/

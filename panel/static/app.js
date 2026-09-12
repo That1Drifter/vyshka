@@ -6,12 +6,16 @@
 // plus the x-vyshka-widget hint). Dispatching is POST /servers/{id}/actions
 // and watching the result is GET /actions/{id}, the same calls curl makes.
 // The event feed is GET /servers/{id}/events (protocol section 8.5), paged
-// with the hub's own cursor.
+// with the hub's own cursor. The live map is GET /servers/{id}/state/players
+// (section 8.3) drawn over a basemap the hub serves from its maps directory,
+// with the map widget itself in map.js.
 //
 // The DOM is built with createElement and text nodes only. Manifest labels,
-// result payloads, and event data are plugin-supplied text and are never
-// treated as markup; the Content-Security-Policy the hub sends is the
-// backstop.
+// result payloads, event data, and player names are plugin-supplied text and
+// are never treated as markup; the Content-Security-Policy the hub sends is
+// the backstop.
+
+import { createMap, validateManifest, worldPoint } from './map.js';
 
 const API = '/api/v1';
 const TOKEN_KEY = 'vyshka.adminToken';
@@ -22,6 +26,13 @@ const TERMINAL_STATES = new Set(['completed', 'failed', 'expired']);
 // hub's default page (section 8.5: reference default 100, cap 500).
 const EVENT_FEED_REFRESH_MS = SERVER_LIST_REFRESH_MS;
 const EVENT_PAGE_SIZE = 100;
+// The map re-reads the latest snapshot on the server-list cadence too. The
+// snapshot's own age is what says how live the picture is: a plugin on a
+// held long-poll publishes less often than the panel asks.
+const MAP_REFRESH_MS = SERVER_LIST_REFRESH_MS;
+// Map tilesets are served by the panel's own handler beside the page, so
+// the path is relative to it rather than to the Admin API.
+const MAPS_PATH = 'maps/';
 // The core event types of section 8.1, offered as filter suggestions. The
 // feed itself accepts whatever the hub's grammar accepts.
 const CORE_EVENT_TYPES = [
@@ -162,8 +173,17 @@ function parseRoute() {
   const path = mark === -1 ? hash : hash.slice(0, mark);
   const query = new URLSearchParams(mark === -1 ? '' : hash.slice(mark + 1));
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
+  // A player chosen on the map travels to the action list and on into an
+  // action form as ?player=, the platform id that is a player target's
+  // referenceKey. It is a preselection, never a filter: the list is whole.
+  const player = query.get('player') || '';
   if (parts[0] === 'servers' && parts.length === 2) {
-    return { view: 'server', serverId: parts[1] };
+    return { view: 'server', serverId: parts[1], player };
+  }
+  if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'map') {
+    // ?world= overrides the world the server reported, for a server whose
+    // start event the token cannot read, or to look at another map.
+    return { view: 'map', serverId: parts[1], world: query.get('world') || '' };
   }
   if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'events') {
     // Type terms travel to the hub as they are. An empty term in a link is
@@ -176,17 +196,25 @@ function parseRoute() {
     };
   }
   if (parts[0] === 'servers' && parts.length === 4 && parts[2] === 'actions') {
-    return { view: 'action', serverId: parts[1], code: parts[3] };
+    return { view: 'action', serverId: parts[1], code: parts[3], player };
   }
   return { view: 'servers' };
 }
 
-function serverHref(serverId) {
-  return '#/servers/' + encodeURIComponent(serverId);
+function playerQuery(player) {
+  return player ? '?player=' + encodeURIComponent(player) : '';
 }
 
-function actionHref(serverId, code) {
-  return serverHref(serverId) + '/actions/' + encodeURIComponent(code);
+function serverHref(serverId, player = '') {
+  return '#/servers/' + encodeURIComponent(serverId) + playerQuery(player);
+}
+
+function actionHref(serverId, code, player = '') {
+  return '#/servers/' + encodeURIComponent(serverId) + '/actions/' + encodeURIComponent(code) + playerQuery(player);
+}
+
+function mapHref(serverId, world = '') {
+  return serverHref(serverId) + '/map' + (world ? '?world=' + encodeURIComponent(world) : '');
 }
 
 function eventsHref(serverId, types = [], follow = true) {
@@ -255,6 +283,8 @@ async function render() {
       await viewAction(app, route, seq);
     } else if (route.view === 'events') {
       await viewEvents(app, route, seq);
+    } else if (route.view === 'map') {
+      await viewMap(app, route, seq);
     } else {
       await viewServers(app, seq);
     }
@@ -406,11 +436,30 @@ function serverSummary(server) {
 async function viewServer(app, route, seq) {
   const { server, manifest } = await loadServerAndManifest(route.serverId);
   if (seq !== renderSeq) return;
+  // A preselected player is labelled from the latest snapshot when it is
+  // there; the id alone is still a valid target when it is not (the player
+  // may have left since the map was drawn).
+  let target = null;
+  if (route.player) {
+    const players = await loadPlayers(server.id);
+    if (seq !== renderSeq) return;
+    target = players.find((entry) => entry.id === route.player) || { id: route.player, platform: '', name: '' };
+  }
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name }]);
   clear(app);
   app.append(serverSummary(server));
   app.append(el('p', { class: 'view-links' },
+    el('a', { class: 'button', href: mapHref(server.id), id: 'map-link' }, 'Live map'),
+    ' ',
     el('a', { class: 'button', href: eventsHref(server.id), id: 'events-link' }, 'Event feed')));
+  if (target) {
+    app.append(el('div', { class: 'notice target', id: 'target-player' },
+      el('strong', {}, 'Target player: '),
+      target.name ? target.name + ' ' : '',
+      el('span', { class: 'mono' }, (target.platform ? target.platform + ':' : '') + target.id),
+      '. Player actions below open with this target filled in. ',
+      el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
+  }
 
   if (!manifest) {
     app.append(el('p', { class: 'notice', id: 'no-manifest' },
@@ -436,7 +485,9 @@ async function viewServer(app, route, seq) {
   for (const [namespace, group] of byNamespace) {
     if (byNamespace.size > 1 || namespace) app.append(el('h3', {}, namespace || 'no namespace'));
     app.append(el('div', { class: 'action-list' }, group.map((action) => el('a', {
-      class: 'action-item', href: actionHref(server.id, action.code), 'data-action-code': action.code,
+      class: 'action-item',
+      href: actionHref(server.id, action.code, action.context === 'player' ? route.player : ''),
+      'data-action-code': action.code,
     },
     el('span', { class: 'name' }, action.name || action.code),
     el('span', { class: 'code mono' }, action.code),
@@ -832,6 +883,304 @@ async function viewEvents(app, route, seq) {
 }
 
 // ---------------------------------------------------------------------------
+// Live map
+//
+// One server's latest state.players snapshot (section 8.3), straight from
+// GET /servers/{id}/state/players, drawn on a basemap and listed beside it.
+// The basemap is a tileset the hub serves from its maps directory under the
+// panel's own path, chosen by the world the server reported in its latest
+// core.server.start event (or by ?world= in the route). A server with no
+// tileset installed for its world still gets the list, with positions as
+// numbers; the view is never blank because imagery is missing.
+//
+// The snapshot is whole and replaces its predecessor, so every refresh
+// replaces every marker: a player absent from the latest snapshot is gone
+// from the map. What the map cannot know is how fresh the snapshot is
+// beyond what capturedAt says, so that age is always on the page.
+
+// fetchPanelJSON reads a file the panel's own handler serves (a map index
+// or manifest): no bearer token, same origin, null when there is none.
+async function fetchPanelJSON(path) {
+  let response;
+  try {
+    response = await fetch(path, { headers: { Accept: 'application/json' } });
+  } catch (err) {
+    throw new ApiError(0, 'unreachable', 'the hub could not be reached: ' + err.message);
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) throw new ApiError(response.status, 'http_' + response.status, 'the hub answered ' + response.status + ' for ' + path);
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new ApiError(response.status, 'malformed', path + ' is not JSON');
+  }
+  return { body, url: response.url };
+}
+
+// reportedWorld is the world the server's plugin last announced (the
+// DayZ plugin puts the mission's world name in core.server.start). A token
+// without events:read cannot see it, which is not an error: the operator
+// picks a map by hand.
+async function reportedWorld(serverId) {
+  try {
+    const page = await api('GET', '/servers/' + encodeURIComponent(serverId) + '/events?type=core.server.start&limit=1');
+    const event = Array.isArray(page.events) && page.events.length > 0 ? page.events[0] : null;
+    const world = event && event.data && typeof event.data === 'object' ? event.data.world : undefined;
+    return typeof world === 'string' ? world : '';
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 403) return '';
+    throw err;
+  }
+}
+
+// snapshotPlayers reads the entries of a state.players read into what the
+// map and the list need: identity as a key, the display label, the raw
+// position (the widget decides whether it can plot it), and the extras.
+function snapshotPlayers(response) {
+  const entries = response && response.snapshot && Array.isArray(response.snapshot.players) ? response.snapshot.players : [];
+  const players = [];
+  for (const entry of entries) {
+    if (!entry || !entry.player || typeof entry.player.id !== 'string' || entry.player.id === '') continue;
+    const platform = typeof entry.player.platform === 'string' ? entry.player.platform : '';
+    players.push({
+      // The key is the identity tuple, encoded so that no two identities
+      // share one: platform and id may each contain any character, a
+      // colon included, so joining them with one would not do.
+      key: JSON.stringify([platform, entry.player.id]),
+      identity: platform + ':' + entry.player.id,
+      id: entry.player.id,
+      platform,
+      name: typeof entry.name === 'string' ? entry.name : '',
+      position: entry.position,
+      data: entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {},
+    });
+  }
+  return players;
+}
+
+function positionText(manifest, position) {
+  if (!Array.isArray(position)) return '';
+  const point = manifest ? worldPoint(manifest, position) : null;
+  if (point) {
+    return manifest.axes.east.name + ' ' + Math.round(point.x) + ', ' + manifest.axes.north.name + ' ' + Math.round(point.z);
+  }
+  return position.map((value) => (typeof value === 'number' ? String(Math.round(value)) : JSON.stringify(value))).join(', ');
+}
+
+async function viewMap(app, route, seq) {
+  const server = await api('GET', '/servers/' + encodeURIComponent(route.serverId));
+  if (seq !== renderSeq) return;
+  // Finding the world and the installed maps is imagery, not the view: a
+  // failure there (an unreadable maps directory, a hub error on the events
+  // read) is noted beside the map controls, and the player list still
+  // loads. Only a rejected token stops the view.
+  const discoveryProblems = [];
+  const degrade = (what) => (err) => {
+    if (err instanceof ApiError && err.status === 401) throw err;
+    discoveryProblems.push(what + ': ' + (err.message || String(err)));
+    return null;
+  };
+  const [reported, index] = await Promise.all([
+    reportedWorld(server.id).catch(degrade('the reported world could not be read')),
+    fetchPanelJSON(MAPS_PATH).catch(degrade('the installed maps could not be listed')),
+  ]);
+  if (seq !== renderSeq) return;
+  const installed = index && index.body && Array.isArray(index.body.worlds)
+    ? index.body.worlds.filter((world) => typeof world === 'string' && world !== '')
+    : [];
+  const world = route.world || reported || '';
+
+  // The tileset for the world, when there is one. A manifest the panel
+  // cannot read is reported beside the map controls, not thrown: the list
+  // still works without imagery.
+  let dataset = null;
+  let datasetProblem = null;
+  if (world) {
+    try {
+      const fetched = await fetchPanelJSON(MAPS_PATH + encodeURIComponent(world) + '/manifest.json');
+      if (seq !== renderSeq) return;
+      if (fetched) dataset = { manifest: validateManifest(fetched.body), baseURL: fetched.url };
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      if (err instanceof ApiError && err.status === 401) throw err;
+      datasetProblem = err;
+    }
+  }
+  const manifest = dataset ? dataset.manifest : null;
+
+  setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name, href: serverHref(server.id) }, { label: 'Map' }]);
+  clear(app);
+
+  const worldSelect = el('select', { id: 'map-world' },
+    el('option', { value: '' }, reported ? 'as reported by the server (' + reported + ')' : 'none chosen'),
+    installed.map((entry) => el('option', { value: entry }, entry)));
+  worldSelect.value = installed.includes(route.world) ? route.world : '';
+  worldSelect.addEventListener('change', () => { location.hash = mapHref(server.id, worldSelect.value); });
+  const controls = el('div', { class: 'card map-controls' },
+    el('label', { class: 'field' },
+      el('span', { class: 'name' }, 'Map'),
+      worldSelect,
+      el('span', { class: 'hint' }, installed.length > 0
+        ? 'Installed maps: ' + installed.join(', ') + '. The server reports its world in core.server.start' + (reported ? ' (' + reported + ')' : ' (none readable)') + '.'
+        : 'No map tilesets are installed on this hub (see panel/README.md, "Map tilesets"); players are listed with their positions as numbers.'),
+      discoveryProblems.length > 0
+        ? el('span', { class: 'field-error', id: 'map-discovery-error' }, discoveryProblems.join('; '))
+        : null));
+
+  const status = el('p', { class: 'muted', id: 'map-status' }, 'Loading…');
+  const problem = el('div', { class: 'error', id: 'map-error', role: 'alert', hidden: true });
+  const tbody = el('tbody', {});
+  const table = el('table', { id: 'players', hidden: true },
+    el('thead', {}, el('tr', {}, el('th', {}, 'Player'), el('th', {}, 'Identity'), el('th', {}, 'Position'), el('th', {}, 'Data'), el('th', {}, ''))),
+    tbody);
+  const empty = el('p', { class: 'notice', id: 'players-empty', hidden: true }, 'Nobody is online in the latest snapshot.');
+
+  let notice = null;
+  if (datasetProblem) {
+    notice = el('div', { class: 'error', id: 'map-missing', role: 'alert' },
+      'The map for world ' + world + ' could not be loaded: ' + (datasetProblem.message || String(datasetProblem)));
+  } else if (!manifest) {
+    notice = el('p', { class: 'notice', id: 'map-missing' }, world
+      ? 'No map is installed for world ' + world + '. Players are listed below with their positions.'
+      : 'This server has not reported a world (no core.server.start event is readable), and no map is chosen. Players are listed below with their positions.');
+  }
+  const mapContainer = manifest ? el('div', { class: 'map', id: 'map', 'data-world': manifest.world }) : null;
+
+  // The panel's own append, which skips the notice or the container that
+  // is null; the DOM's would print the word.
+  append(app, [
+    el('h1', {}, server.name, ' ', badge(server.linkState || 'unknown', server.linkState),
+      el('span', { class: 'muted title-tail' }, ' live map')),
+    controls, problem, status, notice, mapContainer, empty, table]);
+
+  const state = { response: null, players: [], loaded: false };
+
+  // The widget is created once the container is laid out, so its first
+  // measurement is the real one.
+  let map = null;
+  if (mapContainer) {
+    map = createMap(mapContainer, {
+      onSelect: (key) => {
+        const player = state.players.find((entry) => entry.key === key);
+        if (player) location.hash = serverHref(server.id, player.id);
+      },
+    });
+    map.setDataset(manifest, dataset.baseURL);
+  }
+  // Registered before the first snapshot read, so a navigation during it
+  // still disposes the widget; the timers join once they exist.
+  let timers = [];
+  teardown = () => {
+    for (const timer of timers) clearInterval(timer);
+    if (map) map.destroy();
+  };
+
+  const draw = () => {
+    clear(tbody);
+    let plotted = 0;
+    for (const player of state.players) {
+      const point = manifest ? worldPoint(manifest, player.position) : null;
+      if (point) plotted++;
+      const row = el('tr', { 'data-player-key': player.key, 'data-player-id': player.id },
+        el('td', {}, player.name || el('span', { class: 'muted' }, 'unnamed')),
+        el('td', { class: 'mono' }, player.identity),
+        el('td', { class: 'position' }, Array.isArray(player.position)
+          ? positionText(manifest, player.position)
+          : el('span', { class: 'muted' }, 'no position')),
+        el('td', { class: 'data' }, Object.keys(player.data).length > 0
+          ? attempt(() => summarizeEventData(player.data), 'The data is nested too deeply to summarize.')
+          : el('span', { class: 'muted' }, 'none')),
+        el('td', { class: 'row-actions' },
+          point ? el('button', {
+            type: 'button', class: 'small', 'data-show': player.key,
+            onclick: () => { map.setHighlight(player.key); map.focus(player.key); },
+          }, 'Show') : null,
+          ' ',
+          el('a', { class: 'button small', href: serverHref(server.id, player.id), 'data-target': player.id }, 'Actions')));
+      if (map) {
+        row.addEventListener('mouseenter', () => map.setHighlight(player.key));
+        row.addEventListener('mouseleave', () => map.setHighlight(null));
+      }
+      tbody.append(row);
+    }
+    if (map) {
+      map.setMarkers(state.players.map((player) => ({
+        key: player.key, label: player.name || player.id, position: player.position,
+      })));
+    }
+    table.hidden = state.players.length === 0;
+    empty.hidden = !state.loaded || state.players.length > 0;
+    status.dataset.plotted = String(plotted);
+    status.dataset.players = String(state.players.length);
+    updateStatus();
+  };
+  const updateStatus = () => {
+    if (!state.loaded) return;
+    if (!state.response) {
+      status.textContent = 'No player snapshot yet. The plugin publishes state.players snapshots (protocol section 8.3); until the hub accepts one there is nothing to show.';
+      return;
+    }
+    const count = state.players.length;
+    const unplotted = count - Number(status.dataset.plotted || 0);
+    status.textContent = count + ' player' + (count === 1 ? '' : 's') + ' in the latest snapshot, captured ' +
+      ago(state.response.capturedAt) + ', received ' + ago(state.response.receivedAt) +
+      (manifest && unplotted > 0 ? '; ' + unplotted + ' without a position the map can plot' : '') +
+      (manifest ? '' : '; listed without a map') +
+      '. Re-read every ' + (MAP_REFRESH_MS / 1000) + ' s.';
+  };
+  const showProblem = (err) => {
+    clear(problem);
+    problem.append(el('strong', {}, err.code ? err.code + ': ' : ''), err.message || String(err));
+    problem.hidden = false;
+  };
+
+  const load = async () => {
+    let response = null;
+    try {
+      response = await api('GET', '/servers/' + encodeURIComponent(server.id) + '/state/players');
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 404)) throw err;
+    }
+    if (seq !== renderSeq) return;
+    state.response = response;
+    state.players = snapshotPlayers(response);
+    state.loaded = true;
+    problem.hidden = true;
+    draw();
+  };
+
+  try {
+    await load();
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    if (err instanceof ApiError && err.status === 401) throw err;
+    status.textContent = 'The snapshot could not be read.';
+    showProblem(err);
+  }
+  if (seq !== renderSeq) return;
+
+  let inFlight = false;
+  const tick = async () => {
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    try {
+      await load();
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      if (err instanceof ApiError && err.status === 401) {
+        signOut('The hub rejected this token.');
+        return;
+      }
+      showProblem(err);
+    } finally {
+      inFlight = false;
+    }
+  };
+  timers = [setInterval(tick, MAP_REFRESH_MS), setInterval(updateStatus, 1000)];
+}
+
+// ---------------------------------------------------------------------------
 // Schema-driven forms
 //
 // A field is { node, read(errors), setError(message) }. read returns the JSON
@@ -1098,6 +1447,15 @@ function stringField(schema, opts) {
   return {
     node: wrapped.node, setError: wrapped.setError,
     entered() { return input.value !== initial; },
+    // set fills the field in from outside the form, as a preselected
+    // target arriving in the route does; it counts as entered. It reports
+    // whether the field holds the value exactly: a text input drops line
+    // breaks, and an identity is any string, so a value it cannot hold
+    // must not be dispatched as something else.
+    set(value) {
+      input.value = value;
+      return input.value === value;
+    },
     read(errors, present) {
       const value = input.value;
       if (value === '') {
@@ -1444,6 +1802,15 @@ async function viewAction(app, route, seq) {
   const target = targetField(action, contexts, players);
   const params = buildParamsForm(action.params, players);
   if (target) params.fieldsByPath.set('referenceKey', target);
+  // A player picked on the map arrives in the route and lands in the
+  // target field, which stays editable: the preselection is a convenience,
+  // not a lock. An id the field cannot hold exactly is not preselected at
+  // all, and the form says so.
+  let unrepresentable = null;
+  if (target && route.player && action.context === 'player' && !target.set(route.player)) {
+    target.set('');
+    unrepresentable = 'The preselected player id contains characters this field cannot hold; use the API to target it.';
+  }
 
   const danger = action.danger || 'none';
   let confirmBox = null;
@@ -1523,6 +1890,7 @@ async function viewAction(app, route, seq) {
     action.context ? badge(action.context) : null, ' ',
     danger !== 'none' ? badge(danger, danger) : null),
   el('p', { class: 'muted mono' }, action.code),
+  unrepresentable ? el('div', { class: 'error', id: 'target-unrepresentable', role: 'alert' }, unrepresentable) : null,
   target ? target.node : null,
   params.node,
   confirmBox ? el('label', { class: 'field inline ' + danger }, confirmBox,

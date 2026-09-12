@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
@@ -34,6 +38,10 @@ import (
 // through the hub to the plugin and back onto the page. Issue #47 added the
 // event feed to the same run: a batch the plugin publishes is listed in the
 // hub's order, filtered by type, followed as new batches land, and paged.
+// Issue #46 added the live map: a tileset the test generates is installed
+// on the hub, the plugin's snapshot is plotted on it where the world frame
+// says, a later snapshot replaces the markers whole, and a click on one
+// preselects the player in the action list and its form.
 //
 // It needs a Chromium-family browser. CI has one and sets VYSHKA_E2E=required
 // so a missing browser fails the job instead of skipping the test; anywhere
@@ -106,14 +114,92 @@ var e2ePlayers = map[string]any{
 	}},
 }
 
+// The synthetic world of the map section: a 1024 m square at one metre per
+// raster pixel, tiled at 256 px over three zoom levels, painted in sixteen
+// flat colours by raster quadrant so that a canvas pixel under a marker
+// says which part of the world was drawn there. Positions are DayZ-shaped,
+// [x, y, z] with y the elevation and z the northing, which the manifest's
+// default axes read.
+const (
+	e2eWorld       = "e2e-world"
+	e2eWorldSize   = 1024
+	e2eTileSize    = 256
+	e2eNativeZoom  = 2
+	e2eQuadrantPx  = 256
+	e2eColourStep  = 45
+	e2eColourFloor = 60
+)
+
+// e2eQuadrantColour is the colour painted over raster quadrant (qx, qy).
+func e2eQuadrantColour(qx, qy int) color.NRGBA {
+	return color.NRGBA{R: uint8(e2eColourFloor + e2eColourStep*qx), G: uint8(e2eColourFloor + e2eColourStep*qy), B: 100, A: 255}
+}
+
+// writeE2ETileset writes the world's manifest and tile pyramid under dir.
+func writeE2ETileset(t *testing.T, dir string) {
+	t.Helper()
+	world := filepath.Join(dir, e2eWorld)
+	manifest := map[string]any{
+		"schemaVersion": 1,
+		"world":         e2eWorld,
+		"name":          "E2E world",
+		"bounds":        map[string]any{"xmin": 0, "xmax": e2eWorldSize, "zmin": 0, "zmax": e2eWorldSize},
+		"raster":        map[string]any{"width": e2eWorldSize, "height": e2eWorldSize, "metresPerPixel": 1},
+		"tiles": map[string]any{
+			"size": e2eTileSize, "minZoom": 0, "maxZoom": e2eNativeZoom,
+			"urlTemplate": "tiles/{z}/{x}/{y}.png", "format": "png", "scheme": "xyz",
+		},
+	}
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(world, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(world, "manifest.json"), encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for zoom := 0; zoom <= e2eNativeZoom; zoom++ {
+		levelSize := e2eWorldSize >> (e2eNativeZoom - zoom)
+		rasterPerLevelPx := 1 << (e2eNativeZoom - zoom)
+		tiles := (levelSize + e2eTileSize - 1) / e2eTileSize
+		for x := 0; x < tiles; x++ {
+			for y := 0; y < tiles; y++ {
+				img := image.NewNRGBA(image.Rect(0, 0, e2eTileSize, e2eTileSize))
+				for i := 0; i < e2eTileSize; i++ {
+					for j := 0; j < e2eTileSize; j++ {
+						u := (x*e2eTileSize + i) * rasterPerLevelPx
+						v := (y*e2eTileSize + j) * rasterPerLevelPx
+						img.SetNRGBA(i, j, e2eQuadrantColour(u/e2eQuadrantPx, v/e2eQuadrantPx))
+					}
+				}
+				path := filepath.Join(world, "tiles", strconv.Itoa(zoom), strconv.Itoa(x), strconv.Itoa(y)+".png")
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				var buf bytes.Buffer
+				if err := png.Encode(&buf, img); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
 func TestPanelEndToEnd(t *testing.T) {
 	browser := findBrowser(t)
 
+	mapsDir := t.TempDir()
+	writeE2ETileset(t, mapsDir)
 	server, err := hub.New(context.Background(), hub.Config{
 		DatabaseURL: filepath.Join(t.TempDir(), "e2e.db"),
 		AdminToken:  e2eAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Panel:       panel.Handler(),
+		Panel:       panel.NewHandler(panel.Config{MapsDir: mapsDir}),
 	})
 	if err != nil {
 		t.Fatalf("boot hub: %v", err)
@@ -654,13 +740,209 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("%s distinct event ids among 251 rows", got)
 	}
 
-	// 9. Signing out forgets the token: the page is back at the prompt and
+	// 9. The live map (issue #46). The plugin names its world in a start
+	// event and publishes a snapshot with positions: Alice and Bob at the
+	// centres of two raster quadrants, Dave with the flat two-number form,
+	// Carol with no position at all. The page plots the three it can where
+	// the world frame puts them, over the tiles the hub serves.
+	carol := map[string]any{"platform": "steam", "id": "76561198000000003"}
+	dave := map[string]any{"platform": "steam", "id": "76561198000000004"}
+	// Two identities whose platform and id joined with a colon would read
+	// the same: the map must keep them apart and drop both when they go.
+	colon1 := map[string]any{"platform": "a:b", "id": "c"}
+	colon2 := map[string]any{"platform": "a", "id": "b:c"}
+	plugin.queue("event.batch", map[string]any{"events": []map[string]any{
+		{"t": "core.server.start", "ts": stamp(9), "data": map[string]any{"game": "e2e", "world": e2eWorld}},
+	}})
+	plugin.queue("state.players", map[string]any{
+		"capturedAt": time.Now().UTC().Add(-20 * time.Second).Format("2006-01-02T15:04:05Z"),
+		"players": []map[string]any{
+			{"player": alice, "name": "Alice", "position": []float64{384, 12.5, 640}, "data": map[string]any{"alive": true, "health": 82}},
+			{"player": bob, "name": "Bob", "position": []float64{896, 3, 128}},
+			{"player": carol, "name": "Carol"},
+			{"player": dave, "name": "Dave", "position": []float64{128, 896}},
+			{"player": colon1, "name": "Colon one", "position": []float64{600, 0, 200}},
+			{"player": colon2, "name": "Colon two", "position": []float64{700, 0, 200}},
+		},
+	})
+	marker := func(platform, id string) string {
+		key, _ := json.Marshal([]string{platform, id})
+		return `.map-marker[data-marker-key='` + string(key) + `']`
+	}
+	if err := plugin.awaitDrained(ctx); err != nil {
+		t.Fatalf("plugin never got its map snapshot acked: %v", err)
+	}
+	run("open the live map", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map"), nil),
+		chromedp.WaitVisible("#map", chromedp.ByQuery), chromedp.WaitVisible("#players", chromedp.ByQuery))
+	if got := attribute("#map", "data-world"); got != e2eWorld {
+		t.Fatalf("map world = %q, want the one the start event reported", got)
+	}
+	if got := evalString(`document.querySelector("#map-world").value + "|" + document.querySelector("#map-world option").textContent`); got != "|as reported by the server ("+e2eWorld+")" {
+		t.Fatalf("world selector = %q", got)
+	}
+	if got := text("#map-status"); !strings.Contains(got, "6 players") || !strings.Contains(got, "captured") || !strings.Contains(got, "1 without a position") {
+		t.Fatalf("map status = %q", got)
+	}
+	playerRow := func(id string) string { return `#players tr[data-player-id="` + id + `"]` }
+	if got := text(playerRow("76561198000000001") + " td.position"); got != "x 384, z 640" {
+		t.Fatalf("Alice's position cell = %q", got)
+	}
+	if got := text(playerRow("76561198000000003") + " td.position"); got != "no position" {
+		t.Fatalf("Carol's position cell = %q", got)
+	}
+	if got := text(playerRow("76561198000000004") + " td.position"); got != "x 128, z 896" {
+		t.Fatalf("Dave's flat position cell = %q", got)
+	}
+	if got := text(playerRow("76561198000000001") + " td.data"); got != "alive: true, health: 82" {
+		t.Fatalf("Alice's data cell = %q", got)
+	}
+	waitJS("every visible tile loaded", `(function(){const s=document.querySelector("#map .map-tiles");return s && s.dataset.total !== "0" && s.dataset.loaded === s.dataset.total && s.dataset.failed === "0"})()`)
+	if got := evalString(`String(document.querySelectorAll("#map .map-marker").length)`); got != "5" {
+		t.Fatalf("%s markers plotted, want Alice, Bob, Dave, and the two colon identities", got)
+	}
+	if got := evalString(`document.querySelector(` + strconv.Quote(marker("a:b", "c")) + `).title + " | " + document.querySelector(` + strconv.Quote(marker("a", "b:c")) + `).title`); got != "Colon one (x 600, z 200) | Colon two (x 700, z 200)" {
+		t.Fatalf("colon identities are not two distinct markers: %q", got)
+	}
+	// Where a marker sits on the page is checked against the frame the map
+	// was fitted with: the raster centred in the stage at the scale that
+	// fits it, u = x and v = 1024 - z, north up. The canvas pixel under
+	// each marker's centre is the colour painted over that quadrant, which
+	// is what says the tiles are drawn in the same frame as the markers:
+	// a flipped axis puts Alice's marker over quadrant (1, 2), a swapped
+	// one over (2, 1).
+	geometry := `(function(){
+		const stage = document.querySelector("#map .map-stage");
+		const rect = stage.getBoundingClientRect();
+		const width = Math.round(rect.width), height = Math.round(rect.height);
+		const scale = Math.min(width / 1024, height / 1024);
+		const ox = width / 2 - 512 * scale, oy = height / 2 - 512 * scale;
+		const canvas = document.querySelector("#map .map-canvas");
+		const ratio = window.devicePixelRatio || 1;
+		const ctx = canvas.getContext("2d");
+		const out = [];
+		for (const [id, x, z] of [["76561198000000001", 384, 640], ["76561198000000002", 896, 128], ["76561198000000004", 128, 896]]) {
+			const key = JSON.stringify(["steam", id]);
+			const dot = document.querySelector(".map-marker[data-marker-key='" + key + "'] .map-marker-dot").getBoundingClientRect();
+			const got = { x: dot.left + dot.width / 2 - rect.left, y: dot.top + dot.height / 2 - rect.top };
+			const want = { x: ox + x * scale, y: oy + (1024 - z) * scale };
+			const px = ctx.getImageData(Math.round(want.x * ratio), Math.round(want.y * ratio), 1, 1).data;
+			out.push([Math.round((got.x - want.x) * 10) / 10, Math.round((got.y - want.y) * 10) / 10, px[0], px[1], px[2]].join(" "));
+		}
+		return out.join(";");
+	})()`
+	for i, entry := range strings.Split(evalString(geometry), ";") {
+		var dx, dy float64
+		var r, g, b int
+		if _, err := fmt.Sscan(entry, &dx, &dy, &r, &g, &b); err != nil {
+			t.Fatalf("marker geometry %q: %v", entry, err)
+		}
+		if dx < -1.5 || dx > 1.5 || dy < -1.5 || dy > 1.5 {
+			t.Errorf("marker %d is off by (%.1f, %.1f) px from where the world frame puts it", i, dx, dy)
+		}
+		want := []color.NRGBA{e2eQuadrantColour(1, 1), e2eQuadrantColour(3, 3), e2eQuadrantColour(0, 0)}[i]
+		if abs(r-int(want.R)) > 4 || abs(g-int(want.G)) > 4 || abs(b-int(want.B)) > 4 {
+			t.Errorf("tile pixel under marker %d = (%d, %d, %d), want quadrant colour (%d, %d, %d)", i, r, g, b, want.R, want.G, want.B)
+		}
+	}
+
+	// 9a. A snapshot is whole: the next one moves Alice, drops Bob, and the
+	// page follows without a click, marker for marker.
+	plugin.queue("state.players", map[string]any{
+		"players": []map[string]any{
+			{"player": alice, "name": "Alice", "position": []float64{640, 12.5, 640}},
+			{"player": carol, "name": "Carol"},
+			{"player": dave, "name": "Dave", "position": []float64{128, 896}},
+		},
+	})
+	waitJS("the new snapshot replaced the markers",
+		`document.querySelectorAll("#map .map-marker").length === 2 && document.querySelector(`+strconv.Quote(marker("steam", "76561198000000001"))+`).dataset.x === "640" && !document.querySelector('#players tr[data-player-id="76561198000000002"]')`)
+	if got := text("#map-status"); !strings.Contains(got, "3 players") {
+		t.Fatalf("map status after the second snapshot = %q", got)
+	}
+
+	// 9b. A pan is a pan and a key is a click. Zoomed in on Alice (a fitted
+	// map is smaller than the viewport and stays centred, so it cannot pan),
+	// the stage is dragged 40 px with the mouse: every marker moves with it,
+	// and nothing is selected. Then a marker is activated from the keyboard,
+	// which must still open the action list: a finished drag may not leave
+	// marker activation disabled behind it.
+	aliceMarker := marker("steam", "76561198000000001")
+	markerX := func() string {
+		return `Math.round(document.querySelector(` + strconv.Quote(aliceMarker) + `).getBoundingClientRect().left)`
+	}
+	run("zoom in on Alice", chromedp.Click(playerRow("76561198000000001")+" button[data-show]", chromedp.ByQuery))
+	// At one metre per pixel the scale bar's nicest length near 90 px is 50 m.
+	waitJS("the view is at native zoom on Alice", `document.querySelector("#map .map-scale-label").textContent === "50 m"`)
+	beforeDrag := evalString(`String(` + markerX() + `)`)
+	var stageBox []float64
+	run("measure the stage", chromedp.Evaluate(`(function(){const r=document.querySelector("#map .map-stage").getBoundingClientRect();return [r.left, r.top, r.width, r.height]})()`, &stageBox))
+	fromX, fromY := stageBox[0]+stageBox[2]/2, stageBox[1]+stageBox[3]/2
+	run("drag the map 40 px to the right",
+		input.DispatchMouseEvent(input.MousePressed, fromX, fromY).WithButton(input.Left).WithButtons(1).WithClickCount(1),
+		input.DispatchMouseEvent(input.MouseMoved, fromX+10, fromY).WithButton(input.Left).WithButtons(1),
+		input.DispatchMouseEvent(input.MouseMoved, fromX+40, fromY).WithButton(input.Left).WithButtons(1),
+		input.DispatchMouseEvent(input.MouseReleased, fromX+40, fromY).WithButton(input.Left).WithClickCount(1))
+	waitJS("the markers moved with the drag", markerX()+` === `+beforeDrag+` + 40`)
+	if got := evalString(`location.hash`); !strings.HasSuffix(got, "/map") {
+		t.Fatalf("a drag navigated away: %q", got)
+	}
+	run("activate Alice's marker from the keyboard",
+		chromedp.Focus(aliceMarker, chromedp.ByQuery), chromedp.KeyEvent("\r"),
+		chromedp.WaitVisible("#target-player", chromedp.ByQuery))
+	if got := evalString(`location.hash`); got != "#/servers/"+created.Server.ID+"?player=76561198000000001" {
+		t.Fatalf("keyboard activation after a drag landed on %q", got)
+	}
+
+	// 9c. A click on a marker opens the action list with that player as
+	// the target, and the player action's form arrives filled in.
+	run("back to the map", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map"), nil),
+		chromedp.WaitVisible(aliceMarker, chromedp.ByQuery))
+	run("click Alice's marker", chromedp.Click(aliceMarker, chromedp.ByQuery),
+		chromedp.WaitVisible("#target-player", chromedp.ByQuery))
+	if got := evalString(`location.hash`); got != "#/servers/"+created.Server.ID+"?player=76561198000000001" {
+		t.Fatalf("marker click landed on %q", got)
+	}
+	if got := text("#target-player"); !strings.Contains(got, "Alice") || !strings.Contains(got, "steam:76561198000000001") {
+		t.Fatalf("target banner = %q", got)
+	}
+	if got := attribute(`a[data-action-code="example-mod.heal"]`, "href"); !strings.HasSuffix(got, "?player=76561198000000001") {
+		t.Fatalf("player action href = %q, want the preselected player", got)
+	}
+	run("open the action with the target preselected", chromedp.Click(`a[data-action-code="example-mod.heal"]`, chromedp.ByQuery),
+		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+	if got := evalString(`document.querySelector('input[name="referenceKey"]').value`); got != "76561198000000001" {
+		t.Fatalf("referenceKey = %q, want the preselected player", got)
+	}
+
+	// 9d. A world with no tileset still lists the players, with their
+	// positions as numbers and a notice in place of the map.
+	run("open the map for a world with no tileset",
+		chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map?world=nowhere"), nil),
+		chromedp.WaitVisible("#map-missing", chromedp.ByQuery), chromedp.WaitVisible("#players", chromedp.ByQuery))
+	if evalString(`document.querySelector("#map") ? "map" : "none"`) != "none" {
+		t.Fatalf("a map was drawn for a world with no tileset")
+	}
+	if got := text("#map-missing"); !strings.Contains(got, "nowhere") {
+		t.Fatalf("missing-map notice = %q", got)
+	}
+	if got := text(playerRow("76561198000000001") + " td.position"); got != "640, 13, 640" {
+		t.Fatalf("Alice's position without a map = %q, want the raw numbers", got)
+	}
+
+	// 10. Signing out forgets the token: the page is back at the prompt and
 	// a reload stays there.
 	run("sign out", chromedp.Click("#sign-out", chromedp.ByQuery), chromedp.WaitVisible("#login", chromedp.ByQuery),
 		chromedp.Reload(), chromedp.WaitVisible("#login", chromedp.ByQuery))
 	if got := evalString(`sessionStorage.getItem("vyshka.adminToken") || "none"`); got != "none" {
 		t.Fatalf("token survived sign-out: %q", got)
 	}
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // findBrowser locates a Chromium-family executable or decides between skip

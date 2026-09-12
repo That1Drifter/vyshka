@@ -12,6 +12,68 @@ point if needed.
 
 ### Added
 
+- 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
+  per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
+  `state.players` snapshot, re-read on the server-list cadence: the players listed with
+  identity, position, and extras, and plotted on a basemap when the hub has a tileset for
+  the server's world, which is the world the plugin reported in its latest
+  `core.server.start` event (`?world=` overrides it). Every refresh replaces every marker,
+  because a snapshot is whole; the snapshot's captured and received ages stay on the page,
+  because the panel's cadence says nothing about the plugin's. A marker click, or a row's
+  Actions link, opens the action list with the player preselected (`?player=`), and a
+  player-context action's form opens with its target filled in. The map widget (`map.js`)
+  draws a tile pyramid on a canvas and lays markers over it as buttons, in a world frame
+  the dataset manifest describes (bounds, native raster, tile levels, and which position
+  components are east and north, defaulting to DayZ's `[x, y, z]`); nothing in it knows a
+  game. Tilesets are operator-installed, not embedded: `vyshka-hub serve -maps-dir DIR`
+  (env `VYSHKA_MAPS_DIR`) serves `DIR/{world}/manifest.json` and `DIR/{world}/tiles/...`
+  under `/panel/maps/` with the panel's headers, and nothing else from a world directory;
+  the reference compose file mounts `./maps` read-only for it. The headless end-to-end test
+  generates a three-level tileset painted by raster quadrant and grades the world pick,
+  the list, marker placement within 1.5 px of the world frame with the canvas pixel under
+  each marker the colour of its quadrant (a flipped or swapped axis fails), a second
+  snapshot replacing the markers whole, the click-through to a preselected target, and a
+  world with no tileset. The demo plugin in `scripts/demo-panel.sh` publishes positions and
+  a start event naming `chernarusplus`. No hub API or protocol changes. Alongside, the
+  `spikes/chernarus-satellite` prototype that measured the basemap first: an offline
+  pipeline from the installed DayZ satellite textures to a calibrated 15,360 m raster and
+  WebP tile pyramid in the manifest shape the panel reads, with a seam audit over every
+  source overlap, a standalone inspection viewer, and a loopback preview server. Generated
+  game assets stay in the ignored scratch directory; distribution of a built dataset is the
+  operator's call. The review found eleven holes, each now closed and most graded by a
+  test: a symlink under a world's tiles could reach a build intermediate beside them or any
+  file outside the maps directory (links are now honoured at the world and its tiles
+  directory only, and a tile must resolve inside the resolved tiles directory); a manifest
+  with a raster of 1e20 pixels passed validation and spun the renderer on an index past
+  2^53 (dimensions, tile size, and zoom levels are now capped and a frame draws at most
+  4096 tiles); joining platform and id with a colon merged two distinct identities and
+  left a marker behind (the key is now the encoded tuple); a drag begun on a marker and
+  released outside the stage kept panning, and any finished drag disabled keyboard
+  activation of markers (a drag past the threshold is captured, a release seen through
+  the buttons state ends it, and the click guard is gone); a navigation during the first
+  snapshot read leaked the widget (teardown is registered before it); an id with a line
+  break was silently dispatched without it (the form refuses to preselect what its field
+  cannot hold); an unreadable maps index blocked the player list (discovery failures are
+  noted and the list loads); fit was clamped by the lowest tile level; ServeFileFS
+  redirected a tile named index.html and answered open failures in plain text (files are
+  opened and served by the handler); and the spike's build lock could overwrite a
+  completed dataset or delete another build's lock. The second round found the
+  resolve-then-compare confinement of the first fix still let a manifest that is a link
+  publish any readable file, raced a directory swapped for a link between the check and
+  the open, folded case on a case-sensitive volume, broke a junction-linked world on
+  Windows, and refused links inside the tiles spelled in another path form; the world and
+  its tiles directory are now opened as an `os.Root` and the file opened inside it, so the
+  boundary is enforced by the open itself and nothing beneath the tiles can reach outside
+  them (the third round added that a root follows a relative link inside itself, so a
+  manifest linked to an intermediate beside it was still served: the manifest and a tile
+  may not themselves be links, checked after the open against the file it opened, by
+  identity, size, and time, so a swap in between refuses; the fourth and fifth rounds
+  narrowed the remaining case to a filesystem that reports no file identity, a manifest the
+  operator linked to an intermediate, and a local writer swapping it for a same-sized,
+  same-timed file mid-request, which is recorded as the accepted limit rather than closed
+  with a platform-specific open). It also found the over-budget placeholder skipped cache eviction, and that
+  an unsatisfiable range or a failed precondition is answered in Go's plain form rather
+  than the protocol's, which is now documented rather than claimed otherwise.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
   per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
   hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,
