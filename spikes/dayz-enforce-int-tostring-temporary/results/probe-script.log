@@ -1,0 +1,33 @@
+---------------------------------------------
+Log C:\WorkDrive\Vyshka\spikes\dayz-enforce-int-tostring-temporary\results\profile\script_2026-09-12_06-49-30.log started at 12.09. 06:49:30
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATION,FEAT
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+SCRIPT       : Module: Game; loaded 416x files; 1379x classes; used 3702/33554 kB (11%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATION
+SCRIPT       : ... Backlit Effects Enabled
+SCRIPT       : Module: World; loaded 2123x files; 5604x classes; used 8598/33554 kB (25%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATI
+ SCRIPT       : Module: Mission; loaded 209x files; 442x classes; used 2999/33554 kB (8%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECONCILIATI
+ SCRIPT       : Module: $CurrentDir:mpmissions\vyshkaSpike.chernarusplus\init.c; loaded 1x files; 2x classes; used 15/1048 kB (1%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ,FE
+ SCRIPT       : VYSHKA_TSPROBE	case=boot	got=start	want=start	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=direct-chain	got=90911	want=20260911	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=literal-between	got=2026-09-11	want=2026-09-11	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=two-tostring	got=20269	want=20269	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=three-tostring	got=2026911	want=2026911	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-plain-call	got=2026x	want=2026x	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-stringify	got=1111	want=202611	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-pad-low	got=909	want=202609	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-pad-high	got=1111	want=202611	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-int-call	got=202622	want=202622	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-then-float-call	got=20261.5	want=20261.5	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=float-tostring-then-pad	got=1.509	want=1.509	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=call-then-tostring	got=092026	want=092026	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=tostring-as-argument	got=909	want=202609	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=parenthesized	got=110911	want=20260911	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=local-copy	got=20260911	want=20260911	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=append-assign	got=20260911	want=20260911	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=implicit-int-concat	got=20260911	want=20260911	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=format	got=20260911	want=20260911	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=live-clock-ints	got=2026/9/12	want=2026/9/12	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=live-clock-direct-chain	got=90912	want=20260912	ok=0
+ SCRIPT       : VYSHKA_TSPROBE	case=live-clock-local-copy	got=20260912	want=20260912	ok=1
+ SCRIPT       : VYSHKA_TSPROBE	case=done	got=end	want=end	ok=1
