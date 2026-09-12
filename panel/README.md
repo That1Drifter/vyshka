@@ -84,8 +84,8 @@ Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
   at another map. A snapshot is whole, so every refresh replaces every marker: a player
   absent from the latest snapshot is gone from the map. The snapshot's `capturedAt` and
   `receivedAt` ages are always on the page, because the five-second re-read says nothing
-  about how often the plugin publishes (the DayZ plugin on a held long-poll manages one
-  every two poll cycles, measured at 50 s with `pollTimeout` 25). Clicking a marker, or a row's Actions link, opens the server's action
+  about how often the plugin publishes (the DayZ plugin on a held long-poll manages one per
+  one to two poll cycles, usually 50 s with `pollTimeout` 25). Clicking a marker, or a row's Actions link, opens the server's action
   list with that player preselected (`?player=`): player-context actions open with the
   target field filled in, editable. Positions are read in the game's own frame as the
   manifest says (for DayZ `[x, y, z]` with `y` the elevation, so the map plots `x` east and
