@@ -116,15 +116,14 @@ var worldID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // mapsDir is the tileset surface over one directory; a nil *mapsDir serves
 // nothing.
 type mapsDir struct {
-	dir  string
-	fsys fs.FS
+	dir string
 }
 
 func mapsFrom(dir string) *mapsDir {
 	if dir == "" {
 		return nil
 	}
-	return &mapsDir{dir: dir, fsys: os.DirFS(dir)}
+	return &mapsDir{dir: dir}
 }
 
 // serve answers the tileset surface: "/maps/" is the index of installed
@@ -140,10 +139,10 @@ func mapsFrom(dir string) *mapsDir {
 // dataset elsewhere and links it in: the world directory itself, and its
 // tiles directory. Each is opened as an os.Root, and the file is opened
 // inside that root, so the boundary is enforced by the open itself rather
-// than by comparing paths beforehand: a link beneath the tiles directory
-// (or a manifest that is a link) is refused by the root whatever it points
-// at, a directory swapped for a link between a check and the open cannot
-// widen anything, and no case folding or path spelling takes part.
+// than by comparing paths beforehand: nothing beneath the tiles directory
+// can reach outside it, a directory swapped for a link between a check and
+// the open cannot widen anything, and no case folding or path spelling
+// takes part. The manifest and a tile may not themselves be links.
 //
 // What ServeContent refuses on its own (an unsatisfiable Range, a failed
 // precondition) is answered in its plain form; the refusals this surface
@@ -199,6 +198,18 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 		notFound(w, r)
 		return
 	}
+	// The name itself may not be a link, whatever it points at: the root
+	// keeps a link inside the world, and the world holds the build's
+	// intermediates beside the manifest. The link check follows the open
+	// rather than preceding it, and the opened file must be the one the
+	// name denotes now, so a name swapped for a link in between refuses
+	// rather than serves. A directory link beneath the tiles is followed
+	// by the root only while it stays inside the tiles.
+	denoted, err := root.Lstat(name)
+	if err != nil || denoted.Mode()&fs.ModeSymlink != 0 || !os.SameFile(denoted, info) {
+		notFound(w, r)
+		return
+	}
 	if file != "manifest.json" {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
@@ -210,10 +221,11 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 // not a world (a stray file, a name outside the world shape, a directory
 // without a manifest) is simply not a world. Whether an entry is a directory
 // is decided through any link it is (a symlink or a Windows junction to a
-// dataset built elsewhere), the same way its files are served, so that a
-// world that answers is a world that is listed.
+// dataset built elsewhere), and whether the manifest is one is decided
+// without following a link, the same way each is served, so that a world
+// that answers is a world that is listed and no other.
 func (m *mapsDir) installedWorlds() ([]string, error) {
-	entries, err := fs.ReadDir(m.fsys, ".")
+	entries, err := os.ReadDir(m.dir)
 	if err != nil {
 		return nil, err
 	}
@@ -222,19 +234,19 @@ func (m *mapsDir) installedWorlds() ([]string, error) {
 		if !worldID.MatchString(entry.Name()) {
 			continue
 		}
-		dir, err := fs.Stat(m.fsys, entry.Name())
+		dir, err := os.Stat(filepath.Join(m.dir, entry.Name()))
 		if err != nil || !dir.IsDir() {
 			// A dangling link is not a world either.
 			continue
 		}
-		info, err := fs.Stat(m.fsys, path.Join(entry.Name(), "manifest.json"))
+		info, err := os.Lstat(filepath.Join(m.dir, entry.Name(), "manifest.json"))
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			return nil, err
 		}
-		if info.IsDir() {
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		worlds = append(worlds, entry.Name())

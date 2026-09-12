@@ -63,8 +63,11 @@ point if needed.
   the open, folded case on a case-sensitive volume, broke a junction-linked world on
   Windows, and refused links inside the tiles spelled in another path form; the world and
   its tiles directory are now opened as an `os.Root` and the file opened inside it, so the
-  boundary is enforced by the open itself and a link beneath the tiles is refused whatever
-  it points at. It also found the over-budget placeholder skipped cache eviction, and that
+  boundary is enforced by the open itself and nothing beneath the tiles can reach outside
+  them (the third round added that a root follows a relative link inside itself, so a
+  manifest linked to an intermediate beside it was still served: the manifest and a tile
+  may not themselves be links, checked after the open against the file it opened so a
+  swap in between refuses). It also found the over-budget placeholder skipped cache eviction, and that
   an unsatisfiable range or a failed precondition is answered in Go's plain form rather
   than the protocol's, which is now documented rather than claimed otherwise.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A

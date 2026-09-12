@@ -207,6 +207,24 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(built, "master.png"), []byte("intermediate"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		// Relative links stay inside a root and are followed by it, so the
+		// name itself must be checked: a manifest that is a relative link
+		// to an intermediate beside it is not a manifest (and its world is
+		// not listed), a tile that is a relative link to a sibling tile is
+		// not a tile, and a directory link inside the tiles is an alias of
+		// tiles, which is harmless.
+		for _, parts := range [][]string{{"linked-manifest", "master.png"}, {"linked-manifest", "tiles", "0", "0", "0.webp"}} {
+			write(parts...)
+		}
+		if err := os.Symlink("master.png", filepath.Join(dir, "linked-manifest", "manifest.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("0.webp", filepath.Join(tilesElsewhere, "0", "0", "alias.webp")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join("0", "0"), filepath.Join(tilesElsewhere, "rel")); err != nil {
+			t.Fatal(err)
+		}
 	} else {
 		t.Logf("symlink not available here, the linked cases are not exercised: %v", err)
 	}
@@ -256,6 +274,7 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	}
 	if linked {
 		served["/maps/sakhal/tiles/0/0/0.webp"] = "image/webp"    // through the linked world and its linked tiles
+		served["/maps/sakhal/tiles/rel/0.webp"] = "image/webp"    // a relative directory link inside the tiles: an alias of a tile
 		served["/maps/sakhal/manifest.json"] = "application/json" // the linked world's manifest
 	}
 	for path, contentType := range served {
@@ -296,7 +315,10 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	if linked {
 		refused = append(refused,
 			"/maps/sakhal/tiles/leak",                          // a link out of the maps directory
-			"/maps/sakhal/tiles/self/0.webp",                   // a link that stays inside the tiles: links beneath tiles are not followed
+			"/maps/sakhal/tiles/self/0.webp",                   // an absolute link inside the tiles: refused by the root
+			"/maps/sakhal/tiles/0/0/alias.webp",                // a tile that is itself a link, to a sibling tile
+			"/maps/linked-manifest/manifest.json",              // a manifest that is a relative link to an intermediate beside it
+			"/maps/linked-manifest/tiles/0/0/0.webp",           // served on its own, but the world is not listed (below)
 			"/maps/sakhal/tiles/back/master.png",               // a link back to the world's intermediates
 			"/maps/sakhal/tiles/back/manifest.json",            // the manifest through the tiles is not a tile
 			"/maps/sakhal/tiles/maps/chernarusplus/master.png", // the whole maps directory through a link
@@ -306,7 +328,7 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	}
 	for _, path := range refused {
 		recorder := get(path)
-		if path == "/maps/half-built/tiles/0/0/0.webp" {
+		if path == "/maps/half-built/tiles/0/0/0.webp" || path == "/maps/linked-manifest/tiles/0/0/0.webp" {
 			// Served: a tile path is a tile path. The index is the only
 			// place a manifest is required, and this world is not in it.
 			if recorder.Code != http.StatusOK {
