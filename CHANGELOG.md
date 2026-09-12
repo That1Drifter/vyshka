@@ -28,8 +28,17 @@ point if needed.
   the hub-side ordering of an out-of-order batch, the declared name, markup-shaped data
   rendered as text, the filter and its place in the route, follow mode merging a late event
   below the ones shown, the negative control that a paused feed does not move, and paging
-  through 157 events with no event shown twice. The demo plugin in `scripts/demo-panel.sh`
+  through 158 events with no event shown twice. The demo plugin in `scripts/demo-panel.sh`
   publishes a batch so the feed has something to show locally. No hub or protocol changes.
+  The review found three holes, each now graded by the test: a follow tick re-adopted the
+  first page's cursor after the walk was exhausted, so Load older reappeared and refetched
+  the same history whenever a new event landed (the cursor is now adopted only when the
+  page ends in an event the feed had not seen); a payload nested a few thousand levels deep,
+  inside the hub's 16 KiB cap, was pretty-printed into megabytes for every row on every
+  draw and could overflow the stack and take the whole view with it (payloads are now
+  serialized on first open, compact past 64 levels, and a row that cannot be built falls
+  back to its id and type); and an explicit empty `type` term in a shared link was dropped
+  rather than sent, showing a wider feed where the hub would have answered `bad_request`.
 
 - 2026-09-11: DayZ plugin telemetry (issue #49), plugin 0.2.0. The plugin now publishes the
   core player events a feed needs and the `state.players` snapshots a live map needs, which

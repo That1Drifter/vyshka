@@ -166,9 +166,12 @@ function parseRoute() {
     return { view: 'server', serverId: parts[1] };
   }
   if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'events') {
+    // Type terms travel to the hub as they are. An empty term in a link is
+    // the hub's to refuse (section 8.5: a filter it could not parse is a
+    // bad request, never silently a wider feed); the form never makes one.
     return {
       view: 'events', serverId: parts[1],
-      types: query.getAll('type').map((term) => term.trim()).filter(Boolean),
+      types: query.getAll('type'),
       follow: query.get('follow') !== 'off',
     };
   }
@@ -508,6 +511,44 @@ function summarizeEventData(data) {
   return line.length > EVENT_SUMMARY_MAX ? line.slice(0, EVENT_SUMMARY_MAX - 1) + '…' : line;
 }
 
+// Event data is bounded in bytes by the hub (16 KiB), not in depth: a few
+// thousand nested objects fit in that. JSON.stringify recurses, so it can
+// overflow the stack on such a value, and indenting it multiplies its size
+// by its depth. jsonDepth walks without recursion so the feed can decide
+// how to show a value before it tries; attempt keeps any failure to the
+// one cell it belongs to.
+const EVENT_PRETTY_MAX_DEPTH = 64;
+
+function jsonDepth(value, cap) {
+  let deepest = 0;
+  const stack = [{ value, depth: 1 }];
+  while (stack.length > 0) {
+    const { value: current, depth } = stack.pop();
+    if (current === null || typeof current !== 'object') continue;
+    if (depth > deepest) deepest = depth;
+    if (deepest > cap) return deepest;
+    for (const child of Array.isArray(current) ? current : Object.values(current)) {
+      if (child !== null && typeof child === 'object') stack.push({ value: child, depth: depth + 1 });
+    }
+  }
+  return deepest;
+}
+
+function attempt(render, fallback) {
+  try {
+    return render();
+  } catch {
+    return fallback;
+  }
+}
+
+function eventPayloadText(data) {
+  if (jsonDepth(data, EVENT_PRETTY_MAX_DEPTH) > EVENT_PRETTY_MAX_DEPTH) {
+    return attempt(() => JSON.stringify(data), 'The data is nested too deeply to display.');
+  }
+  return attempt(() => pretty(data), 'The data could not be serialized.');
+}
+
 // declaredEventNames maps the custom event types a manifest declares
 // (section 6.3) to their display names; the feed labels a matching event
 // with its name beside the type. Declaration is advisory, so an undeclared
@@ -537,21 +578,34 @@ function eventTypeSuggestions(names) {
 
 function eventRow(event, names) {
   const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
-  const summary = summarizeEventData(data);
+  const type = typeof event.type === 'string' ? event.type : '';
+  const summary = attempt(() => summarizeEventData(data), 'The data is nested too deeply to summarize.');
   const hasData = Object.keys(data).length > 0;
-  const custom = !event.type.startsWith('core.');
-  const name = names.get(event.type);
-  return el('tr', { 'data-event-id': event.id, 'data-event-type': event.type },
+  const custom = !type.startsWith('core.');
+  const name = names.get(type);
+  // The full payload is serialized when the disclosure is first opened,
+  // not for every row on every draw.
+  const pre = el('pre', {});
+  const details = el('details', {}, el('summary', {}, summary), pre);
+  details.addEventListener('toggle', () => {
+    if (details.open && !pre.firstChild) pre.textContent = eventPayloadText(data);
+  });
+  return el('tr', { 'data-event-id': event.id, 'data-event-type': type },
     el('td', { class: 'when', title: 'received ' + formatTime(event.receivedAt) }, formatTime(event.occurredAt)),
     el('td', {},
-      el('span', { class: 'mono type' }, event.type), ' ',
+      el('span', { class: 'mono type' }, type), ' ',
       badge(custom ? 'custom' : 'core', custom ? 'custom' : 'core'),
       name ? el('span', { class: 'muted' }, ' ', name) : null),
-    el('td', { class: 'data' }, hasData
-      ? el('details', {},
-        el('summary', {}, summary),
-        el('pre', {}, pretty(data)))
-      : el('span', { class: 'muted' }, 'no data')));
+    el('td', { class: 'data' }, hasData ? details : el('span', { class: 'muted' }, 'no data')));
+}
+
+// A row that cannot be built for any reason is one row's problem, not the
+// feed's: the event stays in the list with its id and type and nothing else.
+function eventRowOrFallback(event, names) {
+  return attempt(() => eventRow(event, names), el('tr', { 'data-event-id': event.id, 'data-event-type': String(event.type) },
+    el('td', { class: 'when' }, formatTime(event.occurredAt)),
+    el('td', {}, el('span', { class: 'mono type' }, String(event.type))),
+    el('td', { class: 'data muted' }, 'This event could not be rendered.')));
 }
 
 async function viewEvents(app, route, seq) {
@@ -621,7 +675,7 @@ async function viewEvents(app, route, seq) {
     for (const event of feed.order) {
       let row = rows.get(event.id);
       if (!row) {
-        row = eventRow(event, names);
+        row = eventRowOrFallback(event, names);
         if (fresh) row.classList.add('new');
         rows.set(event.id, row);
       }
@@ -702,12 +756,18 @@ async function viewEvents(app, route, seq) {
       const latest = await query(null);
       if (seq !== renderSeq) return;
       problem.hidden = true;
-      mergeEvents(feed, latest.events || []);
+      const events = Array.isArray(latest.events) ? latest.events : [];
       // A feed that had reached its end can grow past one page while it is
       // followed; the hub's cursor from this page then names where the
-      // unseen remainder starts. A cursor already held is deeper (it came
-      // from an older page) and is kept.
-      if (!feed.nextCursor && latest.nextCursor) feed.nextCursor = latest.nextCursor;
+      // unseen remainder starts. The sign that there is one is the page's
+      // last event being new to the feed: history the feed has already
+      // walked ends in an event it knows, and adopting the cursor then
+      // would offer the same walk again. A cursor already held is deeper
+      // (it came from an older page) and is kept.
+      const tail = events.length > 0 ? events[events.length - 1] : null;
+      const tailUnseen = tail !== null && typeof tail.id === 'string' && !feed.byId.has(tail.id);
+      mergeEvents(feed, events);
+      if (!feed.nextCursor && latest.nextCursor && tailUnseen) feed.nextCursor = latest.nextCursor;
       draw(true);
     } catch (err) {
       if (seq !== renderSeq) return;

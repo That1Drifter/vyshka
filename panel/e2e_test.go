@@ -464,8 +464,10 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := text(deathRow); !strings.Contains(got, "M4A1") || !strings.Contains(got, "steam:76561198000000002") || !strings.Contains(got, "Alice") {
 		t.Fatalf("death row = %q, want the weapon, the killer identity, and the victim's name", got)
 	}
-	// The payload sits inside a closed <details>, so it is read through the
-	// DOM rather than as visible text.
+	// The payload is serialized when its <details> is first opened, and is
+	// read through the DOM rather than as visible text.
+	run("open the death payload", chromedp.Evaluate(`document.querySelector(`+strconv.Quote(deathRow+" details")+`).open = true`, nil))
+	waitJS("death payload rendered", `document.querySelector(`+strconv.Quote(deathRow+" details pre")+`).textContent.length > 0`)
 	if got := evalString(`document.querySelector(` + strconv.Quote(deathRow+" details pre") + `).textContent`); !strings.Contains(got, `"weapon": "M4A1"`) {
 		t.Fatalf("death row payload = %q, want the full data as JSON", got)
 	}
@@ -483,7 +485,15 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("feed status = %q", got)
 	}
 
-	// 8a. The type filter is a hub-side query and part of the route.
+	// 8a. The type filter is a hub-side query and part of the route. A term
+	// the hub refuses is shown with its code: an explicit empty term in a
+	// shared link travels as it is rather than quietly widening the feed.
+	run("open a link with an empty type term",
+		chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/events?type="), nil),
+		chromedp.WaitVisible("#event-error", chromedp.ByQuery))
+	if got := text("#event-error"); !strings.Contains(got, "bad_request") {
+		t.Fatalf("empty type term: error = %q, want the hub's bad_request", got)
+	}
 	run("filter to core player events", setValue("#event-filter", "core.player.*"),
 		chromedp.Click("#event-filter-apply", chromedp.ByQuery))
 	waitJS("filtered feed shows only core player events", rowTypes+` === "core.player.death,core.player.connect"`)
@@ -495,10 +505,15 @@ func TestPanelEndToEnd(t *testing.T) {
 	// the hub's order, through the same filter. The damage event is older
 	// than everything shown, which a since= query keyed on the newest
 	// event would never see; the raid.ended event is filtered out.
+	// The deep event is 2500 nested objects in 15 KB, inside the hub's
+	// 16 KiB data cap: a payload the feed must show bounded rather than
+	// indent into megabytes or overflow the stack on.
+	deep := strings.Repeat(`{"a":`, 2500) + "1" + strings.Repeat("}", 2500)
 	plugin.queue("event.batch", map[string]any{"events": []map[string]any{
 		{"t": "core.player.disconnect", "ts": stamp(4), "data": map[string]any{"player": alice, "name": "Alice"}},
 		{"t": "core.player.damage", "ts": stamp(0), "data": map[string]any{"player": alice, "amount": 12}},
 		{"t": "example-mod.raid.ended", "ts": stamp(5), "data": map[string]any{"territoryId": "t-19"}},
+		{"t": "example-mod.deep", "ts": stamp(7), "data": json.RawMessage(deep)},
 	}})
 	waitJS("follow mode merged the new events in order", rowTypes+` === "core.player.disconnect,core.player.death,core.player.connect,core.player.damage"`)
 	if got := evalString(`String(document.querySelectorAll("#events tr.new").length)`); got != "2" {
@@ -523,12 +538,26 @@ func TestPanelEndToEnd(t *testing.T) {
 	run("follow again", chromedp.Click("#event-follow", chromedp.ByQuery))
 	waitJS("the kick is on the page once following resumes", rowTypes+` === "core.player.kick,core.player.disconnect,core.player.death,core.player.connect,core.player.damage"`)
 
-	// 8d. Paging. With the filter cleared the feed holds seven events and
+	// 8d. The deep payload: its row is there, the feed is intact, and the
+	// disclosure shows it bounded (compact JSON, not an indentation that
+	// grows with the square of the depth).
+	run("clear the filter", setValue("#event-filter", ""), chromedp.Click("#event-filter-apply", chromedp.ByQuery))
+	waitJS("unfiltered feed shows every event", rowTypes+` === "example-mod.deep,core.player.kick,example-mod.raid.ended,core.player.disconnect,example-mod.raid.started,core.player.death,core.player.connect,core.player.damage"`)
+	if got := evalString(`document.querySelector("#event-error").hidden ? "hidden" : "shown"`); got != "hidden" {
+		t.Fatalf("the feed reports an error with the deep payload on the page: %s", text("#event-error"))
+	}
+	deepRow := `#events tr[data-event-type="example-mod.deep"]`
+	run("open the deep payload", chromedp.Evaluate(`document.querySelector(`+strconv.Quote(deepRow+" details")+`).open = true`, nil))
+	waitJS("deep payload rendered", `document.querySelector(`+strconv.Quote(deepRow+" details pre")+`).textContent.length > 0`)
+	deepLength, err := strconv.Atoi(evalString(`String(document.querySelector(` + strconv.Quote(deepRow+" details pre") + `).textContent.length)`))
+	if err != nil || deepLength < len(deep) || deepLength > 2*len(deep) {
+		t.Fatalf("deep payload rendered as %d characters (%v), want about the compact %d", deepLength, err, len(deep))
+	}
+
+	// 8e. Paging. With the filter cleared the feed holds eight events and
 	// no cursor. A batch of 150 older custom events then arrives under
 	// follow: the first page fills, the tick adopts the hub's cursor, and
 	// Load older walks to the end with no event shown twice.
-	run("clear the filter", setValue("#event-filter", ""), chromedp.Click("#event-filter-apply", chromedp.ByQuery))
-	waitJS("unfiltered feed shows every event", rowTypes+` === "core.player.kick,example-mod.raid.ended,core.player.disconnect,example-mod.raid.started,core.player.death,core.player.connect,core.player.damage"`)
 	if got := evalString(`document.querySelector("#events-older").hidden ? "hidden" : "shown"`); got != "hidden" {
 		t.Fatalf("Load older is %s on a feed with no further page", got)
 	}
@@ -543,15 +572,27 @@ func TestPanelEndToEnd(t *testing.T) {
 	waitJS("follow filled the first page and offered older events",
 		`document.querySelectorAll("#events tbody tr").length === 100 && !document.querySelector("#events-older").hidden`)
 	run("load older", chromedp.Click("#events-older", chromedp.ByQuery))
-	waitJS("the whole feed is on the page", `document.querySelectorAll("#events tbody tr").length === 157 && document.querySelector("#events-older").hidden`)
-	if got := evalString(`String(new Set(Array.from(document.querySelectorAll("#events tbody tr")).map(r => r.dataset.eventId)).size)`); got != "157" {
-		t.Fatalf("%s distinct event ids among 157 rows", got)
+	waitJS("the whole feed is on the page", `document.querySelectorAll("#events tbody tr").length === 158 && document.querySelector("#events-older").hidden`)
+	if got := evalString(`String(new Set(Array.from(document.querySelectorAll("#events tbody tr")).map(r => r.dataset.eventId)).size)`); got != "158" {
+		t.Fatalf("%s distinct event ids among 158 rows", got)
 	}
-	if got := evalString(`Array.from(document.querySelectorAll("#events tbody tr")).slice(0, 8).map(r => r.dataset.eventType).join(",")`); got != "core.player.kick,example-mod.raid.ended,core.player.disconnect,example-mod.raid.started,core.player.death,core.player.connect,core.player.damage,example-mod.tick" {
+	if got := evalString(`Array.from(document.querySelectorAll("#events tbody tr")).slice(0, 9).map(r => r.dataset.eventType).join(",")`); got != "example-mod.deep,core.player.kick,example-mod.raid.ended,core.player.disconnect,example-mod.raid.started,core.player.death,core.player.connect,core.player.damage,example-mod.tick" {
 		t.Fatalf("feed head after paging = %q", got)
 	}
-	if got := evalString(`Array.from(document.querySelectorAll("#events tbody tr")).slice(7).map(r => r.querySelector("summary").textContent).join(",")`); !strings.HasPrefix(got, "n: 149,n: 148,") || !strings.HasSuffix(got, ",n: 1,n: 0") {
+	if got := evalString(`Array.from(document.querySelectorAll("#events tbody tr")).slice(8).map(r => r.querySelector("summary").textContent).join(",")`); !strings.HasPrefix(got, "n: 149,n: 148,") || !strings.HasSuffix(got, ",n: 1,n: 0") {
 		t.Fatalf("older page is out of order: %.60s ... %.20s", got, got[len(got)-20:])
+	}
+
+	// 8f. With the walk exhausted, a new event at the top is followed onto
+	// the page, and the first page's cursor, which now points into history
+	// the feed has already walked, must not bring Load older back.
+	plugin.queue("event.batch", map[string]any{"events": []map[string]any{
+		{"t": "example-mod.late", "ts": stamp(8), "data": map[string]any{"why": "the walk is done"}},
+	}})
+	waitJS("follow shows the late event at the top",
+		`document.querySelectorAll("#events tbody tr").length === 159 && document.querySelector("#events tbody tr").dataset.eventType === "example-mod.late"`)
+	if got := evalString(`document.querySelector("#events-older").hidden ? "hidden" : "shown"`); got != "hidden" {
+		t.Fatalf("Load older is %s after the walk was exhausted and one new event arrived", got)
 	}
 
 	// 9. Signing out forgets the token: the page is back at the prompt and

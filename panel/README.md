@@ -61,8 +61,15 @@ ticket (#46).
   route, so a reload keeps them and the URL can be shared. Each row shows `occurredAt`
   (with `receivedAt` on hover), the type with a core or custom badge and, for a custom
   type the manifest declares, its display name, and the event's `data` as one line of text
-  with the full JSON behind a disclosure. A filter the hub refuses, or one the token's
-  `events:read` scope does not cover, is shown beside the form with the hub's code.
+  with the full JSON behind a disclosure, serialized when the disclosure is first opened and
+  compact rather than indented past 64 levels of nesting (the hub bounds data in bytes, not
+  depth, and indentation grows with the square of the depth); a row that cannot be built
+  is one row's problem, not the feed's. A filter the hub refuses, or one the token's
+  `events:read` scope does not cover, is shown beside the form with the hub's code; an
+  empty type term in a shared link is sent as it is, so the hub's refusal shows instead of
+  a quietly wider feed. A follow tick adopts the hub's cursor only when the page ends in an
+  event the feed had not seen, so an exhausted walk is not offered again every time a new
+  event lands at the top.
 
 ## Security posture
 
