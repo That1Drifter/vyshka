@@ -67,9 +67,15 @@ ticket (#46).
   is one row's problem, not the feed's. A filter the hub refuses, or one the token's
   `events:read` scope does not cover, is shown beside the form with the hub's code; an
   empty type term in a shared link is sent as it is, so the hub's refusal shows instead of
-  a quietly wider feed. A follow tick adopts the hub's cursor only when the page ends in an
-  event the feed had not seen, so an exhausted walk is not offered again every time a new
-  event lands at the top.
+  a quietly wider feed. The feed keeps the walk's cursor apart from a "gap" cursor a
+  follow tick records when the hub holds more below its first page than the feed has
+  walked: when the page ends in an event the feed had not seen (more than a page of new
+  events landed), or when the page carries a cursor where the previous read carried none
+  (the hub crossed the page boundary). "Load older" continues the walk first and starts
+  from the gap once the walk is done. A page that merely shifted by one new event, or that
+  is unchanged over a finished walk, records nothing, so a finished walk is not offered
+  again on every new event. What this cannot see is a late event landing below the first
+  page of a hub already past the boundary; a reload picks it up.
 
 ## Security posture
 
@@ -113,8 +119,10 @@ see it), a corrected dispatch that round-trips to `completed` with the plugin's 
 the page, and then the event feed: a batch listed out of order on the wire shown in the
 hub's order, the declared name and markup-shaped data as text, the type filter and its
 place in the route, follow mode merging a late event below the ones already shown, a paused
-feed that does not move while a new event lands in the hub, and paging through 157 events
-with no event shown twice.
+feed that does not move while a new event lands in the hub, a 2500-deep payload rendered
+bounded, paging through 158 events with no event shown twice, a feed of exactly one page
+offering the walk when a late older event gives its unchanged page a cursor, and a burst
+of 150 new events on a walked feed joined to its history in two pages.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.

@@ -32,8 +32,12 @@ point if needed.
   publishes a batch so the feed has something to show locally. No hub or protocol changes.
   The review found three holes, each now graded by the test: a follow tick re-adopted the
   first page's cursor after the walk was exhausted, so Load older reappeared and refetched
-  the same history whenever a new event landed (the cursor is now adopted only when the
-  page ends in an event the feed had not seen); a payload nested a few thousand levels deep,
+  the same history whenever a new event landed (the feed now keeps the walk's cursor apart
+  from a gap cursor a follow tick records on the two signs it can see, a page ending in an
+  unseen event or a cursor appearing where the previous read had none, so a finished walk
+  is not offered again and a walk ending while a gap is pending does not discard it; the
+  second round found the first fix hid a late event below a feed of exactly one page and
+  lost a gap to that race); a payload nested a few thousand levels deep,
   inside the hub's 16 KiB cap, was pretty-printed into megabytes for every row on every
   draw and could overflow the stack and take the whole view with it (payloads are now
   serialized on first open, compact past 64 levels, and a row that cannot be built falls

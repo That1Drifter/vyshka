@@ -466,6 +466,9 @@ func TestPanelEndToEnd(t *testing.T) {
 	}
 	// The payload is serialized when its <details> is first opened, and is
 	// read through the DOM rather than as visible text.
+	if got := evalString(`String(document.querySelector(` + strconv.Quote(deathRow+" details pre") + `).textContent.length)`); got != "0" {
+		t.Fatalf("death payload was serialized before its disclosure was opened (%s characters)", got)
+	}
 	run("open the death payload", chromedp.Evaluate(`document.querySelector(`+strconv.Quote(deathRow+" details")+`).open = true`, nil))
 	waitJS("death payload rendered", `document.querySelector(`+strconv.Quote(deathRow+" details pre")+`).textContent.length > 0`)
 	if got := evalString(`document.querySelector(` + strconv.Quote(deathRow+" details pre") + `).textContent`); !strings.Contains(got, `"weapon": "M4A1"`) {
@@ -593,6 +596,62 @@ func TestPanelEndToEnd(t *testing.T) {
 		`document.querySelectorAll("#events tbody tr").length === 159 && document.querySelector("#events tbody tr").dataset.eventType === "example-mod.late"`)
 	if got := evalString(`document.querySelector("#events-older").hidden ? "hidden" : "shown"`); got != "hidden" {
 		t.Fatalf("Load older is %s after the walk was exhausted and one new event arrived", got)
+	}
+
+	// 8g. The other way the hub can hold more than the feed has walked: a
+	// feed of exactly one page, no cursor, and then one late event older
+	// than everything on it. The page does not change, but it now carries
+	// a cursor where it carried none, and that alone must offer the walk.
+	// Under the core.player.* filter the feed holds five events; 95 older
+	// chat events fill the page exactly.
+	chats := make([]map[string]any, 0, 95)
+	for i := 0; i < 95; i++ {
+		chats = append(chats, map[string]any{
+			"t": "core.player.chat", "ts": feedBase.Add(-2*time.Hour + time.Duration(i)*time.Second).Format("2006-01-02T15:04:05.000Z"),
+			"data": map[string]any{"player": alice, "text": "hello " + strconv.Itoa(i)},
+		})
+	}
+	plugin.queue("event.batch", map[string]any{"events": chats})
+	if err := plugin.awaitDrained(ctx); err != nil {
+		t.Fatalf("plugin never got its chat events acked: %v", err)
+	}
+	run("filter to core player events again", setValue("#event-filter", "core.player.*"),
+		chromedp.Click("#event-filter-apply", chromedp.ByQuery))
+	waitJS("the filtered feed is exactly one page with no cursor",
+		`document.querySelectorAll("#events tbody tr").length === 100 && document.querySelector("#events-older").hidden && document.querySelector("#event-status").textContent.includes("following")`)
+	plugin.queue("event.batch", map[string]any{"events": []map[string]any{
+		{"t": "core.player.chat", "ts": feedBase.Add(-3 * time.Hour).Format("2006-01-02T15:04:05.000Z"), "data": map[string]any{"player": alice, "text": "late"}},
+	}})
+	waitJS("the unchanged page's new cursor offers the walk", `!document.querySelector("#events-older").hidden`)
+	if got := evalString(`String(document.querySelectorAll("#events tbody tr").length)`); got != "100" {
+		t.Fatalf("%s rows before loading older, want the unchanged page of 100", got)
+	}
+	run("load the late event", chromedp.Click("#events-older", chromedp.ByQuery))
+	waitJS("the late event is at the bottom and the walk is done",
+		`document.querySelectorAll("#events tbody tr").length === 101 && document.querySelector("#events-older").hidden && document.querySelector("#events tbody tr:last-child summary").textContent.includes("late")`)
+
+	// 8h. The backlog case on a feed already past the boundary: 150 new
+	// events land on top of the 101 walked. The first page is all new and
+	// ends in an unseen event, which is the sign that more lie below it;
+	// the walk from there reaches the end in two pages with every event
+	// shown once.
+	burst := make([]map[string]any, 0, 150)
+	for i := 0; i < 150; i++ {
+		burst = append(burst, map[string]any{
+			"t": "core.player.chat", "ts": feedBase.Add(9*time.Minute + time.Duration(i)*time.Second).Format("2006-01-02T15:04:05.000Z"),
+			"data": map[string]any{"player": alice, "text": "burst " + strconv.Itoa(i)},
+		})
+	}
+	plugin.queue("event.batch", map[string]any{"events": burst})
+	waitJS("the burst's first page is on top and the walk below it is offered",
+		`document.querySelectorAll("#events tbody tr").length === 201 && !document.querySelector("#events-older").hidden && document.querySelector("#events tbody tr summary").textContent === "player: steam:76561198000000001, text: burst 149"`)
+	run("load the rest of the burst", chromedp.Click("#events-older", chromedp.ByQuery))
+	waitJS("the second page joins the burst to the walked history",
+		`document.querySelectorAll("#events tbody tr").length === 251 && !document.querySelector("#events-older").hidden`)
+	run("load the last page", chromedp.Click("#events-older", chromedp.ByQuery))
+	waitJS("the walk reaches the end with nothing new", `document.querySelectorAll("#events tbody tr").length === 251 && document.querySelector("#events-older").hidden`)
+	if got := evalString(`String(new Set(Array.from(document.querySelectorAll("#events tbody tr")).map(r => r.dataset.eventId)).size)`); got != "251" {
+		t.Fatalf("%s distinct event ids among 251 rows", got)
 	}
 
 	// 9. Signing out forgets the token: the page is back at the prompt and

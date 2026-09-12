@@ -602,10 +602,14 @@ function eventRow(event, names) {
 // A row that cannot be built for any reason is one row's problem, not the
 // feed's: the event stays in the list with its id and type and nothing else.
 function eventRowOrFallback(event, names) {
-  return attempt(() => eventRow(event, names), el('tr', { 'data-event-id': event.id, 'data-event-type': String(event.type) },
-    el('td', { class: 'when' }, formatTime(event.occurredAt)),
-    el('td', {}, el('span', { class: 'mono type' }, String(event.type))),
-    el('td', { class: 'data muted' }, 'This event could not be rendered.')));
+  try {
+    return eventRow(event, names);
+  } catch {
+    return el('tr', { 'data-event-id': event.id, 'data-event-type': String(event.type) },
+      el('td', { class: 'when' }, formatTime(event.occurredAt)),
+      el('td', {}, el('span', { class: 'mono type' }, String(event.type))),
+      el('td', { class: 'data muted' }, 'This event could not be rendered.'));
+  }
 }
 
 async function viewEvents(app, route, seq) {
@@ -615,7 +619,18 @@ async function viewEvents(app, route, seq) {
   clear(app);
 
   const names = declaredEventNames(manifest);
-  const feed = { byId: new Map(), order: [], nextCursor: null };
+  // Two cursors, kept apart because they mean different things. nextCursor
+  // is the walk's own: where the next older page starts, from the first
+  // page or the last "Load older", null once a walk has reached the end.
+  // gapCursor is set by a follow tick that finds the hub has more below
+  // its first page than the feed has walked (see the tick), and it is
+  // where the next walk starts once the current one is done. Holding it
+  // separately is what keeps a walk that ends while a follow tick's
+  // discovery is pending from discarding that discovery. topHadCursor
+  // remembers whether the last first-page read carried a cursor at all,
+  // so a hub crossing the page boundary is noticed even when the page
+  // itself has not changed.
+  const feed = { byId: new Map(), order: [], nextCursor: null, gapCursor: null, topHadCursor: false };
   const follow = route.follow;
   const types = route.types;
 
@@ -683,10 +698,11 @@ async function viewEvents(app, route, seq) {
     }
     table.hidden = feed.order.length === 0;
     empty.hidden = feed.order.length > 0;
-    older.hidden = !feed.nextCursor;
+    const more = Boolean(feed.nextCursor || feed.gapCursor);
+    older.hidden = !more;
     status.textContent = (feed.order.length === 0 ? 'No events shown' : feed.order.length + ' event' + (feed.order.length === 1 ? '' : 's') + ' shown, newest first') +
       (follow ? '; following' : '; not following') +
-      (feed.nextCursor ? '; older events are available' : '');
+      (more ? '; older events are available' : '');
   };
   const showProblem = (err) => {
     clear(problem);
@@ -718,18 +734,26 @@ async function viewEvents(app, route, seq) {
   if (seq !== renderSeq) return;
   mergeEvents(feed, page.events || []);
   feed.nextCursor = page.nextCursor || null;
+  feed.topHadCursor = Boolean(page.nextCursor);
   draw(false);
 
   let loadingOlder = false;
   older.addEventListener('click', async () => {
-    if (loadingOlder || !feed.nextCursor) return;
+    // The walk in progress continues first; a gap a follow tick found
+    // starts a new walk once the current one has reached the end.
+    const fromGap = !feed.nextCursor;
+    const from = fromGap ? feed.gapCursor : feed.nextCursor;
+    if (loadingOlder || !from) return;
     loadingOlder = true;
     older.disabled = true;
     try {
-      const next = await query(feed.nextCursor);
+      const next = await query(from);
       if (seq !== renderSeq) return;
       mergeEvents(feed, next.events || []);
       feed.nextCursor = next.nextCursor || null;
+      // A gap recorded while this page was in flight is a newer one and
+      // is kept; only the gap this walk started from is spent.
+      if (fromGap && feed.gapCursor === from) feed.gapCursor = null;
       problem.hidden = true;
       draw(false);
     } catch (err) {
@@ -757,17 +781,28 @@ async function viewEvents(app, route, seq) {
       if (seq !== renderSeq) return;
       problem.hidden = true;
       const events = Array.isArray(latest.events) ? latest.events : [];
-      // A feed that had reached its end can grow past one page while it is
-      // followed; the hub's cursor from this page then names where the
-      // unseen remainder starts. The sign that there is one is the page's
-      // last event being new to the feed: history the feed has already
-      // walked ends in an event it knows, and adopting the cursor then
-      // would offer the same walk again. A cursor already held is deeper
-      // (it came from an older page) and is kept.
+      // The hub can hold more below its first page than the feed has
+      // walked, and this page's cursor is where that starts. The feed
+      // cannot know for certain what lies below a cursor without walking
+      // it, so it records the cursor as a gap on the two signs it can see,
+      // and not otherwise. First, the page ends in an event the feed had
+      // not seen: more than a page of new events has landed, and the rest
+      // are below. Second, the page carries a cursor where the previous
+      // first-page read carried none: the hub crossed the page boundary,
+      // and if nothing on the page is new, what made it cross is below.
+      // A page that merely shifted by a new event at the top, or that is
+      // unchanged over a walk already completed, records nothing, which is
+      // what keeps a finished walk from being offered again on every new
+      // event. The one case this misses is a late event landing below the
+      // first page of a hub already past the boundary; the one false
+      // alarm is a late event landing exactly at the page's edge, which
+      // offers a walk that finds nothing new.
       const tail = events.length > 0 ? events[events.length - 1] : null;
       const tailUnseen = tail !== null && typeof tail.id === 'string' && !feed.byId.has(tail.id);
+      const crossed = Boolean(latest.nextCursor) && !feed.topHadCursor;
+      feed.topHadCursor = Boolean(latest.nextCursor);
       mergeEvents(feed, events);
-      if (!feed.nextCursor && latest.nextCursor && tailUnseen) feed.nextCursor = latest.nextCursor;
+      if (latest.nextCursor && (tailUnseen || crossed)) feed.gapCursor = latest.nextCursor;
       draw(true);
     } catch (err) {
       if (seq !== renderSeq) return;
