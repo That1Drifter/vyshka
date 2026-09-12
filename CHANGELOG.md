@@ -37,7 +37,9 @@ point if needed.
   unseen event or a cursor appearing where the previous read had none, so a finished walk
   is not offered again and a walk ending while a gap is pending does not discard it; the
   second round found the first fix hid a late event below a feed of exactly one page and
-  lost a gap to that race); a payload nested a few thousand levels deep,
+  lost a gap to that race, and the third found a gap re-recorded with identical cursor text
+  during a walk from it being retired with that walk, so gaps now carry a discovery serial);
+  a payload nested a few thousand levels deep,
   inside the hub's 16 KiB cap, was pretty-printed into megabytes for every row on every
   draw and could overflow the stack and take the whole view with it (payloads are now
   serialized on first open, compact past 64 levels, and a row that cannot be built falls

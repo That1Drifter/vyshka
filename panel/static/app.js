@@ -630,7 +630,11 @@ async function viewEvents(app, route, seq) {
   // remembers whether the last first-page read carried a cursor at all,
   // so a hub crossing the page boundary is noticed even when the page
   // itself has not changed.
-  const feed = { byId: new Map(), order: [], nextCursor: null, gapCursor: null, topHadCursor: false };
+  // gapSerial counts gap discoveries, so a walk that started from a gap
+  // retires only the discovery it started from: a gap re-recorded with
+  // the same cursor text (the boundary event has not moved) while the
+  // walk was in flight is a new discovery, not the one just walked.
+  const feed = { byId: new Map(), order: [], nextCursor: null, gapCursor: null, gapSerial: 0, topHadCursor: false };
   const follow = route.follow;
   const types = route.types;
 
@@ -743,6 +747,7 @@ async function viewEvents(app, route, seq) {
     // starts a new walk once the current one has reached the end.
     const fromGap = !feed.nextCursor;
     const from = fromGap ? feed.gapCursor : feed.nextCursor;
+    const discovery = feed.gapSerial;
     if (loadingOlder || !from) return;
     loadingOlder = true;
     older.disabled = true;
@@ -751,9 +756,10 @@ async function viewEvents(app, route, seq) {
       if (seq !== renderSeq) return;
       mergeEvents(feed, next.events || []);
       feed.nextCursor = next.nextCursor || null;
-      // A gap recorded while this page was in flight is a newer one and
-      // is kept; only the gap this walk started from is spent.
-      if (fromGap && feed.gapCursor === from) feed.gapCursor = null;
+      // A gap recorded while this page was in flight is a newer discovery
+      // and is kept, whatever its text; only the one this walk started
+      // from is spent.
+      if (fromGap && feed.gapSerial === discovery) feed.gapCursor = null;
       problem.hidden = true;
       draw(false);
     } catch (err) {
@@ -793,16 +799,21 @@ async function viewEvents(app, route, seq) {
       // A page that merely shifted by a new event at the top, or that is
       // unchanged over a walk already completed, records nothing, which is
       // what keeps a finished walk from being offered again on every new
-      // event. The one case this misses is a late event landing below the
-      // first page of a hub already past the boundary; the one false
-      // alarm is a late event landing exactly at the page's edge, which
-      // offers a walk that finds nothing new.
+      // event. The case this misses is a late event landing below the
+      // first page of a hub already past the boundary. The false alarms
+      // are a late event landing exactly at the page's edge, and a feed
+      // of exactly one page growing by one at the top; each offers one
+      // walk that finds nothing new, and a hub unchanged after it offers
+      // no more.
       const tail = events.length > 0 ? events[events.length - 1] : null;
       const tailUnseen = tail !== null && typeof tail.id === 'string' && !feed.byId.has(tail.id);
       const crossed = Boolean(latest.nextCursor) && !feed.topHadCursor;
       feed.topHadCursor = Boolean(latest.nextCursor);
       mergeEvents(feed, events);
-      if (latest.nextCursor && (tailUnseen || crossed)) feed.gapCursor = latest.nextCursor;
+      if (latest.nextCursor && (tailUnseen || crossed)) {
+        feed.gapCursor = latest.nextCursor;
+        feed.gapSerial++;
+      }
       draw(true);
     } catch (err) {
       if (seq !== renderSeq) return;
