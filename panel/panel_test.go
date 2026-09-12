@@ -176,9 +176,9 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		wantWorlds = "chernarusplus,enoch,sakhal"
 		linked = true
 		// Links are honoured at the world and at its tiles directory, and
-		// nowhere below: a link under tiles that leaves the resolved tiles
-		// directory, whether to a build intermediate beside it or to a
-		// file outside the maps directory, is not a tile.
+		// nowhere below: a link under tiles is refused whatever it points
+		// at, a build intermediate beside the tiles, a file outside the
+		// maps directory, or even a tile inside them.
 		outside := filepath.Join(t.TempDir(), "secret.txt")
 		if err := os.WriteFile(outside, []byte("not a tile"), 0o644); err != nil {
 			t.Fatal(err)
@@ -196,7 +196,7 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		for name, target := range map[string]string{
 			"leak": outside,                                      // a file outside the maps directory
 			"back": built,                                        // the world itself, beside its intermediates
-			"self": filepath.Join(tilesElsewhere, "0", "0"),      // a link that stays inside the tiles
+			"self": filepath.Join(tilesElsewhere, "0", "0"),      // a link that stays inside the tiles: refused all the same
 			"maps": dir,                                          // the whole maps directory
 			"up":   filepath.Join(dir, "chernarusplus", "tiles"), // another world's tiles
 		} {
@@ -256,7 +256,6 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	}
 	if linked {
 		served["/maps/sakhal/tiles/0/0/0.webp"] = "image/webp"    // through the linked world and its linked tiles
-		served["/maps/sakhal/tiles/self/0.webp"] = "image/webp"   // a link that stays inside the tiles
 		served["/maps/sakhal/manifest.json"] = "application/json" // the linked world's manifest
 	}
 	for path, contentType := range served {
@@ -297,6 +296,7 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	if linked {
 		refused = append(refused,
 			"/maps/sakhal/tiles/leak",                          // a link out of the maps directory
+			"/maps/sakhal/tiles/self/0.webp",                   // a link that stays inside the tiles: links beneath tiles are not followed
 			"/maps/sakhal/tiles/back/master.png",               // a link back to the world's intermediates
 			"/maps/sakhal/tiles/back/manifest.json",            // the manifest through the tiles is not a tile
 			"/maps/sakhal/tiles/maps/chernarusplus/master.png", // the whole maps directory through a link

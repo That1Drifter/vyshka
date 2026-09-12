@@ -109,8 +109,10 @@ under `/panel/maps/`:
 Nothing else under a world directory is served (a build leaves large intermediates beside
 the tiles), directories are never listed, and `{world}` is one path segment of letters,
 digits, dots, dashes, and underscores. A world directory, and its `tiles` directory, may be
-a symlink or junction to a dataset built elsewhere; what a tile path resolves to must lie
-inside the resolved `tiles` directory, so a link beneath it cannot reach anything else. Tiles are answered with `Cache-Control: public,
+a symlink or junction to a dataset built elsewhere; each is opened as a root and the file
+opened inside it, so a link beneath `tiles`, or a manifest that is itself a link, is refused
+whatever it points at. Missing and unreachable files are answered in the protocol's error
+shape; an unsatisfiable `Range` or a failed precondition gets Go's plain answer. Tiles are answered with `Cache-Control: public,
 max-age=3600`; the index and manifests with `no-cache`. The surface is unauthenticated
 like the page itself, so install only imagery you are prepared to serve to anyone who can
 reach the hub.

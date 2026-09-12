@@ -138,9 +138,16 @@ func mapsFrom(dir string) *mapsDir {
 //
 // Links are followed at two places only, because an operator builds a
 // dataset elsewhere and links it in: the world directory itself, and its
-// tiles directory. What a tile path resolves to must lie inside the
-// resolved tiles directory, so a link under it cannot reach a build
-// intermediate beside the tiles or anything outside the maps directory.
+// tiles directory. Each is opened as an os.Root, and the file is opened
+// inside that root, so the boundary is enforced by the open itself rather
+// than by comparing paths beforehand: a link beneath the tiles directory
+// (or a manifest that is a link) is refused by the root whatever it points
+// at, a directory swapped for a link between a check and the open cannot
+// widen anything, and no case folding or path spelling takes part.
+//
+// What ServeContent refuses on its own (an unsatisfiable Range, a failed
+// precondition) is answered in its plain form; the refusals this surface
+// decides, a missing or unreachable file, keep the protocol's shape.
 func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 	if m == nil {
 		notFound(w, r)
@@ -166,23 +173,22 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 		notFound(w, r)
 		return
 	}
-	target, err := filepath.EvalSymlinks(filepath.Join(m.dir, world, filepath.FromSlash(file)))
+	rootPath := filepath.Join(m.dir, world)
+	name := file
+	if file != "manifest.json" {
+		rootPath = filepath.Join(rootPath, "tiles")
+		name = strings.TrimPrefix(file, "tiles/")
+	}
+	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		notFound(w, r)
 		return
 	}
-	if file != "manifest.json" {
-		tilesRoot, err := filepath.EvalSymlinks(filepath.Join(m.dir, world, "tiles"))
-		if err != nil || !within(tilesRoot, target) {
-			notFound(w, r)
-			return
-		}
-	}
+	defer root.Close()
 	// The file is opened and served here rather than through ServeFileFS,
 	// which would redirect a path ending in index.html and answer an open
-	// failure in its own plain text; every refusal from this surface keeps
-	// the protocol's shape.
-	handle, err := os.Open(target)
+	// failure in its own plain text.
+	handle, err := root.Open(name)
 	if err != nil {
 		notFound(w, r)
 		return
@@ -197,16 +203,6 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
 	http.ServeContent(w, r, path.Base(file), info.ModTime(), handle)
-}
-
-// within reports whether target lies strictly inside root, both already
-// resolved.
-func within(root, target string) bool {
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // installedWorlds lists the world directories that hold a manifest.json, in

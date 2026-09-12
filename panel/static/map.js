@@ -341,6 +341,10 @@ export function createMap(container, options = {}) {
       context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
       state.visibleTiles = visible;
       state.overBudget = true;
+      // Nothing is visible, so the cache is trimmed here as after any
+      // other frame; the tiles of the view that was zoomed out of would
+      // otherwise stay held until a frame within budget.
+      evictTiles();
       return;
     }
     state.overBudget = false;

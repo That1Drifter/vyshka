@@ -57,7 +57,16 @@ point if needed.
   noted and the list loads); fit was clamped by the lowest tile level; ServeFileFS
   redirected a tile named index.html and answered open failures in plain text (files are
   opened and served by the handler); and the spike's build lock could overwrite a
-  completed dataset or delete another build's lock.
+  completed dataset or delete another build's lock. The second round found the
+  resolve-then-compare confinement of the first fix still let a manifest that is a link
+  publish any readable file, raced a directory swapped for a link between the check and
+  the open, folded case on a case-sensitive volume, broke a junction-linked world on
+  Windows, and refused links inside the tiles spelled in another path form; the world and
+  its tiles directory are now opened as an `os.Root` and the file opened inside it, so the
+  boundary is enforced by the open itself and a link beneath the tiles is refused whatever
+  it points at. It also found the over-budget placeholder skipped cache eviction, and that
+  an unsatisfiable range or a failed precondition is answered in Go's plain form rather
+  than the protocol's, which is now documented rather than claimed otherwise.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
   per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
   hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,
