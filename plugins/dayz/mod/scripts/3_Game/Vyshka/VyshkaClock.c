@@ -23,10 +23,11 @@ class VyshkaClock
 	}
 
 	// Both formatters copy the year into a local before calling Pad2. An
-	// int.ToString() still pending in an expression takes the value of the
-	// next int.ToString() run inside a function the expression calls, so
-	// year.ToString() + Pad2(month) yields the month twice and no year
-	// (spikes/dayz-enforce-int-tostring-temporary). A literal concatenated
+	// int.ToString() still pending in an expression ends up with the value
+	// of the last int.ToString() run inside functions the expression calls
+	// afterwards, so year.ToString() + Pad2(month) yields the month twice
+	// and no year (measured on DayZ 1.29 in
+	// spikes/dayz-enforce-int-tostring-temporary). A literal concatenated
 	// first also avoids it, which is why the RFC 3339 shape happened to work.
 
 	// NowRfc3339 formats the current UTC time as 2026-09-03T16:50:19Z.

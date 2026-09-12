@@ -3,11 +3,13 @@
 Resolves issue #50 (envelope id prefix `dz-90911T...` for 2026-09-11).
 
 **Short answer:** the result of `int.ToString()` is not materialized when it is evaluated.
-While it is still pending in an expression, any `int.ToString()` that runs inside a function
-the same expression calls later replaces it. `year.ToString() + Pad2(month) + Pad2(day)`
-therefore reads as `"9" + "09" + "11"` on 2026-09-11: the year slot took the value of the
-last `ToString()` that `Pad2` ran. Copying the result into a local first, or concatenating a
-string literal onto it before the call, materializes it and the expression is correct.
+While it is still pending in an expression, it ends up holding the value of the last
+`int.ToString()` run inside any function the same expression calls afterwards.
+`year.ToString() + Pad2(month) + Pad2(day)` therefore reads as `"9" + "09" + "11"` on
+2026-09-11: the year slot took the value of the last `ToString()` that `Pad2` ran before the
+year was consumed. Copying the result into a local first, or concatenating a string literal
+onto it before the call, materializes it and the expression is correct. The mechanism named
+here is an inference from the measured outcomes below, not a documented language rule.
 
 ## Environment
 
@@ -77,12 +79,18 @@ plugin's helper: `"0" + v.ToString()` under 10, `v.ToString()` otherwise. Full l
 `VyshkaClock.NowCompact` and `NowRfc3339` copy the year into a local before calling `Pad2`
 (the local-copy shape, measured correct against literals and the live clock). No other
 concatenation in the plugin has a pending `int.ToString()` followed by a call into a
-converting function: every other site concatenates a literal onto the conversion first or
-builds with `+=`.
+converting function: at every other site the conversion is consumed into a string (a
+literal, an accumulated concatenation, an assignment, or `+=`) before any later call, or it
+is the final operand. The probe does not run the complete formatters themselves; the rebuilt
+plugin did, under the plugin conformance harness on 2026-09-12, and minted
+`dz-20260912T115305-7c690e6d-15` with a correct `ts` beside it.
 
-Ids already minted with the short prefix stay valid: an envelope id is opaque to the hub and
-uniqueness came from the random tag and counter all along. The prefix is minted once per
-process, so the corrected shape appears from the next server boot.
+Ids already minted with the short prefix stay valid: an envelope id is opaque to the hub,
+which compares ids as whole strings and accepts up to 128 bytes. Uniqueness rests where it
+did before, on the per-boot timestamp and random tag plus the counter, which is
+probabilistic across restarts in the same way the ULID recommendation of spec section 4 is;
+the probe measures none of that. The prefix is minted once per process, so the corrected
+shape appears from the next server boot running the fixed plugin.
 
 Behavior can change between game patches. Re-run the spike when the plugin is validated
 against a new major DayZ version.

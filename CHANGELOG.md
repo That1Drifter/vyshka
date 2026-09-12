@@ -606,8 +606,10 @@ point if needed.
   formatter next to it only worked because a literal was concatenated first. Both
   formatters in `VyshkaClock` now copy the year into a local before calling `Pad2`; the
   rest of the plugin was checked for the same shape and has none. Ids already minted stay
-  valid (opaque to the hub, unique through the random tag and counter); the corrected
-  prefix appears from the next server boot. The finding is recorded in the DayZ knowledge
+  valid: they are opaque to the hub, and uniqueness rests where it did before, on the
+  per-boot timestamp and random tag plus the counter. The corrected prefix appears from the
+  next server boot running the fixed plugin; the plugin conformance harness showed it
+  (`dz-20260912T...`, 15 checks passing). The finding is recorded in the DayZ knowledge
   base as verified.
 - 2026-08-31: the hub had no write timeout and no connection cap (issue #38, surfaced by
   the adversarial review of the admin body/timeout hardening but pre-existing; both were
