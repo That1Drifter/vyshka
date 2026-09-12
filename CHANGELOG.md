@@ -598,6 +598,20 @@ point if needed.
 
 ### Fixed
 
+- 2026-09-12: DayZ plugin envelope ids carried a date prefix with no year, `dz-90911T...`
+  for 2026-09-11 (issue #50). New spike `spikes/dayz-enforce-int-tostring-temporary`
+  measured the cause on DayZ 1.29: a pending `int.ToString()` result in an expression ends
+  up with the value of the last `int.ToString()` run inside functions the expression calls
+  before the result is consumed, so `year.ToString() + Pad2(month)` read as the month
+  twice. The RFC 3339
+  formatter next to it only worked because a literal was concatenated first. Both
+  formatters in `VyshkaClock` now copy the year into a local before calling `Pad2`; the
+  rest of the plugin was checked for the same shape and has none. Ids already minted stay
+  valid: they are opaque to the hub, and uniqueness rests where it did before, on the
+  per-boot timestamp and random tag plus the counter. The corrected prefix appears from the
+  next server boot running the fixed plugin; the plugin conformance harness showed it
+  (`dz-20260912T...`, 15 checks passing). The finding is recorded in the DayZ knowledge
+  base as verified.
 - 2026-08-31: the hub had no write timeout and no connection cap (issue #38, surfaced by
   the adversarial review of the admin body/timeout hardening but pre-existing; both were
   declared out of scope there). The read side was fully bounded and the write side not at

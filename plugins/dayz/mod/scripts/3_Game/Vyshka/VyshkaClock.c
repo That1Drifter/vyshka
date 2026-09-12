@@ -22,13 +22,22 @@ class VyshkaClock
 		return value.ToString();
 	}
 
+	// Both formatters copy the year into a local before calling Pad2. An
+	// int.ToString() still pending in an expression ends up with the value
+	// of the last int.ToString() run inside functions the expression calls
+	// afterwards, so year.ToString() + Pad2(month) yields the month twice
+	// and no year (measured on DayZ 1.29 in
+	// spikes/dayz-enforce-int-tostring-temporary). A literal concatenated
+	// first also avoids it, which is why the RFC 3339 shape happened to work.
+
 	// NowRfc3339 formats the current UTC time as 2026-09-03T16:50:19Z.
 	static string NowRfc3339()
 	{
 		int year, month, day, hour, minute, second;
 		GetYearMonthDayUTC(year, month, day);
 		GetHourMinuteSecondUTC(hour, minute, second);
-		return year.ToString() + "-" + Pad2(month) + "-" + Pad2(day) + "T" + Pad2(hour) + ":" + Pad2(minute) + ":" + Pad2(second) + "Z";
+		string y = year.ToString();
+		return y + "-" + Pad2(month) + "-" + Pad2(day) + "T" + Pad2(hour) + ":" + Pad2(minute) + ":" + Pad2(second) + "Z";
 	}
 
 	// NowCompact formats the current UTC time as 20260903T165019, for ids.
@@ -37,7 +46,8 @@ class VyshkaClock
 		int year, month, day, hour, minute, second;
 		GetYearMonthDayUTC(year, month, day);
 		GetHourMinuteSecondUTC(hour, minute, second);
-		return year.ToString() + Pad2(month) + Pad2(day) + "T" + Pad2(hour) + Pad2(minute) + Pad2(second);
+		string y = year.ToString();
+		return y + Pad2(month) + Pad2(day) + "T" + Pad2(hour) + Pad2(minute) + Pad2(second);
 	}
 
 	// EpochSeconds is the current UTC time as seconds since 1970-01-01.
