@@ -6,8 +6,7 @@ may not reach into hub internals, and anything it can do must be possible with `
 `/api/v1` alone. Action forms are rendered from the plugin manifest rather than hand-written
 per game, which is what keeps the hub game-agnostic.
 
-Tracked in issue #13 (panel v1) and #47 (the event feed). The live map view is a follow-up
-ticket (#46).
+Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
 
 ## What it does
 
@@ -76,6 +75,71 @@ ticket (#46).
   is unchanged over a finished walk, records nothing, so a finished walk is not offered
   again on every new event. What this cannot see is a late event landing below the first
   page of a hub already past the boundary; a reload picks it up.
+- **Live map** per server, at `#/servers/{id}/map`, over
+  `GET /api/v1/servers/{id}/state/players` (protocol section 8.3) re-read every five
+  seconds. The latest snapshot's players are listed with identity, position, and extras,
+  and plotted on a basemap when the hub has a tileset installed for the server's world
+  (below). The world is the one the plugin reported in its latest `core.server.start`
+  event; `?world=` in the route overrides it, for a token without `events:read` or to look
+  at another map. A snapshot is whole, so every refresh replaces every marker: a player
+  absent from the latest snapshot is gone from the map. The snapshot's `capturedAt` and
+  `receivedAt` ages are always on the page, because the five-second re-read says nothing
+  about how often the plugin publishes (the DayZ plugin on a held long-poll manages one
+  every 25 to 35 s). Clicking a marker, or a row's Actions link, opens the server's action
+  list with that player preselected (`?player=`): player-context actions open with the
+  target field filled in, editable. Positions are read in the game's own frame as the
+  manifest says (for DayZ `[x, y, z]` with `y` the elevation, so the map plots `x` east and
+  `z` north); a position the manifest cannot read, or a player without one, is listed and
+  not plotted. Drag or arrow keys pan, wheel and the `+`/`−` buttons zoom (past the
+  imagery's native level too), `0` or Fit shows the whole world.
+
+## Map tilesets
+
+The map's imagery is not in the binary: a world's basemap is tens of megabytes and is
+game-specific, so the operator generates it and installs it in a directory the hub is
+pointed at with `vyshka-hub serve -maps-dir DIR` (env `VYSHKA_MAPS_DIR`). The hub serves it
+under `/panel/maps/`:
+
+| Path | What it is |
+|---|---|
+| `/panel/maps/` | `{ "worlds": [...] }`, the subdirectories holding a `manifest.json` |
+| `/panel/maps/{world}/manifest.json` | the dataset contract below |
+| `/panel/maps/{world}/tiles/...` | the tiles the manifest's template names |
+
+Nothing else under a world directory is served (a build leaves large intermediates beside
+the tiles), directories are never listed, and `{world}` is one path segment of letters,
+digits, dots, dashes, and underscores. Tiles are answered with `Cache-Control: public,
+max-age=3600`; the index and manifests with `no-cache`. The surface is unauthenticated
+like the page itself, so install only imagery you are prepared to serve to anyone who can
+reach the hub.
+
+A world directory is named by the world id the plugin reports (`chernarusplus`, `enoch`,
+`sakhal` on DayZ) and holds a `manifest.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "world": "chernarusplus",
+  "name": "Chernarus",
+  "bounds": { "xmin": 0, "xmax": 15360, "zmin": 0, "zmax": 15360 },
+  "raster": { "width": 15360, "height": 15360 },
+  "tiles": { "size": 256, "minZoom": 0, "maxZoom": 6, "urlTemplate": "tiles/{z}/{x}/{y}.webp" },
+  "axes": { "east": { "index": 0, "name": "x" }, "north": { "index": 2, "name": "z" } }
+}
+```
+
+`bounds` is the world's extent in the game's map frame; `raster` the native image size, with
+`(xmin, zmax)` at its top-left corner (north up) and the raster's `maxZoom` level drawn at
+one image pixel per raster pixel. Level `z` is the raster scaled by `2^(z - maxZoom)`, cut
+into `size`-pixel tiles from the top-left corner, north-origin XYZ rows, partial edge tiles
+padded; `urlTemplate` is resolved relative to the manifest. `axes` says which components of
+a position are easting and northing and what to call them; the defaults shown are DayZ's
+(and Enfusion's). A two-number position is always read as `[east, north]`. `name` is
+optional. Extra members (a build's provenance, validation results) are ignored.
+
+`spikes/chernarus-satellite` builds a Chernarus dataset in this shape from the installed DayZ
+assets; copy its `manifest.json` and `tiles/` into `DIR/chernarusplus/`. Its README records
+what that dataset's registration has and has not been verified against.
 
 ## Security posture
 
@@ -84,8 +148,10 @@ The Go side is a file server that adds response headers. Every panel response ca
 style, `frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 no-referrer`, and `Cache-Control: no-cache`. The JavaScript builds every node with
 `createElement` and text nodes; there is no `innerHTML` anywhere, and a test fails if one
-appears, because manifest labels, result payloads, and event data are plugin-supplied text.
-There are no cookies, so there is nothing for cross-site request forgery to ride on.
+appears, because manifest labels, result payloads, event data, and player names are
+plugin-supplied text. There are no cookies, so there is nothing for cross-site request
+forgery to ride on. Map tilesets are served with the same headers and no authentication;
+they are operator-installed static files, never anything the hub holds about a server.
 
 Disable the panel with `vyshka-hub serve -panel=false` (env `VYSHKA_PANEL=false`); the hub
 then serves nothing at `/panel/` and `/` is an ordinary 404.
@@ -94,18 +160,20 @@ then serves nothing at `/panel/` and `/` is an ordinary 404.
 
 ```
 panel/
-  panel.go         // http.Handler over the embedded files, plus the security headers
+  panel.go         // http.Handler over the embedded files and the maps directory, plus the security headers
   static/
     index.html     // the shell: header, breadcrumbs, one <main>
-    app.js         // routing, the Admin API client, the form builder, dispatch and result, the event feed
+    app.js         // routing, the Admin API client, the form builder, dispatch and result, the event feed, the map view
+    map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame
     style.css      // one stylesheet, light and dark
-  panel_test.go    // the handler: headers, what it serves, what it refuses
-  e2e_test.go      // headless Chrome against a real hub and a fake plugin
+  panel_test.go    // the handler: headers, what it serves, what it refuses, the maps surface
+  e2e_test.go      // headless Chrome against a real hub, a fake plugin, and a generated tileset
 ```
 
 No build step: the files are served as written. The hub takes the handler through
-`hub.Config.Panel` and does not import this package, so an embedder can mount a different
-panel or none.
+`hub.Config.Panel` (`panel.NewHandler(panel.Config{MapsDir: ...})`, or `panel.Handler()`
+for no maps) and does not import this package, so an embedder can mount a different panel
+or none.
 
 ## Tests
 
@@ -122,7 +190,15 @@ place in the route, follow mode merging a late event below the ones already show
 feed that does not move while a new event lands in the hub, a 2500-deep payload rendered
 bounded, paging through 158 events with no event shown twice, a feed of exactly one page
 offering the walk when a late older event gives its unchanged page a cursor, and a burst
-of 150 new events on a walked feed joined to its history in two pages.
+of 150 new events on a walked feed joined to its history in two pages. Then the live map,
+on a three-level tileset the test generates (a 1024 m world painted in sixteen flat colours
+by raster quadrant): the world picked from the plugin's start event, four players listed
+with one lacking a position and one in the flat two-number form, three markers placed
+within 1.5 px of where the world frame puts them with the canvas pixel under each the
+colour of its quadrant (which is what tells a flipped or swapped axis from a right one),
+a second snapshot replacing the markers whole, a marker click landing on the action list
+with the player preselected and the heal form filled in, and a world with no tileset
+listing the players under a notice.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.
@@ -138,4 +214,7 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-panel.sh   # a fake plugin t
 
 Then open <http://127.0.0.1:8080/> and sign in with the token. With the DayZ plugin from
 `plugins/dayz` enrolled instead of the demo plugin, the same page dispatches `vyshka.heal` to
-a live server: pick the server, pick the action, choose or type the player's Steam64 id.
+a live server: pick the server, pick the action, choose or type the player's Steam64 id, or
+open the live map and click the player. To see the demo plugin's players on imagery, build
+the Chernarus dataset (`spikes/chernarus-satellite`), install it under a maps directory as
+described above, and start the hub with `-maps-dir`.

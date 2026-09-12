@@ -82,16 +82,23 @@ send manifest.publish '{
     }
   }]
 }'
+# Positions are DayZ-shaped ([x, y, z], y the elevation) so the map view
+# plots them when a chernarusplus tileset is installed on the hub; without
+# one they are listed as numbers.
 send state.players '{
   "players": [
-    {"player": {"platform": "steam", "id": "76561198000000001"}, "name": "Alice"},
-    {"player": {"platform": "steam", "id": "76561198000000002"}, "name": "Bob"}
+    {"player": {"platform": "steam", "id": "76561198000000001"}, "name": "Alice",
+     "position": [6778.6, 6.2, 2321.8], "data": {"alive": true, "health": 100}},
+    {"player": {"platform": "steam", "id": "76561198000000002"}, "name": "Bob",
+     "position": [4827.0, 339.5, 9595.0], "data": {"alive": true, "health": 64}}
   ]
 }'
-# A few events for the feed view, stamped over the last few minutes.
+# A few events for the feed view, stamped over the last few minutes. The
+# start event names the world, which is how the map view picks its tileset.
 send event.batch "$(jq -nc '
   def at(m): (now - m * 60 | todate);
   {events: [
+    {t: "core.server.start", ts: at(6), data: {game: "demo", plugin: {name: "demo-plugin", version: "0.1.0"}, world: "chernarusplus"}},
     {t: "core.player.connect", ts: at(5), data: {player: {platform: "steam", id: "76561198000000001"}, name: "Alice"}},
     {t: "core.player.connect", ts: at(4), data: {player: {platform: "steam", id: "76561198000000002"}, name: "Bob"}},
     {t: "core.player.death", ts: at(2), data: {player: {platform: "steam", id: "76561198000000001"}, name: "Alice",
@@ -103,6 +110,7 @@ step "Open the panel and sign in"
 echo "  $HUB_URL/"
 echo "  sign in with the admin token you gave this script (it is not printed here)"
 echo "Pick 'Panel demo', then 'Heal player'. Every dispatch is executed below. Ctrl-C to stop."
+echo "'Live map' lists Alice and Bob; with a chernarusplus tileset installed (-maps-dir) it plots them."
 
 trap 'printf "\nstopping\n"; exit 0' INT TERM
 

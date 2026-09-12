@@ -12,6 +12,35 @@ point if needed.
 
 ### Added
 
+- 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
+  per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
+  `state.players` snapshot, re-read on the server-list cadence: the players listed with
+  identity, position, and extras, and plotted on a basemap when the hub has a tileset for
+  the server's world, which is the world the plugin reported in its latest
+  `core.server.start` event (`?world=` overrides it). Every refresh replaces every marker,
+  because a snapshot is whole; the snapshot's captured and received ages stay on the page,
+  because the panel's cadence says nothing about the plugin's. A marker click, or a row's
+  Actions link, opens the action list with the player preselected (`?player=`), and a
+  player-context action's form opens with its target filled in. The map widget (`map.js`)
+  draws a tile pyramid on a canvas and lays markers over it as buttons, in a world frame
+  the dataset manifest describes (bounds, native raster, tile levels, and which position
+  components are east and north, defaulting to DayZ's `[x, y, z]`); nothing in it knows a
+  game. Tilesets are operator-installed, not embedded: `vyshka-hub serve -maps-dir DIR`
+  (env `VYSHKA_MAPS_DIR`) serves `DIR/{world}/manifest.json` and `DIR/{world}/tiles/...`
+  under `/panel/maps/` with the panel's headers, and nothing else from a world directory;
+  the reference compose file mounts `./maps` read-only for it. The headless end-to-end test
+  generates a three-level tileset painted by raster quadrant and grades the world pick,
+  the list, marker placement within 1.5 px of the world frame with the canvas pixel under
+  each marker the colour of its quadrant (a flipped or swapped axis fails), a second
+  snapshot replacing the markers whole, the click-through to a preselected target, and a
+  world with no tileset. The demo plugin in `scripts/demo-panel.sh` publishes positions and
+  a start event naming `chernarusplus`. No hub API or protocol changes. Alongside, the
+  `spikes/chernarus-satellite` prototype that measured the basemap first: an offline
+  pipeline from the installed DayZ satellite textures to a calibrated 15,360 m raster and
+  WebP tile pyramid in the manifest shape the panel reads, with a seam audit over every
+  source overlap, a standalone inspection viewer, and a loopback preview server. Generated
+  game assets stay in the ignored scratch directory; distribution of a built dataset is the
+  operator's call.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
   per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
   hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,

@@ -302,6 +302,118 @@ tr.row-link:hover td { background: var(--code-bg); }
 
 #events tr.new td { animation: feed-flash 3s ease-out; }
 
+/* Live map */
+
+.map-controls { display: grid; gap: 0.75rem; }
+.map-controls select { max-width: 24rem; }
+
+.notice.target { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: baseline; }
+
+.map {
+  position: relative;
+  height: min(70vh, 720px);
+  min-height: 320px;
+  margin: 0 0 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #121513;
+}
+
+.map-stage {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+}
+
+.map-stage:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.map-stage.dragging { cursor: grabbing; }
+
+.map-canvas { display: block; width: 100%; height: 100%; }
+
+.map-markers { position: absolute; inset: 0; pointer-events: none; }
+
+/* The button is the dot: 14 px square, pulled back by half of that so the
+   transform the widget sets puts the dot's centre exactly on the position.
+   The label hangs off its right edge without taking part in its box. */
+.map-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  font: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.map-marker-dot {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #ffd166;
+  border: 2px solid #1d2320;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+  box-sizing: border-box;
+}
+
+.map-marker-label {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 5px;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(10, 14, 11, 0.85);
+  font-size: 0.8em;
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-marker:hover .map-marker-dot, .map-marker.highlighted .map-marker-dot, .map-marker:focus-visible .map-marker-dot {
+  background: #ff6b6b;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.45);
+}
+
+.map-marker:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+.map-hud {
+  position: absolute;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  display: grid;
+  gap: 0.3rem;
+  justify-items: end;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius);
+  background: rgba(10, 14, 11, 0.8);
+  color: #eef2ec;
+  font-size: 0.8em;
+  font-family: var(--mono);
+}
+
+.map-hud-row { display: flex; gap: 0.3rem; align-items: center; }
+.map-hud button { color: #eef2ec; background: #2b372e; border-color: #465249; }
+.map-scale-bar { display: block; height: 0.4rem; border: solid #eef2ec; border-width: 0 2px 2px; }
+.map-cursor { min-height: 1.2em; }
+.map-tiles { color: #b8c2ba; }
+
+#players td.position { white-space: nowrap; }
+#players td.data { width: 40%; word-break: break-word; }
+#players td.row-actions { white-space: nowrap; }
+#players .button.small { text-decoration: none; }
+
 /* Action list */
 
 .action-list { display: grid; gap: 0.5rem; }

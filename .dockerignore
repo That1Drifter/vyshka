@@ -14,6 +14,7 @@ bin
 **/*.db-wal
 deploy/admin-token
 deploy/data
+deploy/maps
 plugins/dayz/build
 spikes/*/results
 CLAUDE.md
