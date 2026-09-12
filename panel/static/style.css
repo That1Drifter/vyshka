@@ -273,6 +273,34 @@ tr.row-link:hover td { background: var(--code-bg); }
 .badge.down, .badge.failed, .badge.revoked { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
 .badge.warning, .badge.expired, .badge.pending { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 .badge.destructive { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
+.badge.core { background: var(--code-bg); border-color: transparent; }
+.badge.custom { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+
+/* Server page links to the other views */
+
+.view-links { display: flex; gap: 0.75rem; margin: 0 0 1rem; }
+.view-links .button { text-decoration: none; }
+
+/* Event feed */
+
+.title-tail { font-weight: 400; font-size: 0.8em; }
+
+.feed-controls { display: grid; gap: 0.75rem; }
+.filter-row { display: flex; gap: 0.5rem; align-items: center; max-width: 40rem; }
+.filter-row input { flex: 1; min-width: 0; max-width: none; font-family: var(--mono); }
+
+#events td.when { white-space: nowrap; color: var(--muted); font-size: 0.92em; }
+#events .type { overflow-wrap: anywhere; }
+#events td.data { width: 55%; }
+#events td.data details > summary { cursor: pointer; word-break: break-word; }
+#events td.data details > pre { margin-top: 0.5rem; }
+
+@keyframes feed-flash {
+  from { background: var(--ok-bg); }
+  to { background: transparent; }
+}
+
+#events tr.new td { animation: feed-flash 3s ease-out; }
 
 /* Action list */
 

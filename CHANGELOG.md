@@ -12,6 +12,40 @@ point if needed.
 
 ### Added
 
+- 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
+  per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
+  hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,
+  several at once) kept in the route so a reload or a shared link keeps it, paging behind
+  the hub's cursor, and a follow mode on the server-list cadence that re-reads the first
+  page and merges what is new into place by id rather than asking for events since the
+  newest one, because the feed is ordered by the game server's clock and a late batch can
+  land below events already shown. Each row carries `occurredAt` with `receivedAt` on
+  hover, the type with a core or custom badge and the manifest's display name for a
+  declared custom type, and the `data` as one line of text with the full JSON behind a
+  disclosure; a filter the hub refuses or the token does not cover is shown beside the form
+  with the hub's code. The DOM stays text-only, as the panel's markup-sink test requires.
+  The headless end-to-end test now drives a fake plugin's batches into the feed and grades
+  the hub-side ordering of an out-of-order batch, the declared name, markup-shaped data
+  rendered as text, the filter and its place in the route, follow mode merging a late event
+  below the ones shown, the negative control that a paused feed does not move, and paging
+  through 158 events with no event shown twice. The demo plugin in `scripts/demo-panel.sh`
+  publishes a batch so the feed has something to show locally. No hub or protocol changes.
+  The review found three holes, each now graded by the test: a follow tick re-adopted the
+  first page's cursor after the walk was exhausted, so Load older reappeared and refetched
+  the same history whenever a new event landed (the feed now keeps the walk's cursor apart
+  from a gap cursor a follow tick records on the two signs it can see, a page ending in an
+  unseen event or a cursor appearing where the previous read had none, so a finished walk
+  is not offered again and a walk ending while a gap is pending does not discard it; the
+  second round found the first fix hid a late event below a feed of exactly one page and
+  lost a gap to that race, and the third found a gap re-recorded with identical cursor text
+  during a walk from it being retired with that walk, so gaps now carry a discovery serial);
+  a payload nested a few thousand levels deep,
+  inside the hub's 16 KiB cap, was pretty-printed into megabytes for every row on every
+  draw and could overflow the stack and take the whole view with it (payloads are now
+  serialized on first open, compact past 64 levels, and a row that cannot be built falls
+  back to its id and type); and an explicit empty `type` term in a shared link was dropped
+  rather than sent, showing a wider feed where the hub would have answered `bad_request`.
+
 - 2026-09-11: DayZ plugin telemetry (issue #49), plugin 0.2.0. The plugin now publishes the
   core player events a feed needs and the `state.players` snapshots a live map needs, which
   plugin 0.1.0 never did. Events: `core.player.connect` from the mission's connect hook (a

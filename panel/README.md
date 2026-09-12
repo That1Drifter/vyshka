@@ -6,7 +6,8 @@ may not reach into hub internals, and anything it can do must be possible with `
 `/api/v1` alone. Action forms are rendered from the plugin manifest rather than hand-written
 per game, which is what keeps the hub game-agnostic.
 
-Tracked in issue #13 (panel v1). Live map and event feed views are follow-up tickets.
+Tracked in issue #13 (panel v1) and #47 (the event feed). The live map view is a follow-up
+ticket (#46).
 
 ## What it does
 
@@ -48,6 +49,33 @@ Tracked in issue #13 (panel v1). Live map and event feed views are follow-up tic
   dispatch after an accepted one), then `GET /api/v1/actions/{id}` every second until the action
   reaches a terminal state, drawn as a timeline with the result payload or error. A
   `params_invalid` refusal lands on the field the hub named.
+- **Event feed** per server, at `#/servers/{id}/events`, over
+  `GET /api/v1/servers/{id}/events` (protocol section 8.5): newest first in the hub's own
+  order, a type filter in the hub's grammar (exact types, `{namespace}.*` patterns, `*`,
+  several at once), paging behind the hub's cursor with a "Load older" button, and a follow
+  mode, on by default, that re-reads the first page every five seconds and merges what is
+  new into place by id. Following re-reads the page rather than asking for events since the
+  newest one because the feed is ordered by the game server's clock, so a late batch can
+  land below events already shown; a late event that lands below the newest hundred is
+  picked up by a reload or an older page. The filter and the follow switch live in the
+  route, so a reload keeps them and the URL can be shared. Each row shows `occurredAt`
+  (with `receivedAt` on hover), the type with a core or custom badge and, for a custom
+  type the manifest declares, its display name, and the event's `data` as one line of text
+  with the full JSON behind a disclosure, serialized when the disclosure is first opened and
+  compact rather than indented past 64 levels of nesting (the hub bounds data in bytes, not
+  depth, and indentation grows with the square of the depth); a row that cannot be built
+  is one row's problem, not the feed's. A filter the hub refuses, or one the token's
+  `events:read` scope does not cover, is shown beside the form with the hub's code; an
+  empty type term in a shared link is sent as it is, so the hub's refusal shows instead of
+  a quietly wider feed. The feed keeps the walk's cursor apart from a "gap" cursor a
+  follow tick records when the hub holds more below its first page than the feed has
+  walked: when the page ends in an event the feed had not seen (more than a page of new
+  events landed), or when the page carries a cursor where the previous read carried none
+  (the hub crossed the page boundary). "Load older" continues the walk first and starts
+  from the gap once the walk is done. A page that merely shifted by one new event, or that
+  is unchanged over a finished walk, records nothing, so a finished walk is not offered
+  again on every new event. What this cannot see is a late event landing below the first
+  page of a hub already past the boundary; a reload picks it up.
 
 ## Security posture
 
@@ -56,8 +84,8 @@ The Go side is a file server that adds response headers. Every panel response ca
 style, `frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 no-referrer`, and `Cache-Control: no-cache`. The JavaScript builds every node with
 `createElement` and text nodes; there is no `innerHTML` anywhere, and a test fails if one
-appears, because manifest labels and result payloads are plugin-supplied text. There are no
-cookies, so there is nothing for cross-site request forgery to ride on.
+appears, because manifest labels, result payloads, and event data are plugin-supplied text.
+There are no cookies, so there is nothing for cross-site request forgery to ride on.
 
 Disable the panel with `vyshka-hub serve -panel=false` (env `VYSHKA_PANEL=false`); the hub
 then serves nothing at `/panel/` and `/` is an ordinary 404.
@@ -69,7 +97,7 @@ panel/
   panel.go         // http.Handler over the embedded files, plus the security headers
   static/
     index.html     // the shell: header, breadcrumbs, one <main>
-    app.js         // routing, the Admin API client, the form builder, dispatch and result
+    app.js         // routing, the Admin API client, the form builder, dispatch and result, the event feed
     style.css      // one stylesheet, light and dark
   panel_test.go    // the handler: headers, what it serves, what it refuses
   e2e_test.go      // headless Chrome against a real hub and a fake plugin
@@ -87,8 +115,14 @@ fake plugin that publishes a manifest and a players snapshot, and drives headles
 through sign-in (a bad token first), the server list, the action list, the generated form
 (asserting the inputs' bounds, defaults, options, and the player suggestions), a dispatch the
 hub refuses with `params_invalid` (the fault must land on its field and the plugin must never
-see it), and a corrected dispatch that round-trips to `completed` with the plugin's result on
-the page.
+see it), a corrected dispatch that round-trips to `completed` with the plugin's result on
+the page, and then the event feed: a batch listed out of order on the wire shown in the
+hub's order, the declared name and markup-shaped data as text, the type filter and its
+place in the route, follow mode merging a late event below the ones already shown, a paused
+feed that does not move while a new event lands in the hub, a 2500-deep payload rendered
+bounded, paging through 158 events with no event shown twice, a feed of exactly one page
+offering the walk when a late older event gives its unchanged page a cursor, and a burst
+of 150 new events on a walked feed joined to its history in two pages.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.
