@@ -83,14 +83,16 @@ converting function: at every other site the conversion is consumed into a strin
 literal, an accumulated concatenation, an assignment, or `+=`) before any later call, or it
 is the final operand. The probe does not run the complete formatters themselves; the rebuilt
 plugin did, under the plugin conformance harness on 2026-09-12, and minted
-`dz-20260912T115305-7c690e6d-15` with a correct `ts` beside it.
+`dz-20260912T115305-7c690e6d-15` with a correct `ts` beside it. The relevant lines of that
+harness run are kept in `harness-id-check.log` next to this file.
 
 Ids already minted with the short prefix stay valid: an envelope id is opaque to the hub,
 which compares ids as whole strings and accepts up to 128 bytes. Uniqueness rests where it
-did before, on the per-boot timestamp and random tag plus the counter, which is
-probabilistic across restarts in the same way the ULID recommendation of spec section 4 is;
-the probe measures none of that. The prefix is minted once per process, so the corrected
-shape appears from the next server boot running the fixed plugin.
+did before, on the per-boot timestamp and random tag plus the counter, and is probabilistic
+across restarts; the probe measures none of that, and nothing here compares the generator's
+collision resistance with the ULIDs spec section 4 recommends. The prefix is minted once
+per process, so the corrected shape appears from the next server boot running the fixed
+plugin.
 
 Behavior can change between game patches. Re-run the spike when the plugin is validated
 against a new major DayZ version.

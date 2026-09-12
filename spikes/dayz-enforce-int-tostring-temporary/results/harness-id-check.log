@@ -1,0 +1,20 @@
+# Excerpt of .scratch/harness-fix50.log, 2026-09-12: go run ./conformance/plugin -enroll-wait 240s -check-timeout 30s -- go run ./plugins/dayz/cmd/vyshka-dayz harness, with the mod rebuilt from the fix.
+# Kept: the plugin start line, every line carrying a minted envelope id, and the check summary.
+5:  dayz:  SCRIPT       : [Vyshka] started; hub http://127.0.0.1:51808, 1 action(s) declared, state.players every 10 s
+24:  dayz: SCRIPT       : [Vyshka] ERROR: outbox: the hub refused envelope dz-20260912T115305-7c690e6d-15 (action.ack, seq 7) as malformed: this harness declares the envelope at index 0 malformed to grade recovery; nothing in the batch was applied; set aside at $pro
+34:PASS  enroll.exchange            The plugin exchanges the one-time token for credentials
+35:PASS  session.start              The plugin trades its credentials for a session
+36:PASS  poll.repolls               The plugin long-polls and re-polls after each response
+37:PASS  manifest.publish           The plugin publishes a manifest declaring at least one action
+38:PASS  telemetry.wellFormed       Any events and snapshots the plugin publishes are well formed
+39:PASS  action.roundTrip           A dispatched action is acked and answered with a result
+40:PASS  action.redeliveryDedup     A forced re-delivery of the same envelope is not executed again
+41:PASS  action.idDedup             A fresh envelope carrying an executed actionId is not executed again
+42:PASS  compat.unknownType         An unknown envelope type is acked and ignored
+43:PASS  outage.bufferAndFlush      Envelopes unacked through an outage are buffered and flushed on reconnect
+44:PASS  session.renumber           Envelopes unacked across a session change are renumbered, not replayed
+45:PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
+46:PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
+47:PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
+48:PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
+50:15 checks, 0 failed

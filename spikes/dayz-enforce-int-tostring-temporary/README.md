@@ -13,7 +13,7 @@ Findings: [`results/findings.md`](results/findings.md).
 | Path | What it is |
 |---|---|
 | `harness/VyshkaToStringProbe.c` | Enforce Script probe: a matrix of string expressions over fixed ints, one tab-separated line per case with the value the engine produced and the value expected. |
-| `results/` | Captured server script log and the write-up. |
+| `results/` | Captured server script log, the lines of the plugin conformance harness run that show the rebuilt plugin's id, and the write-up. |
 
 ## Reproducing
 

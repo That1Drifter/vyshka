@@ -600,9 +600,10 @@ point if needed.
 
 - 2026-09-12: DayZ plugin envelope ids carried a date prefix with no year, `dz-90911T...`
   for 2026-09-11 (issue #50). New spike `spikes/dayz-enforce-int-tostring-temporary`
-  measured the cause on DayZ 1.29: a pending `int.ToString()` result in an expression is
-  replaced by the next `int.ToString()` run inside a function the expression calls
-  afterwards, so `year.ToString() + Pad2(month)` read as the month twice. The RFC 3339
+  measured the cause on DayZ 1.29: a pending `int.ToString()` result in an expression ends
+  up with the value of the last `int.ToString()` run inside functions the expression calls
+  before the result is consumed, so `year.ToString() + Pad2(month)` read as the month
+  twice. The RFC 3339
   formatter next to it only worked because a literal was concatenated first. Both
   formatters in `VyshkaClock` now copy the year into a local before calling `Pad2`; the
   rest of the plugin was checked for the same shape and has none. Ids already minted stay
