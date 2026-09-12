@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Stands up something for the panel to drive: a server record and a fake
-# plugin, in bash, that publishes a heal manifest and a players snapshot and
-# then executes whatever the panel dispatches. Run it beside a hub, open the
-# panel, sign in, and click through to a completed heal.
+# plugin, in bash, that publishes a heal manifest, a players snapshot, and a
+# batch of events, and then executes whatever the panel dispatches. Run it
+# beside a hub, open the panel, sign in, click through to a completed heal,
+# and open the event feed.
 #
 #   VYSHKA_ADMIN_TOKEN=... scripts/demo-panel.sh [hub-url]
 #
@@ -87,6 +88,16 @@ send state.players '{
     {"player": {"platform": "steam", "id": "76561198000000002"}, "name": "Bob"}
   ]
 }'
+# A few events for the feed view, stamped over the last few minutes.
+send event.batch "$(jq -nc '
+  def at(m): (now - m * 60 | todate);
+  {events: [
+    {t: "core.player.connect", ts: at(5), data: {player: {platform: "steam", id: "76561198000000001"}, name: "Alice"}},
+    {t: "core.player.connect", ts: at(4), data: {player: {platform: "steam", id: "76561198000000002"}, name: "Bob"}},
+    {t: "core.player.death", ts: at(2), data: {player: {platform: "steam", id: "76561198000000001"}, name: "Alice",
+      cause: "player", killer: {platform: "steam", id: "76561198000000002"}, killerName: "Bob", weapon: "M4A1", distance: 312.5}},
+    {t: "example-mod.raid.started", ts: at(1), data: {territoryId: "t-19", attackers: 4}}
+  ]}')"
 
 step "Open the panel and sign in"
 echo "  $HUB_URL/"

@@ -12,6 +12,25 @@ point if needed.
 
 ### Added
 
+- 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
+  per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
+  hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,
+  several at once) kept in the route so a reload or a shared link keeps it, paging behind
+  the hub's cursor, and a follow mode on the server-list cadence that re-reads the first
+  page and merges what is new into place by id rather than asking for events since the
+  newest one, because the feed is ordered by the game server's clock and a late batch can
+  land below events already shown. Each row carries `occurredAt` with `receivedAt` on
+  hover, the type with a core or custom badge and the manifest's display name for a
+  declared custom type, and the `data` as one line of text with the full JSON behind a
+  disclosure; a filter the hub refuses or the token does not cover is shown beside the form
+  with the hub's code. The DOM stays text-only, as the panel's markup-sink test requires.
+  The headless end-to-end test now drives a fake plugin's batches into the feed and grades
+  the hub-side ordering of an out-of-order batch, the declared name, markup-shaped data
+  rendered as text, the filter and its place in the route, follow mode merging a late event
+  below the ones shown, the negative control that a paused feed does not move, and paging
+  through 157 events with no event shown twice. The demo plugin in `scripts/demo-panel.sh`
+  publishes a batch so the feed has something to show locally. No hub or protocol changes.
+
 - 2026-09-11: DayZ plugin telemetry (issue #49), plugin 0.2.0. The plugin now publishes the
   core player events a feed needs and the `state.players` snapshots a live map needs, which
   plugin 0.1.0 never did. Events: `core.player.connect` from the mission's connect hook (a

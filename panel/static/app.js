@@ -5,16 +5,31 @@
 // params schema in that manifest (protocol section 6.1's JSON Schema subset,
 // plus the x-vyshka-widget hint). Dispatching is POST /servers/{id}/actions
 // and watching the result is GET /actions/{id}, the same calls curl makes.
+// The event feed is GET /servers/{id}/events (protocol section 8.5), paged
+// with the hub's own cursor.
 //
-// The DOM is built with createElement and text nodes only. Manifest labels
-// and result payloads are plugin-supplied text and are never treated as
-// markup; the Content-Security-Policy the hub sends is the backstop.
+// The DOM is built with createElement and text nodes only. Manifest labels,
+// result payloads, and event data are plugin-supplied text and are never
+// treated as markup; the Content-Security-Policy the hub sends is the
+// backstop.
 
 const API = '/api/v1';
 const TOKEN_KEY = 'vyshka.adminToken';
 const SERVER_LIST_REFRESH_MS = 5000;
 const ACTION_POLL_MS = 1000;
 const TERMINAL_STATES = new Set(['completed', 'failed', 'expired']);
+// The feed follows new events on the server-list cadence and asks for the
+// hub's default page (section 8.5: reference default 100, cap 500).
+const EVENT_FEED_REFRESH_MS = SERVER_LIST_REFRESH_MS;
+const EVENT_PAGE_SIZE = 100;
+// The core event types of section 8.1, offered as filter suggestions. The
+// feed itself accepts whatever the hub's grammar accepts.
+const CORE_EVENT_TYPES = [
+  'core.player.connect', 'core.player.disconnect', 'core.player.death', 'core.player.damage',
+  'core.player.chat', 'core.player.kick', 'core.player.ban', 'core.vehicle.spawn',
+  'core.vehicle.destroy', 'core.object.placed', 'core.item.interact', 'core.server.start',
+  'core.server.fps', 'core.server.stop',
+];
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -138,10 +153,24 @@ async function api(method, path, body) {
 let renderSeq = 0;
 let teardown = null;
 
+// The route lives in the hash as a path with an optional query, so that a
+// feed's filter survives a reload and can be handed to someone as a link:
+// #/servers/{id}/events?type=core.player.*&follow=off.
 function parseRoute() {
-  const parts = location.hash.replace(/^#/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  const hash = location.hash.replace(/^#/, '');
+  const mark = hash.indexOf('?');
+  const path = mark === -1 ? hash : hash.slice(0, mark);
+  const query = new URLSearchParams(mark === -1 ? '' : hash.slice(mark + 1));
+  const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   if (parts[0] === 'servers' && parts.length === 2) {
     return { view: 'server', serverId: parts[1] };
+  }
+  if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'events') {
+    return {
+      view: 'events', serverId: parts[1],
+      types: query.getAll('type').map((term) => term.trim()).filter(Boolean),
+      follow: query.get('follow') !== 'off',
+    };
   }
   if (parts[0] === 'servers' && parts.length === 4 && parts[2] === 'actions') {
     return { view: 'action', serverId: parts[1], code: parts[3] };
@@ -155,6 +184,14 @@ function serverHref(serverId) {
 
 function actionHref(serverId, code) {
   return serverHref(serverId) + '/actions/' + encodeURIComponent(code);
+}
+
+function eventsHref(serverId, types = [], follow = true) {
+  const query = new URLSearchParams();
+  for (const term of types) query.append('type', term);
+  if (!follow) query.set('follow', 'off');
+  const encoded = query.toString();
+  return serverHref(serverId) + '/events' + (encoded ? '?' + encoded : '');
 }
 
 function setCrumbs(items) {
@@ -213,6 +250,8 @@ async function render() {
       await viewServer(app, route, seq);
     } else if (route.view === 'action') {
       await viewAction(app, route, seq);
+    } else if (route.view === 'events') {
+      await viewEvents(app, route, seq);
     } else {
       await viewServers(app, seq);
     }
@@ -367,6 +406,8 @@ async function viewServer(app, route, seq) {
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name }]);
   clear(app);
   app.append(serverSummary(server));
+  app.append(el('p', { class: 'view-links' },
+    el('a', { class: 'button', href: eventsHref(server.id), id: 'events-link' }, 'Event feed')));
 
   if (!manifest) {
     app.append(el('p', { class: 'notice', id: 'no-manifest' },
@@ -400,6 +441,287 @@ async function viewServer(app, route, seq) {
     action.context ? badge(action.context) : null,
     action.danger && action.danger !== 'none' ? badge(action.danger, action.danger) : null))));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Event feed
+//
+// One server's events, newest first, straight from GET /servers/{id}/events
+// with the hub's own ordering and cursor. The page holds a set of events
+// keyed by id in the hub's order (occurredAt descending, then id descending,
+// the total order section 8.5 requires) and merges every answer into it:
+// the first page on load, older pages behind the hub's cursor on request,
+// and, in follow mode, the first page again every EVENT_FEED_REFRESH_MS.
+//
+// Following re-reads the first page rather than asking for events since the
+// newest one seen, because the feed is ordered by occurredAt, which is the
+// game server's clock: a batch flushed late, or an event the hub stamped with
+// its own receipt time, can land below events already on the page, and a
+// since= query keyed on the newest occurredAt would never see it. Merging by
+// id in the hub's order places it where the hub would. What follow cannot
+// see is a late event that lands below the newest EVENT_PAGE_SIZE; a reload
+// or an older page picks it up.
+
+function compareEvents(a, b) {
+  const at = Date.parse(a.occurredAt);
+  const bt = Date.parse(b.occurredAt);
+  if (at !== bt) return at > bt ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id > b.id ? -1 : 1;
+}
+
+// mergeEvents adds the events the page has not seen to feed.order, keeping
+// it sorted, and returns how many were new.
+function mergeEvents(feed, incoming) {
+  let added = 0;
+  for (const event of incoming) {
+    if (!event || typeof event.id !== 'string' || feed.byId.has(event.id)) continue;
+    feed.byId.set(event.id, event);
+    let index = feed.order.findIndex((known) => compareEvents(event, known) < 0);
+    if (index === -1) index = feed.order.length;
+    feed.order.splice(index, 0, event);
+    added++;
+  }
+  return added;
+}
+
+// compactValue renders one value of an event's data on a single line. A
+// player identity (section 8.2) reads as platform:id; anything else nested
+// is JSON. Every result is text.
+function compactValue(value) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object') return String(value);
+  if (!Array.isArray(value) && typeof value.platform === 'string' && typeof value.id === 'string'
+      && Object.keys(value).length === 2) {
+    return value.platform + ':' + value.id;
+  }
+  return JSON.stringify(value);
+}
+
+const EVENT_SUMMARY_MAX = 240;
+
+function summarizeEventData(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
+  const parts = Object.entries(data).map(([key, value]) => key + ': ' + compactValue(value));
+  const line = parts.join(', ');
+  return line.length > EVENT_SUMMARY_MAX ? line.slice(0, EVENT_SUMMARY_MAX - 1) + '…' : line;
+}
+
+// declaredEventNames maps the custom event types a manifest declares
+// (section 6.3) to their display names; the feed labels a matching event
+// with its name beside the type. Declaration is advisory, so an undeclared
+// type simply has no label.
+function declaredEventNames(manifest) {
+  const names = new Map();
+  const body = manifest && manifest.manifest ? manifest.manifest : {};
+  for (const declared of Array.isArray(body.events) ? body.events : []) {
+    if (declared && typeof declared.id === 'string' && typeof declared.name === 'string' && declared.name) {
+      names.set(declared.id, declared.name);
+    }
+  }
+  return names;
+}
+
+function eventTypeSuggestions(names) {
+  const namespaces = new Set(['core']);
+  const suggestions = new Set(['*']);
+  for (const type of [...CORE_EVENT_TYPES, ...names.keys()]) {
+    suggestions.add(type);
+    const dot = type.indexOf('.');
+    if (dot > 0) namespaces.add(type.slice(0, dot));
+  }
+  for (const namespace of namespaces) suggestions.add(namespace + '.*');
+  return [...suggestions];
+}
+
+function eventRow(event, names) {
+  const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  const summary = summarizeEventData(data);
+  const hasData = Object.keys(data).length > 0;
+  const custom = !event.type.startsWith('core.');
+  const name = names.get(event.type);
+  return el('tr', { 'data-event-id': event.id, 'data-event-type': event.type },
+    el('td', { class: 'when', title: 'received ' + formatTime(event.receivedAt) }, formatTime(event.occurredAt)),
+    el('td', {},
+      el('span', { class: 'mono type' }, event.type), ' ',
+      badge(custom ? 'custom' : 'core', custom ? 'custom' : 'core'),
+      name ? el('span', { class: 'muted' }, ' ', name) : null),
+    el('td', { class: 'data' }, hasData
+      ? el('details', {},
+        el('summary', {}, summary),
+        el('pre', {}, pretty(data)))
+      : el('span', { class: 'muted' }, 'no data')));
+}
+
+async function viewEvents(app, route, seq) {
+  const { server, manifest } = await loadServerAndManifest(route.serverId);
+  if (seq !== renderSeq) return;
+  setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name, href: serverHref(server.id) }, { label: 'Events' }]);
+  clear(app);
+
+  const names = declaredEventNames(manifest);
+  const feed = { byId: new Map(), order: [], nextCursor: null };
+  const follow = route.follow;
+  const types = route.types;
+
+  // The filter and the follow switch are both part of the route: applying
+  // either navigates, and the view starts over from the hub's first page.
+  const go = (nextTypes, nextFollow) => {
+    const next = eventsHref(server.id, nextTypes, nextFollow);
+    if (location.hash === next) {
+      render();
+    } else {
+      location.hash = next;
+    }
+  };
+  const list = el('datalist', { id: 'event-types' }, eventTypeSuggestions(names).map((type) => el('option', { value: type })));
+  const filterInput = el('input', {
+    type: 'text', id: 'event-filter', name: 'type', list: 'event-types', value: types.join(' '),
+    placeholder: 'core.player.* example-mod.raid.started', spellcheck: 'false', autocomplete: 'off',
+  });
+  const followBox = el('input', { type: 'checkbox', id: 'event-follow' });
+  followBox.checked = follow;
+  followBox.addEventListener('change', () => { go(types, followBox.checked); });
+  const filterForm = el('form', {
+    class: 'card feed-controls', id: 'event-filter-form',
+    onsubmit: (event) => {
+      event.preventDefault();
+      const terms = [...new Set(filterInput.value.split(/[\s,]+/).map((term) => term.trim()).filter(Boolean))];
+      go(terms, followBox.checked);
+    },
+  },
+  el('label', { class: 'field' },
+    el('span', { class: 'name' }, 'Type filter'),
+    el('span', { class: 'filter-row' }, filterInput, list, el('button', { type: 'submit', class: 'small', id: 'event-filter-apply' }, 'Apply')),
+    el('span', { class: 'hint' }, 'Exact types or {namespace}.* patterns, separated by spaces; empty shows every type the token may read.')),
+  el('label', { class: 'field inline' }, followBox,
+    el('span', { class: 'name' }, 'Follow: check for new events every ' + (EVENT_FEED_REFRESH_MS / 1000) + ' s')));
+
+  const status = el('p', { class: 'muted', id: 'event-status' }, 'Loading…');
+  const problem = el('div', { class: 'error', id: 'event-error', role: 'alert', hidden: true });
+  const tbody = el('tbody', {});
+  const table = el('table', { id: 'events', hidden: true },
+    el('thead', {}, el('tr', {}, el('th', {}, 'When'), el('th', {}, 'Type'), el('th', {}, 'Data'))),
+    tbody);
+  const empty = el('p', { class: 'notice', id: 'events-empty', hidden: true },
+    'No events' + (types.length > 0 ? ' match this filter' : ' yet') +
+    '. Events arrive in event.batch envelopes from the plugin (protocol section 8.1).');
+  const older = el('button', { type: 'button', id: 'events-older', hidden: true }, 'Load older');
+  app.append(
+    el('h1', {}, server.name, ' ', badge(server.linkState || 'unknown', server.linkState),
+      el('span', { class: 'muted title-tail' }, ' event feed')),
+    filterForm, problem, status, empty, table,
+    el('div', { class: 'actions-row' }, older));
+
+  // Rows are keyed by event id and moved rather than rebuilt, so an open
+  // <details> stays open across a follow tick and an insertion above it.
+  const rows = new Map();
+  const draw = (fresh) => {
+    for (const event of feed.order) {
+      let row = rows.get(event.id);
+      if (!row) {
+        row = eventRow(event, names);
+        if (fresh) row.classList.add('new');
+        rows.set(event.id, row);
+      }
+      tbody.append(row);
+    }
+    table.hidden = feed.order.length === 0;
+    empty.hidden = feed.order.length > 0;
+    older.hidden = !feed.nextCursor;
+    status.textContent = (feed.order.length === 0 ? 'No events shown' : feed.order.length + ' event' + (feed.order.length === 1 ? '' : 's') + ' shown, newest first') +
+      (follow ? '; following' : '; not following') +
+      (feed.nextCursor ? '; older events are available' : '');
+  };
+  const showProblem = (err) => {
+    clear(problem);
+    problem.append(el('strong', {}, err.code ? err.code + ': ' : ''), err.message || String(err));
+    problem.hidden = false;
+  };
+
+  const query = (cursor) => {
+    const params = new URLSearchParams();
+    for (const term of types) params.append('type', term);
+    params.set('limit', String(EVENT_PAGE_SIZE));
+    if (cursor) params.set('cursor', cursor);
+    return api('GET', '/servers/' + encodeURIComponent(server.id) + '/events?' + params.toString());
+  };
+
+  // The first page. A filter the hub refuses (bad_request) or the token
+  // does not cover (forbidden) is shown beside the form, which stays so the
+  // operator can change it.
+  let page;
+  try {
+    page = await query(null);
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    if (err instanceof ApiError && err.status === 401) throw err;
+    status.textContent = 'The feed could not be read.';
+    showProblem(err);
+    return;
+  }
+  if (seq !== renderSeq) return;
+  mergeEvents(feed, page.events || []);
+  feed.nextCursor = page.nextCursor || null;
+  draw(false);
+
+  let loadingOlder = false;
+  older.addEventListener('click', async () => {
+    if (loadingOlder || !feed.nextCursor) return;
+    loadingOlder = true;
+    older.disabled = true;
+    try {
+      const next = await query(feed.nextCursor);
+      if (seq !== renderSeq) return;
+      mergeEvents(feed, next.events || []);
+      feed.nextCursor = next.nextCursor || null;
+      problem.hidden = true;
+      draw(false);
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      if (err instanceof ApiError && err.status === 401) {
+        signOut('The hub rejected this token.');
+        return;
+      }
+      showProblem(err);
+    } finally {
+      loadingOlder = false;
+      older.disabled = false;
+    }
+  });
+
+  if (!follow) return;
+  let inFlight = false;
+  const tick = async () => {
+    // A hidden tab keeps its timer but does not spend requests on a page
+    // nobody is watching; the next visible tick catches up.
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    try {
+      const latest = await query(null);
+      if (seq !== renderSeq) return;
+      problem.hidden = true;
+      mergeEvents(feed, latest.events || []);
+      // A feed that had reached its end can grow past one page while it is
+      // followed; the hub's cursor from this page then names where the
+      // unseen remainder starts. A cursor already held is deeper (it came
+      // from an older page) and is kept.
+      if (!feed.nextCursor && latest.nextCursor) feed.nextCursor = latest.nextCursor;
+      draw(true);
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      if (err instanceof ApiError && err.status === 401) {
+        signOut('The hub rejected this token.');
+        return;
+      }
+      showProblem(err);
+    } finally {
+      inFlight = false;
+    }
+  };
+  const timer = setInterval(tick, EVENT_FEED_REFRESH_MS);
+  teardown = () => clearInterval(timer);
 }
 
 // ---------------------------------------------------------------------------
