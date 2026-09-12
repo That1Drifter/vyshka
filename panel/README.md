@@ -111,9 +111,13 @@ the tiles), directories are never listed, and `{world}` is one path segment of l
 digits, dots, dashes, and underscores. A world directory, and its `tiles` directory, may be
 a symlink or junction to a dataset built elsewhere; each is opened as a root and the file
 opened inside it, so nothing beneath `tiles` can reach outside it, and the manifest and a
-tile may not themselves be links (a world whose manifest is one is not listed). Missing and
-unreachable files are answered in the protocol's error shape; an unsatisfiable `Range` or a
-failed precondition gets Go's plain answer. Tiles are answered with `Cache-Control: public,
+tile may not themselves be links (a world whose manifest is one is not listed; the check
+runs after the open and requires the named and the opened file to be the same file with the
+same size and time, so a swap in between refuses). The one accepted limit: on a filesystem
+that reports no file identity, a local writer who installs a manifest linked to a build
+intermediate and swaps it for a same-sized, same-timed regular file during a request gets
+that intermediate served once. Missing and unreachable files are answered in the protocol's
+error shape; an unsatisfiable `Range` or a failed precondition gets Go's plain answer. Tiles are answered with `Cache-Control: public,
 max-age=3600`; the index and manifests with `no-cache`. The surface is unauthenticated
 like the page itself, so install only imagery you are prepared to serve to anyone who can
 reach the hub.

@@ -66,8 +66,12 @@ point if needed.
   boundary is enforced by the open itself and nothing beneath the tiles can reach outside
   them (the third round added that a root follows a relative link inside itself, so a
   manifest linked to an intermediate beside it was still served: the manifest and a tile
-  may not themselves be links, checked after the open against the file it opened so a
-  swap in between refuses). It also found the over-budget placeholder skipped cache eviction, and that
+  may not themselves be links, checked after the open against the file it opened, by
+  identity, size, and time, so a swap in between refuses; the fourth and fifth rounds
+  narrowed the remaining case to a filesystem that reports no file identity, a manifest the
+  operator linked to an intermediate, and a local writer swapping it for a same-sized,
+  same-timed file mid-request, which is recorded as the accepted limit rather than closed
+  with a platform-specific open). It also found the over-budget placeholder skipped cache eviction, and that
   an unsatisfiable range or a failed precondition is answered in Go's plain form rather
   than the protocol's, which is now documented rather than claimed otherwise.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A

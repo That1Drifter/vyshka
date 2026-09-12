@@ -206,8 +206,15 @@ func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
 	// rather than serves. Identity is the filesystem's, and a filesystem
 	// that reports none (some network shares answer every file with the
 	// same zero id) would equate any two files, so the size and
-	// modification time must agree as well. A directory link beneath the
-	// tiles is followed by the root only while it stays inside the tiles.
+	// modification time must agree as well. That is the accepted limit:
+	// on such a filesystem, a local writer who installs a manifest that
+	// links to an intermediate and then swaps it for a regular file of
+	// the same size and time during a request has the intermediate
+	// served once. Refusing a final link atomically would need an open
+	// the root does not offer (and NtCreateFile on Windows), for a file
+	// the operator built and installed themselves. A directory link
+	// beneath the tiles is followed by the root only while it stays
+	// inside the tiles.
 	denoted, err := root.Lstat(name)
 	if err != nil || denoted.Mode()&fs.ModeSymlink != 0 || !os.SameFile(denoted, info) ||
 		denoted.Size() != info.Size() || !denoted.ModTime().Equal(info.ModTime()) {
