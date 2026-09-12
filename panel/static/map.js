@@ -21,9 +21,18 @@
 // plugin-supplied text.
 
 const OVERZOOM = 2;
-const UNDERZOOM = 2;
 const MAX_CACHED_TILES = 512;
 const DRAG_THRESHOLD_PX = 4;
+// Bounds on what a manifest may describe, so that every index the renderer
+// computes stays an exact integer and every loop it runs is short: a raster
+// side of a million pixels is a thousand kilometres at a metre per pixel.
+const MAX_RASTER_SIDE = 1 << 20;
+const MAX_TILE_SIZE = 4096;
+const MAX_ZOOM_LEVEL = 24;
+// The most tiles one frame will draw. A view that needs more (a tileset
+// whose lowest level is still huge, fitted to a small viewport) is drawn
+// as a placeholder rather than spun on.
+const MAX_TILES_PER_FRAME = 4096;
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -68,13 +77,15 @@ export function validateManifest(raw) {
   }
   if (!(bounds.xmin < bounds.xmax) || !(bounds.zmin < bounds.zmax)) throw new Error('the manifest bounds are empty');
   const raster = raw.raster;
-  if (!raster || typeof raster !== 'object' || !positiveInteger(raster.width) || !positiveInteger(raster.height)) {
-    throw new Error('the manifest raster must carry a positive integer width and height');
+  if (!raster || typeof raster !== 'object' || !positiveInteger(raster.width) || !positiveInteger(raster.height)
+      || raster.width > MAX_RASTER_SIDE || raster.height > MAX_RASTER_SIDE) {
+    throw new Error('the manifest raster must carry a positive integer width and height of at most ' + MAX_RASTER_SIDE);
   }
   const tiles = raw.tiles;
-  if (!tiles || typeof tiles !== 'object' || !positiveInteger(tiles.size)
-      || !Number.isInteger(tiles.minZoom) || !Number.isInteger(tiles.maxZoom) || tiles.minZoom > tiles.maxZoom || tiles.minZoom < 0) {
-    throw new Error('the manifest tiles must carry a positive size and integer minZoom <= maxZoom');
+  if (!tiles || typeof tiles !== 'object' || !positiveInteger(tiles.size) || tiles.size > MAX_TILE_SIZE
+      || !Number.isInteger(tiles.minZoom) || !Number.isInteger(tiles.maxZoom) || tiles.minZoom > tiles.maxZoom
+      || tiles.minZoom < 0 || tiles.maxZoom > MAX_ZOOM_LEVEL) {
+    throw new Error('the manifest tiles must carry a size of at most ' + MAX_TILE_SIZE + ' and integer 0 <= minZoom <= maxZoom <= ' + MAX_ZOOM_LEVEL);
   }
   if (typeof tiles.urlTemplate !== 'string' || !['{z}', '{x}', '{y}'].every((token) => tiles.urlTemplate.includes(token))) {
     throw new Error('the manifest tiles.urlTemplate must contain {z}, {x}, and {y}');
@@ -141,11 +152,13 @@ function alignToDevicePixel(value, pixelRatio) {
   return Math.round(value * pixelRatio) / pixelRatio;
 }
 
-// fitZoom is the zoom at which the whole raster fits the viewport.
+// fitZoom is the zoom at which the whole raster fits the viewport. It is
+// not bounded below by the lowest tile level: a tileset without small
+// levels is drawn from its smallest one, downsampled.
 export function fitZoom(manifest, width, height) {
   if (!(width > 0) || !(height > 0)) return manifest.tiles.minZoom;
   const scale = Math.min(width / manifest.raster.width, height / manifest.raster.height);
-  return clamp(manifest.tiles.maxZoom + Math.log2(scale), manifest.tiles.minZoom - UNDERZOOM, manifest.tiles.maxZoom + OVERZOOM);
+  return Math.min(manifest.tiles.maxZoom + Math.log2(scale), manifest.tiles.maxZoom + OVERZOOM);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +199,7 @@ export function createMap(container, options = {}) {
     highlighted: null,
     tiles: new Map(),   // key -> { image, status, lastUsed }
     visibleTiles: new Set(),
+    overBudget: false,
     tileUse: 0,
     drag: null,
     dragMoved: false,
@@ -234,11 +248,15 @@ export function createMap(container, options = {}) {
     });
   };
 
+  // The camera may zoom out to one step below the fit and in to OVERZOOM
+  // steps past the native level.
+  const minCameraZoom = () => fitZoom(state.manifest, state.viewport.width, state.viewport.height) - 1;
+
   const setZoom = (zoom, anchorX = state.viewport.width / 2, anchorY = state.viewport.height / 2) => {
     const manifest = state.manifest;
     if (!manifest) return;
     const before = screenToRaster(anchorX, anchorY);
-    state.camera.zoom = clamp(zoom, manifest.tiles.minZoom - UNDERZOOM, manifest.tiles.maxZoom + OVERZOOM);
+    state.camera.zoom = clamp(zoom, minCameraZoom(), manifest.tiles.maxZoom + OVERZOOM);
     const scale = zoomScale(state.camera.zoom, nativeZoom());
     state.camera.u = before.u - (anchorX - state.viewport.width / 2) / scale;
     state.camera.v = before.v - (anchorY - state.viewport.height / 2) / scale;
@@ -314,6 +332,18 @@ export function createMap(container, options = {}) {
     const endY = clamp(Math.floor((bottom * levelScale - Number.EPSILON) / size), 0, maxTileY);
     const origin = rasterToScreen(0, 0);
     const visible = new Set();
+    if ((endX - startX + 1) * (endY - startY + 1) > MAX_TILES_PER_FRAME) {
+      // Beyond the frame budget: the extent is drawn as a placeholder
+      // and the status says why nothing loads.
+      const topLeft = rasterToScreen(0, 0);
+      const bottomRight = rasterToScreen(manifest.raster.width, manifest.raster.height);
+      context.fillStyle = '#1c221e';
+      context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+      state.visibleTiles = visible;
+      state.overBudget = true;
+      return;
+    }
+    state.overBudget = false;
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
     for (let y = startY; y <= endY; y++) {
@@ -384,7 +414,9 @@ export function createMap(container, options = {}) {
       else if (status === 'error') failed++;
     }
     const total = state.visibleTiles.size;
-    tileStatus.textContent = loaded + '/' + total + ' tiles' + (failed ? ', ' + failed + ' failed' : '');
+    tileStatus.textContent = state.overBudget
+      ? 'too many tiles at this zoom; zoom in'
+      : loaded + '/' + total + ' tiles' + (failed ? ', ' + failed + ' failed' : '');
     tileStatus.dataset.loaded = String(loaded);
     tileStatus.dataset.total = String(total);
     tileStatus.dataset.failed = String(failed);
@@ -430,9 +462,10 @@ export function createMap(container, options = {}) {
 
   stage.addEventListener('pointerdown', (event) => {
     if (!state.manifest || event.button !== 0) return;
-    // A drag that starts on a marker is not captured, so that a press and
-    // release on it still reaches the marker as a click; dragMoved tells
-    // the click apart from a pan that happened to begin there.
+    // A press on a marker is not captured yet, so that a press and release
+    // on it reaches the marker as a click. Once it moves past the drag
+    // threshold it is captured like any other pan, and from then on the
+    // release lands on the stage, so the marker sees no click from it.
     if (!isMarker(event.target)) stage.setPointerCapture(event.pointerId);
     state.drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     state.dragMoved = false;
@@ -451,9 +484,23 @@ export function createMap(container, options = {}) {
         : '';
     }
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
+    // A button released outside the stage on an uncaptured drag was never
+    // seen; the pointer coming back with no button down says so.
+    if (event.pointerType === 'mouse' && event.buttons === 0) {
+      endDrag(event);
+      return;
+    }
     const dx = event.clientX - state.drag.x;
     const dy = event.clientY - state.drag.y;
     if (!state.dragMoved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+    if (!state.dragMoved && !stage.hasPointerCapture(event.pointerId)) {
+      try {
+        stage.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer is no longer active; the release will still arrive
+        // here or be noticed by the buttons check above.
+      }
+    }
     state.dragMoved = true;
     const scale = zoomScale(state.camera.zoom, nativeZoom());
     state.camera.u -= dx / scale;
@@ -467,6 +514,7 @@ export function createMap(container, options = {}) {
   const endDrag = (event) => {
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     state.drag = null;
+    state.dragMoved = false;
     stage.classList.remove('dragging');
   };
   stage.addEventListener('pointerup', endDrag);
@@ -526,17 +574,23 @@ export function createMap(container, options = {}) {
       if (!manifest) return;
       const existing = new Map(state.markers.map((marker) => [marker.key, marker]));
       const next = [];
+      const seen = new Set();
       for (const given of markers) {
         const point = worldPoint(manifest, given.position);
-        if (!point) continue;
+        // One marker per key: a key given twice is plotted once, where it
+        // was given first, so that no node can outlive its key.
+        if (!point || seen.has(given.key)) continue;
+        seen.add(given.key);
         let marker = existing.get(given.key);
         if (marker) {
           existing.delete(given.key);
         } else {
           const node = el('button', { type: 'button', class: 'map-marker', 'data-marker-key': given.key },
             el('span', { class: 'map-marker-dot' }), el('span', { class: 'map-marker-label' }, ''));
+          // A pan that began on this marker never reaches here: it was
+          // captured by the stage, and the click went there. Keyboard
+          // activation arrives as a click too.
           node.addEventListener('click', () => {
-            if (state.dragMoved) return;
             if (typeof options.onSelect === 'function') options.onSelect(given.key);
           });
           marker = { key: given.key, node };

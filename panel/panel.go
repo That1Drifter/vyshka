@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -69,10 +70,7 @@ func NewHandler(cfg Config) http.Handler {
 		panic("panel: embedded static directory missing: " + err.Error())
 	}
 	files := http.FileServerFS(root)
-	var maps fs.FS
-	if cfg.MapsDir != "" {
-		maps = os.DirFS(cfg.MapsDir)
-	}
+	maps := mapsFrom(cfg.MapsDir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
 		header.Set("Content-Security-Policy", contentSecurityPolicy)
@@ -81,7 +79,7 @@ func NewHandler(cfg Config) http.Handler {
 		header.Set("Referrer-Policy", "no-referrer")
 		header.Set("Cache-Control", "no-cache")
 		if rest, isMap := strings.CutPrefix(r.URL.Path, "/maps/"); isMap {
-			serveMap(w, r, maps, rest)
+			maps.serve(w, r, rest)
 			return
 		}
 		// The panel is flat: its files live at the root and nowhere else.
@@ -115,7 +113,21 @@ func shipped(root fs.FS, path string) bool {
 // cannot mean anything to a path or a URL.
 var worldID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// serveMap answers the tileset surface: "/maps/" is the index of installed
+// mapsDir is the tileset surface over one directory; a nil *mapsDir serves
+// nothing.
+type mapsDir struct {
+	dir  string
+	fsys fs.FS
+}
+
+func mapsFrom(dir string) *mapsDir {
+	if dir == "" {
+		return nil
+	}
+	return &mapsDir{dir: dir, fsys: os.DirFS(dir)}
+}
+
+// serve answers the tileset surface: "/maps/" is the index of installed
 // worlds, "/maps/{world}/manifest.json" a world's dataset contract, and
 // "/maps/{world}/tiles/..." its tiles. Nothing else under a world directory
 // is reachable: a build leaves large intermediates (a lossless master
@@ -123,13 +135,19 @@ var worldID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // should not stream those to whoever guesses a name. Directories are never
 // listed. Tiles are immutable per dataset and may be cached; the index and
 // the manifest are revalidated like the page.
-func serveMap(w http.ResponseWriter, r *http.Request, maps fs.FS, rest string) {
-	if maps == nil {
+//
+// Links are followed at two places only, because an operator builds a
+// dataset elsewhere and links it in: the world directory itself, and its
+// tiles directory. What a tile path resolves to must lie inside the
+// resolved tiles directory, so a link under it cannot reach a build
+// intermediate beside the tiles or anything outside the maps directory.
+func (m *mapsDir) serve(w http.ResponseWriter, r *http.Request, rest string) {
+	if m == nil {
 		notFound(w, r)
 		return
 	}
 	if rest == "" {
-		worlds, err := installedWorlds(maps)
+		worlds, err := m.installedWorlds()
 		if err != nil {
 			serverError(w, "the maps directory could not be read")
 			return
@@ -142,18 +160,35 @@ func serveMap(w http.ResponseWriter, r *http.Request, maps fs.FS, rest string) {
 		notFound(w, r)
 		return
 	}
-	if file != "manifest.json" && !strings.HasPrefix(file, "tiles/") {
-		notFound(w, r)
-		return
-	}
 	// The raw segment is validated, not a cleaned one: a climb inside it
 	// ("tiles/../master.png") must be refused here rather than resolved.
-	if !fs.ValidPath(file) {
+	if !fs.ValidPath(file) || (file != "manifest.json" && !strings.HasPrefix(file, "tiles/")) {
 		notFound(w, r)
 		return
 	}
-	name := world + "/" + file
-	info, err := fs.Stat(maps, name)
+	target, err := filepath.EvalSymlinks(filepath.Join(m.dir, world, filepath.FromSlash(file)))
+	if err != nil {
+		notFound(w, r)
+		return
+	}
+	if file != "manifest.json" {
+		tilesRoot, err := filepath.EvalSymlinks(filepath.Join(m.dir, world, "tiles"))
+		if err != nil || !within(tilesRoot, target) {
+			notFound(w, r)
+			return
+		}
+	}
+	// The file is opened and served here rather than through ServeFileFS,
+	// which would redirect a path ending in index.html and answer an open
+	// failure in its own plain text; every refusal from this surface keeps
+	// the protocol's shape.
+	handle, err := os.Open(target)
+	if err != nil {
+		notFound(w, r)
+		return
+	}
+	defer handle.Close()
+	info, err := handle.Stat()
 	if err != nil || info.IsDir() {
 		notFound(w, r)
 		return
@@ -161,7 +196,17 @@ func serveMap(w http.ResponseWriter, r *http.Request, maps fs.FS, rest string) {
 	if file != "manifest.json" {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
-	http.ServeFileFS(w, r, maps, name)
+	http.ServeContent(w, r, path.Base(file), info.ModTime(), handle)
+}
+
+// within reports whether target lies strictly inside root, both already
+// resolved.
+func within(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // installedWorlds lists the world directories that hold a manifest.json, in
@@ -171,8 +216,8 @@ func serveMap(w http.ResponseWriter, r *http.Request, maps fs.FS, rest string) {
 // is decided through any link it is (a symlink or a Windows junction to a
 // dataset built elsewhere), the same way its files are served, so that a
 // world that answers is a world that is listed.
-func installedWorlds(maps fs.FS) ([]string, error) {
-	entries, err := fs.ReadDir(maps, ".")
+func (m *mapsDir) installedWorlds() ([]string, error) {
+	entries, err := fs.ReadDir(m.fsys, ".")
 	if err != nil {
 		return nil, err
 	}
@@ -181,12 +226,12 @@ func installedWorlds(maps fs.FS) ([]string, error) {
 		if !worldID.MatchString(entry.Name()) {
 			continue
 		}
-		dir, err := fs.Stat(maps, entry.Name())
+		dir, err := fs.Stat(m.fsys, entry.Name())
 		if err != nil || !dir.IsDir() {
 			// A dangling link is not a world either.
 			continue
 		}
-		info, err := fs.Stat(maps, path.Join(entry.Name(), "manifest.json"))
+		info, err := fs.Stat(m.fsys, path.Join(entry.Name(), "manifest.json"))
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

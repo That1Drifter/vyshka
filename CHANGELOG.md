@@ -40,7 +40,24 @@ point if needed.
   WebP tile pyramid in the manifest shape the panel reads, with a seam audit over every
   source overlap, a standalone inspection viewer, and a loopback preview server. Generated
   game assets stay in the ignored scratch directory; distribution of a built dataset is the
-  operator's call.
+  operator's call. The review found eleven holes, each now closed and most graded by a
+  test: a symlink under a world's tiles could reach a build intermediate beside them or any
+  file outside the maps directory (links are now honoured at the world and its tiles
+  directory only, and a tile must resolve inside the resolved tiles directory); a manifest
+  with a raster of 1e20 pixels passed validation and spun the renderer on an index past
+  2^53 (dimensions, tile size, and zoom levels are now capped and a frame draws at most
+  4096 tiles); joining platform and id with a colon merged two distinct identities and
+  left a marker behind (the key is now the encoded tuple); a drag begun on a marker and
+  released outside the stage kept panning, and any finished drag disabled keyboard
+  activation of markers (a drag past the threshold is captured, a release seen through
+  the buttons state ends it, and the click guard is gone); a navigation during the first
+  snapshot read leaked the widget (teardown is registered before it); an id with a line
+  break was silently dispatched without it (the form refuses to preselect what its field
+  cannot hold); an unreadable maps index blocked the player list (discovery failures are
+  noted and the list loads); fit was clamped by the lowest tile level; ServeFileFS
+  redirected a tile named index.html and answered open failures in plain text (files are
+  opened and served by the handler); and the spike's build lock could overwrite a
+  completed dataset or delete another build's lock.
 - 2026-09-12: panel event feed (issue #47), the second of the three M4 panel views. A
   per-server view at `#/servers/{id}/events` over the section 8.5 query: newest first in the
   hub's order, a type filter in the hub's grammar (exact types, `{namespace}.*`, `*`,

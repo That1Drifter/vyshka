@@ -944,7 +944,11 @@ function snapshotPlayers(response) {
     if (!entry || !entry.player || typeof entry.player.id !== 'string' || entry.player.id === '') continue;
     const platform = typeof entry.player.platform === 'string' ? entry.player.platform : '';
     players.push({
-      key: platform + ':' + entry.player.id,
+      // The key is the identity tuple, encoded so that no two identities
+      // share one: platform and id may each contain any character, a
+      // colon included, so joining them with one would not do.
+      key: JSON.stringify([platform, entry.player.id]),
+      identity: platform + ':' + entry.player.id,
       id: entry.player.id,
       platform,
       name: typeof entry.name === 'string' ? entry.name : '',
@@ -967,12 +971,25 @@ function positionText(manifest, position) {
 async function viewMap(app, route, seq) {
   const server = await api('GET', '/servers/' + encodeURIComponent(route.serverId));
   if (seq !== renderSeq) return;
-  const [reported, index] = await Promise.all([reportedWorld(server.id), fetchPanelJSON(MAPS_PATH)]);
+  // Finding the world and the installed maps is imagery, not the view: a
+  // failure there (an unreadable maps directory, a hub error on the events
+  // read) is noted beside the map controls, and the player list still
+  // loads. Only a rejected token stops the view.
+  const discoveryProblems = [];
+  const degrade = (what) => (err) => {
+    if (err instanceof ApiError && err.status === 401) throw err;
+    discoveryProblems.push(what + ': ' + (err.message || String(err)));
+    return null;
+  };
+  const [reported, index] = await Promise.all([
+    reportedWorld(server.id).catch(degrade('the reported world could not be read')),
+    fetchPanelJSON(MAPS_PATH).catch(degrade('the installed maps could not be listed')),
+  ]);
   if (seq !== renderSeq) return;
   const installed = index && index.body && Array.isArray(index.body.worlds)
     ? index.body.worlds.filter((world) => typeof world === 'string' && world !== '')
     : [];
-  const world = route.world || reported;
+  const world = route.world || reported || '';
 
   // The tileset for the world, when there is one. A manifest the panel
   // cannot read is reported beside the map controls, not thrown: the list
@@ -1006,7 +1023,10 @@ async function viewMap(app, route, seq) {
       worldSelect,
       el('span', { class: 'hint' }, installed.length > 0
         ? 'Installed maps: ' + installed.join(', ') + '. The server reports its world in core.server.start' + (reported ? ' (' + reported + ')' : ' (none readable)') + '.'
-        : 'No map tilesets are installed on this hub (see panel/README.md, "Map tilesets"); players are listed with their positions as numbers.')));
+        : 'No map tilesets are installed on this hub (see panel/README.md, "Map tilesets"); players are listed with their positions as numbers.'),
+      discoveryProblems.length > 0
+        ? el('span', { class: 'field-error', id: 'map-discovery-error' }, discoveryProblems.join('; '))
+        : null));
 
   const status = el('p', { class: 'muted', id: 'map-status' }, 'Loading…');
   const problem = el('div', { class: 'error', id: 'map-error', role: 'alert', hidden: true });
@@ -1048,6 +1068,13 @@ async function viewMap(app, route, seq) {
     });
     map.setDataset(manifest, dataset.baseURL);
   }
+  // Registered before the first snapshot read, so a navigation during it
+  // still disposes the widget; the timers join once they exist.
+  let timers = [];
+  teardown = () => {
+    for (const timer of timers) clearInterval(timer);
+    if (map) map.destroy();
+  };
 
   const draw = () => {
     clear(tbody);
@@ -1057,7 +1084,7 @@ async function viewMap(app, route, seq) {
       if (point) plotted++;
       const row = el('tr', { 'data-player-key': player.key, 'data-player-id': player.id },
         el('td', {}, player.name || el('span', { class: 'muted' }, 'unnamed')),
-        el('td', { class: 'mono' }, player.key),
+        el('td', { class: 'mono' }, player.identity),
         el('td', { class: 'position' }, Array.isArray(player.position)
           ? positionText(manifest, player.position)
           : el('span', { class: 'muted' }, 'no position')),
@@ -1150,13 +1177,7 @@ async function viewMap(app, route, seq) {
       inFlight = false;
     }
   };
-  const timer = setInterval(tick, MAP_REFRESH_MS);
-  const ager = setInterval(updateStatus, 1000);
-  teardown = () => {
-    clearInterval(timer);
-    clearInterval(ager);
-    if (map) map.destroy();
-  };
+  timers = [setInterval(tick, MAP_REFRESH_MS), setInterval(updateStatus, 1000)];
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,8 +1448,14 @@ function stringField(schema, opts) {
     node: wrapped.node, setError: wrapped.setError,
     entered() { return input.value !== initial; },
     // set fills the field in from outside the form, as a preselected
-    // target arriving in the route does; it counts as entered.
-    set(value) { input.value = value; },
+    // target arriving in the route does; it counts as entered. It reports
+    // whether the field holds the value exactly: a text input drops line
+    // breaks, and an identity is any string, so a value it cannot hold
+    // must not be dispatched as something else.
+    set(value) {
+      input.value = value;
+      return input.value === value;
+    },
     read(errors, present) {
       const value = input.value;
       if (value === '') {
@@ -1777,8 +1804,13 @@ async function viewAction(app, route, seq) {
   if (target) params.fieldsByPath.set('referenceKey', target);
   // A player picked on the map arrives in the route and lands in the
   // target field, which stays editable: the preselection is a convenience,
-  // not a lock.
-  if (target && route.player && action.context === 'player') target.set(route.player);
+  // not a lock. An id the field cannot hold exactly is not preselected at
+  // all, and the form says so.
+  let unrepresentable = null;
+  if (target && route.player && action.context === 'player' && !target.set(route.player)) {
+    target.set('');
+    unrepresentable = 'The preselected player id contains characters this field cannot hold; use the API to target it.';
+  }
 
   const danger = action.danger || 'none';
   let confirmBox = null;
@@ -1858,6 +1890,7 @@ async function viewAction(app, route, seq) {
     action.context ? badge(action.context) : null, ' ',
     danger !== 'none' ? badge(danger, danger) : null),
   el('p', { class: 'muted mono' }, action.code),
+  unrepresentable ? el('div', { class: 'error', id: 'target-unrepresentable', role: 'alert' }, unrepresentable) : null,
   target ? target.node : null,
   params.node,
   confirmBox ? el('label', { class: 'field inline ' + danger }, confirmBox,

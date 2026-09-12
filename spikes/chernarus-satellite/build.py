@@ -670,6 +670,15 @@ def acquire_build_lock(output: Path) -> Path:
 
 
 def release_build_lock(lock_path: Path) -> None:
+    """Remove this process's lock, and only this process's: after an explicit
+    release another build may hold a lock at the same path, and the exit hook
+    of the first must not delete it."""
+    try:
+        owner = lock_path.read_text(encoding="ascii")
+    except FileNotFoundError:
+        return
+    if owner.strip() != f"pid={os.getpid()}":
+        return
     try:
         lock_path.unlink()
     except FileNotFoundError:
@@ -701,12 +710,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not 1 <= args.webp_quality <= 100:
         raise BuildError("WebP quality must be between 1 and 100")
     output.mkdir(parents=True, exist_ok=True)
+    # Completion is checked under the lock: a build that finishes between an
+    # unlocked check and the acquisition would otherwise be overwritten.
+    lock_path = acquire_build_lock(output)
     if (output / "manifest.json").exists():
+        release_build_lock(lock_path)
         raise BuildError(
             f"output already contains a completed manifest: {output / 'manifest.json'}; "
             "use a new --output path for a new immutable build"
         )
-    lock_path = acquire_build_lock(output)
 
     archive_identity = file_identity(pbo_path)
     phase = time.perf_counter()

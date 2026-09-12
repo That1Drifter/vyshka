@@ -151,7 +151,8 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 	write("chernarusplus", "manifest.json")
 	write("chernarusplus", "tiles", "0", "0", "0.webp")
 	write("chernarusplus", "tiles", "1", "0", "1.png")
-	write("chernarusplus", "master.png") // a build intermediate beside the tiles
+	write("chernarusplus", "tiles", "0", "0", "index.html") // a tile with FileServer's magic name
+	write("chernarusplus", "master.png")                    // a build intermediate beside the tiles
 	write("enoch", "manifest.json")
 	write("half-built", "tiles", "0", "0", "0.webp") // no manifest: not a world
 	write("bad name", "manifest.json")               // outside the world shape
@@ -170,10 +171,44 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantWorlds := "chernarusplus,enoch"
+	linked := false
 	if err := os.Symlink(built, filepath.Join(dir, "sakhal")); err == nil {
 		wantWorlds = "chernarusplus,enoch,sakhal"
+		linked = true
+		// Links are honoured at the world and at its tiles directory, and
+		// nowhere below: a link under tiles that leaves the resolved tiles
+		// directory, whether to a build intermediate beside it or to a
+		// file outside the maps directory, is not a tile.
+		outside := filepath.Join(t.TempDir(), "secret.txt")
+		if err := os.WriteFile(outside, []byte("not a tile"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tilesElsewhere := filepath.Join(t.TempDir(), "sakhal-tiles")
+		if err := os.MkdirAll(filepath.Join(tilesElsewhere, "0", "0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tilesElsewhere, "0", "0", "0.webp"), []byte("linked tile"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(tilesElsewhere, filepath.Join(built, "tiles")); err != nil {
+			t.Fatal(err)
+		}
+		for name, target := range map[string]string{
+			"leak": outside,                                      // a file outside the maps directory
+			"back": built,                                        // the world itself, beside its intermediates
+			"self": filepath.Join(tilesElsewhere, "0", "0"),      // a link that stays inside the tiles
+			"maps": dir,                                          // the whole maps directory
+			"up":   filepath.Join(dir, "chernarusplus", "tiles"), // another world's tiles
+		} {
+			if err := os.Symlink(target, filepath.Join(tilesElsewhere, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(built, "master.png"), []byte("intermediate"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	} else {
-		t.Logf("symlink not available here, the linked world is not exercised: %v", err)
+		t.Logf("symlink not available here, the linked cases are not exercised: %v", err)
 	}
 	handler := panel.NewHandler(panel.Config{MapsDir: dir})
 	get := func(path string) *httptest.ResponseRecorder {
@@ -213,26 +248,38 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		t.Errorf("manifest Content-Type = %q", got)
 	}
 
-	for path, contentType := range map[string]string{
+	served := map[string]string{
 		"/maps/chernarusplus/tiles/0/0/0.webp": "image/webp",
 		"/maps/chernarusplus/tiles/1/0/1.png":  "image/png",
-	} {
+		// Served as the file it is: FileServer would have redirected it.
+		"/maps/chernarusplus/tiles/0/0/index.html": "text/html",
+	}
+	if linked {
+		served["/maps/sakhal/tiles/0/0/0.webp"] = "image/webp"    // through the linked world and its linked tiles
+		served["/maps/sakhal/tiles/self/0.webp"] = "image/webp"   // a link that stays inside the tiles
+		served["/maps/sakhal/manifest.json"] = "application/json" // the linked world's manifest
+	}
+	for path, contentType := range served {
 		tile := get(path)
 		if tile.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d %q", path, tile.Code, tile.Body.String())
 		}
-		if got := tile.Header().Get("Content-Type"); got != contentType {
+		if got := tile.Header().Get("Content-Type"); !strings.HasPrefix(got, contentType) {
 			t.Errorf("GET %s Content-Type = %q, want %s", path, got, contentType)
 		}
-		if got := tile.Header().Get("Cache-Control"); got != "public, max-age=3600" {
-			t.Errorf("GET %s Cache-Control = %q, want the tile cache policy", path, got)
+		wantCache := "public, max-age=3600"
+		if strings.HasSuffix(path, "manifest.json") {
+			wantCache = "no-cache"
+		}
+		if got := tile.Header().Get("Cache-Control"); got != wantCache {
+			t.Errorf("GET %s Cache-Control = %q, want %s", path, got, wantCache)
 		}
 		if got := tile.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Errorf("GET %s X-Content-Type-Options = %q", path, got)
 		}
 	}
 
-	for _, path := range []string{
+	refused := []string{
 		"/maps/chernarusplus/master.png",             // beside the tiles, not served
 		"/maps/chernarusplus/tiles",                  // a directory
 		"/maps/chernarusplus/tiles/",                 // a directory listing
@@ -246,7 +293,18 @@ func TestMapsServeIndexManifestAndTiles(t *testing.T) {
 		"/maps/dir-as-manifest/manifest.json",        // a directory named like the manifest
 		"/maps/stray.txt",                            // not a world
 		"/maps/chernarusplus/tiles/0/0/missing.webp", // a tile that is not there
-	} {
+	}
+	if linked {
+		refused = append(refused,
+			"/maps/sakhal/tiles/leak",                          // a link out of the maps directory
+			"/maps/sakhal/tiles/back/master.png",               // a link back to the world's intermediates
+			"/maps/sakhal/tiles/back/manifest.json",            // the manifest through the tiles is not a tile
+			"/maps/sakhal/tiles/maps/chernarusplus/master.png", // the whole maps directory through a link
+			"/maps/sakhal/tiles/up/0/0/0.webp",                 // another world's tiles through a link
+			"/maps/sakhal/master.png",                          // the linked world's own intermediate
+		)
+	}
+	for _, path := range refused {
 		recorder := get(path)
 		if path == "/maps/half-built/tiles/0/0/0.webp" {
 			// Served: a tile path is a tile path. The index is the only
