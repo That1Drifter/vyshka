@@ -694,6 +694,15 @@ point if needed.
 
 ### Fixed
 
+- 2026-09-12: the panel and DayZ plugin READMEs put the `state.players` cadence at one
+  snapshot per 25 to 35 s with `pollTimeout` 25. The live map demo on the staging hub
+  measured 50 s, twelve consecutive snapshots with no exception, each received 16 to 25 s
+  after its capture. The floor is two poll cycles rather than one: a queued snapshot waits
+  for the poll already in flight to return before the plugin can send it, and the ack that
+  releases the next capture rides the following poll's response. The earlier figure came
+  from counting held-back log lines rather than `capturedAt` deltas. Documentation only;
+  the plugin and hub are unchanged, and whether a hub should answer a poll that carried
+  envelopes as soon as it applies them (which would halve this) is filed as its own issue.
 - 2026-09-12: DayZ plugin envelope ids carried a date prefix with no year, `dz-90911T...`
   for 2026-09-11 (issue #50). New spike `spikes/dayz-enforce-int-tostring-temporary`
   measured the cause on DayZ 1.29: a pending `int.ToString()` result in an expression ends

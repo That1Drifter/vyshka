@@ -120,10 +120,15 @@ list of characters with an identity attached, alive or not:
 A snapshot is only queued when the previous one has been acked. A snapshot says what *is*,
 so a stale one waiting behind an outage is worth nothing, and a buffer full of them would
 crowd out the events and action results that are worth keeping; the hub keeps the latest
-per type regardless, with `capturedAt` saying how stale it is. Because an ack only arrives
-when the held poll returns, the effective cadence on a healthy link is the longer of the
-configured interval and the poll cycle (with `pollTimeout` 25 that is roughly one snapshot
-per 25 to 35 s); a run of held-back ticks long enough to mean an outage is logged.
+per type regardless, with `capturedAt` saying how stale it is. The cost is a cadence set by
+the poll cycle rather than by `snapshotIntervalSeconds`, and by two cycles rather than one:
+a queued snapshot waits for the poll already in flight to return before it can be sent (up
+to `pollTimeout`), and the ack that releases the next capture rides the *next* poll's
+response (up to `pollTimeout` again). On a healthy link the effective cadence is therefore
+the configured interval rounded up to two poll cycles; measured on a live server with
+`pollTimeout` 25 and `snapshotIntervalSeconds` 10, twelve consecutive snapshots came 50 s
+apart, each received 16 to 25 s after it was captured. A run of held-back ticks long enough
+to mean an outage is logged.
 
 `core.server.stop` is emitted when the mission finishes, which a graceful shutdown reaches
 and a process kill does not: a server killed from the outside leaves no stop event.
