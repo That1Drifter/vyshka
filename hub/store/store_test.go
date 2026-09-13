@@ -153,11 +153,12 @@ func TestMigrationsForBothDialectsAgreeOnVersions(t *testing.T) {
 			differing++
 		}
 	}
-	// 0010_state is the one file with a Postgres spelling (identity column
-	// against AUTOINCREMENT). A new variant is fine, but it should be a
-	// decision, so this count is asserted.
-	if differing != 1 {
-		t.Errorf("%d migrations differ between dialects, want 1 (0010_state)", differing)
+	// 0010_state (identity column against AUTOINCREMENT) and
+	// 0014_wide_integers (BIGINT where SQLite already stores 64 bits) are
+	// the files with a Postgres spelling. A new variant is fine, but it
+	// should be a decision, so this count is asserted.
+	if differing != 2 {
+		t.Errorf("%d migrations differ between dialects, want 2 (0010_state, 0014_wide_integers)", differing)
 	}
 	if _, err := store.MigrationsFor("oracle"); err == nil {
 		t.Error("MigrationsFor accepted an unknown driver")

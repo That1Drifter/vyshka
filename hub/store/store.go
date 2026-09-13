@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -70,7 +71,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		shown = redactPostgresDSN(target)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open %s database: %w", driver, err)
+		return nil, fmt.Errorf("open %s database: %w", driver, redactError(driver, target, err))
 	}
 
 	switch driver {
@@ -93,7 +94,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	defer cancel()
 	if err := raw.PingContext(pingCtx); err != nil {
 		raw.Close()
-		return nil, fmt.Errorf("ping %s database: %w", driver, err)
+		return nil, fmt.Errorf("ping %s database: %w", driver, redactError(driver, target, err))
 	}
 
 	if driver == dialectSQLite {
@@ -148,6 +149,33 @@ func redactPostgresDSN(dsn string) string {
 		redacted.User = url.User(parsed.User.Username())
 	}
 	return redacted.String()
+}
+
+// redactError keeps a driver's open or ping error from carrying the
+// credential out of Open. Connection errors are worth their text (a refused
+// port, a wrong database name), so the password is cut out of the message
+// rather than the message dropped. A URL the driver could not parse gets no
+// text at all: the parser quotes the fragment it choked on, which for an
+// unescaped password is the password.
+func redactError(driver dialect, target string, err error) error {
+	if driver != dialectPostgres {
+		return err
+	}
+	parsed, parseErr := url.Parse(target)
+	if parseErr != nil {
+		return errors.New("the URL does not parse; check its syntax (the driver's message is withheld because it quotes the URL)")
+	}
+	message := err.Error()
+	if password, set := parsed.User.Password(); set && password != "" {
+		message = strings.ReplaceAll(message, password, "<redacted>")
+		if escaped := url.QueryEscape(password); escaped != password {
+			message = strings.ReplaceAll(message, escaped, "<redacted>")
+		}
+	}
+	if strings.Contains(message, target) {
+		message = strings.ReplaceAll(message, target, redactPostgresDSN(target))
+	}
+	return errors.New(message)
 }
 
 // DefaultSQLitePath is the database file used when no DSN is configured.

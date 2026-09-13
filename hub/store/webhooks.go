@@ -654,6 +654,21 @@ func (s *Store) ApplyLinkTransition(ctx context.Context, serverID, from, to stri
 	}
 	defer tx.Rollback()
 
+	// The server row is locked in a statement of its own before the guarded
+	// update runs. The update's own wait on that row would re-evaluate its
+	// predicate against the committed server row, but the live-session
+	// subquery inside it would keep the snapshot the statement started with:
+	// a revocation committing during the wait ends the session, and the
+	// guard would still see it live and fire a restored notification for a
+	// server that can no longer speak. Taken first, the lock makes the
+	// update's snapshot postdate the revocation.
+	switch err := lockServer(ctx, tx, serverID); {
+	case errors.Is(err, ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read server: %w", err)
+	}
+
 	observed := any(nil)
 	if observedLastSeen != nil {
 		observed = formatTime(*observedLastSeen)

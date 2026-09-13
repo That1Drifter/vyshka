@@ -22,7 +22,10 @@ const (
 // rebind rewrites `?` placeholders into the dialect's own. Every query in this
 // package is written with `?`, and every statement goes through a DB or Tx
 // handle that calls this, so no query has to know which engine it runs on.
-// Question marks inside single-quoted literals are left alone.
+// Question marks inside single-quoted literals, `--` line comments, and
+// `/* */` block comments are left alone, and a quote inside a comment does
+// not open a literal. Dollar-quoted strings are not recognised; nothing in
+// this package writes one.
 func (d dialect) rebind(query string) string {
 	if d != dialectPostgres || !strings.Contains(query, "?") {
 		return query
@@ -30,14 +33,36 @@ func (d dialect) rebind(query string) string {
 	var out strings.Builder
 	out.Grow(len(query) + 16)
 	n := 0
-	quoted := false
 	for i := 0; i < len(query); i++ {
 		c := query[i]
 		switch {
 		case c == '\'':
-			quoted = !quoted
-			out.WriteByte(c)
-		case c == '?' && !quoted:
+			// Copy the literal through its closing quote. A doubled quote
+			// inside it closes and reopens, which lands on the same byte.
+			end := strings.IndexByte(query[i+1:], '\'')
+			if end < 0 {
+				out.WriteString(query[i:])
+				return out.String()
+			}
+			out.WriteString(query[i : i+end+2])
+			i += end + 1
+		case c == '-' && i+1 < len(query) && query[i+1] == '-':
+			end := strings.IndexByte(query[i:], '\n')
+			if end < 0 {
+				out.WriteString(query[i:])
+				return out.String()
+			}
+			out.WriteString(query[i : i+end])
+			i += end - 1
+		case c == '/' && i+1 < len(query) && query[i+1] == '*':
+			end := strings.Index(query[i+2:], "*/")
+			if end < 0 {
+				out.WriteString(query[i:])
+				return out.String()
+			}
+			out.WriteString(query[i : i+end+4])
+			i += end + 3
+		case c == '?':
 			n++
 			out.WriteByte('$')
 			out.WriteString(strconv.Itoa(n))
@@ -158,6 +183,20 @@ func (t *Tx) forUpdate() string { return t.d.forUpdate() }
 // session second, the same way StartSession does, so the two can never wait
 // on each other. On SQLite the lock suffix is empty and this is a plain
 // existence check; the single connection is the lock.
+//
+// The order governs the server and session rows. Child rows are locked in
+// whatever order a statement visits them, and the maintenance passes
+// (ExpireActions, PruneSnapshots) run without a server lock because they
+// span every server. Two transactions can therefore still meet over child
+// rows in opposite orders: a poll applying action results while the expiry
+// sweep flips the same actions, or a snapshot trim against the snapshot
+// prune. Postgres detects such a cycle and aborts one side with a deadlock
+// error; nothing is written by the aborted side, the poll answers an error
+// its plugin retries, and the sweep runs again on its next tick. That is
+// the accepted resolution: the cycles need a deadline to pass in the same
+// instant as the write, and ordering every child-row lock across the sweeps
+// would cost each pass a locking pre-read for a case that cannot corrupt
+// state.
 //
 // It returns ErrNotFound when the server does not exist.
 func lockServer(ctx context.Context, tx *Tx, serverID string) error {

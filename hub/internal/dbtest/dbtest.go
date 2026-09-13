@@ -104,8 +104,21 @@ func postgresURL(t *testing.T) string {
 		}
 	})
 
-	test := *parsed
+	return perTestURL(parsed, name)
+}
+
+// perTestURL points the maintenance URL at one test's database. The
+// database is selected by the path, so any query parameter that would
+// override it (libpq's dbname, pgx's database) is dropped: left in place,
+// every test would connect to the maintenance database, migrate and mutate
+// it, and drop an unused database at cleanup.
+func perTestURL(admin *url.URL, name string) string {
+	test := *admin
 	test.Path = "/" + name
+	query := test.Query()
+	query.Del("dbname")
+	query.Del("database")
+	test.RawQuery = query.Encode()
 	return test.String()
 }
 

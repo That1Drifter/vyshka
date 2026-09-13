@@ -16,6 +16,11 @@ func TestRebindRewritesPlaceholdersForPostgresOnly(t *testing.T) {
 		// A question mark inside a literal is data, not a placeholder.
 		{`UPDATE t SET note = 'why?' WHERE id = ?`, `UPDATE t SET note = 'why?' WHERE id = $1`},
 		{`SELECT ? WHERE x = '' AND y = ?`, `SELECT $1 WHERE x = '' AND y = $2`},
+		{`SELECT 'it''s?' , ?`, `SELECT 'it''s?' , $1`},
+		// Comments are copied through, and a quote inside one opens nothing.
+		{"SELECT ? -- why? isn't it\nFROM t WHERE a = ?", "SELECT $1 -- why? isn't it\nFROM t WHERE a = $2"},
+		{`SELECT /* ? don't */ ?::integer`, `SELECT /* ? don't */ $1::integer`},
+		{`SELECT ? -- unterminated?`, `SELECT $1 -- unterminated?`},
 	}
 	for _, c := range cases {
 		if got := dialectPostgres.rebind(c.query); got != c.postgres {

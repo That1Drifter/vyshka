@@ -180,12 +180,19 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		return nil, 0, 0, err
 	}
 
+	// The envelope rows are locked as they are read. ExpireActions deletes
+	// the dispatch envelope of an expired action while it is still
+	// unnumbered, and on a pool that delete could land between this read
+	// and the numbering below: the seq would be spent on a row that no
+	// longer exists, leaving a gap in the session's sequence space that the
+	// plugin's contiguous ack could never cross. Locked, the delete waits
+	// and then finds the row numbered, which its predicate excludes.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, type, body, created_at, session_id, seq
 		   FROM outbound_envelopes
 		  WHERE server_id = ? AND acked_at IS NULL
 		  ORDER BY created_at, id
-		  LIMIT ?`, serverID, limit)
+		  LIMIT ?`+tx.forUpdate(), serverID, limit)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
@@ -227,6 +234,8 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	}
 	rows.Close()
 
+	runHook(testHooks.afterOutboundRead)
+
 	if len(batch) == 0 {
 		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
@@ -237,11 +246,19 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			outboundSeq++
 			batch[i].envelope.Seq = outboundSeq
 		}
-		if _, err := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
+		}
+		// Unreachable under the row lock above; checked so that a lock ever
+		// lost is a failed poll rather than a silent hole in the sequence.
+		if affected, err := result.RowsAffected(); err != nil {
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
+		} else if affected != 1 {
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: envelope %s vanished while being numbered", batch[i].envelope.ID)
 		}
 	}
 

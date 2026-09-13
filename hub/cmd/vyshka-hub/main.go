@@ -62,8 +62,13 @@ Run "vyshka-hub serve -h" for serve flags.
 func runServe(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", envOr("VYSHKA_ADDR", "127.0.0.1:8080"), "listen address (env VYSHKA_ADDR)")
-	dsn := flags.String("db", os.Getenv("DATABASE_URL"), "database DSN, empty means local SQLite (env DATABASE_URL)")
-	adminToken := flags.String("admin-token", os.Getenv("VYSHKA_ADMIN_TOKEN"),
+	// The two secret-bearing flags do not carry their environment value as
+	// the flag default: the flag package prints defaults in its usage text,
+	// so `serve -h` or a mistyped flag would print a Postgres password or
+	// the admin token to the terminal. The environment is read after parsing
+	// instead (see below).
+	dsn := flags.String("db", "", "database DSN, empty means local SQLite (env DATABASE_URL)")
+	adminToken := flags.String("admin-token", "",
 		"bootstrap Admin API token, or file:/path/to/secret; empty generates one per boot (env VYSHKA_ADMIN_TOKEN)")
 	logLevel := flags.String("log-level", envOr("VYSHKA_LOG_LEVEL", "info"), "debug, info, warn, or error (env VYSHKA_LOG_LEVEL)")
 	servePanel := flags.Bool("panel", envOr("VYSHKA_PANEL", "true") != "false",
@@ -72,6 +77,12 @@ func runServe(args []string) error {
 		"directory of map tilesets for the panel's live map, one subdirectory per world (env VYSHKA_MAPS_DIR); empty serves none")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *dsn == "" {
+		*dsn = os.Getenv("DATABASE_URL")
+	}
+	if *adminToken == "" {
+		*adminToken = os.Getenv("VYSHKA_ADMIN_TOKEN")
 	}
 	if *mapsDir != "" {
 		info, err := os.Stat(*mapsDir)

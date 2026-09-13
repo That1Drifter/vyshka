@@ -206,9 +206,14 @@ func (s *Store) applyMigration(ctx context.Context, conn *sql.Conn, migration Mi
 
 	// A migration file is one script of several statements. Both drivers run
 	// a multi-statement script when it carries no parameters, which is why
-	// migrations never take any.
-	if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
-		return fmt.Errorf("apply migration %d (%s): %w", migration.Version, migration.Name, err)
+	// migrations never take any. A file that is all comment is a version
+	// with nothing to do on this engine (its dialect variant does the work);
+	// it is recorded without being executed, since an empty script is an
+	// error to some drivers.
+	if hasStatements(migration.SQL) {
+		if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+			return fmt.Errorf("apply migration %d (%s): %w", migration.Version, migration.Name, err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
@@ -220,6 +225,18 @@ func (s *Store) applyMigration(ctx context.Context, conn *sql.Conn, migration Mi
 		return fmt.Errorf("commit migration %d: %w", migration.Version, err)
 	}
 	return nil
+}
+
+// hasStatements reports whether a migration script has anything but `--`
+// comments and whitespace in it.
+func hasStatements(script string) bool {
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			return true
+		}
+	}
+	return false
 }
 
 func appliedVersions(ctx context.Context, conn *sql.Conn) (map[int]bool, error) {

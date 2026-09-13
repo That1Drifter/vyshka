@@ -146,6 +146,7 @@ func (s *Store) KVSet(ctx context.Context, namespace, key string, value []byte, 
 	if err != nil {
 		return KVEntry{}, err
 	}
+	runHook(testHooks.afterKVRead)
 	if ifRevision != nil && *ifRevision != current {
 		return KVEntry{}, &KVRevisionMismatchError{Current: current}
 	}
@@ -162,6 +163,7 @@ func (s *Store) KVSet(ctx context.Context, namespace, key string, value []byte, 
 	if err := kvUpsert(ctx, tx, namespace, key, string(value), revision, expiry, now); err != nil {
 		return KVEntry{}, err
 	}
+	runHook(testHooks.afterKVWrite)
 
 	if err := tx.Commit(); err != nil {
 		return KVEntry{}, fmt.Errorf("commit kv set: %w", err)
@@ -173,8 +175,24 @@ func (s *Store) KVSet(ctx context.Context, namespace, key string, value []byte, 
 // expired. The statement itself refuses to touch an expired row, so a delete
 // racing an expiry cannot report a success for a key that already read as
 // gone.
+//
+// It takes the key lock like the writers do, although it is one statement:
+// a delete that slipped between a compare-and-swap's read and its write would
+// let the swap succeed against a revision that no longer existed, and an incr
+// would resurrect the deleted value plus its delta instead of starting fresh.
+// Under the lock the delete lands before the read or after the write, and
+// either order is one the caller can reason about.
 func (s *Store) KVDelete(ctx context.Context, namespace, key string) error {
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin kv delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := lockKey(ctx, tx, namespace, key); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx,
 		`DELETE FROM kv
 		  WHERE namespace = ? AND key = ?
 		    AND (expires_at IS NULL OR expires_at > ?)`,
@@ -185,6 +203,9 @@ func (s *Store) KVDelete(ctx context.Context, namespace, key string) error {
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("delete kv key: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit kv delete: %w", err)
 	}
 	if affected == 0 {
 		return ErrNotFound
@@ -317,13 +338,23 @@ func (s *Store) PruneKV(ctx context.Context, limit int) (int, error) {
 		limit = defaultPruneBatch
 	}
 
+	// The expiry test is repeated on the delete target, not only in the
+	// subquery that picks the batch. On Postgres a delete that waited on a
+	// row lock re-evaluates its own predicate against the committed row, but
+	// the subquery keeps the snapshot it was planned with: a key selected
+	// as expired, then refreshed by a writer that held the row (a set with
+	// ifRevision 0 recreating it without a TTL), would still be a member of
+	// the picked set and would be deleted after the writer's commit. The
+	// outer test sees the refreshed expires_at and skips it.
+	now := formatTime(time.Now().UTC())
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM kv
-		  WHERE (namespace, key) IN (
+		  WHERE expires_at IS NOT NULL AND expires_at <= ?
+		    AND (namespace, key) IN (
 		        SELECT namespace, key FROM kv
 		         WHERE expires_at IS NOT NULL AND expires_at <= ?
 		         LIMIT ?)`,
-		formatTime(time.Now().UTC()), limit)
+		now, now, limit)
 	if err != nil {
 		return 0, fmt.Errorf("prune kv: %w", err)
 	}

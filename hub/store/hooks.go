@@ -22,6 +22,13 @@ var testHooks struct {
 	// afterManifestChecked runs in DispatchAction between the manifest
 	// revision recheck and the action insert.
 	afterManifestChecked func()
+	// afterOutboundRead runs in NextOutbound between reading the pending
+	// envelopes and numbering them.
+	afterOutboundRead func()
+	// afterKVRead runs in KVSet between reading the key's revision and
+	// writing the new row; afterKVWrite runs after the write, before commit.
+	afterKVRead  func()
+	afterKVWrite func()
 }
 
 func runHook(hook func()) {

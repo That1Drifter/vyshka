@@ -345,32 +345,30 @@ func (s *Store) PruneEvents(ctx context.Context, limit int) (int, error) {
 	}
 
 	// The batch dedup rows expire on their own column and ride the same pass,
-	// bounded the same way, but only once the expired-event backlog is drained
-	// (a pass that deleted fewer rows than its bound deleted every expired row
-	// there was). A dedup row expires with its batch's longest-lived event, so
-	// at that point every event it guarded is deleted, not merely expired;
+	// bounded the same way, but a marker only goes once its server has no
+	// expired event still standing. A dedup row expires with its batch's
+	// longest-lived event, so an expired marker whose server holds no
+	// expired event has every event it guarded deleted, not merely expired;
 	// sweeping it any earlier would let a replay land beside expired copies
-	// that are still query-visible. The rows are not counted in the return:
-	// the count is what the caller's loop paces event deletion by, and there
-	// is at most one of these per batch of up to 200 events.
-	//
-	// The drained-backlog inference does not need the two statements to share
-	// a snapshot, so it holds on a pooled Postgres as it does on SQLite. An
-	// ingest committing between them lands a marker stamped with its own
-	// receipt time plus its horizon, and its receipt time is at or after the
-	// `now` both statements compare against, so the sweep cannot reach that
-	// marker unless the horizon is zero to the millisecond. The other
-	// assumption is one sweeper per database, which is the supported
+	// that are still query-visible. The condition is evaluated inside the
+	// one statement, against one snapshot, rather than inferred from the
+	// event delete's count: an ingest that stamped its rows, stalled past
+	// its own retention, and committed between the two statements would be
+	// invisible to the count and visible to the sweep. The rows are not
+	// counted in the return: the count is what the caller's loop paces event
+	// deletion by, and there is at most one of these per batch of up to 200
+	// events. One sweeper per database is assumed, which is the supported
 	// deployment (see DueWebhookDeliveries).
-	if int(pruned) < limit {
-		if _, err := s.db.ExecContext(ctx,
-			`DELETE FROM event_batches
-			  WHERE (server_id, envelope_id) IN
-			        (SELECT server_id, envelope_id FROM event_batches
-			          WHERE expires_at <= ? LIMIT ?)`,
-			now, limit); err != nil {
-			return 0, fmt.Errorf("prune event batches: %w", err)
-		}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM event_batches
+		  WHERE (server_id, envelope_id) IN
+		        (SELECT b.server_id, b.envelope_id FROM event_batches b
+		          WHERE b.expires_at <= ?
+		            AND NOT EXISTS (SELECT 1 FROM events e
+		                             WHERE e.server_id = b.server_id AND e.expires_at <= ?)
+		          LIMIT ?)`,
+		now, now, limit); err != nil {
+		return 0, fmt.Errorf("prune event batches: %w", err)
 	}
 	return int(pruned), nil
 }

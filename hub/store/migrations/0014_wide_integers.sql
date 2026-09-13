@@ -1,0 +1,10 @@
+-- Protocol-sized integers (issue #20, Postgres backend).
+--
+-- Sequence numbers, acks, counters, manifest and key revisions, and durations
+-- are bounded by the protocol at 2^53 (spec/protocol.md sections 6.1, 9.1,
+-- and 12), and the earlier migrations declared them INTEGER. SQLite stores
+-- every integer as up to 64 bits whatever the declared type, so here there
+-- is nothing to change and this file carries no statement. The Postgres
+-- variant beside it widens the columns to BIGINT, because there INTEGER is
+-- 32 bits and a valid revision above 2^31 would be refused at the driver.
+-- New migrations on either engine should write BIGINT for such columns.

@@ -48,6 +48,26 @@ point if needed.
   redaction, and the boot log are graded directly. CI adds a Postgres service and runs the
   hub suites and the 76-check conformance suite once per engine. README documents the
   supported DSNs. One hub per database remains the supported deployment on both engines.
+  The first review round found and the slice closed: `NextOutbound` locks the envelope
+  rows it reads, so the expiry sweep cannot retire an unnumbered dispatch envelope between
+  the read and the numbering and leave a hole in the sequence space (the numbering update
+  also checks its row count); `KVDelete` takes the key lock like the writers, so a delete
+  cannot land between a compare-and-swap's read and its write; `PruneKV` re-tests expiry
+  on the delete target, so a key a writer refreshed while the pass waited on its row
+  survives; the event-batch marker sweep decides "every guarded event is gone" inside one
+  statement (no expired event of that server still standing) instead of inferring it from
+  the previous statement's count; `ApplyLinkTransition` locks the server row in its own
+  statement first, so the live-session guard's snapshot postdates a concurrent revocation;
+  `0014_wide_integers.postgres.sql` widens sequence, ack, counter, revision, and duration
+  columns to BIGINT (Postgres INTEGER is 32 bits; the protocol bounds these at 2^53) with a
+  comment-only shared file the migrator records without executing; the CLI no longer
+  carries `DATABASE_URL` or `VYSHKA_ADMIN_TOKEN` as flag defaults, which `serve -h` would
+  print; a Postgres open or ping error has the password cut out and an unparseable URL is
+  reported without the driver's text; the placeholder rebinder skips comments as well as
+  literals; and the test helper drops a `dbname` query parameter that would have pointed
+  every test at the maintenance database. Child-row lock cycles between a poll and a
+  maintenance sweep are left to Postgres deadlock detection, which aborts one side without
+  writing; that decision is recorded at `lockServer`.
 
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,25 +25,39 @@ import (
 // These tests set package-level hooks, so none of them runs in parallel.
 
 // gate is one pause point. The first transaction to reach it parks until the
-// test releases it; later arrivals pass straight through.
+// test releases it; later arrivals pass straight through, whether or not the
+// first has been released yet. That second part is what makes "the other
+// transaction did not commit while the first was parked" a claim about the
+// locks: a second transaction that reached the same pause point would
+// otherwise park on the gate and look blocked without being blocked.
 type gate struct {
 	once     sync.Once
+	release  sync.Once
 	reached  chan struct{}
 	released chan struct{}
 }
 
-func newGate() *gate {
-	return &gate{reached: make(chan struct{}), released: make(chan struct{})}
+func newGate(t *testing.T) *gate {
+	g := &gate{reached: make(chan struct{}), released: make(chan struct{})}
+	// A fatal assertion must not leave the parked goroutine parked.
+	t.Cleanup(g.doRelease)
+	return g
 }
 
 func (g *gate) hook() func() {
 	return func() {
-		g.once.Do(func() { close(g.reached) })
-		<-g.released
+		first := false
+		g.once.Do(func() {
+			first = true
+			close(g.reached)
+		})
+		if first {
+			<-g.released
+		}
 	}
 }
 
-func (g *gate) release() { close(g.released) }
+func (g *gate) doRelease() { g.release.Do(func() { close(g.released) }) }
 
 // awaitReached fails the test if no transaction parks at the gate in time.
 func (g *gate) awaitReached(t *testing.T) {
@@ -140,7 +155,7 @@ func TestOverlapInboundApplicationsSeeEachOthersCommit(t *testing.T) {
 	serverID := plantServer(t, st, "overlap inbound")
 	session := plantSession(t, st, serverID, "overlap-inbound")
 
-	first := newGate()
+	first := newGate(t)
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
@@ -173,7 +188,7 @@ func TestOverlapInboundApplicationsSeeEachOthersCommit(t *testing.T) {
 	}()
 	assertBlocked(t, "the second application", secondDone)
 
-	first.release()
+	first.doRelease()
 	awaitDone(t, "the first application", firstDone)
 	awaitDone(t, "the second application", secondDone)
 
@@ -210,7 +225,7 @@ func TestOverlapSessionEndWaitsForTheSessionWrite(t *testing.T) {
 			serverID := plantServer(t, st, "overlap end "+name)
 			session := plantSession(t, st, serverID, "overlap-end-"+name)
 
-			write := newGate()
+			write := newGate(t)
 			writeDone := make(chan struct{})
 			var writeErr error
 			go func() {
@@ -230,7 +245,7 @@ func TestOverlapSessionEndWaitsForTheSessionWrite(t *testing.T) {
 			}()
 			assertBlocked(t, name, endDone)
 
-			write.release()
+			write.doRelease()
 			awaitDone(t, "the session write", writeDone)
 			awaitDone(t, name, endDone)
 			if writeErr != nil || endErr != nil {
@@ -266,7 +281,7 @@ func TestOverlapQueueInsertsRespectTheBound(t *testing.T) {
 	st := openMigrated(t)
 	serverID := plantServer(t, st, "overlap queue")
 
-	count := newGate()
+	count := newGate(t)
 	testHooks.afterQueueCount = count.hook()
 	t.Cleanup(func() { testHooks.afterQueueCount = nil })
 
@@ -287,7 +302,7 @@ func TestOverlapQueueInsertsRespectTheBound(t *testing.T) {
 	}()
 	assertBlocked(t, "the second queue insert", secondDone)
 
-	count.release()
+	count.doRelease()
 	awaitDone(t, "the first queue insert", firstDone)
 	awaitDone(t, "the second queue insert", secondDone)
 
@@ -306,7 +321,7 @@ func TestOverlapSessionStartsLeaveOneLiveSession(t *testing.T) {
 	st := openMigrated(t)
 	serverID := plantServer(t, st, "overlap sessions")
 
-	ended := newGate()
+	ended := newGate(t)
 	testHooks.afterSessionsEnded = ended.hook()
 	t.Cleanup(func() { testHooks.afterSessionsEnded = nil })
 
@@ -326,7 +341,7 @@ func TestOverlapSessionStartsLeaveOneLiveSession(t *testing.T) {
 	go start("overlap-second", secondDone, &second, &secondErr)
 	assertBlocked(t, "the second session start", secondDone)
 
-	ended.release()
+	ended.doRelease()
 	awaitDone(t, "the first session start", firstDone)
 	awaitDone(t, "the second session start", secondDone)
 	if firstErr != nil || secondErr != nil {
@@ -353,6 +368,10 @@ func TestOverlapSessionStartsLeaveOneLiveSession(t *testing.T) {
 		"overlap-raw", "overlap-raw-token", serverID, now, formatTime(time.Now().Add(time.Hour).UTC()),
 	); err == nil {
 		t.Error("a second unended session row was accepted; the partial unique index of migration 0013 is missing")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "unique") {
+		// SQLite says "UNIQUE constraint failed", Postgres "violates unique
+		// constraint"; any other refusal is not the index doing its job.
+		t.Errorf("the second unended session row was refused for the wrong reason: %v", err)
 	}
 }
 
@@ -366,7 +385,7 @@ func TestOverlapTokenIssuanceLeavesOneUnusedToken(t *testing.T) {
 		t.Fatalf("create server: %v", err)
 	}
 
-	cleared := newGate()
+	cleared := newGate(t)
 	testHooks.afterTokensCleared = cleared.hook()
 	t.Cleanup(func() { testHooks.afterTokensCleared = nil })
 
@@ -388,7 +407,7 @@ func TestOverlapTokenIssuanceLeavesOneUnusedToken(t *testing.T) {
 	}()
 	assertBlocked(t, "the second issuance", secondDone)
 
-	cleared.release()
+	cleared.doRelease()
 	awaitDone(t, "the first issuance", firstDone)
 	awaitDone(t, "the second issuance", secondDone)
 
@@ -435,7 +454,7 @@ func TestOverlapDispatchAndManifestPublishSerialize(t *testing.T) {
 	// Publish first: the dispatch validated against revision 1 waits, then
 	// finds revision 2 stored and is refused.
 	t.Run("publish then dispatch", func(t *testing.T) {
-		publishing := newGate()
+		publishing := newGate(t)
 		publishDone := make(chan struct{})
 		go func() {
 			defer close(publishDone)
@@ -453,7 +472,7 @@ func TestOverlapDispatchAndManifestPublishSerialize(t *testing.T) {
 		}()
 		assertBlocked(t, "the dispatch", dispatchDone)
 
-		publishing.release()
+		publishing.doRelease()
 		awaitDone(t, "the publish", publishDone)
 		awaitDone(t, "the dispatch", dispatchDone)
 		if !errors.Is(dispatchErr, ErrManifestChanged) {
@@ -467,7 +486,7 @@ func TestOverlapDispatchAndManifestPublishSerialize(t *testing.T) {
 	// Dispatch first: the publish waits for the dispatch to commit against the
 	// revision it checked, then replaces it.
 	t.Run("dispatch then publish", func(t *testing.T) {
-		checked := newGate()
+		checked := newGate(t)
 		testHooks.afterManifestChecked = checked.hook()
 		t.Cleanup(func() { testHooks.afterManifestChecked = nil })
 
@@ -490,7 +509,7 @@ func TestOverlapDispatchAndManifestPublishSerialize(t *testing.T) {
 		}()
 		assertBlocked(t, "the publish", publishDone)
 
-		checked.release()
+		checked.doRelease()
 		awaitDone(t, "the dispatch", dispatchDone)
 		awaitDone(t, "the publish", publishDone)
 
@@ -588,7 +607,223 @@ func TestOverlapConcurrentMigratorsAreSerialized(t *testing.T) {
 	if total != len(expected) {
 		t.Errorf("the two migrators applied %d versions between them, want %d", total, len(expected))
 	}
+	// One did all the work and the other none: the lock is what makes the
+	// second run find every version recorded, rather than the two splitting
+	// the list between them.
+	if len(applied[0]) != 0 && len(applied[1]) != 0 {
+		t.Errorf("both migrators applied versions (%v and %v); the lock did not serialize them", applied[0], applied[1])
+	}
 	if rows := countRows(t, stores[0], `SELECT COUNT(*) FROM schema_migrations`); rows != len(expected) {
 		t.Errorf("schema_migrations holds %d rows, want %d", rows, len(expected))
+	}
+}
+
+// The session row lock on its own, apart from the server lock: NextOutbound
+// takes no server lock, so a supersession that could commit while it is
+// parked would be a session-lock defect the ApplyInbound cases cannot see.
+// The numbering must land on the session that was live when it read, and
+// the successor must then find the envelope and renumber it.
+func TestOverlapSupersessionWaitsForNumbering(t *testing.T) {
+	ctx := context.Background()
+	st := openMigrated(t)
+	serverID := plantServer(t, st, "overlap numbering")
+	session := plantSession(t, st, serverID, "overlap-numbering")
+	if _, err := st.QueueEnvelope(ctx, serverID, "test.thing", []byte(`{}`), 100); err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+
+	read := newGate(t)
+	testHooks.afterOutboundRead = read.hook()
+	t.Cleanup(func() { testHooks.afterOutboundRead = nil })
+
+	numberDone := make(chan struct{})
+	var numbered []OutboundEnvelope
+	var numberErr error
+	go func() {
+		defer close(numberDone)
+		numbered, _, _, numberErr = st.NextOutbound(ctx, session.ID, serverID, 10)
+	}()
+	read.awaitReached(t)
+
+	endDone := make(chan struct{})
+	var successor Session
+	var endErr error
+	go func() {
+		defer close(endDone)
+		successor, endErr = st.StartSession(ctx, NewSession{ServerID: serverID, TokenHash: "overlap-numbering-2",
+			TTL: time.Hour, ProtocolVersion: 1, PollTimeoutSeconds: 25})
+	}()
+	assertBlocked(t, "the supersession", endDone)
+
+	read.doRelease()
+	awaitDone(t, "the numbering", numberDone)
+	awaitDone(t, "the supersession", endDone)
+	if numberErr != nil || endErr != nil {
+		t.Fatalf("number err = %v, end err = %v", numberErr, endErr)
+	}
+	if len(numbered) != 1 || numbered[0].Seq != 1 {
+		t.Fatalf("numbered = %+v, want one envelope at seq 1", numbered)
+	}
+	again, _, _, err := st.NextOutbound(ctx, successor.ID, serverID, 10)
+	if err != nil || len(again) != 1 || again[0].Seq != 1 || again[0].ID != numbered[0].ID {
+		t.Errorf("successor read %+v, %v; want the same envelope renumbered to 1", again, err)
+	}
+}
+
+// The expiry sweep retires the unnumbered dispatch envelope of an expired
+// action. If it could do so between a poll reading that envelope and
+// numbering it, the seq would be spent on a row that no longer exists: a gap
+// in the session's sequence space the plugin's contiguous ack could never
+// cross. The read locks the rows, so the sweep waits and then finds the
+// envelope numbered, which it leaves alone.
+func TestOverlapExpirySweepWaitsForNumbering(t *testing.T) {
+	ctx := context.Background()
+	st := openMigrated(t)
+	serverID := plantServer(t, st, "overlap expiry")
+	session := plantSession(t, st, serverID, "overlap-expiry")
+	if _, err := st.ApplyInbound(ctx, session.ID, func(ack int64) InboundApplication {
+		return InboundApplication{Ack: ack + 1, Accepted: 1,
+			Manifests: []ManifestPublish{{Revision: 1, Body: json.RawMessage(`{}`)}}}
+	}, 100); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	// Already past its deadline when the sweep looks, but not yet numbered.
+	if _, _, err := st.DispatchAction(ctx, NewAction{
+		ID: "overlap-expired", ServerID: serverID, Code: "test.thing", Params: json.RawMessage(`{}`),
+		ExpiresAt: time.Now().Add(-time.Second), ManifestRevision: 1,
+		EnvelopeType: "action.dispatch", EnvelopeBody: json.RawMessage(`{}`), QueueLimit: 100,
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	read := newGate(t)
+	testHooks.afterOutboundRead = read.hook()
+	t.Cleanup(func() { testHooks.afterOutboundRead = nil })
+
+	numberDone := make(chan struct{})
+	var numbered []OutboundEnvelope
+	var numberErr error
+	go func() {
+		defer close(numberDone)
+		numbered, _, _, numberErr = st.NextOutbound(ctx, session.ID, serverID, 10)
+	}()
+	read.awaitReached(t)
+
+	sweepDone := make(chan struct{})
+	var sweepErr error
+	go func() {
+		defer close(sweepDone)
+		_, sweepErr = st.ExpireActions(ctx)
+	}()
+	assertBlocked(t, "the expiry sweep", sweepDone)
+
+	read.doRelease()
+	awaitDone(t, "the numbering", numberDone)
+	awaitDone(t, "the expiry sweep", sweepDone)
+	if numberErr != nil || sweepErr != nil {
+		t.Fatalf("number err = %v, sweep err = %v", numberErr, sweepErr)
+	}
+	if len(numbered) != 1 || numbered[0].Seq != 1 {
+		t.Fatalf("numbered = %+v, want the dispatch envelope at seq 1", numbered)
+	}
+	// The numbered envelope survives the sweep and is retransmitted: no gap.
+	if pending := countRows(t, st, `SELECT COUNT(*) FROM outbound_envelopes WHERE server_id = ? AND seq = 1 AND acked_at IS NULL`, serverID); pending != 1 {
+		t.Errorf("seq 1 holds %d envelopes after the sweep, want 1: the sequence has a gap", pending)
+	}
+	action, err := st.ActionByID(ctx, "overlap-expired")
+	if err != nil || action.State != ActionExpired {
+		t.Errorf("action = %s, %v; want expired", action.State, err)
+	}
+}
+
+// A delete cannot slip between a compare-and-swap's read and its write: under
+// the key lock it lands before the read (the swap then fails) or after the
+// write (the key is then gone). Here it is the second; a delete that ran in
+// between would let the swap report success and leave the key standing.
+func TestOverlapKVDeleteWaitsForTheSwap(t *testing.T) {
+	ctx := context.Background()
+	st := openMigrated(t)
+	if _, err := st.KVSet(ctx, "overlap", "cas", []byte(`1`), nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	read := newGate(t)
+	testHooks.afterKVRead = read.hook()
+	t.Cleanup(func() { testHooks.afterKVRead = nil })
+
+	swapDone := make(chan struct{})
+	var swapErr error
+	go func() {
+		defer close(swapDone)
+		one := int64(1)
+		_, swapErr = st.KVSet(ctx, "overlap", "cas", []byte(`2`), &one, nil)
+	}()
+	read.awaitReached(t)
+
+	deleteDone := make(chan struct{})
+	var deleteErr error
+	go func() {
+		defer close(deleteDone)
+		deleteErr = st.KVDelete(ctx, "overlap", "cas")
+	}()
+	assertBlocked(t, "the delete", deleteDone)
+
+	read.doRelease()
+	awaitDone(t, "the swap", swapDone)
+	awaitDone(t, "the delete", deleteDone)
+	if swapErr != nil || deleteErr != nil {
+		t.Fatalf("swap err = %v, delete err = %v", swapErr, deleteErr)
+	}
+	if _, err := st.KVGet(ctx, "overlap", "cas"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after set-then-delete the key reads %v, want ErrNotFound", err)
+	}
+}
+
+// The retention pass cannot delete a key a writer refreshed while the pass
+// waited on its row: the delete re-tests expiry on the committed row.
+func TestOverlapPruneKVSparesARefreshedKey(t *testing.T) {
+	ctx := context.Background()
+	st := openMigrated(t)
+	ttl := time.Millisecond
+	if _, err := st.KVSet(ctx, "overlap", "refresh", []byte(`1`), nil, &ttl); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := st.KVGet(ctx, "overlap", "refresh"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("seed still live: %v", err)
+	}
+
+	written := newGate(t)
+	testHooks.afterKVWrite = written.hook()
+	t.Cleanup(func() { testHooks.afterKVWrite = nil })
+
+	setDone := make(chan struct{})
+	var setErr error
+	go func() {
+		defer close(setDone)
+		zero := int64(0)
+		// Recreates the expired key without a TTL, holding its row until
+		// released.
+		_, setErr = st.KVSet(ctx, "overlap", "refresh", []byte(`2`), &zero, nil)
+	}()
+	written.awaitReached(t)
+
+	pruneDone := make(chan struct{})
+	var pruneErr error
+	go func() {
+		defer close(pruneDone)
+		_, pruneErr = st.PruneKV(ctx, 10)
+	}()
+	assertBlocked(t, "the prune", pruneDone)
+
+	written.doRelease()
+	awaitDone(t, "the set", setDone)
+	awaitDone(t, "the prune", pruneDone)
+	if setErr != nil || pruneErr != nil {
+		t.Fatalf("set err = %v, prune err = %v", setErr, pruneErr)
+	}
+	entry, err := st.KVGet(ctx, "overlap", "refresh")
+	if err != nil || string(entry.Value) != "2" || entry.ExpiresAt != nil {
+		t.Errorf("after the prune the refreshed key reads %+v, %v; want value 2 with no expiry", entry, err)
 	}
 }
