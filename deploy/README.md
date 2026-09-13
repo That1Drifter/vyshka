@@ -3,7 +3,9 @@
 The hub is one static binary; `Dockerfile` at the repository root wraps it in a distroless
 image running as a non-root user, with the SQLite file on `/data`. This directory holds the
 reference single-host layout: the container on loopback, a reverse proxy terminating TLS in
-front of it (spec section 3.3).
+front of it (spec section 3.3). An operator who already runs Postgres sets `DATABASE_URL`
+in the compose file instead of mounting `/data`; the accepted URL forms are in the
+repository README under "Database".
 
 | File | What it is |
 |---|---|
