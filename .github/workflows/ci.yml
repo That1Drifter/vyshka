@@ -13,6 +13,27 @@ jobs:
   build:
     name: Build, test, conform
     runs-on: ubuntu-latest
+    services:
+      # The Postgres backend is graded against a real server, twice: the Go
+      # suite creates a throwaway database per test through this maintenance
+      # connection, and the conformance suite runs against a hub booted on
+      # the service's own database. The credential is not a secret: the
+      # server exists for one job and listens on the runner's loopback.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vyshka
+          POSTGRES_PASSWORD: vyshka_ci_password_not_a_secret
+          POSTGRES_DB: vyshka
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vyshka"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CI_POSTGRES_URL: postgres://vyshka:vyshka_ci_password_not_a_secret@localhost:5432/vyshka
     steps:
       - uses: actions/checkout@v4
 
@@ -41,10 +62,21 @@ jobs:
           VYSHKA_E2E: required
         run: go test ./...
 
+      - name: Test the hub against Postgres
+        # The same hub and store suites, each test on a database of its own,
+        # with the pool above one connection so the row locks are what keeps
+        # the overlap tests honest. Only the hub packages: nothing else opens
+        # a database.
+        env:
+          VYSHKA_E2E: required
+          VYSHKA_TEST_BACKEND: postgres
+          VYSHKA_TEST_POSTGRES_URL: ${{ env.CI_POSTGRES_URL }}
+        run: go test ./hub/...
+
       - name: Build
         run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
 
-      - name: Run conformance suite against a live hub
+      - name: Run conformance suite against a live hub on SQLite
         env:
           # Not a secret: this hub exists for the length of one job and listens
           # on loopback. The suite needs a known admin token to grade the
@@ -55,6 +87,18 @@ jobs:
           hub_pid=$!
           trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
           go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+
+      - name: Run conformance suite against a live hub on Postgres
+        # The same suite, the same checks, against a hub whose system of
+        # record is the Postgres service. A fresh database: the Go suite
+        # created and dropped its own and never touched this one.
+        env:
+          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
+        run: |
+          ./bin/vyshka-hub serve -addr 127.0.0.1:8081 -db "$CI_POSTGRES_URL" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          go run ./conformance/hub -url http://127.0.0.1:8081 -wait 30s
 
       - name: Run the plugin conformance suite against the reference driver
         run: go run ./conformance/plugin -- go run ./conformance/plugin/driver

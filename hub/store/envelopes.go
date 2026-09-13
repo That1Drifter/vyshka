@@ -28,11 +28,22 @@ var (
 // session, stealing them from the live one and silently voiding the ack the
 // live session had already sent. Answering `401 session_invalid` is the only
 // correct outcome, so a dead session must look like no session here.
-func liveSessionSeq(ctx context.Context, tx *sql.Tx, sessionID string, columns string, dest ...any) error {
+//
+// On Postgres the read locks the session row and holds it to commit, which is
+// what keeps the liveness answer true for the rest of the transaction: a
+// StartSession or RevokeCredentials that wants to end this session waits on
+// the same row, so this transaction's effects land before the session ends,
+// never after. Conversely, when the ending transaction holds the row first,
+// this read waits and then re-evaluates its predicate against the committed
+// row, finds ended_at set, and answers ErrNotFound. The session row is the
+// second step of the lock order at lockServer; a caller that will touch the
+// server row later (ApplyInbound queueing a notice) takes the server first.
+// On SQLite the lock suffix is empty and the single connection serializes.
+func liveSessionSeq(ctx context.Context, tx *Tx, sessionID string, columns string, dest ...any) error {
 	err := tx.QueryRowContext(ctx,
 		`SELECT `+columns+`
 		   FROM sessions
-		  WHERE id = ? AND ended_at IS NULL AND expires_at > ?`,
+		  WHERE id = ? AND ended_at IS NULL AND expires_at > ?`+tx.forUpdate(),
 		sessionID, formatTime(time.Now().UTC()),
 	).Scan(dest...)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -66,9 +77,8 @@ func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string
 	}
 	defer tx.Rollback()
 
-	var exists string
-	switch err := tx.QueryRowContext(ctx, `SELECT id FROM servers WHERE id = ?`, serverID).Scan(&exists); {
-	case errors.Is(err, sql.ErrNoRows):
+	switch err := lockServer(ctx, tx, serverID); {
+	case errors.Is(err, ErrNotFound):
 		return OutboundEnvelope{}, ErrNotFound
 	case err != nil:
 		return OutboundEnvelope{}, fmt.Errorf("read server: %w", err)
@@ -86,9 +96,9 @@ func (s *Store) QueueEnvelope(ctx context.Context, serverID, envelopeType string
 }
 
 // queueOutbound inserts one hub -> plugin envelope inside an open transaction,
-// enforcing the per-server queue bound. The caller has already established that
-// the server exists.
-func queueOutbound(ctx context.Context, tx *sql.Tx, serverID, envelopeType string, body []byte, limit int) (OutboundEnvelope, error) {
+// enforcing the per-server queue bound. The caller holds the server row lock
+// (lockServer), which is what makes the count below and the insert one step.
+func queueOutbound(ctx context.Context, tx *Tx, serverID, envelopeType string, body []byte, limit int) (OutboundEnvelope, error) {
 	envelope := newOutbound(envelopeType, body)
 	if err := insertOutbound(ctx, tx, serverID, envelope, limit); err != nil {
 		return OutboundEnvelope{}, err
@@ -108,14 +118,17 @@ func newOutbound(envelopeType string, body []byte) OutboundEnvelope {
 }
 
 // insertOutbound writes a framed envelope inside an open transaction,
-// enforcing the per-server queue bound.
-func insertOutbound(ctx context.Context, tx *sql.Tx, serverID string, envelope OutboundEnvelope, limit int) error {
+// enforcing the per-server queue bound. The caller holds the server row lock:
+// the bound is a count followed by an insert, and without the lock two
+// writers on a pooled backend can both count one free slot and both insert.
+func insertOutbound(ctx context.Context, tx *Tx, serverID string, envelope OutboundEnvelope, limit int) error {
 	var pending int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM outbound_envelopes WHERE server_id = ? AND acked_at IS NULL`,
 		serverID).Scan(&pending); err != nil {
 		return fmt.Errorf("count pending envelopes: %w", err)
 	}
+	runHook(testHooks.afterQueueCount)
 	if limit > 0 && pending >= limit {
 		return ErrOutboundQueueFull
 	}
@@ -167,12 +180,19 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		return nil, 0, 0, err
 	}
 
+	// The envelope rows are locked as they are read. ExpireActions deletes
+	// the dispatch envelope of an expired action while it is still
+	// unnumbered, and on a pool that delete could land between this read
+	// and the numbering below: the seq would be spent on a row that no
+	// longer exists, leaving a gap in the session's sequence space that the
+	// plugin's contiguous ack could never cross. Locked, the delete waits
+	// and then finds the row numbered, which its predicate excludes.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, type, body, created_at, session_id, seq
 		   FROM outbound_envelopes
 		  WHERE server_id = ? AND acked_at IS NULL
 		  ORDER BY created_at, id
-		  LIMIT ?`, serverID, limit)
+		  LIMIT ?`+tx.forUpdate(), serverID, limit)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
@@ -214,6 +234,8 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	}
 	rows.Close()
 
+	runHook(testHooks.afterOutboundRead)
+
 	if len(batch) == 0 {
 		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
@@ -224,11 +246,19 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			outboundSeq++
 			batch[i].envelope.Seq = outboundSeq
 		}
-		if _, err := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
+		}
+		// Unreachable under the row lock above; checked so that a lock ever
+		// lost is a failed poll rather than a silent hole in the sequence.
+		if affected, err := result.RowsAffected(); err != nil {
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: %w", err)
+		} else if affected != 1 {
+			return nil, 0, 0, fmt.Errorf("number outbound envelope: envelope %s vanished while being numbered", batch[i].envelope.ID)
 		}
 	}
 
@@ -382,9 +412,12 @@ type InboundApplied struct {
 // lower than one the hub already gave out, which section 9.1 forbids outright,
 // and double-counts duplicates on the way.
 //
-// The read and the writes are one transaction. On SQLite that is enough because
-// the pool holds a single connection; a Postgres backend would need the read in
-// liveSessionSeq to take a row lock. See the Postgres note in resolveDSN.
+// The read and the writes are one transaction, and on Postgres the read locks
+// the session row (liveSessionSeq) so a second application waits for this one
+// to commit and then classifies against what it committed. The server row is
+// locked first: the effects below include manifests and notices, which are
+// server-scoped writes under the lock order at lockServer, and taking the
+// session before the server would invert that order against StartSession.
 func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify func(ack int64) InboundApplication, noticeQueueLimit int) (InboundApplied, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -392,12 +425,26 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 	}
 	defer tx.Rollback()
 
-	var (
-		inboundAck int64
-		serverID   string
-	)
-	if err := liveSessionSeq(ctx, tx, sessionID, "inbound_ack, server_id",
-		&inboundAck, &serverID); err != nil {
+	// A session's server never changes, so this read needs no lock and no
+	// liveness predicate: it only names the row to lock next. Liveness is
+	// decided by liveSessionSeq, under the lock.
+	var serverID string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT server_id FROM sessions WHERE id = ?`, sessionID).Scan(&serverID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return InboundApplied{}, ErrNotFound
+	case err != nil:
+		return InboundApplied{}, fmt.Errorf("read session server: %w", err)
+	}
+	switch err := lockServer(ctx, tx, serverID); {
+	case errors.Is(err, ErrNotFound):
+		return InboundApplied{}, ErrNotFound
+	case err != nil:
+		return InboundApplied{}, fmt.Errorf("read server: %w", err)
+	}
+
+	var inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "inbound_ack", &inboundAck); err != nil {
 		return InboundApplied{}, err
 	}
 

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // receivedDelivery is one POST a test receiver accepted.
@@ -324,7 +324,7 @@ func TestSignedDeliveryEndToEnd(t *testing.T) {
 func TestFailingTargetIsRetriedThenDeadLettered(t *testing.T) {
 	t.Parallel()
 	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL:        filepath.Join(t.TempDir(), "test.db"),
+		DatabaseURL:        dbtest.URL(t),
 		AdminToken:         testAdminToken,
 		Logger:             slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		WebhookRetryDelays: []time.Duration{100 * time.Millisecond},

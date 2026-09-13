@@ -92,9 +92,13 @@ func (s *Store) DispatchAction(ctx context.Context, request NewAction) (Action, 
 	}
 	defer tx.Rollback()
 
-	var exists string
-	switch err := tx.QueryRowContext(ctx, `SELECT id FROM servers WHERE id = ?`, request.ServerID).Scan(&exists); {
-	case errors.Is(err, sql.ErrNoRows):
+	// The server row lock serializes this dispatch against a manifest publish
+	// (ApplyInbound holds the same lock while it applies manifests) and
+	// against every other writer of the outbound queue, so the revision
+	// recheck and the queue bound below both read committed state that
+	// cannot change before this transaction commits.
+	switch err := lockServer(ctx, tx, request.ServerID); {
+	case errors.Is(err, ErrNotFound):
 		return Action{}, false, ErrNotFound
 	case err != nil:
 		return Action{}, false, fmt.Errorf("read server: %w", err)
@@ -116,6 +120,7 @@ func (s *Store) DispatchAction(ctx context.Context, request NewAction) (Action, 
 	case storedRevision != request.ManifestRevision:
 		return Action{}, false, ErrManifestChanged
 	}
+	runHook(testHooks.afterManifestChecked)
 
 	// The action row goes in first, so that an idempotent retry is recognized
 	// before anything else can fail: a retry against a full outbound queue
@@ -297,7 +302,7 @@ func (s *Store) ExpireActions(ctx context.Context) (int, error) {
 // ack is the delivery receipt (spec section 7). Expiry is not checked here:
 // the flip to expired is the sweeper's job, and delivered is not a terminal
 // state, so a late receipt loses nothing.
-func markDelivered(ctx context.Context, tx *sql.Tx, sessionID string, ack int64, now time.Time) error {
+func markDelivered(ctx context.Context, tx *Tx, sessionID string, ack int64, now time.Time) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE actions SET state = ?, delivered_at = ?
 		  WHERE state = ? AND envelope_id IN
@@ -319,7 +324,7 @@ func markDelivered(ctx context.Context, tx *sql.Tx, sessionID string, ack int64,
 // leaking an actionId; ids are not credentials, and the session's server is.
 // An ack implies receipt, so a missing delivered_at is filled in on the way:
 // the plugin can only be acking a dispatch it received.
-func applyActionAck(ctx context.Context, tx *sql.Tx, serverID, actionID string, now time.Time) (bool, error) {
+func applyActionAck(ctx context.Context, tx *Tx, serverID, actionID string, now time.Time) (bool, error) {
 	result, err := tx.ExecContext(ctx,
 		`UPDATE actions
 		    SET state = ?, running_at = ?, delivered_at = COALESCE(delivered_at, ?)
@@ -351,10 +356,13 @@ type ActionResult struct {
 // already been told the action expired and a state that flip-flops afterwards
 // would be worse than a lost result. serverID scopes the update for the same
 // reason as in applyActionAck: an actionId is not a credential.
-func applyActionResult(ctx context.Context, tx *sql.Tx, serverID string, result ActionResult, now time.Time) (bool, error) {
-	state := ActionCompleted
+func applyActionResult(ctx context.Context, tx *Tx, serverID string, result ActionResult, now time.Time) (bool, error) {
+	// ok is an INTEGER column on both engines. SQLite would take a Go bool
+	// and store 0 or 1; Postgres refuses a boolean for an integer column, so
+	// the conversion is explicit here rather than left to the driver.
+	state, okStored := ActionCompleted, 1
 	if !result.OK {
-		state = ActionFailed
+		state, okStored = ActionFailed, 0
 	}
 	resultJSON := any(nil)
 	if len(result.Result) > 0 {
@@ -372,7 +380,7 @@ func applyActionResult(ctx context.Context, tx *sql.Tx, serverID string, result 
 		        ok = ?, result = ?, error = ?, duration_ms = ?
 		  WHERE id = ? AND server_id = ? AND state IN (?, ?, ?) AND expires_at > ?`,
 		state, formatTime(now), formatTime(now), formatTime(now),
-		result.OK, resultJSON, errorText, result.DurationMs,
+		okStored, resultJSON, errorText, result.DurationMs,
 		result.ActionID, serverID, ActionQueued, ActionDelivered, ActionRunning, formatTime(now))
 	if err != nil {
 		return false, fmt.Errorf("apply action result: %w", err)

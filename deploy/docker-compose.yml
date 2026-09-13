@@ -31,6 +31,11 @@ services:
     environment:
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
       VYSHKA_MAPS_DIR: /maps
+      # The default is the SQLite file in ./data. To keep the system of
+      # record in a Postgres you already run, set the URL here instead (the
+      # README's "Database" section lists the accepted forms) and drop the
+      # data volume; the hub creates its schema on first boot.
+      # DATABASE_URL: postgres://vyshka:secret@db.example:5432/vyshka?sslmode=require
     secrets:
       - admin_token
     # The hub drains held polls for up to 15 s on SIGTERM; compose's default

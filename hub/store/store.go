@@ -6,113 +6,201 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // pure Go SQLite driver, keeps the build cgo-free
+	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib" // pure Go Postgres driver, registered as "pgx"
+	_ "modernc.org/sqlite"             // pure Go SQLite driver, keeps the build cgo-free
 )
 
 // Store is a database handle plus the metadata needed to describe it in logs
 // and health output.
 type Store struct {
-	db     *sql.DB
-	driver string
-	dsn    string
+	db     *DB
+	driver dialect
+	// target is what Target reports: a file path for SQLite, and for Postgres
+	// a description with the password removed. The raw DSN is not kept.
+	target string
 }
+
+// Postgres pool bounds. The pool is what makes Postgres worth having over the
+// single-connection SQLite default, and also what makes every multi-statement
+// write in this package take row locks (see lockServer): with more than one
+// connection, two transactions can interleave between a read and the write
+// that depends on it. Sixteen is enough to serve many concurrent long-polls
+// (a held poll parks no connection) without exhausting a default Postgres
+// max_connections of 100 when a few hubs share one server.
+const (
+	postgresMaxOpenConns    = 16
+	postgresMaxIdleConns    = 8
+	postgresConnMaxIdleTime = 5 * time.Minute
+)
 
 // Open resolves a DSN to a driver, opens the database, and verifies it answers.
 // An empty DSN means the default local SQLite file.
 //
 // Accepted forms:
 //
-//	""                     -> sqlite, ./vyshka.db
-//	"vyshka.db"            -> sqlite, that path
-//	"sqlite://path/to.db"  -> sqlite, that path
-//	"postgres://..."       -> not supported yet, reported as such
+//	""                         -> sqlite, ./vyshka.db
+//	"vyshka.db"                -> sqlite, that path
+//	"sqlite://path/to.db"      -> sqlite, that path
+//	"postgres://user:pw@h/db"  -> postgres, with a connection pool
+//	"postgresql://..."         -> the same
+//
+// Postgres DSNs take the libpq URL form, including its query parameters
+// (sslmode, connect_timeout, and the rest).
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	driver, target, err := resolveDSN(dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	db, err := sql.Open(driver, target)
+	var (
+		raw   *sql.DB
+		shown string
+	)
+	switch driver {
+	case dialectSQLite:
+		raw, err = sql.Open("sqlite", target)
+		shown = target
+	case dialectPostgres:
+		raw, err = sql.Open("pgx", target)
+		shown = redactPostgresDSN(target)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("open %s database: %w", driver, err)
+		return nil, fmt.Errorf("open %s database: %w", driver, redactError(driver, target, err))
 	}
 
-	// SQLite tolerates exactly one writer. Keeping the pool at one connection
-	// trades a little throughput for never seeing SQLITE_BUSY.
-	//
-	// It has since become load-bearing for correctness, not just for locking:
-	// the per-session sequence state in envelopes.go is read and written across
-	// separate statements inside a transaction, and a single connection is what
-	// serializes those. Raising this without adding row locks reintroduces the
-	// concurrent-poll defects those functions document. See resolveDSN.
-	if driver == "sqlite" {
-		db.SetMaxOpenConns(1)
+	switch driver {
+	case dialectSQLite:
+		// SQLite tolerates exactly one writer. Keeping the pool at one
+		// connection trades a little throughput for never seeing SQLITE_BUSY,
+		// and it is also what serializes every multi-statement write in this
+		// package: the row locks the Postgres path takes (lockServer,
+		// liveSessionSeq) have no SQLite spelling, and the one connection is
+		// what stands in for them. Raising this without a locking story
+		// reintroduces the concurrent-poll defects those functions document.
+		raw.SetMaxOpenConns(1)
+	case dialectPostgres:
+		raw.SetMaxOpenConns(postgresMaxOpenConns)
+		raw.SetMaxIdleConns(postgresMaxIdleConns)
+		raw.SetConnMaxIdleTime(postgresConnMaxIdleTime)
 	}
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ping %s database: %w", driver, err)
+	if err := raw.PingContext(pingCtx); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("ping %s database: %w", driver, redactError(driver, target, err))
 	}
 
-	if driver == "sqlite" {
+	if driver == dialectSQLite {
 		for _, pragma := range []string{
 			"PRAGMA journal_mode = WAL",
 			"PRAGMA busy_timeout = 5000",
 			"PRAGMA foreign_keys = ON",
 		} {
-			if _, err := db.ExecContext(ctx, pragma); err != nil {
-				db.Close()
+			if _, err := raw.ExecContext(ctx, pragma); err != nil {
+				raw.Close()
 				return nil, fmt.Errorf("apply %q: %w", pragma, err)
 			}
 		}
 	}
 
-	return &Store{db: db, driver: driver, dsn: target}, nil
+	return &Store{db: &DB{raw: raw, d: driver}, driver: driver, target: shown}, nil
 }
 
-func resolveDSN(dsn string) (driver, target string, err error) {
+// resolveDSN maps a configured DSN onto a dialect and the string handed to
+// that dialect's driver. Postgres URLs pass through whole: the driver parses
+// them, and every libpq query parameter keeps its meaning.
+func resolveDSN(dsn string) (driver dialect, target string, err error) {
 	switch {
 	case dsn == "":
-		return "sqlite", DefaultSQLitePath, nil
+		return dialectSQLite, DefaultSQLitePath, nil
 	case strings.HasPrefix(dsn, "sqlite://"):
-		return "sqlite", strings.TrimPrefix(dsn, "sqlite://"), nil
-	// Adding Postgres is not only a driver swap (issue #20). The envelope
-	// queries in envelopes.go read a session's sequence state and write it back
-	// in a later statement of the same transaction, and today nothing but the
-	// single SQLite connection stops two polls from interleaving there. On a
-	// real pool those reads MUST take a row lock (`SELECT ... FOR UPDATE` in
-	// liveSessionSeq), or the hub starts reporting acks it has already exceeded
-	// and double-counting the envelopes behind them.
+		return dialectSQLite, strings.TrimPrefix(dsn, "sqlite://"), nil
 	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
-		return "", "", fmt.Errorf("postgres support is not implemented yet; unset DATABASE_URL to use SQLite")
+		return dialectPostgres, dsn, nil
 	case strings.Contains(dsn, "://"):
 		scheme, _, _ := strings.Cut(dsn, "://")
 		return "", "", fmt.Errorf("unsupported database scheme %q", scheme)
 	default:
-		return "sqlite", dsn, nil
+		return dialectSQLite, dsn, nil
 	}
+}
+
+// redactPostgresDSN reduces a Postgres URL to what an operator needs to
+// recognise the database in a log line: scheme, user, host, and database
+// name. The password and every query parameter are dropped, the parameters
+// because libpq lets some of them carry secrets too (sslpassword, and a
+// password= that overrides the userinfo). A URL that does not parse is
+// reported as nothing but its scheme rather than echoed.
+func redactPostgresDSN(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		scheme, _, _ := strings.Cut(dsn, "://")
+		return scheme + "://<unparseable>"
+	}
+	redacted := url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}
+	if parsed.User != nil && parsed.User.Username() != "" {
+		redacted.User = url.User(parsed.User.Username())
+	}
+	return redacted.String()
+}
+
+// redactError keeps a driver's open or ping error from carrying the
+// credential out of Open. Connection errors are worth their text (a refused
+// port, a wrong database name), so the password is cut out of the message
+// rather than the message dropped. A URL the driver could not parse gets no
+// text at all: the parser quotes the fragment it choked on, which for an
+// unescaped password is the password.
+func redactError(driver dialect, target string, err error) error {
+	if driver != dialectPostgres {
+		return err
+	}
+	// Two parsers, two verdicts: Go's may accept a URL the driver's rejects
+	// (a password with a space or a stray slash lands in the path for one
+	// and in an error message for the other). Either rejection withholds
+	// the text.
+	var driverParse *pgconn.ParseConfigError
+	parsed, parseErr := url.Parse(target)
+	if parseErr != nil || errors.As(err, &driverParse) {
+		return errors.New("the URL does not parse; check its syntax (the driver's message is withheld because it quotes the URL)")
+	}
+	message := err.Error()
+	if password, set := parsed.User.Password(); set && password != "" {
+		message = strings.ReplaceAll(message, password, "<redacted>")
+		if escaped := url.QueryEscape(password); escaped != password {
+			message = strings.ReplaceAll(message, escaped, "<redacted>")
+		}
+	}
+	if strings.Contains(message, target) {
+		message = strings.ReplaceAll(message, target, redactPostgresDSN(target))
+	}
+	return errors.New(message)
 }
 
 // DefaultSQLitePath is the database file used when no DSN is configured.
 const DefaultSQLitePath = "vyshka.db"
 
-// DB exposes the handle for packages that run queries.
-func (s *Store) DB() *sql.DB { return s.db }
+// DB exposes the handle for packages that run queries. Queries are written
+// with `?` placeholders whatever the engine; the handle rebinds them.
+func (s *Store) DB() *DB { return s.db }
 
 // Driver names the backing engine, for logs and health output.
-func (s *Store) Driver() string { return s.driver }
+func (s *Store) Driver() string { return string(s.driver) }
 
-// Target is the resolved file path or connection target, for logs.
-func (s *Store) Target() string { return s.dsn }
+// Target describes the database for logs: the file path for SQLite, and for
+// Postgres the URL with its password and query parameters removed. It never
+// returns anything a credential could hide in.
+func (s *Store) Target() string { return s.target }
 
 // Ping reports whether the database is still answering.
-func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+func (s *Store) Ping(ctx context.Context) error { return s.db.raw.PingContext(ctx) }
 
 // Close releases the handle.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return s.db.raw.Close() }

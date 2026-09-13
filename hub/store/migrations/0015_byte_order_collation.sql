@@ -1,0 +1,12 @@
+-- Byte-order comparison of text columns (issue #20, Postgres backend).
+--
+-- The store orders and range-scans TEXT columns assuming byte order: fixed
+-- width UTC timestamps compare as strings, ULIDs tiebreak feeds and cursors,
+-- and a namespace filter on events is a half-open range from "ns." to "ns/".
+-- SQLite compares text bytewise unless told otherwise, so here there is
+-- nothing to change and this file carries no statement. Postgres compares
+-- text under the database's collation, and a glibc locale collation such as
+-- en_US.utf8 orders punctuation and case differently from the bytes, which
+-- breaks every one of those assumptions. The Postgres variant beside this
+-- file pins the compared and ordered columns to the "C" collation, so the
+-- hub behaves the same on any database whatever locale it was created with.

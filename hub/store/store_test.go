@@ -2,17 +2,18 @@ package store_test
 
 import (
 	"context"
-	"path/filepath"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
 func openTemp(t *testing.T) *store.Store {
 	t.Helper()
 
-	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.Open(context.Background(), dbtest.URL(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -98,8 +99,8 @@ func TestOpenRejectsUnsupportedDSN(t *testing.T) {
 	ctx := context.Background()
 
 	for _, dsn := range []string{
-		"postgres://user:pass@localhost/vyshka",
 		"mysql://root@localhost/vyshka",
+		"redis://localhost/0",
 	} {
 		st, err := store.Open(ctx, dsn)
 		if err == nil {
@@ -109,9 +110,58 @@ func TestOpenRejectsUnsupportedDSN(t *testing.T) {
 	}
 }
 
-func TestOpenDefaultsToSQLite(t *testing.T) {
+func TestOpenReportsTheSelectedBackend(t *testing.T) {
 	st := openTemp(t)
-	if st.Driver() != "sqlite" {
-		t.Errorf("driver = %q, want sqlite", st.Driver())
+	if st.Driver() != dbtest.Backend() {
+		t.Errorf("driver = %q, want the run's backend %q", st.Driver(), dbtest.Backend())
+	}
+	if st.Driver() == "postgres" {
+		// Target is what the startup log prints. The password is the only
+		// part of the URL a reader must never see there.
+		if parsed, err := url.Parse(dbtest.PostgresAdminURL()); err == nil {
+			if password, set := parsed.User.Password(); set && strings.Contains(st.Target(), ":"+password+"@") {
+				t.Errorf("Target() = %q carries the password", st.Target())
+			}
+		}
+		if !strings.HasPrefix(st.Target(), "postgres") {
+			t.Errorf("Target() = %q, want the redacted URL", st.Target())
+		}
+	}
+}
+
+// Both engines apply the same versions under the same names; only the SQL of
+// a version with a dialect-specific file differs.
+func TestMigrationsForBothDialectsAgreeOnVersions(t *testing.T) {
+	sqlite, err := store.MigrationsFor("sqlite")
+	if err != nil {
+		t.Fatalf("sqlite migrations: %v", err)
+	}
+	postgres, err := store.MigrationsFor("postgres")
+	if err != nil {
+		t.Fatalf("postgres migrations: %v", err)
+	}
+	if len(sqlite) != len(postgres) {
+		t.Fatalf("sqlite has %d migrations, postgres %d", len(sqlite), len(postgres))
+	}
+	differing := 0
+	for i := range sqlite {
+		if sqlite[i].Version != postgres[i].Version || sqlite[i].Name != postgres[i].Name {
+			t.Errorf("migration %d: sqlite %d %q, postgres %d %q", i,
+				sqlite[i].Version, sqlite[i].Name, postgres[i].Version, postgres[i].Name)
+		}
+		if sqlite[i].SQL != postgres[i].SQL {
+			differing++
+		}
+	}
+	// 0010_state (identity column against AUTOINCREMENT), 0014_wide_integers
+	// (BIGINT where SQLite already stores 64 bits), and
+	// 0015_byte_order_collation (COLLATE "C" where SQLite already compares
+	// bytes) are the files with a Postgres spelling. A new variant is fine,
+	// but it should be a decision, so this count is asserted.
+	if differing != 3 {
+		t.Errorf("%d migrations differ between dialects, want 3 (0010, 0014, 0015)", differing)
+	}
+	if _, err := store.MigrationsFor("oracle"); err == nil {
+		t.Error("MigrationsFor accepted an unknown driver")
 	}
 }

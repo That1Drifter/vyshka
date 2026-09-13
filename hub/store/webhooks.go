@@ -250,7 +250,7 @@ func (s *Store) NotifyEvents(ctx context.Context, limit int,
 
 // webhooksTx reads every webhook inside an open transaction, for the fan-out
 // paths that must see registrations consistently with the rows they flag.
-func webhooksTx(ctx context.Context, tx *sql.Tx) ([]Webhook, error) {
+func webhooksTx(ctx context.Context, tx *Tx) ([]Webhook, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+webhookColumns+` FROM webhooks ORDER BY created_at DESC, id DESC`)
 	if err != nil {
@@ -326,7 +326,7 @@ func (s *Store) NotifyFinishedActions(ctx context.Context, limit int,
 
 // markNotified clears the outbox flag on the rows one pass fanned out. table
 // is a compile-time constant at every call site, never caller input.
-func markNotified(ctx context.Context, tx *sql.Tx, table string, ids []any) error {
+func markNotified(ctx context.Context, tx *Tx, table string, ids []any) error {
 	placeholders := ""
 	for i := range ids {
 		if i > 0 {
@@ -345,7 +345,7 @@ func markNotified(ctx context.Context, tx *sql.Tx, table string, ids []any) erro
 // of section 11.5: at the bound a delivery is created dead with a lastError
 // saying so, because a full queue is exactly the failure webhooks exist to
 // surface and discarding the evidence would hide it.
-func insertDeliveries(ctx context.Context, tx *sql.Tx, deliveries []NewWebhookDelivery, pendingBound int) error {
+func insertDeliveries(ctx context.Context, tx *Tx, deliveries []NewWebhookDelivery, pendingBound int) error {
 	if len(deliveries) == 0 {
 		return nil
 	}
@@ -398,11 +398,13 @@ type DueDelivery struct {
 // first, up to limit.
 //
 // There is no claim column: within one hub the dispatcher loop serializes
-// passes, and SQLite's single connection is the only deployment this store
-// supports. A Postgres backend running more than one hub instance MUST add a
-// claim (`SELECT ... FOR UPDATE SKIP LOCKED` or a lease column), or two
-// dispatchers will attempt the same delivery concurrently. See the Postgres
-// note in resolveDSN and issue #20.
+// passes, and one hub per database is the deployment this store supports on
+// both engines. Running more than one hub instance against one Postgres
+// database is not supported: the dispatcher, the link monitor, and the
+// retention sweeps each assume they are the only pass of their kind, and a
+// second instance would attempt the same delivery concurrently. Making that
+// safe means a claim here (`SELECT ... FOR UPDATE SKIP LOCKED` or a lease
+// column) and the same for the other passes.
 func (s *Store) DueWebhookDeliveries(ctx context.Context, now time.Time, limit int) ([]DueDelivery, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.webhook_id, d.type, d.server_id, d.body, d.state, d.attempts,
@@ -651,6 +653,21 @@ func (s *Store) ApplyLinkTransition(ctx context.Context, serverID, from, to stri
 		return false, fmt.Errorf("begin link transition: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The server row is locked in a statement of its own before the guarded
+	// update runs. The update's own wait on that row would re-evaluate its
+	// predicate against the committed server row, but the live-session
+	// subquery inside it would keep the snapshot the statement started with:
+	// a revocation committing during the wait ends the session, and the
+	// guard would still see it live and fire a restored notification for a
+	// server that can no longer speak. Taken first, the lock makes the
+	// update's snapshot postdate the revocation.
+	switch err := lockServer(ctx, tx, serverID); {
+	case errors.Is(err, ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read server: %w", err)
+	}
 
 	observed := any(nil)
 	if observedLastSeen != nil {

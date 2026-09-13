@@ -12,6 +12,80 @@ point if needed.
 
 ### Added
 
+- 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
+  `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
+  sixteen connections; SQLite stays the zero-configuration default. The slice is the row
+  locks, not the driver: since the envelope slice the single SQLite connection had been
+  serializing every read-then-write in the store, and on a pool those became silent
+  integrity defects (a lowered inbound ack, a double-counted envelope, a queue over its
+  bound, two live sessions, two unused enrollment tokens, a dispatch validated against a
+  replaced manifest, a stale session effect landing after supersession). The store now
+  follows one lock order everywhere, server row then live session row then child rows:
+  session starts, token issuance, manifest application, dispatch, and every outbound
+  insert take the server row `FOR UPDATE`; session-scoped writes lock and revalidate the
+  session row through commit, so an end-of-session either waits for them or they find the
+  session gone; `ApplyInbound` takes the server before the session because it may queue a
+  notice, and `Enroll` locks the server before burning the token, so nothing inverts the
+  order. KV writers serialize on a transaction-scoped advisory lock keyed on the key, which
+  a row lock cannot do for a key that does not exist yet. Every query is written once with
+  `?` and rebound per dialect by the store's own `DB` and `Tx` handles; the `FOR UPDATE`
+  suffix is empty on SQLite. Migrations: `0010_state.postgres.sql` spells the snapshot
+  `seq` as an identity column (the shared file's AUTOINCREMENT is SQLite-only) and the
+  loader picks a `.postgres.sql` variant when one exists; `0013_one_live_session.sql` adds
+  the partial unique index on `sessions(server_id) WHERE ended_at IS NULL` as the schema
+  backstop; on Postgres the migrator holds a session-level advisory lock for the run, so two
+  hubs booting at once apply the schema once between them. `actions.ok` receives the
+  integer the column declares rather than a Go bool Postgres refuses. Startup logs and
+  `Store.Target()` report a Postgres URL with its password and query parameters removed;
+  the raw DSN is not kept. Tests: `hub/internal/dbtest` hands every test a database of its
+  own on the backend `VYSHKA_TEST_BACKEND` names (a fresh Postgres database per test,
+  created and dropped through `VYSHKA_TEST_POSTGRES_URL`), so the whole hub and store
+  suites run unchanged on both engines; deterministic overlap tests park one transaction at
+  a pause point and assert the second waits and then observes the commit, covering the
+  inbound ack and count, supersession and revocation against a session write, the queue
+  bound, session-start uniqueness, token-issuance uniqueness, dispatch against a concurrent
+  publish in both orders, concurrent KV incrs, and two concurrent migrators; DSN resolution,
+  redaction, and the boot log are graded directly. CI adds a Postgres service and runs the
+  hub suites and the 76-check conformance suite once per engine. README documents the
+  supported DSNs. One hub per database remains the supported deployment on both engines.
+  The first review round found and the slice closed: `NextOutbound` locks the envelope
+  rows it reads, so the expiry sweep cannot retire an unnumbered dispatch envelope between
+  the read and the numbering and leave a hole in the sequence space (the numbering update
+  also checks its row count); `KVDelete` takes the key lock like the writers, so a delete
+  cannot land between a compare-and-swap's read and its write; `PruneKV` re-tests expiry
+  on the delete target, so a key a writer refreshed while the pass waited on its row
+  survives; the event-batch marker sweep decides "every guarded event is gone" inside one
+  statement (no expired event of that server still standing) instead of inferring it from
+  the previous statement's count; `ApplyLinkTransition` locks the server row in its own
+  statement first, so the live-session guard's snapshot postdates a concurrent revocation;
+  `0014_wide_integers.postgres.sql` widens sequence, ack, counter, revision, and duration
+  columns to BIGINT (Postgres INTEGER is 32 bits; the protocol bounds these at 2^53) with a
+  comment-only shared file the migrator records without executing; the CLI no longer
+  carries `DATABASE_URL` or `VYSHKA_ADMIN_TOKEN` as flag defaults, which `serve -h` would
+  print; a Postgres open or ping error has the password cut out and an unparseable URL is
+  reported without the driver's text; the placeholder rebinder skips comments as well as
+  literals; and the test helper drops a `dbname` query parameter that would have pointed
+  every test at the maintenance database. Child-row lock cycles between a poll and a
+  maintenance sweep are left to Postgres deadlock detection, which aborts one side without
+  writing; that decision is recorded at `lockServer`. The second round closed what the
+  first round's fixes had opened: an explicitly empty `-db=` or `-admin-token=` again wins
+  over the environment (the fallback checks whether the flag was given, not whether it is
+  empty); the test helper keeps the maintenance URL's other query parameters byte for byte
+  and in order rather than re-encoding them; a URL the driver rejects is withheld even when
+  Go's parser accepted it; and the rebinder follows nested block comments. The third round
+  caught the helper comparing query keys raw, so a percent-encoded `dbname` could still
+  have pointed a test at the maintenance database; keys are now compared as the driver
+  decodes them, and the test asserts on the driver's parsed database name. The fourth round
+  found one more spelling (a space around the key), so the helper now also parses the URL it
+  built with the driver and refuses to run unless the parsed database is the test's own.
+  CI's first run then failed where local runs had passed: the local container was Alpine,
+  whose libc collates bytewise whatever the locale, and CI's Debian image collates
+  `en_US.utf8` the glibc way, under which the events namespace range scan matched nothing
+  and timestamp comparisons misordered. `0015_byte_order_collation.postgres.sql` pins every
+  TEXT column the store compares or orders to the `"C"` collation, so the hub behaves the
+  same on a database of any locale; SQLite already compares bytes, and its shared file is
+  comment-only.
+
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
   `state.players` snapshot, re-read on the server-list cadence: the players listed with
