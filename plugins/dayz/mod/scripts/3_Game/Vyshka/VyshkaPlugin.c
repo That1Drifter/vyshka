@@ -17,7 +17,7 @@ class VyshkaPlugin
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.2.0";
+	static const string PLUGIN_VERSION = "0.3.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -30,8 +30,8 @@ class VyshkaPlugin
 	static const int BACKOFF_REQUEST_MS = 60000;      // the plugin's own request was refused (a bug, not a cadence problem)
 	static const int BACKOFF_PROTOCOL_MS = 300000;    // protocol version refused: something needs upgrading
 	static const int RENEW_MARGIN_SECONDS = 60;      // start a new session this long before expiry
-	static const int SNAPSHOTS_HELD_LOG_AFTER = 12;  // consecutive held snapshot ticks before the first log line (2 min at the default cadence)
-	static const int SNAPSHOTS_HELD_LOG_EVERY = 60;  // and then every this many (10 min)
+	static const int SNAPSHOTS_HELD_LOG_AFTER = 6;   // consecutive polls sent with the last snapshot still unacked before the first log line (about a minute into an outage at the backoff cadence)
+	static const int SNAPSHOTS_HELD_LOG_EVERY = 20;  // and then every this many (10 min at the backoff ceiling)
 
 	// Every request asks for its refusals inline (spec section 2.3): the
 	// engine delivers a non-2xx as an opaque code with no body, so this is
@@ -50,8 +50,9 @@ class VyshkaPlugin
 	ref VyshkaActionRegistry m_Actions;
 	ref VyshkaEventBuffer m_Events;
 	ref VyshkaSnapshotSource m_Snapshots;
-	int m_NextSnapshotMs;
-	int m_SnapshotsHeld;       // snapshot ticks skipped because the last one is still unacked
+	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
+	int m_LastSnapshotMs;      // monotonic time of the last capture; 0 before the first
+	int m_SnapshotsHeld;       // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -151,12 +152,11 @@ class VyshkaPlugin
 		m_Transport.SetReadTimeout(m_Config.m_PollTimeoutSeconds + 5);
 
 		m_Running = true;
-		if (m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots)
-			m_NextSnapshotMs = VyshkaClock.MonotonicMs() + m_Config.m_SnapshotIntervalSeconds * 1000;
+		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
 		string snapshotNote = "snapshots off";
-		if (m_NextSnapshotMs > 0)
-			snapshotNote = "state.players every " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s";
+		if (m_SnapshotsOn)
+			snapshotNote = "state.players with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
 		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared, " + snapshotNote);
 		Emit("core.server.start", ServerEventData());
 	}
@@ -196,9 +196,11 @@ class VyshkaPlugin
 	{
 		if (!m_Running)
 			return;
-		// Telemetry goes into the outbox whether or not a request is in
-		// flight; whatever is queued rides the next poll.
-		PublishTelemetry();
+		// Events go into the outbox whether or not a request is in flight;
+		// whatever is queued rides the next poll. Snapshots are captured by
+		// the poll itself (PublishSnapshot), so they never wait for one.
+		if (m_Events.Due())
+			FlushEvents();
 		m_Transport.CheckWatchdog();
 		if (m_Transport.IsInFlight())
 			return;
@@ -208,17 +210,6 @@ class VyshkaPlugin
 	}
 
 	// ---- telemetry (spec section 8) ----
-
-	void PublishTelemetry()
-	{
-		if (m_Events.Due())
-			FlushEvents();
-		if (m_NextSnapshotMs > 0 && VyshkaClock.MonotonicMs() >= m_NextSnapshotMs)
-		{
-			PublishSnapshot();
-			m_NextSnapshotMs = VyshkaClock.MonotonicMs() + m_Config.m_SnapshotIntervalSeconds * 1000;
-		}
-	}
 
 	// FlushEvents moves every pending event into event.batch envelopes of at
 	// most 200 events each (section 8.1). An outbox refusal (it is full)
@@ -237,28 +228,42 @@ class VyshkaPlugin
 		}
 	}
 
-	// PublishSnapshot queues one state.players envelope unless the previous
-	// one is still unacked, in which case this tick is skipped: the map
-	// wants the latest state, and a queue of stale snapshots behind an
-	// outage serves no one (section 8.3 keeps the latest per type anyway).
-	// Skipping is ordinary on a healthy link, because an ack arrives only
-	// when the held poll returns (up to pollTimeout later), so the effective
-	// cadence is the longer of the configured interval and the poll cycle;
-	// it is logged only once it has gone on long enough to mean an outage.
+	// PublishSnapshot captures one state.players envelope as the poll that
+	// will carry it is being built, so the sample is as fresh as the link
+	// allows: a snapshot captured on a timer would sit in the outbox until
+	// the poll already in flight returned, up to a full pollTimeout later.
+	// The configured interval is a floor on the spacing between captures,
+	// and the poll cycle sets the cadence when it is longer (issue #55).
+	//
+	// No capture is made while the previous snapshot is still unacked, or
+	// while the outbox holds more than this poll can carry, so that a
+	// snapshot appended now could not ride it: the map wants the latest
+	// state, an appended envelope is immutable (section 9.3), and a queue of
+	// stale snapshots behind an outage serves no one (section 8.3 keeps the
+	// latest per type regardless). On a healthy link the previous snapshot's
+	// ack arrived with the response that ended the last poll, so a held
+	// capture means an outage, or a backlog of anything (a burst of action
+	// results counts), and a run of them long enough to matter is logged.
 	void PublishSnapshot()
 	{
-		if (m_Outbox.HasUnacked("state.players"))
+		if (!m_SnapshotsOn)
+			return;
+		if (m_Outbox.HasUnacked("state.players") || !m_Outbox.RoomInBatch())
 		{
 			m_SnapshotsHeld++;
 			if (m_SnapshotsHeld == SNAPSHOTS_HELD_LOG_AFTER || m_SnapshotsHeld % SNAPSHOTS_HELD_LOG_EVERY == 0)
-				VyshkaLog.Info("state.players snapshot held back: the previous one is still unacked (" + m_SnapshotsHeld.ToString() + " skipped)");
+				VyshkaLog.Info("state.players snapshot held back: the previous one is still unacked or the outbox has a backlog (" + m_SnapshotsHeld.ToString() + " poll(s) without one)");
 			return;
 		}
 		m_SnapshotsHeld = 0;
+		int now = VyshkaClock.MonotonicMs();
+		if (m_LastSnapshotMs != 0 && now - m_LastSnapshotMs < m_Config.m_SnapshotIntervalSeconds * 1000)
+			return;
 		string body = m_Snapshots.CapturePlayers();
 		if (body == "")
 			return;
-		m_Outbox.Append("state.players", body);
+		if (m_Outbox.Append("state.players", body))
+			m_LastSnapshotMs = now;
 	}
 
 	// Advance issues whichever request the link needs next. The name matters:
@@ -385,6 +390,9 @@ class VyshkaPlugin
 
 	void Poll()
 	{
+		// The snapshot is captured here, not on the tick, so it rides this
+		// very request rather than waiting behind a held poll.
+		PublishSnapshot();
 		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson() + "}";
 		// The hub answers within pollTimeout; the engine's read timeout is
 		// pollTimeout + 5 s; the watchdog sits behind both.

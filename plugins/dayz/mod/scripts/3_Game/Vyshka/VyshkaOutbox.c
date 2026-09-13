@@ -178,6 +178,25 @@ class VyshkaOutbox
 		return false;
 	}
 
+	// RoomInBatch reports whether an envelope carrying no events, appended
+	// now, would ride the next poll: every entry already here rides it, one
+	// envelope slot is left, and the events those entries carry are inside
+	// the per-poll budget. That last check matters because BatchCount admits
+	// a first entry above the budget and then nothing behind it, so an entry
+	// appended behind an oversized one would wait for the poll after next.
+	bool RoomInBatch()
+	{
+		int count = m_Entries.Count();
+		if (count >= m_BatchLimit)
+			return false;
+		if (BatchCount() < count)
+			return false;
+		int events = 0;
+		for (int i = 0; i < count; i++)
+			events += m_Entries.Get(i).m_Events;
+		return events <= EVENTS_PER_POLL;
+	}
+
 	// Load reads every record left on disk by a previous run, in ordinal
 	// order, and leaves them unnumbered: the next session start numbers them.
 	void Load()

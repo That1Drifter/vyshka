@@ -9,8 +9,10 @@
 //
 // Snapshots say what is rather than what happened, so they are not
 // buffered at all: the plugin asks a game-side source for the current
-// state.players body on a cadence, and only when the previous snapshot has
-// been acked (see VyshkaOutbox.HasUnacked).
+// state.players body as it builds the poll that will carry it, no more
+// often than the configured interval, and only when the previous snapshot
+// has been acked (see VyshkaPlugin.PublishSnapshot and
+// VyshkaOutbox.HasUnacked).
 
 class VyshkaEventBuffer
 {

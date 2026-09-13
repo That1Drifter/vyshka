@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.19 (2026-09-10)
+**Status:** draft 0.20 (2026-09-13)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1147,6 +1147,17 @@ durable effect is that the stored state did not change), answered with a `state.
 notice shaped like the rejections of sections 6.4 and 8.1 (`envelopeId` plus `errors`,
 sharing the same per-poll notice budget), and never partially applied, because a partially
 applied snapshot would be a state nobody ever observed.
+
+A snapshot is worth its freshness, and a plugin that keeps one poll in flight (section 3.1)
+can only send one when that poll returns. A plugin SHOULD therefore capture a snapshot as it
+builds the poll request that will carry it, rather than on a timer whose sample then waits
+for the link, and SHOULD NOT queue a snapshot of a type while an earlier one of that type is
+unacked: an envelope the plugin has sent may already be stored, so a fresher one cannot
+replace it (sections 9.1 and 9.3), and a queue of superseded snapshots serves no reader. A
+configured capture interval is then a floor on the spacing between snapshots, and the poll
+cycle sets the cadence when it is longer. A plugin that captures on a timer instead is
+conformant, only later: the reference DayZ plugin once did, and measured two poll cycles
+between snapshots where one is enough.
 
 The hub keeps the **latest** accepted snapshot per `(server, type)`, plus a bounded
 history behind it. Latest means latest *accepted*: snapshots apply in envelope order
