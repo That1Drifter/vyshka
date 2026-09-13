@@ -362,6 +362,19 @@ func (s *Store) Enroll(ctx context.Context, tokenHash, game, secretHash string, 
 	if affected, err := result.RowsAffected(); err != nil {
 		return Server{}, fmt.Errorf("burn enrollment token: %w", err)
 	} else if affected != 1 {
+		// Lost a race while waiting for the server row: either another
+		// enrollment burned the token, or an operator re-issued and the
+		// re-issue deleted it. The row tells the two apart, and the plugin is
+		// told which, because "used" and "unknown" are different answers on
+		// the wire (spec section 5.2).
+		var usedAt sql.NullString
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT used_at FROM enrollment_tokens WHERE token_hash = ?`, tokenHash).Scan(&usedAt); {
+		case errors.Is(err, sql.ErrNoRows):
+			return Server{}, ErrEnrollmentTokenInvalid
+		case err != nil:
+			return Server{}, fmt.Errorf("read enrollment token: %w", err)
+		}
 		return Server{}, ErrEnrollmentTokenUsed
 	}
 
