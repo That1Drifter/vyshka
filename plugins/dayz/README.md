@@ -122,26 +122,35 @@ capture is tried, not how often one lands (see the cadence below):
 A snapshot is only queued when the previous one has been acked. A snapshot says what *is*,
 so a stale one waiting behind an outage is worth nothing, and a buffer full of them would
 crowd out the events and action results that are worth keeping; the hub keeps the latest
-per type regardless, with `capturedAt` saying how stale it is. The cost is a cadence the
-poll cycle sets, not `snapshotIntervalSeconds`. Two waits stand between a capture and the
-ack that frees the next one: the envelope cannot be sent until the poll already in flight
-returns (nothing to a full `pollTimeout`, depending on when in the cycle it was queued),
-and the ack for it rides the response of the poll that carried it (up to `pollTimeout`
-again, since the hub holds that response when nothing is queued downstream). Capture
-attempts keep running on the interval throughout, and a skipped attempt still advances the
-timer, so the gap between captures is that delay rounded up to the next attempt:
+per type regardless, with `capturedAt` saying how stale it is. The cost is that
+`snapshotIntervalSeconds` sets how often a capture is *tried*, while the link decides how
+often one lands. The exact rule is: a capture happens at the first scheduled attempt that
+finds no unacked snapshot. A skipped attempt still advances the timer, and the timer is set
+from the end of each attempt, so attempts drift rather than sit on a fixed grid.
+
+Two waits stand between a capture and the moment its ack is processed. The envelope cannot
+be sent until the poll already in flight returns: nothing to a full `pollTimeout`, depending
+on where in the cycle it was queued. Then the ack rides the response of the poll that
+carried it, which the hub holds until it has something to send or the timeout expires. So
+with an interval well under `pollTimeout`, on a healthy link with quiet, fully held polls
+and no backlog:
 
 ```
-capture gap  =  snapshotIntervalSeconds * ceil((send wait + ack hold) / snapshotIntervalSeconds)
+capture gap  ~=  snapshotIntervalSeconds * ceil((send wait + ack hold) / snapshotIntervalSeconds)
 ```
 
-which is one to two poll cycles, quantised to the interval. Measured on a live server with
-`pollTimeout` 25 and `snapshotIntervalSeconds` 10: nineteen snapshots, gaps of 50 s
-thirteen times, 60 s twice, 51 s once, and 30 s once (that one queued just as a poll went
-out and was received 3.0 s later, so only the ack hold applied); receipt lagged capture by
-3.0 to 26.5 s. Lowering the interval below the poll cycle buys nothing; raising
-`pollTimeout` costs cadence on both waits. A run of held-back ticks long enough to mean an
-outage is logged.
+Approximate, because transport, hub processing, and callback time are in that delay too, and
+anything that pushes the ack past an attempt costs a whole interval more. With an interval
+longer than the two waits (the config allows up to 600) the interval alone sets the cadence,
+and lowering an interval already well under the poll cycle mostly moves where the rounding
+lands rather than shortening the waits.
+
+Measured on a live server with `pollTimeout` 25 and `snapshotIntervalSeconds` 10: nineteen
+snapshots, so eighteen gaps, of which 50 s fourteen times, 60 s twice, 51 s once, and 30 s
+once; receipt lagged capture by 3.0 to 26.5 s. The 30 s gap is consistent with a short send
+wait followed by the ack hold, the snapshot opening it having been received 3.0 s after
+capture, though receipt times alone cannot separate that from a hold the hub ended early. A
+run of held-back ticks long enough to mean an outage is logged.
 
 `core.server.stop` is emitted when the mission finishes, which a graceful shutdown reaches
 and a process kill does not: a server killed from the outside leaves no stop event.

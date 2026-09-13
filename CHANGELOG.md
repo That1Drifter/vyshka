@@ -697,17 +697,17 @@ point if needed.
 - 2026-09-12: the panel and DayZ plugin READMEs put the `state.players` cadence at one
   snapshot per 25 to 35 s with `pollTimeout` 25, and described the interval as how often the
   plugin publishes. The live map demo on the staging hub measured nineteen snapshots at
-  `pollTimeout` 25 and `snapshotIntervalSeconds` 10: gaps of 50 s thirteen times, 60 s
-  twice, 51 s once, and 30 s once, with receipt lagging capture by 3.0 to 26.5 s. The
-  interval sets how often a capture is *attempted*; two waits sit between a capture and the
-  ack that frees the next attempt (the envelope waits for the poll already in flight to
-  return, then its ack rides the response of the poll that carried it), and because a
-  skipped attempt still advances the timer, the gap is that delay rounded up to the next
-  attempt: one to two poll cycles quantised to the interval, not a flat two cycles. The
-  30 s gap is the case where the send wait was near zero. The earlier 25 to 35 s figure came
-  from counting held-back log lines rather than `capturedAt` deltas. Documentation only; the
-  plugin and hub are unchanged, and issue #55 carries the two candidate fixes with their
-  costs.
+  `pollTimeout` 25 and `snapshotIntervalSeconds` 10: of the eighteen gaps, 50 s fourteen
+  times, 60 s twice, 51 s once, and 30 s once, with receipt lagging capture by 3.0 to
+  26.5 s. The interval sets how often a capture is *attempted*, and a capture happens at the
+  first attempt that finds no unacked snapshot; two waits sit in between (the envelope waits
+  for the poll already in flight to return, then its ack rides the response of the poll that
+  carried it), and because a skipped attempt still advances the timer, the gap is that delay
+  rounded up to the next attempt rather than a flat two poll cycles. Above those waits the
+  interval alone sets the cadence, which is why the README now gives the rule and an
+  approximation rather than a figure. The earlier 25 to 35 s figure came from counting
+  held-back log lines rather than `capturedAt` deltas. Documentation only; the plugin and hub
+  are unchanged, and issue #55 carries the two candidate fixes with their costs.
 - 2026-09-12: DayZ plugin envelope ids carried a date prefix with no year, `dz-90911T...`
   for 2026-09-11 (issue #50). New spike `spikes/dayz-enforce-int-tostring-temporary`
   measured the cause on DayZ 1.29: a pending `int.ToString()` result in an expression ends
