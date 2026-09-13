@@ -48,7 +48,7 @@ func (s *Store) Manifest(ctx context.Context, serverID string) (Manifest, error)
 // monotonicity: a revision above the stored one replaces it, anything else is
 // ignored (spec section 6.1). The gate lives in the statement itself so that
 // two concurrent publishes cannot interleave a read and a write.
-func applyManifest(ctx context.Context, tx *sql.Tx, serverID string, revision int64, body []byte, now time.Time) (applied bool, err error) {
+func applyManifest(ctx context.Context, tx *Tx, serverID string, revision int64, body []byte, now time.Time) (applied bool, err error) {
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO manifests (server_id, revision, body, published_at)
 		 VALUES (?, ?, ?, ?)

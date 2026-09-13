@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // poisonedBody fails the test the moment anything reads it, which is how a
@@ -144,7 +144,7 @@ func TestRefusalIsDeliveredAndBounded(t *testing.T) {
 	t.Parallel()
 
 	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL: filepath.Join(t.TempDir(), "refusal.db"),
+		DatabaseURL: dbtest.URL(t),
 		AdminToken:  testAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		// Short, so the stalled-body cases prove the bound without the test
@@ -247,7 +247,7 @@ func TestHeldPollIsImmuneToResponseWriteTimeout(t *testing.T) {
 	t.Parallel()
 
 	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL:          filepath.Join(t.TempDir(), "writebound.db"),
+		DatabaseURL:          dbtest.URL(t),
 		AdminToken:           testAdminToken,
 		Logger:               slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		ResponseWriteTimeout: time.Second, // well under the 5 s hold

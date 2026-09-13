@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // testAdminToken is the bootstrap Admin API credential every test hub boots
@@ -20,7 +20,7 @@ const testAdminToken = "vya_TESTTOKENTESTTOKENTESTTO"
 // newTestServer boots a hub against a throwaway SQLite file.
 func newTestServer(t *testing.T) *hub.Server {
 	t.Helper()
-	return newTestServerAt(t, filepath.Join(t.TempDir(), "test.db"))
+	return newTestServerAt(t, dbtest.URL(t))
 }
 
 // newTestServerAt boots a hub against a named database, so a test can stop one

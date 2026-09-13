@@ -50,7 +50,7 @@ type NewSnapshot struct {
 // section 9.3). Rows are inserted in slice order, which the AUTOINCREMENT seq
 // turns into the acceptance order "latest" is defined by; ULIDs would not do,
 // because everything in one poll shares a millisecond.
-func insertSnapshots(ctx context.Context, tx *sql.Tx, serverID string, snapshots []NewSnapshot, now time.Time) (int, error) {
+func insertSnapshots(ctx context.Context, tx *Tx, serverID string, snapshots []NewSnapshot, now time.Time) (int, error) {
 	if len(snapshots) == 0 {
 		return 0, nil
 	}
@@ -216,9 +216,9 @@ func scanSnapshot(scan func(...any) error) (Snapshot, error) {
 // PruneSnapshots deletes up to limit snapshots past their retention, always
 // leaving the newest row per (server, type) standing whatever its age: a
 // server's last known state stays readable, and its capturedAt says how stale
-// it is (spec section 8.3). Bounded like every retention pass, because the
-// SQLite pool is one connection. The returned count covers history rows and
-// expired dedup markers together, so the caller's pacing loop drains both.
+// it is (spec section 8.3). Bounded like every retention pass, because on
+// SQLite the pool is one connection. The returned count covers history rows
+// and expired dedup markers together, so the caller's pacing loop drains both.
 func (s *Store) PruneSnapshots(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 {
 		limit = defaultPruneBatch

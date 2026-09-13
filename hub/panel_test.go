@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // newTestServerWithPanel boots a hub with a stand-in panel: the mounting is
@@ -20,7 +20,7 @@ import (
 func newTestServerWithPanel(t *testing.T, panel http.Handler) *hub.Server {
 	t.Helper()
 	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL: filepath.Join(t.TempDir(), "test.db"),
+		DatabaseURL: dbtest.URL(t),
 		AdminToken:  testAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Panel:       panel,

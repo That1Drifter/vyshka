@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -58,7 +57,7 @@ type NewEventBatch struct {
 // twice with fresh ids and a fresh received_at, and fire webhook fan-out twice
 // for each. The dedup row expires with the batch's longest-lived event, so it
 // cannot be pruned while a duplicate it guards against would still be visible.
-func insertEventBatches(ctx context.Context, tx *sql.Tx, serverID string, batches []NewEventBatch, now time.Time) (int, error) {
+func insertEventBatches(ctx context.Context, tx *Tx, serverID string, batches []NewEventBatch, now time.Time) (int, error) {
 	total := 0
 	for _, batch := range batches {
 		// An empty batch stores nothing, so a replay of it double-stores
@@ -138,7 +137,7 @@ func (s *Store) IngestedEventBatches(ctx context.Context, serverID string, envel
 
 // insertEvents appends one batch's rows inside an open transaction. The caller
 // has already claimed the batch's envelope id.
-func insertEvents(ctx context.Context, tx *sql.Tx, serverID string, events []NewEvent, now time.Time) (int, error) {
+func insertEvents(ctx context.Context, tx *Tx, serverID string, events []NewEvent, now time.Time) (int, error) {
 	statement, err := tx.PrepareContext(ctx,
 		`INSERT INTO events (id, server_id, type, occurred_at, received_at, expires_at, data)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -314,9 +313,10 @@ func prefixUpperBound(prefix string) string {
 const defaultPruneBatch = 1000
 
 // PruneEvents deletes up to limit events past their retention (spec section
-// 8.4) and reports how many went. It is bounded because the SQLite pool is one
-// connection: an unbounded delete over a long-neglected database would hold
-// that connection, and therefore the whole hub, for as long as it took.
+// 8.4) and reports how many went. It is bounded because on SQLite the pool is
+// one connection: an unbounded delete over a long-neglected database would
+// hold that connection, and therefore the whole hub, for as long as it took.
+// On Postgres the same bound keeps the delete's row locks short.
 //
 // Retention is the deadline each event was stamped with at ingest, not a rule
 // re-derived on every pass. Re-deriving would make a configuration typo destroy
@@ -354,11 +354,14 @@ func (s *Store) PruneEvents(ctx context.Context, limit int) (int, error) {
 	// the count is what the caller's loop paces event deletion by, and there
 	// is at most one of these per batch of up to 200 events.
 	//
-	// The drained-backlog inference leans on the single SQLite connection
-	// serializing this pass against ingest. A pooled Postgres backend would
-	// need both deletes in one snapshot and a single sweeper, or an uncommitted
-	// ingest could surface its marker between the two statements. That backend
-	// is refused today; see the Postgres note in resolveDSN and issue #20.
+	// The drained-backlog inference does not need the two statements to share
+	// a snapshot, so it holds on a pooled Postgres as it does on SQLite. An
+	// ingest committing between them lands a marker stamped with its own
+	// receipt time plus its horizon, and its receipt time is at or after the
+	// `now` both statements compare against, so the sweep cannot reach that
+	// marker unless the horizon is zero to the millisecond. The other
+	// assumption is one sweeper per database, which is the supported
+	// deployment (see DueWebhookDeliveries).
 	if int(pruned) < limit {
 		if _, err := s.db.ExecContext(ctx,
 			`DELETE FROM event_batches

@@ -12,6 +12,43 @@ point if needed.
 
 ### Added
 
+- 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
+  `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
+  sixteen connections; SQLite stays the zero-configuration default. The slice is the row
+  locks, not the driver: since the envelope slice the single SQLite connection had been
+  serializing every read-then-write in the store, and on a pool those became silent
+  integrity defects (a lowered inbound ack, a double-counted envelope, a queue over its
+  bound, two live sessions, two unused enrollment tokens, a dispatch validated against a
+  replaced manifest, a stale session effect landing after supersession). The store now
+  follows one lock order everywhere, server row then live session row then child rows:
+  session starts, token issuance, manifest application, dispatch, and every outbound
+  insert take the server row `FOR UPDATE`; session-scoped writes lock and revalidate the
+  session row through commit, so an end-of-session either waits for them or they find the
+  session gone; `ApplyInbound` takes the server before the session because it may queue a
+  notice, and `Enroll` locks the server before burning the token, so nothing inverts the
+  order. KV writers serialize on a transaction-scoped advisory lock keyed on the key, which
+  a row lock cannot do for a key that does not exist yet. Every query is written once with
+  `?` and rebound per dialect by the store's own `DB` and `Tx` handles; the `FOR UPDATE`
+  suffix is empty on SQLite. Migrations: `0010_state.postgres.sql` spells the snapshot
+  `seq` as an identity column (the shared file's AUTOINCREMENT is SQLite-only) and the
+  loader picks a `.postgres.sql` variant when one exists; `0013_one_live_session.sql` adds
+  the partial unique index on `sessions(server_id) WHERE ended_at IS NULL` as the schema
+  backstop; on Postgres the migrator holds a session-level advisory lock for the run, so two
+  hubs booting at once apply the schema once between them. `actions.ok` receives the
+  integer the column declares rather than a Go bool Postgres refuses. Startup logs and
+  `Store.Target()` report a Postgres URL with its password and query parameters removed;
+  the raw DSN is not kept. Tests: `hub/internal/dbtest` hands every test a database of its
+  own on the backend `VYSHKA_TEST_BACKEND` names (a fresh Postgres database per test,
+  created and dropped through `VYSHKA_TEST_POSTGRES_URL`), so the whole hub and store
+  suites run unchanged on both engines; deterministic overlap tests park one transaction at
+  a pause point and assert the second waits and then observes the commit, covering the
+  inbound ack and count, supersession and revocation against a session write, the queue
+  bound, session-start uniqueness, token-issuance uniqueness, dispatch against a concurrent
+  publish in both orders, concurrent KV incrs, and two concurrent migrators; DSN resolution,
+  redaction, and the boot log are graded directly. CI adds a Postgres service and runs the
+  hub suites and the 76-check conformance suite once per engine. README documents the
+  supported DSNs. One hub per database remains the supported deployment on both engines.
+
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
   `state.players` snapshot, re-read on the server-list cadence: the players listed with

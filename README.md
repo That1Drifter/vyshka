@@ -60,7 +60,7 @@ curl http://127.0.0.1:8080/healthz
 ```
 
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
-SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
+SQLite file; see below), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
 `-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
 `VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
 `panel/README.md`). With no admin token configured the hub mints one at boot and logs it,
@@ -68,6 +68,29 @@ which keeps first run to a single command; set the flag to keep it stable across
 That generated credential is first-run behavior only: once the hub holds a scoped token of
 its own it stops minting one, because a fresh superuser token on every boot would mean
 revocation never survived a restart. Logs are structured JSON on stdout.
+
+### Database
+
+SQLite is the default and needs no configuration: with `-db` empty the hub keeps
+`./vyshka.db` next to itself, and `-db path/to/file.db` or `-db sqlite://path/to/file.db`
+puts it elsewhere. That is the whole install story for one hub on one host.
+
+Operators who already run Postgres and do not want a file to be the system of record can
+point the hub at it instead:
+
+```
+DATABASE_URL='postgres://vyshka:secret@db.example:5432/vyshka?sslmode=require' ./bin/vyshka-hub serve
+```
+
+Both `postgres://` and `postgresql://` are accepted, with the usual libpq URL parameters
+(`sslmode`, `connect_timeout`, and the rest). The hub creates its schema on first boot and
+brings it forward on every later one; two hubs booting against one database at the same
+time serialize on an advisory lock, so neither half-applies a migration. Startup logs and
+`/healthz` name the driver and, for Postgres, the URL with its password and query
+parameters removed; the raw URL is never logged. The behavior is the same on both
+engines, and CI runs the full test and conformance suites against each. One hub per
+database on either engine: the retention sweeps and the webhook dispatcher assume they are
+the only pass of their kind.
 
 To run it as a container behind a reverse proxy, see [`deploy/`](deploy/README.md): a
 `Dockerfile` (static binary, distroless, non-root), a compose file, and an nginx block with

@@ -13,11 +13,13 @@ import (
 
 // The key/value store of spec section 12. Every operation here is atomic on
 // its own: get and delete are single statements, and set and incr run their
-// read and write inside one transaction, which today the single SQLite
-// connection serializes. On a real connection pool (issue #20) the reads in
-// kvSetTx and KVIncr MUST take a row lock (SELECT ... FOR UPDATE), or two
-// concurrent incrs can read the same value and one of the deltas vanishes,
-// which is exactly what section 12.2 forbids.
+// read and write inside one transaction. On SQLite the single connection
+// serializes those; on Postgres each write transaction first takes a
+// transaction-scoped advisory lock on the key (lockKey), so two concurrent
+// incrs read and write one after the other and neither delta vanishes, which
+// is what section 12.2 requires. An advisory lock rather than a row lock
+// because the row may not exist yet: two writers creating the same key with
+// ifRevision 0 have no row to lock, and both would otherwise succeed.
 
 // maxKVExact is 2^53 - 1, the exactness bound of spec section 12: revisions
 // and incr arithmetic must survive a float64 round-trip, so anything beyond it
@@ -59,6 +61,22 @@ var (
 	// because a wrapped revision would let a stale compare-and-swap win.
 	ErrKVRevisionExhausted = errors.New("the key's revision is at the exactness bound")
 )
+
+// lockKey serializes the writers of one key for the rest of the transaction.
+// On Postgres it is a transaction-scoped advisory lock in a keyspace of its
+// own (the two-argument form, class 1), released at commit or rollback; a
+// hash collision between two keys costs one of them a wait, never a wrong
+// answer. On SQLite it is nothing: the single connection is the lock.
+func lockKey(ctx context.Context, tx *Tx, namespace, key string) error {
+	if tx.d != dialectPostgres {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(1, hashtext(?))`, namespace+"/"+key); err != nil {
+		return fmt.Errorf("lock kv key: %w", err)
+	}
+	return nil
+}
 
 // kvLive reports whether a scanned row is live at now. expiresAt is the raw
 // stored column, empty when NULL.
@@ -119,6 +137,9 @@ func (s *Store) KVSet(ctx context.Context, namespace, key string, value []byte, 
 	// measured from a timestamp that aged in the queue would sell the caller
 	// an expiry already partly (or wholly) spent, and liveness decisions made
 	// from it would misread a key that expired while this write waited.
+	if err := lockKey(ctx, tx, namespace, key); err != nil {
+		return KVEntry{}, err
+	}
 	now := time.Now().UTC()
 
 	current, err := kvCurrentRevision(ctx, tx, namespace, key, now)
@@ -183,8 +204,12 @@ func (s *Store) KVIncr(ctx context.Context, namespace, key string, delta int64) 
 	}
 	defer tx.Rollback()
 
-	// Read after the wait for the connection, as in KVSet: liveness must be
-	// judged at the moment this transaction runs, not at the moment it queued.
+	// Read after the wait for the connection and the lock, as in KVSet:
+	// liveness must be judged at the moment this transaction runs, not at the
+	// moment it queued.
+	if err := lockKey(ctx, tx, namespace, key); err != nil {
+		return KVEntry{}, err
+	}
 	now := time.Now().UTC()
 
 	var (
@@ -242,7 +267,7 @@ func (s *Store) KVIncr(ctx context.Context, namespace, key string, delta int64) 
 // kvCurrentRevision reads a key's revision inside an open transaction: 0 when
 // the row is absent or expired, which is the same "does not exist" a
 // compare-and-swap must see in both cases.
-func kvCurrentRevision(ctx context.Context, tx *sql.Tx, namespace, key string, now time.Time) (int64, error) {
+func kvCurrentRevision(ctx context.Context, tx *Tx, namespace, key string, now time.Time) (int64, error) {
 	var (
 		revision  int64
 		expiresAt sql.NullString
@@ -265,7 +290,7 @@ func kvCurrentRevision(ctx context.Context, tx *sql.Tx, namespace, key string, n
 
 // kvUpsert writes one row inside an open transaction, replacing whatever the
 // primary key held, including an expired row being recreated.
-func kvUpsert(ctx context.Context, tx *sql.Tx, namespace, key, value string, revision int64, expiry *time.Time, now time.Time) error {
+func kvUpsert(ctx context.Context, tx *Tx, namespace, key, value string, revision int64, expiry *time.Time, now time.Time) error {
 	var expiresAt any
 	if expiry != nil {
 		expiresAt = formatTime(*expiry)
@@ -284,9 +309,9 @@ func kvUpsert(ctx context.Context, tx *sql.Tx, namespace, key, value string, rev
 }
 
 // PruneKV deletes up to limit keys past their expiry and reports how many
-// went. Bounded like every other retention pass: the SQLite pool is one
-// connection, and an unbounded delete would hold it, and therefore the whole
-// hub, for as long as it took.
+// went. Bounded like every other retention pass: on SQLite the one connection
+// it holds is the whole hub's critical section, and on Postgres an unbounded
+// delete would hold its row locks against every write for as long as it took.
 func (s *Store) PruneKV(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 {
 		limit = defaultPruneBatch

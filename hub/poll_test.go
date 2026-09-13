@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // wireEnvelope mirrors spec section 4 on the wire. It is spelled out here rather
@@ -715,7 +715,7 @@ func TestPollUpdatesLastSeenAt(t *testing.T) {
 // memory would pass every black-box check and still lose an operator's work.
 func TestQueuedEnvelopesSurviveAHubRestart(t *testing.T) {
 	t.Parallel()
-	databaseURL := filepath.Join(t.TempDir(), "restart.db")
+	databaseURL := dbtest.URL(t)
 
 	before := newTestServerAt(t, databaseURL)
 	created := createServer(t, before, "survives a restart", "test-game")

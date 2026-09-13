@@ -258,6 +258,10 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 // IssueEnrollmentToken stores the digest of a fresh one-time token and
 // invalidates any unused token the server still had, so that only the most
 // recently issued token can enroll. It returns the expiry it recorded.
+//
+// The delete and the insert are serialized per server by the server row lock
+// (lockServer): two concurrent issuances would otherwise each miss the other's
+// new row and leave two unused tokens standing.
 func (s *Store) IssueEnrollmentToken(ctx context.Context, serverID, tokenHash string, ttl time.Duration) (time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(ttl).Truncate(time.Millisecond)
@@ -268,9 +272,8 @@ func (s *Store) IssueEnrollmentToken(ctx context.Context, serverID, tokenHash st
 	}
 	defer tx.Rollback()
 
-	var exists string
-	switch err := tx.QueryRowContext(ctx, `SELECT id FROM servers WHERE id = ?`, serverID).Scan(&exists); {
-	case errors.Is(err, sql.ErrNoRows):
+	switch err := lockServer(ctx, tx, serverID); {
+	case errors.Is(err, ErrNotFound):
 		return time.Time{}, ErrNotFound
 	case err != nil:
 		return time.Time{}, fmt.Errorf("read server: %w", err)
@@ -281,6 +284,7 @@ func (s *Store) IssueEnrollmentToken(ctx context.Context, serverID, tokenHash st
 	); err != nil {
 		return time.Time{}, fmt.Errorf("clear unused enrollment tokens: %w", err)
 	}
+	runHook(testHooks.afterTokensCleared)
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO enrollment_tokens (token_hash, server_id, created_at, expires_at)
@@ -334,8 +338,14 @@ func (s *Store) Enroll(ctx context.Context, tokenHash, game, secretHash string, 
 		return Server{}, ErrEnrollmentTokenInvalid
 	}
 
+	// The server row is locked before the token is burned, not after: the
+	// lock order is server first, then its child rows (lockServer), and the
+	// burn takes the token row's lock. Taking them the other way round would
+	// let this transaction and an IssueEnrollmentToken for the same server
+	// wait on each other.
 	var declaredGame string
-	if err := tx.QueryRowContext(ctx, `SELECT game FROM servers WHERE id = ?`, serverID).Scan(&declaredGame); err != nil {
+	if err := tx.QueryRowContext(ctx,
+		`SELECT game FROM servers WHERE id = ?`+tx.forUpdate(), serverID).Scan(&declaredGame); err != nil {
 		return Server{}, fmt.Errorf("read server: %w", err)
 	}
 	if declaredGame != "" && declaredGame != game {
@@ -420,9 +430,12 @@ func (s *Store) RevokeCredentials(ctx context.Context, serverID string) error {
 	}
 	defer tx.Rollback()
 
+	// Locked, so that a session-scoped write already past its liveness check
+	// commits before the sessions are ended here, or sees them ended: either
+	// way nothing lands on a session after this revocation (see liveSessionSeq).
 	var secretHash string
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT secret_hash FROM servers WHERE id = ?`, serverID).Scan(&secretHash); {
+		`SELECT secret_hash FROM servers WHERE id = ?`+tx.forUpdate(), serverID).Scan(&secretHash); {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrNotFound
 	case err != nil:
@@ -450,6 +463,13 @@ func (s *Store) RevokeCredentials(ctx context.Context, serverID string) error {
 
 // StartSession issues a session and ends any earlier one for the same server,
 // keeping the "at most one live session per server" rule of spec section 5.3.
+//
+// The end and the insert are serialized per server by the server row lock,
+// taken first per the lock order at lockServer; the partial unique index of
+// migration 0013 is the backstop behind it. Ending the old session takes its
+// row lock too, so a poll that read the session live and is still writing
+// against it holds this call until it commits, and the next poll on that
+// session finds it ended.
 func (s *Store) StartSession(ctx context.Context, request NewSession) (Session, error) {
 	now := time.Now().UTC()
 	session := Session{
@@ -467,9 +487,17 @@ func (s *Store) StartSession(ctx context.Context, request NewSession) (Session, 
 	}
 	defer tx.Rollback()
 
+	switch err := lockServer(ctx, tx, request.ServerID); {
+	case errors.Is(err, ErrNotFound):
+		return Session{}, ErrNotFound
+	case err != nil:
+		return Session{}, fmt.Errorf("read server: %w", err)
+	}
+
 	if err := endSessions(ctx, tx, request.ServerID, SessionEndSuperseded, now); err != nil {
 		return Session{}, err
 	}
+	runHook(testHooks.afterSessionsEnded)
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions (id, token_hash, server_id, created_at, expires_at,
@@ -569,7 +597,10 @@ func scanSession(row rowScanner) (Session, error) {
 }
 
 // endSessions closes every live session of a server inside an open transaction.
-func endSessions(ctx context.Context, tx *sql.Tx, serverID, reason string, now time.Time) error {
+// The caller holds the server row lock. The update takes each live session's
+// row lock, which is how it contends with the session-scoped writes that lock
+// the session in liveSessionSeq: whichever gets there first commits first.
+func endSessions(ctx context.Context, tx *Tx, serverID, reason string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET ended_at = ?, end_reason = ?
 		  WHERE server_id = ? AND ended_at IS NULL`,

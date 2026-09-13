@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 )
 
 // tokenRecord mirrors the Admin API token view on the wire (spec section 10).
@@ -586,7 +586,7 @@ func TestAuditPaginatesWithoutSkippingOrRepeating(t *testing.T) {
 // configured credential must not print a fresh superuser token to the log.
 func TestGeneratedBootstrapTokenIsConfinedToFirstRun(t *testing.T) {
 	t.Parallel()
-	databaseURL := filepath.Join(t.TempDir(), "bootstrap.db")
+	databaseURL := dbtest.URL(t)
 
 	firstRun := bootLogged(t, databaseURL, "")
 	if !strings.Contains(firstRun, "generated an ephemeral one") {

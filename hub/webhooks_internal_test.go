@@ -4,10 +4,10 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -55,7 +55,7 @@ func TestSignWebhookBodyKnownVector(t *testing.T) {
 func bootBare(t *testing.T) *Server {
 	t.Helper()
 	server, err := New(context.Background(), Config{
-		DatabaseURL: filepath.Join(t.TempDir(), "test.db"),
+		DatabaseURL: dbtest.URL(t),
 		AdminToken:  "vya_INTERNALTESTTOKENINTERNAL",
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
