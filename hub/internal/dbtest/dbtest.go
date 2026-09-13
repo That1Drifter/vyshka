@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // "pgx", for creating and dropping test databases
 )
 
@@ -89,6 +90,15 @@ func postgresURL(t *testing.T) string {
 	t.Cleanup(func() { control.Close() })
 
 	name := "vyshka_test_" + randomSuffix()
+	testURL := perTestURL(parsed, name)
+	// The claim is what the driver would connect to, so the driver decides:
+	// a maintenance URL carrying a database override in a spelling the
+	// filter does not recognise is refused here, before any database is
+	// created, rather than pointing every test at the maintenance database.
+	if err := selectsDatabase(testURL, name); err != nil {
+		t.Fatalf("%s: %v", PostgresURLVar, err)
+	}
+
 	// Identifiers cannot be parameters; the name is ours and matches [a-z0-9_].
 	if _, err := control.ExecContext(ctx, `CREATE DATABASE "`+name+`"`); err != nil {
 		t.Fatalf("create test database %s: %v", name, err)
@@ -104,7 +114,7 @@ func postgresURL(t *testing.T) string {
 		}
 	})
 
-	return perTestURL(parsed, name)
+	return testURL
 }
 
 // perTestURL points the maintenance URL at one test's database. The
@@ -124,10 +134,13 @@ func perTestURL(admin *url.URL, name string) string {
 		kept := make([]string, 0, 4)
 		for _, pair := range strings.Split(test.RawQuery, "&") {
 			rawKey, _, _ := strings.Cut(pair, "=")
-			// Compared as the driver reads it: percent-decoded, with `+`
-			// left alone (libpq rules, not form encoding), so an encoded
-			// `%64bname` cannot smuggle the override past this filter.
-			key, err := url.PathUnescape(rawKey)
+			// Compared as the driver reads it: surrounding spaces dropped,
+			// then percent-decoded with `+` left alone (libpq rules, not form
+			// encoding), so an encoded `%64bname` cannot smuggle the override
+			// past this filter. postgresURL then checks the result with the
+			// driver itself, so a spelling this misses fails loudly rather
+			// than silently selecting the wrong database.
+			key, err := url.PathUnescape(strings.TrimSpace(rawKey))
 			if err != nil {
 				key = rawKey
 			}
@@ -139,6 +152,19 @@ func perTestURL(admin *url.URL, name string) string {
 		test.RawQuery = strings.Join(kept, "&")
 	}
 	return test.String()
+}
+
+// selectsDatabase parses a URL the way the driver will and reports an error
+// unless the database it would connect to is name.
+func selectsDatabase(testURL, name string) error {
+	config, err := pgconn.ParseConfig(testURL)
+	if err != nil {
+		return fmt.Errorf("the driver rejects the per-test URL derived from it: %w", err)
+	}
+	if config.Database != name {
+		return fmt.Errorf("the URL carries a database override the helper could not strip (the driver would connect to %q); remove dbname/database from its query", config.Database)
+	}
+	return nil
 }
 
 func randomSuffix() string {

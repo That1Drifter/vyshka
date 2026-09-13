@@ -75,7 +75,9 @@ point if needed.
   Go's parser accepted it; and the rebinder follows nested block comments. The third round
   caught the helper comparing query keys raw, so a percent-encoded `dbname` could still
   have pointed a test at the maintenance database; keys are now compared as the driver
-  decodes them, and the test asserts on the driver's parsed database name.
+  decodes them, and the test asserts on the driver's parsed database name. The fourth round
+  found one more spelling (a space around the key), so the helper now also parses the URL it
+  built with the driver and refuses to run unless the parsed database is the test's own.
 
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
