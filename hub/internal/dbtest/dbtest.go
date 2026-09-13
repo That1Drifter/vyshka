@@ -123,7 +123,14 @@ func perTestURL(admin *url.URL, name string) string {
 	if test.RawQuery != "" {
 		kept := make([]string, 0, 4)
 		for _, pair := range strings.Split(test.RawQuery, "&") {
-			key, _, _ := strings.Cut(pair, "=")
+			rawKey, _, _ := strings.Cut(pair, "=")
+			// Compared as the driver reads it: percent-decoded, with `+`
+			// left alone (libpq rules, not form encoding), so an encoded
+			// `%64bname` cannot smuggle the override past this filter.
+			key, err := url.PathUnescape(rawKey)
+			if err != nil {
+				key = rawKey
+			}
 			if key == "dbname" || key == "database" {
 				continue
 			}

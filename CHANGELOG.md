@@ -72,7 +72,10 @@ point if needed.
   over the environment (the fallback checks whether the flag was given, not whether it is
   empty); the test helper keeps the maintenance URL's other query parameters byte for byte
   and in order rather than re-encoding them; a URL the driver rejects is withheld even when
-  Go's parser accepted it; and the rebinder follows nested block comments.
+  Go's parser accepted it; and the rebinder follows nested block comments. The third round
+  caught the helper comparing query keys raw, so a percent-encoded `dbname` could still
+  have pointed a test at the maintenance database; keys are now compared as the driver
+  decodes them, and the test asserts on the driver's parsed database name.
 
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
