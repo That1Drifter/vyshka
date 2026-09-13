@@ -694,6 +694,24 @@ point if needed.
 
 ### Fixed
 
+- 2026-09-13: the DayZ plugin captures `state.players` as it builds each poll request
+  instead of on a timer (issue #55, plugin 0.3.0). A timer capture sat in the outbox until
+  the poll already in flight returned, and its ack then rode the hold on the next poll, so
+  with the capture gated on that ack the gap between snapshots was two poll cycles (50 s
+  measured at `pollTimeout` 25 and `snapshotIntervalSeconds` 10). Captured at send time the
+  sample rides the request it was made for, the ack comes back in that request's response,
+  and the next poll can capture again: one poll cycle between snapshots, with receipt
+  lagging capture by a round trip. `snapshotIntervalSeconds` is now a floor on the spacing
+  between captures rather than an attempt timer, and a capture is also skipped while the
+  outbox holds more than one poll can carry, since an appended snapshot that could not ride
+  this poll would only age. The spec (draft 0.20) says in section 8.3 that a plugin SHOULD
+  capture as it builds the carrying poll and SHOULD NOT queue a snapshot of a type while an
+  earlier one is unacked, which is the plugin-side rule issue #55 asked for; the hub is
+  unchanged, and the hub-side alternative (answering a poll that carried envelopes at once)
+  was not taken: it costs requests on every busy poll, and on a quiet link it removes no
+  held poll from the cadence once the capture is made at send time. It would drain a
+  backlog faster, which is where a capture can still be held, so it stays an option for
+  later rather than a rejected one. The panel and plugin READMEs describe the new cadence.
 - 2026-09-12: the panel and DayZ plugin READMEs put the `state.players` cadence at one
   snapshot per 25 to 35 s with `pollTimeout` 25, and described the interval as how often the
   plugin publishes. The live map demo on the staging hub measured nineteen snapshots at

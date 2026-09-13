@@ -107,10 +107,12 @@ out, drowning, a fall), `infected`, `animal`, `explosion` (`weapon` is the devic
 `vehicle`, `other` (with `killerType`, the engine class of the killer), or `unknown`. This
 reading of the killer object matches the one the engine's own admin log makes.
 
-**Snapshots.** Every `snapshotIntervalSeconds` (default 10) the plugin *attempts* a capture
-of the full list of characters with an identity attached, alive or not. An attempt made
-while the previous snapshot is still unacked is skipped, so the interval sets how often a
-capture is tried, not how often one lands (see the cadence below):
+**Snapshots.** The plugin captures the full list of characters with an identity attached,
+alive or not, as it builds each poll request, so the sample rides that very request instead
+of waiting behind a held poll. `snapshotIntervalSeconds` (default 10) is a floor on the
+spacing between captures, not a timer: a poll built sooner than that after the last capture
+carries none, and when the interval is shorter than the poll cycle it is the poll cycle that
+sets the cadence (see below):
 
 ```json
 { "capturedAt": "2026-09-11T14:00:00Z",
@@ -119,38 +121,44 @@ capture is tried, not how often one lands (see the cadence below):
                  "data": { "alive": true, "health": 100, "blood": 5000 } } ] }
 ```
 
-A snapshot is only queued when the previous one has been acked. A snapshot says what *is*,
-so a stale one waiting behind an outage is worth nothing, and a buffer full of them would
-crowd out the events and action results that are worth keeping; the hub keeps the latest
-per type regardless, with `capturedAt` saying how stale it is. The cost is that
-`snapshotIntervalSeconds` sets how often a capture is *tried*, while the link decides how
-often one lands. The exact rule is: a capture happens at the first scheduled attempt that
-finds no unacked snapshot. A skipped attempt still advances the timer, and the timer is set
-from the end of each attempt, so attempts drift rather than sit on a fixed grid.
+No capture is made while the previous snapshot is still unacked, or while the outbox holds
+more than one poll can carry. A snapshot says what *is*, so a stale one waiting behind an
+outage is worth nothing, an envelope already in the outbox cannot be replaced by a fresher
+one (it may already have been stored, and the retransmission is then deduplicated), and a
+buffer full of superseded snapshots would crowd out the events and action results that are
+worth keeping; the hub keeps the latest per type regardless, with `capturedAt` saying how
+stale it is. On a healthy link the ack for the previous snapshot arrives in the response that
+ended the last poll, so a skipped capture means an outage or a backlog, and a run of them
+long enough to matter is logged.
 
-Two waits stand between a capture and the moment its ack is processed. The envelope cannot
-be sent until the poll already in flight returns: nothing to a full `pollTimeout`, depending
-on where in the cycle it was queued. Then the ack rides the response of the poll that
-carried it, which the hub holds until it has something to send or the timeout expires. So
-with an interval well under `pollTimeout`, on a healthy link with quiet, fully held polls
-and no backlog:
+The cadence on a healthy link with quiet, fully held polls is therefore one snapshot per
+poll cycle (`pollTimeout` plus a round trip) when the interval is shorter than that, and
+otherwise the interval rounded up to the next poll:
 
 ```
-capture gap  ~=  snapshotIntervalSeconds * ceil((send wait + ack hold) / snapshotIntervalSeconds)
+capture gap  ~=  poll cycle * ceil(snapshotIntervalSeconds / poll cycle)
 ```
 
-Approximate, because transport, hub processing, and callback time are in that delay too, and
-anything that pushes the ack past an attempt costs a whole interval more. With an interval
-longer than the two waits (the config allows up to 600) the interval alone sets the cadence,
-and lowering an interval already well under the poll cycle mostly moves where the rounding
-lands rather than shortening the waits.
+Receipt lags capture by about a round trip, because the hub applies a poll's envelopes
+before it begins to hold. A poll the hub answers early (because it had something to
+deliver) shifts that grid rather than shortening it: the re-poll that follows may be built
+before the interval has elapsed, so it carries no snapshot and is then held in full, and the
+gap runs to the interval plus a cycle. So with successful polls, room for a snapshot at
+every poll, and no session renewal in between, a gap lies between the interval and the
+interval plus the longest time between two polls being built, which for held polls is about
+`pollTimeout` plus transport and processing time; only quiet, fully held polls sit on the grid
+above. A backlog that fills the batch, a failed poll, or a session renewal extends the gap
+past that, and the floor is kept by the running plugin, not across a restart.
 
-Measured on a live server with `pollTimeout` 25 and `snapshotIntervalSeconds` 10: nineteen
-snapshots, so eighteen gaps, of which 50 s fourteen times, 60 s twice, 51 s once, and 30 s
-once; receipt lagged capture by 3.0 to 26.5 s. The 30 s gap is consistent with a short send
-wait followed by the ack hold, the snapshot opening it having been received 3.0 s after
-capture, though receipt times alone cannot separate that from a hold the hub ended early. A
-run of held-back ticks long enough to mean an outage is logged.
+Measured on a live server against a local hub with `pollTimeout` 25 and
+`snapshotIntervalSeconds` 10, no players online: twenty-one snapshots, so twenty gaps, of
+which 25 s eighteen times and 26 s twice; receipt lagged capture by under a second
+(`capturedAt` has whole-second resolution), and no capture was held.
+
+Plugin 0.2.0 captured on a timer instead and skipped the capture while the previous snapshot
+was unacked, which put two waits between captures (the poll already in flight, then the hold
+on the poll that carried the ack) and measured 50 s between snapshots at `pollTimeout` 25 and
+`snapshotIntervalSeconds` 10 (issue #55).
 
 `core.server.stop` is emitted when the mission finishes, which a graceful shutdown reaches
 and a process kill does not: a server killed from the outside leaves no stop event.
