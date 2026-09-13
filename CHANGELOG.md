@@ -991,6 +991,10 @@ point if needed.
 
 ### Changed
 
+- 2026-09-12: `README.md` status section split from one paragraph into five, grouped by
+  direction of flow (control plane, hub to plugin, plugin to hub, operator surface). The
+  conformance-check count is no longer stated in prose, so it cannot go stale. No facts
+  changed.
 - 2026-08-31: `spec/protocol.md` draft 0.17 scopes the receiver's envelope-id dedup
   obligation explicitly (issue #39, surfaced by the adversarial review of the
   snapshot-replay fix; a spec-reading gap, not a code defect). Section 4's rationale said

@@ -5,8 +5,7 @@
 Vyshka is an open source, self-hosted integration hub for game servers: a single-binary
 backend (the hub) that connects in-game plugins to a public admin API for remote actions,
 telemetry, live state, webhooks, and per-mod storage. DayZ is the first supported game;
-Arma Reforger is the explicit second target, and the protocol is designed to be
-game-agnostic from day one.
+Arma Reforger is the explicit second target, and nothing in the protocol is DayZ-specific.
 
 ## Status: early implementation
 
@@ -21,33 +20,38 @@ machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml
 [`spec/events.schema.json`](spec/events.schema.json).
 
 What runs today: the hub boots on an embedded SQLite database, serves `/healthz`, and
-implements the protocol surfaces below. An operator can register a game server, a plugin
-can trade its one-time enrollment token for permanent credentials and those credentials for a
-session, and revoking a server kills its session immediately. On top of that sits the
-transport: a plugin holds a long-poll, the hub flushes queued envelopes into it the moment
-they arrive, and per-direction sequence numbers with cumulative acks make delivery
-at-least-once both ways. Over the transport, a plugin publishes its action manifest: the hub
-validates each params schema against the protocol's closed JSON Schema subset, stores accepted
-manifests revision-gated, answers invalid ones with a `manifest.reject` instead of an error,
-and serves the result to operators at `GET /api/v1/servers/{id}/manifest`. And on top of the
-manifest sits the core tracer bullet, the action lifecycle: an operator dispatches an action
-(validated against the manifest schema before anything is queued), the plugin executes it and
-reports, and every state of `queued -> delivered -> running -> completed/failed/expired` is
-observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry. Telemetry
-runs the other way on the same transport: a plugin pushes `event.batch` envelopes, core and
-mod-defined events land in one append-only store with per-type retention, and operators query
-them at `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. All of it
-sits behind scoped Admin API tokens: a credential can be narrowed to one action code or one
-event namespace, every route enforces its scope, and every authenticated mutation lands in an
-append-only audit log at `GET /api/v1/audit`. Plugins push full-list state snapshots
-(players, vehicles, entities) that operators read at `GET /api/v1/servers/{id}/state/{type}`,
-signed webhooks deliver events and action outcomes to other systems with retries and a dead
-letter, and a per-mod key/value store serves both realms. The embedded panel at `/panel/`
-turns all of it into a page: an operator signs in with a token, picks a server and an
-action, and dispatches from a form generated from the manifest's schema, watching the
-result arrive. Seventy-two conformance checks grade the protocol surfaces in CI, a headless
-browser test grades the panel, and a clean-room DayZ plugin under `plugins/dayz` passes the
-plugin conformance harness against a live server.
+implements every protocol surface below. The conformance suites grade those surfaces in CI,
+a headless browser test grades the panel, and a clean-room DayZ plugin under `plugins/dayz`
+passes the plugin conformance harness against a live server.
+
+Control plane first. An operator registers a game server. The plugin trades its one-time
+enrollment token for permanent credentials, and those for a session; revoking the server
+kills its session immediately. The plugin then holds a long-poll, the hub flushes queued
+envelopes into it as they arrive, and per-direction sequence numbers with cumulative acks
+make delivery at-least-once both ways.
+
+Hub to plugin. The plugin publishes an action manifest. The hub validates each params
+schema against the protocol's closed JSON Schema subset, stores accepted manifests
+revision-gated, answers invalid ones with `manifest.reject` rather than an error, and
+serves the result at `GET /api/v1/servers/{id}/manifest`. An operator dispatches an
+action, validated against that schema before anything is queued. The plugin runs it and
+reports back, and every state of `queued -> delivered -> running -> completed/failed/expired`
+is observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL expiry.
+
+Plugin to hub. The plugin pushes `event.batch` envelopes; core and mod-defined events land
+in one append-only store with per-type retention, queryable at
+`GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Full-list
+state snapshots (players, vehicles, entities) are read at
+`GET /api/v1/servers/{id}/state/{type}`. Signed webhooks push events and action outcomes
+to other systems with retries and a dead letter, and a per-mod key/value store serves
+both realms.
+
+Everything is behind scoped Admin API tokens. A credential can be narrowed to one action
+code or one event namespace, every route enforces its scope, and every authenticated
+mutation lands in an append-only audit log at `GET /api/v1/audit`. The embedded panel at
+`/panel/` turns the whole thing into a page: sign in with a token, pick a server and an
+action, dispatch from a form generated from the manifest schema, and watch the result
+arrive.
 
 ```
 go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
@@ -59,12 +63,11 @@ curl http://127.0.0.1:8080/healthz
 SQLite file), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
 `-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
 `VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
-`panel/README.md`). With no admin token
-configured the hub mints one at boot and logs it, which
-keeps first run to a single command; set the flag to keep it stable across restarts. That
-generated credential is first-run behavior only: once the hub holds a scoped token of its own
-it stops minting one, because a fresh superuser token on every boot would mean revocation
-never survived a restart. Logs are structured JSON on stdout.
+`panel/README.md`). With no admin token configured the hub mints one at boot and logs it,
+which keeps first run to a single command; set the flag to keep it stable across restarts.
+That generated credential is first-run behavior only: once the hub holds a scoped token of
+its own it stops minting one, because a fresh superuser token on every boot would mean
+revocation never survived a restart. Logs are structured JSON on stdout.
 
 To run it as a container behind a reverse proxy, see [`deploy/`](deploy/README.md): a
 `Dockerfile` (static binary, distroless, non-root), a compose file, and an nginx block with
@@ -111,9 +114,9 @@ pipeline between the game server and the tools. Vyshka's goals are the opposite:
                                               SQLite / Postgres
 ```
 
-Three components: a Go **hub**, per-game **plugins** speaking a game-agnostic Plugin API
+Three components: a Go hub, per-game plugins speaking a game-agnostic Plugin API
 (HTTP long-poll baseline, optional WebSocket upgrade), and an optional embedded web
-**panel** that is a thin client over the Admin API. Plugin API and Admin API are separate
+panel that is a thin client over the Admin API. Plugin API and Admin API are separate
 auth realms.
 
 ## Roadmap
