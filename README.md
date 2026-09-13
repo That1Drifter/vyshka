@@ -85,7 +85,9 @@ DATABASE_URL='postgres://vyshka:secret@db.example:5432/vyshka?sslmode=require' .
 Both `postgres://` and `postgresql://` are accepted, with the usual libpq URL parameters
 (`sslmode`, `connect_timeout`, and the rest). The hub creates its schema on first boot and
 brings it forward on every later one; two hubs booting against one database at the same
-time serialize on an advisory lock, so neither half-applies a migration. Startup logs and
+time serialize on an advisory lock, so neither half-applies a migration. The database's
+locale does not matter: the hub pins the columns it orders to byte-order collation, so a
+database created with `en_US.utf8` behaves like one created with `C`. Startup logs and
 `/healthz` name the driver and, for Postgres, the URL with its password and query
 parameters removed; the raw URL is never logged. The behavior is the same on both
 engines, and CI runs the full test and conformance suites against each. One hub per

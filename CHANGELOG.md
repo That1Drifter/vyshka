@@ -78,6 +78,13 @@ point if needed.
   decodes them, and the test asserts on the driver's parsed database name. The fourth round
   found one more spelling (a space around the key), so the helper now also parses the URL it
   built with the driver and refuses to run unless the parsed database is the test's own.
+  CI's first run then failed where local runs had passed: the local container was Alpine,
+  whose libc collates bytewise whatever the locale, and CI's Debian image collates
+  `en_US.utf8` the glibc way, under which the events namespace range scan matched nothing
+  and timestamp comparisons misordered. `0015_byte_order_collation.postgres.sql` pins every
+  TEXT column the store compares or orders to the `"C"` collation, so the hub behaves the
+  same on a database of any locale; SQLite already compares bytes, and its shared file is
+  comment-only.
 
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest
