@@ -23,9 +23,10 @@ const (
 // package is written with `?`, and every statement goes through a DB or Tx
 // handle that calls this, so no query has to know which engine it runs on.
 // Question marks inside single-quoted literals, `--` line comments, and
-// `/* */` block comments are left alone, and a quote inside a comment does
-// not open a literal. Dollar-quoted strings are not recognised; nothing in
-// this package writes one.
+// `/* */` block comments (nested, as Postgres nests them) are left alone,
+// and a quote inside a comment does not open a literal. Dollar-quoted
+// strings are not recognised: nothing in this package writes one, and a
+// query that did would have its `$` sequences misread, so do not.
 func (d dialect) rebind(query string) string {
 	if d != dialectPostgres || !strings.Contains(query, "?") {
 		return query
@@ -55,13 +56,13 @@ func (d dialect) rebind(query string) string {
 			out.WriteString(query[i : i+end])
 			i += end - 1
 		case c == '/' && i+1 < len(query) && query[i+1] == '*':
-			end := strings.Index(query[i+2:], "*/")
+			end := blockCommentEnd(query, i)
 			if end < 0 {
 				out.WriteString(query[i:])
 				return out.String()
 			}
-			out.WriteString(query[i : i+end+4])
-			i += end + 3
+			out.WriteString(query[i:end])
+			i = end - 1
 		case c == '?':
 			n++
 			out.WriteByte('$')
@@ -71,6 +72,27 @@ func (d dialect) rebind(query string) string {
 		}
 	}
 	return out.String()
+}
+
+// blockCommentEnd returns the index just past the block comment opening at
+// start, counting nested openings as Postgres does, or -1 when it never
+// closes.
+func blockCommentEnd(query string, start int) int {
+	depth := 0
+	for i := start; i+1 < len(query); i++ {
+		switch {
+		case query[i] == '/' && query[i+1] == '*':
+			depth++
+			i++
+		case query[i] == '*' && query[i+1] == '/':
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
 }
 
 // forUpdate is the row-lock suffix for a SELECT that a transaction will later
@@ -191,12 +213,15 @@ func (t *Tx) forUpdate() string { return t.d.forUpdate() }
 // rows in opposite orders: a poll applying action results while the expiry
 // sweep flips the same actions, or a snapshot trim against the snapshot
 // prune. Postgres detects such a cycle and aborts one side with a deadlock
-// error; nothing is written by the aborted side, the poll answers an error
-// its plugin retries, and the sweep runs again on its next tick. That is
-// the accepted resolution: the cycles need a deadline to pass in the same
-// instant as the write, and ordering every child-row lock across the sweeps
-// would cost each pass a locking pre-read for a case that cannot corrupt
-// state.
+// error; nothing is written by the aborted side (an aborted ApplyInbound
+// rolls back its ack, counts, snapshots, and notices together), the poll
+// answers an error its plugin retries, and the sweep runs again on its next
+// tick. That is the accepted resolution. The cycles are real and need no
+// coincidence of deadlines (a snapshot trim and the snapshot prune can meet
+// over two expired history rows whenever both run), but they cost latency
+// and a retried poll, never a wrong committed state, and ordering every
+// child-row lock across the sweeps would cost each pass a locking pre-read
+// on every run to avoid that.
 //
 // It returns ErrNotFound when the server does not exist.
 func lockServer(ctx context.Context, tx *Tx, serverID string) error {

@@ -1,8 +1,11 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestRebindRewritesPlaceholdersForPostgresOnly(t *testing.T) {
@@ -21,6 +24,8 @@ func TestRebindRewritesPlaceholdersForPostgresOnly(t *testing.T) {
 		{"SELECT ? -- why? isn't it\nFROM t WHERE a = ?", "SELECT $1 -- why? isn't it\nFROM t WHERE a = $2"},
 		{`SELECT /* ? don't */ ?::integer`, `SELECT /* ? don't */ $1::integer`},
 		{`SELECT ? -- unterminated?`, `SELECT $1 -- unterminated?`},
+		{`SELECT /* outer /* inner */ ? */ ?::integer`, `SELECT /* outer /* inner */ ? */ $1::integer`},
+		{`SELECT /* never closed ? `, `SELECT /* never closed ? `},
 	}
 	for _, c := range cases {
 		if got := dialectPostgres.rebind(c.query); got != c.postgres {
@@ -72,6 +77,31 @@ func TestResolveDSN(t *testing.T) {
 		if driver != c.driver || target != c.target {
 			t.Errorf("resolveDSN(%q) = (%s, %q), want (%s, %q)", c.dsn, driver, target, c.driver, c.target)
 		}
+	}
+}
+
+// The driver's own parse error quotes the fragment it rejected, which for a
+// misplaced password is the password; Go's parser may have accepted the same
+// URL, so the driver's verdict has to be recognised on its own.
+func TestRedactErrorWithholdsTheDriversParseError(t *testing.T) {
+	const target = "postgres://u:/REDACTION MARKER@db/app"
+	_, driverErr := pgconn.ParseConfig(target)
+	if driverErr == nil {
+		t.Fatal("the driver accepted the malformed URL; pick another")
+	}
+	if !strings.Contains(driverErr.Error(), "REDACTION MARKER") {
+		t.Fatalf("the driver's error no longer quotes the fragment (%v); the test needs another input", driverErr)
+	}
+	redacted := redactError(dialectPostgres, target, driverErr)
+	if strings.Contains(redacted.Error(), "REDACTION") {
+		t.Errorf("redactError passed the fragment through: %v", redacted)
+	}
+
+	// An ordinary connection error keeps its text, minus the password.
+	plain := errors.New("failed to connect: password authentication failed for user u (given hunter2)")
+	redacted = redactError(dialectPostgres, "postgres://u:hunter2@db/app", plain)
+	if strings.Contains(redacted.Error(), "hunter2") || !strings.Contains(redacted.Error(), "password authentication failed") {
+		t.Errorf("redactError = %v, want the message kept and the password cut", redacted)
 	}
 }
 

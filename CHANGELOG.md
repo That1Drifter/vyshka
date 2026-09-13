@@ -67,7 +67,12 @@ point if needed.
   literals; and the test helper drops a `dbname` query parameter that would have pointed
   every test at the maintenance database. Child-row lock cycles between a poll and a
   maintenance sweep are left to Postgres deadlock detection, which aborts one side without
-  writing; that decision is recorded at `lockServer`.
+  writing; that decision is recorded at `lockServer`. The second round closed what the
+  first round's fixes had opened: an explicitly empty `-db=` or `-admin-token=` again wins
+  over the environment (the fallback checks whether the flag was given, not whether it is
+  empty); the test helper keeps the maintenance URL's other query parameters byte for byte
+  and in order rather than re-encoding them; a URL the driver rejects is withheld even when
+  Go's parser accepted it; and the rebinder follows nested block comments.
 
 - 2026-09-12: panel live map (issue #46), the third of the three M4 panel views. A
   per-server view at `#/servers/{id}/map` over the section 8.3 read of the latest

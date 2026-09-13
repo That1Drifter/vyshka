@@ -78,12 +78,8 @@ func runServe(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *dsn == "" {
-		*dsn = os.Getenv("DATABASE_URL")
-	}
-	if *adminToken == "" {
-		*adminToken = os.Getenv("VYSHKA_ADMIN_TOKEN")
-	}
+	envFallback(flags, "db", "DATABASE_URL", dsn)
+	envFallback(flags, "admin-token", "VYSHKA_ADMIN_TOKEN", adminToken)
 	if *mapsDir != "" {
 		info, err := os.Stat(*mapsDir)
 		if err != nil {
@@ -128,6 +124,22 @@ func runServe(args []string) error {
 	defer server.Close()
 
 	return server.Serve(ctx)
+}
+
+// envFallback gives a flag its environment value when the flag was not on
+// the command line at all. A flag given explicitly, even as empty (`-db=`),
+// wins over the environment, which is what the env-backed defaults used to
+// do before secret-bearing flags stopped carrying printable defaults.
+func envFallback(flags *flag.FlagSet, name, env string, value *string) {
+	given := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	if !given {
+		*value = os.Getenv(env)
+	}
 }
 
 func parseLevel(name string) (slog.Level, error) {

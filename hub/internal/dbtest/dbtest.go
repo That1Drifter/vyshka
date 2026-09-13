@@ -112,13 +112,25 @@ func postgresURL(t *testing.T) string {
 // override it (libpq's dbname, pgx's database) is dropped: left in place,
 // every test would connect to the maintenance database, migrate and mutate
 // it, and drop an unused database at cleanup.
+//
+// The other parameters are kept byte for byte and in order. Re-encoding
+// them through url.Values would turn a `%20` into a `+`, which the driver
+// does not read as a space, and would reorder keys whose precedence depends
+// on order.
 func perTestURL(admin *url.URL, name string) string {
 	test := *admin
 	test.Path = "/" + name
-	query := test.Query()
-	query.Del("dbname")
-	query.Del("database")
-	test.RawQuery = query.Encode()
+	if test.RawQuery != "" {
+		kept := make([]string, 0, 4)
+		for _, pair := range strings.Split(test.RawQuery, "&") {
+			key, _, _ := strings.Cut(pair, "=")
+			if key == "dbname" || key == "database" {
+				continue
+			}
+			kept = append(kept, pair)
+		}
+		test.RawQuery = strings.Join(kept, "&")
+	}
 	return test.String()
 }
 

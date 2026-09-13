@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // pure Go Postgres driver, registered as "pgx"
 	_ "modernc.org/sqlite"             // pure Go SQLite driver, keeps the build cgo-free
 )
@@ -161,8 +162,13 @@ func redactError(driver dialect, target string, err error) error {
 	if driver != dialectPostgres {
 		return err
 	}
+	// Two parsers, two verdicts: Go's may accept a URL the driver's rejects
+	// (a password with a space or a stray slash lands in the path for one
+	// and in an error message for the other). Either rejection withholds
+	// the text.
+	var driverParse *pgconn.ParseConfigError
 	parsed, parseErr := url.Parse(target)
-	if parseErr != nil {
+	if parseErr != nil || errors.As(err, &driverParse) {
 		return errors.New("the URL does not parse; check its syntax (the driver's message is withheld because it quotes the URL)")
 	}
 	message := err.Error()
