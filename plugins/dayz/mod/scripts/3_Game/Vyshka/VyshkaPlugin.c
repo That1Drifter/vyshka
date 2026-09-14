@@ -54,6 +54,7 @@ class VyshkaPlugin
 	int m_LastSnapshotMs;      // monotonic time of the last capture; 0 before the first
 	int m_SnapshotsHeld;       // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
 	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
+	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -217,21 +218,35 @@ class VyshkaPlugin
 
 	// ---- telemetry (spec section 8) ----
 
+	// OnFrame counts the mission's update frames, from which SampleFps
+	// derives the server's frame rate. The engine's own GetFps() reads 0.1
+	// on a dedicated server (measured on DayZ 1.29, issue #59), so the rate
+	// is measured here instead: frames between two samples over the wall
+	// time between them.
+	static void OnFrame(float timeslice)
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return;
+		s_Instance.m_FramesSinceSample++;
+	}
+
 	// SampleFps emits core.server.fps, the periodic performance sample of
-	// section 8.1, every fpsIntervalSeconds: the engine's own frame rate for
-	// the server and how many players it is simulating for. The first sample
-	// is one interval after start, because the rate during boot says nothing
-	// about the server.
+	// section 8.1, every fpsIntervalSeconds: the server's measured frame
+	// rate over the interval and how many players it is simulating for. The
+	// first sample is one interval after start, because the rate during boot
+	// says nothing about the server.
 	void SampleFps()
 	{
 		int interval = m_Config.m_FpsIntervalSeconds;
 		if (interval <= 0)
 			return;
 		int now = VyshkaClock.MonotonicMs();
-		if (now - m_LastFpsMs < interval * 1000)
+		int elapsed = now - m_LastFpsMs;
+		if (elapsed < interval * 1000)
 			return;
+		float rate = m_FramesSinceSample * 1000.0 / elapsed;
 		m_LastFpsMs = now;
-		float rate = GetGame().GetFps();
+		m_FramesSinceSample = 0;
 		VyshkaJsonValue fps = VyshkaJsonValue.NewFloat(Math.Round(rate * 10) / 10);
 		if (!fps)
 			return;

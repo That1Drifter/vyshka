@@ -10,10 +10,28 @@
 // reaches the mission through OnEvent, the same dispatcher the engine's own
 // client and disconnect events use.
 
+// VyshkaMissionDisconnector kicks through the mission's own logout
+// finalization: InvokeOnDisconnect (the disconnect event), the character
+// save, the body, and only then the engine's disconnect call, exactly what a
+// logout timer running out does. The bare disconnect call alone does none of
+// that (measured on DayZ 1.29, issue #59).
+class VyshkaMissionDisconnector : VyshkaDisconnector
+{
+	override void Disconnect(PlayerBase player, PlayerIdentity identity)
+	{
+		MissionServer mission = MissionServer.Cast(GetGame().GetMission());
+		if (mission)
+			mission.PlayerDisconnected(player, identity, identity.GetId());
+		else
+			super.Disconnect(player, identity);
+	}
+}
+
 class VyshkaBoot
 {
 	static void Start()
 	{
+		VyshkaModeration.s_Disconnector = new VyshkaMissionDisconnector();
 		VyshkaActionRegistry registry = new VyshkaActionRegistry();
 		registry.Register(new VyshkaHealAction());
 		registry.Register(new VyshkaKickAction());
@@ -40,6 +58,12 @@ modded class MissionServer
 	{
 		VyshkaPlugin.Stop();
 		super.OnMissionFinish();
+	}
+
+	override void OnUpdate(float timeslice)
+	{
+		super.OnUpdate(timeslice);
+		VyshkaPlugin.OnFrame(timeslice);
 	}
 
 	override void OnEvent(EventType eventTypeId, Param params)

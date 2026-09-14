@@ -90,7 +90,14 @@ identity the telemetry publishes. The manifest (revision 2) declares:
 | `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
 
 Kick, message, and the ban's own kick need the player online and fail with `player <id> is
-not online` otherwise. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to
+not online` otherwise.
+
+**Kicks** run the mission's own logout finalization (the same code a logout timer running
+out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
+the character is saved, and the body is handled before the engine drops the client. The
+engine's bare disconnect call alone does none of that, measured on DayZ 1.29 while building
+this slice: it drops the connection, fires no disconnect event, and leaves the plugin's
+roster believing the player is still there. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to
 100: the schema subset of protocol section 6.1 has no length keyword, so the plugin bounds
 them itself rather than refuse.
 
@@ -133,10 +140,10 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.connect` | A character is attached to a newly connected identity (first join); a respawn or a reconnect inside the logout window is not a second connect | `player`, `name` |
 | `core.player.disconnect` | The logout is final (a cancelled logout never fires it) | `player`, `name` |
 | `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType` |
-| `core.player.chat` | A chat line reaches the server mission | `name`, `channel` (`direct`, `megaphone`, `transmitter`, `publicAddress`, `admin`, `system`, `battleye`, `other`), `text`, and `player` when exactly one online player has that name (the engine names the sender, it does not identify them) |
+| `core.player.chat` | A chat line reaches the server mission | `name`, `channel` (`direct`, `megaphone`, `transmitter`, `publicAddress`, `admin`, `system`, `battleye`, or `other`), `channelId` (the engine's raw channel value), `text`, and `player` when exactly one online player has that name (the engine names the sender, it does not identify them). A retail client's direct chat arrived with a channel value outside the engine's documented set on DayZ 1.29, so it reads `other`; `channelId` carries what the engine said |
 | `core.player.kick` | A player is disconnected by `vyshka.kick`, or a banned identity is refused at connect | `player`, `name`, `reason`, `cause` (`action` or `ban`), `actionId` |
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
-| `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the engine's frame rate, one decimal), `players` |
+| `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
 
 A moderation event's `actionId` is the hub's id for the dispatch that caused it, so a feed

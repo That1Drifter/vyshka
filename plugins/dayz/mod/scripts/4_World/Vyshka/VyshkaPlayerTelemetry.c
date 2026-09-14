@@ -101,19 +101,29 @@ class VyshkaPlayers
 		VyshkaPlugin.Emit("core.player.connect", data);
 
 		// A banned identity is refused here, the earliest hook that has a
-		// character to disconnect through the engine's ordinary path. The
+		// character to disconnect through the engine's ordinary logout. The
 		// connect above is reported first so the feed shows the attempt and
-		// the refusal in order.
+		// the refusal in order. The kick runs on the next tick rather than
+		// inside the engine's connect event, which still has work to do for
+		// the new character after this hook returns.
 		VyshkaBanEntry ban = VyshkaBans.Find(id);
 		if (ban)
 		{
 			string reason = "banned";
 			if (ban.m_Reason != "")
 				reason = "banned: " + ban.m_Reason;
-			string error;
-			if (!VyshkaModeration.Kick(player, reason, "ban", ban.m_ActionId, error))
-				VyshkaLog.Error("banned player " + id + " connected and could not be kicked: " + error);
+			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(KickBanned, 100, false, player, reason, ban.m_ActionId);
 		}
+	}
+
+	// KickBanned is the deferred half of the ban check above.
+	static void KickBanned(PlayerBase player, string reason, string actionId)
+	{
+		if (!player || !player.GetIdentity())
+			return;
+		string error;
+		if (!VyshkaModeration.Kick(player, reason, "ban", actionId, error))
+			VyshkaLog.Error("banned player " + player.GetIdentity().GetPlainId() + " connected and could not be kicked: " + error);
 	}
 
 	// OnChat runs from the server mission's chat event: channel is the
@@ -132,6 +142,10 @@ class VyshkaPlayers
 			data.Set("player", Identity(entry.m_Id));
 		data.Set("name", VyshkaJsonValue.NewString(sender));
 		data.Set("channel", VyshkaJsonValue.NewString(ChannelName(channel)));
+		// The raw value too: the direct chat of a retail client arrived as a
+		// value outside the engine's documented CC* set on DayZ 1.29 (issue
+		// #59), so the name alone would hide what the engine actually said.
+		data.Set("channelId", VyshkaJsonValue.NewInt(channel));
 		data.Set("text", VyshkaJsonValue.NewString(text));
 		VyshkaPlugin.Emit("core.player.chat", data);
 	}

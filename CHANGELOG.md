@@ -19,10 +19,19 @@ point if needed.
   scripted ban API), and `vyshka.message` and `vyshka.broadcast` (the vanilla notification
   pop-up or a chat line, so nothing is installed on clients). Three core event types join
   the feed: `core.player.chat` from the server mission's chat event (sender resolved by name
-  against the roster), `core.player.kick` and `core.player.ban` carrying the dispatching
-  `actionId`, plus `core.server.fps` every `fpsIntervalSeconds` (default 60) and the custom
-  `vyshka.player.unban`. Actions now receive the dispatch's `actionId`. New files:
-  `VyshkaBans.c`, `VyshkaModerationActions.c`.
+  against the roster, with the engine's raw `channelId`), `core.player.kick` and
+  `core.player.ban` carrying the dispatching `actionId`, plus `core.server.fps` every
+  `fpsIntervalSeconds` (default 60) and the custom `vyshka.player.unban`. Actions now
+  receive the dispatch's `actionId`. Two engine facts measured on the way, both recorded in
+  the plugin README: the engine's bare disconnect call fires no disconnect event and saves
+  nothing, so a kick runs the mission's own logout finalization instead (the disconnect
+  event follows the kick event, the character is saved); and the engine's `GetFps()` reads a
+  constant 0.1 on a dedicated server, so the sample counts mission update frames over wall
+  time. Verified live on DayZ 1.29 with one client: chat line in the feed with the sender
+  resolved, notification and chat-style messages on the client's screen, kick to the main
+  menu with kick then disconnect in the feed, ban kicking the player and refusing the
+  rejoin at connect (connect, kick with `cause: "ban"`, disconnect), unban admitting the
+  next join. New files: `VyshkaBans.c`, `VyshkaModerationActions.c`.
 - 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
   `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
   sixteen connections; SQLite stays the zero-configuration default. The slice is the row

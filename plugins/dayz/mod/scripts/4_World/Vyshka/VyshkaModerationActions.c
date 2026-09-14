@@ -12,8 +12,25 @@
 // chat line are vanilla client features, and a ban is the plugin's own
 // record (VyshkaBans) because the engine has no scripted ban list.
 
+// VyshkaDisconnector is how a kick removes the client. The bare engine call
+// drops the connection and nothing else: measured on DayZ 1.29 (issue #59),
+// DisconnectPlayer alone fires no disconnect event, so the character is not
+// saved, the body is not handled, and InvokeOnDisconnect never runs. The
+// mission module's subclass runs the engine's own logout finalization
+// instead, which does all of that and then disconnects; this base is the
+// fallback when no mission is up.
+class VyshkaDisconnector
+{
+	void Disconnect(PlayerBase player, PlayerIdentity identity)
+	{
+		GetGame().DisconnectPlayer(identity, identity.GetId());
+	}
+}
+
 class VyshkaModeration
 {
+	static ref VyshkaDisconnector s_Disconnector;
+
 	static const int MAX_REASON = 200;
 	static const int MAX_MESSAGE = 1000;
 	static const int MAX_TITLE = 100;
@@ -23,11 +40,12 @@ class VyshkaModeration
 	static const string STYLE_NOTIFICATION = "notification";
 	static const string STYLE_CHAT = "chat";
 
-	// Kick emits core.player.kick and asks the engine to drop the client.
-	// The identity is read before the call, because the engine's own
-	// disconnect path (which then runs as for any logout, disconnect event
-	// included) may let go of it. cause is "action" for a dispatched kick
-	// and "ban" for a banned identity refused at connect.
+	// Kick emits core.player.kick and removes the client through the
+	// disconnector, which finalizes the logout the way the engine does for
+	// any leaving player (so core.player.disconnect follows, from the same
+	// hook as always). The identity is read first because the logout lets
+	// go of it. cause is "action" for a dispatched kick and "ban" for a
+	// banned identity refused at connect.
 	static bool Kick(PlayerBase player, string reason, string cause, string actionId, out string error)
 	{
 		PlayerIdentity identity = player.GetIdentity();
@@ -46,7 +64,9 @@ class VyshkaModeration
 			data.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		VyshkaPlugin.Emit("core.player.kick", data);
 		VyshkaLog.Info("kicking " + identity.GetName() + " (" + identity.GetPlainId() + "), cause " + cause + ": " + reason);
-		GetGame().DisconnectPlayer(identity, identity.GetId());
+		if (!s_Disconnector)
+			s_Disconnector = new VyshkaDisconnector();
+		s_Disconnector.Disconnect(player, identity);
 		return true;
 	}
 
