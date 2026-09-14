@@ -95,9 +95,10 @@ not online` otherwise.
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
 out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
 the character is saved, and the body is handled before the engine drops the client. A
-player already counting down a logout, or whose logout was registered in the same tick, is
-retired from the logout queues first, so the timer cannot finalize the same character
-again. The
+player already counting down a logout is retired from the logout queues first, and a queued
+logout registration whose player is no longer pending (withdrawn by a kick, or by the
+engine's own logout cancellation) is refused, so the timer cannot finalize the same
+character again. The
 engine's bare disconnect call alone does none of that, measured on DayZ 1.29 while building
 this slice: it drops the connection, fires no disconnect event, and leaves the plugin's
 roster believing the player is still there. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to

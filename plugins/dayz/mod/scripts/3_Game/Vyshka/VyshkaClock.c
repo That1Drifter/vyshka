@@ -181,12 +181,27 @@ class VyshkaClock
 
 		// The epoch is a 32-bit int: an instant past 2038-01-19T03:14:07Z
 		// would wrap negative and read as the distant past, so it is clamped
-		// to the clock's last instant instead. 24855 days is the last day
-		// the clock reaches, and 11647 s into it its last second.
+		// to the clock's last instant instead, and one before
+		// 1901-12-13T20:45:52Z to its first. The comparison is made on the
+		// UTC day and second, after the offset is folded in, so an offset
+		// timestamp on either side of the boundary lands on the right side.
 		int days = DaysFromCivil(year, month, day);
 		int rest = hour * 3600 + minute * 60 + second - offsetSeconds;
+		while (rest < 0)
+		{
+			rest += 86400;
+			days -= 1;
+		}
+		while (rest >= 86400)
+		{
+			rest -= 86400;
+			days += 1;
+		}
+		// 24855 days and 11647 s is int.MAX; -24856 days and 74752 s is int.MIN.
 		if (days > 24855 || (days == 24855 && rest > 11647))
 			epoch = int.MAX;
+		else if (days < -24856 || (days == -24856 && rest < 74752))
+			epoch = int.MIN;
 		else
 			epoch = days * 86400 + rest;
 		return true;
