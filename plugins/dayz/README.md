@@ -3,8 +3,9 @@
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player events a feed needs and the
-`state.players` snapshots a live map needs. It ships one built-in action, `vyshka.heal`, so
-an operator can heal a player from a `curl` against the hub. Protocol: `spec/protocol.md`.
+`state.players` snapshots a live map needs. It ships six built-in actions (heal, kick, ban,
+unban, message, broadcast), so an operator can moderate a server from the panel or a `curl`
+against the hub. Protocol: `spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -14,9 +15,9 @@ Clean-room: written from the engine's public script headers and the measurements
 | Path | What it is |
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
-| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
-| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects and disconnects |
+| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
+| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
 
@@ -48,7 +49,8 @@ for a server-side mod; clients never load it.
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60). `game` is optional
    and defaults to `dayz`. `snapshotIntervalSeconds` is optional (default 10, honored between
-   2 and 600; `0` turns `state.players` snapshots off).
+   2 and 600; `0` turns `state.players` snapshots off). `fpsIntervalSeconds` is optional
+   (default 60, honored between 5 and 3600; `0` turns `core.server.fps` samples off).
 4. Start the server with the mod as a server mod:
 
    ```
@@ -65,7 +67,7 @@ Everything the plugin says goes to the server's script log (`script_*.log` under
 profile directory) prefixed `[Vyshka]`, including manifest rejections and the link state
 (`connected`, `degraded`, `buffering`).
 
-## Healing a player
+## Actions
 
 With the server enrolled and a player online:
 
@@ -75,8 +77,57 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
   -d '{"code":"vyshka.heal","context":"player","referenceKey":"<Steam64 id>","params":{}}'
 ```
 
-The `referenceKey` is the player's plain Steam64 id. The result carries the player's health,
-blood, and shock after the heal; `restoreBlood: false` in `params` leaves blood alone.
+The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
+identity the telemetry publishes. The manifest (revision 2) declares:
+
+| Code | Context | Danger | Params | Result |
+|---|---|---|---|---|
+| `vyshka.heal` | player | none | `restoreBlood` (default true) | `health`, `blood`, `shock`, `name` after the heal |
+| `vyshka.kick` | player | warning | `reason` | `name`, `reason`; the player is disconnected through the engine's own disconnect call and `core.player.kick` is emitted |
+| `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`; the identity goes on the ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id |
+| `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
+| `vyshka.message` | player | none | `message` (required), `title`, `seconds` (1 to 60, default 10), `style` (`notification`, the default, or `chat`) | `name`, `style` |
+| `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
+
+Kick, message, and the ban's own kick need the player online and fail with `player <id> is
+not online` otherwise.
+
+**Kicks** run the mission's own logout finalization (the same code a logout timer running
+out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
+the character is saved, and the body is handled before the engine drops the client. A
+player already counting down a logout is retired from the logout queues first, and a queued
+logout registration whose player is no longer pending (withdrawn by a kick, or by the
+engine's own logout cancellation) is refused, so the timer cannot finalize the same
+character again. The
+engine's bare disconnect call alone does none of that, measured on DayZ 1.29 while building
+this slice: it drops the connection, fires no disconnect event, and leaves the plugin's
+roster believing the player is still there. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to
+100: the schema subset of protocol section 6.1 has no length keyword, so the plugin bounds
+them itself rather than refuse.
+
+**Messages** use what every vanilla client already renders, so nothing needs installing on
+the client: the `notification` style is the engine's own pop-up (the title over the message,
+or the message alone as the headline, for `seconds`), and the `chat` style is a line in the
+player's chat window in the engine's "important" color, `title: message` when a title is
+given.
+
+**Bans** are the plugin's own list, because the engine exposes no scripted ban API (only a
+disconnect call): `<profiles>/Vyshka/bans.json`, one entry per identity with the name the
+player had, the reason, when the ban was made, when it expires (`null` for permanent), and
+the `actionId` that made it. A banned identity that connects is kicked as soon as its
+character attaches, the earliest hook that has something to disconnect, so the feed shows
+the attempt (`core.player.connect`) and the refusal (`core.player.kick` with `cause: "ban"`)
+in order; the ban is looked up again at that moment, so one lifted or expired in between is
+no ban. Expired entries are dropped when the list is loaded, when the identity is next
+looked up, and before a result counts `activeBans`. The list is independent of the engine's
+and BattlEye's own ban lists and an operator can edit it while the server is down: a `null`
+or absent `expiresAt` is permanent, a timestamp is honored whatever it says (one in the past
+lifts the ban), one that does not parse is treated as permanent so a typo cannot lift a ban,
+and every text member is cut to the same bounds a dispatch gets. A file that does not parse
+is left alone, enforces nothing, and makes the ban and unban actions refuse until it is
+fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
+duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
+as that instant rather than wrapped into the past.
 
 ## Telemetry
 
@@ -99,6 +150,14 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.connect` | A character is attached to a newly connected identity (first join); a respawn or a reconnect inside the logout window is not a second connect | `player`, `name` |
 | `core.player.disconnect` | The logout is final (a cancelled logout never fires it) | `player`, `name` |
 | `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType` |
+| `core.player.chat` | A chat line reaches the server mission | `name`, `channel` (`direct`, `megaphone`, `transmitter`, `publicAddress`, `admin`, `system`, `battleye`, or `other`), `channelId` (the engine's raw channel value), `text`, and `player` when exactly one online player has that name (the engine names the sender, it does not identify them). A retail client's direct chat arrived with a channel value outside the engine's documented set on DayZ 1.29, so it reads `other`; `channelId` carries what the engine said |
+| `core.player.kick` | A player is disconnected by `vyshka.kick`, or a banned identity is refused at connect | `player`, `name`, `reason`, `cause` (`action` or `ban`), `actionId` |
+| `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
+| `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
+| `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
+
+A moderation event's `actionId` is the hub's id for the dispatch that caused it, so a feed
+entry can be joined to the action record and the audit log.
 
 `cause` is one of `player` (another player, bare hands or a held item; `killer` names them,
 `weapon` is the item's display name, `distance` in metres is present for a ranged weapon),

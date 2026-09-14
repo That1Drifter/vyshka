@@ -59,6 +59,51 @@ class VyshkaClock
 		return DaysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
 	}
 
+	// FormatRfc3339 renders epoch seconds as 2026-09-03T16:50:19Z; the
+	// inverse of EpochSeconds, for timestamps computed rather than read
+	// from the clock (a ban's expiry).
+	static string FormatRfc3339(int epoch)
+	{
+		int days = epoch / 86400;
+		int rest = epoch - days * 86400;
+		if (rest < 0)
+		{
+			rest += 86400;
+			days -= 1;
+		}
+		int year, month, day;
+		CivilFromDays(days, year, month, day);
+		int hour = rest / 3600;
+		int minute = (rest % 3600) / 60;
+		int second = rest % 60;
+		string y = year.ToString();
+		return y + "-" + Pad2(month) + "-" + Pad2(day) + "T" + Pad2(hour) + ":" + Pad2(minute) + ":" + Pad2(second) + "Z";
+	}
+
+	// CivilFromDays is the inverse of DaysFromCivil.
+	static void CivilFromDays(int days, out int year, out int month, out int day)
+	{
+		int z = days + 719468;
+		int era;
+		if (z >= 0)
+			era = z / 146097;
+		else
+			era = (z - 146096) / 146097;
+		int doe = z - era * 146097;
+		int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+		int y = yoe + era * 400;
+		int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+		int mp = (5 * doy + 2) / 153;
+		day = doy - (153 * mp + 2) / 5 + 1;
+		if (mp < 10)
+			month = mp + 3;
+		else
+			month = mp - 9;
+		if (month <= 2)
+			y += 1;
+		year = y;
+	}
+
 	// DaysFromCivil counts days from 1970-01-01 to the given proleptic
 	// Gregorian date (negative before it).
 	static int DaysFromCivil(int year, int month, int day)
@@ -134,7 +179,31 @@ class VyshkaClock
 		if (pos != text.Length())
 			return false;
 
-		epoch = DaysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offsetSeconds;
+		// The epoch is a 32-bit int: an instant past 2038-01-19T03:14:07Z
+		// would wrap negative and read as the distant past, so it is clamped
+		// to the clock's last instant instead, and one before
+		// 1901-12-13T20:45:52Z to its first. The comparison is made on the
+		// UTC day and second, after the offset is folded in, so an offset
+		// timestamp on either side of the boundary lands on the right side.
+		int days = DaysFromCivil(year, month, day);
+		int rest = hour * 3600 + minute * 60 + second - offsetSeconds;
+		while (rest < 0)
+		{
+			rest += 86400;
+			days -= 1;
+		}
+		while (rest >= 86400)
+		{
+			rest -= 86400;
+			days += 1;
+		}
+		// 24855 days and 11647 s is int.MAX; -24856 days and 74752 s is int.MIN.
+		if (days > 24855 || (days == 24855 && rest > 11647))
+			epoch = int.MAX;
+		else if (days < -24856 || (days == -24856 && rest < 74752))
+			epoch = int.MIN;
+		else
+			epoch = days * 86400 + rest;
 		return true;
 	}
 

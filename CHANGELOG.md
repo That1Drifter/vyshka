@@ -12,6 +12,28 @@ point if needed.
 
 ### Added
 
+<<<<<<< HEAD
+- 2026-09-14: DayZ moderation actions and events (issue #59, plugin 0.4.0, manifest
+  revision 2). Five actions join `vyshka.heal`: `vyshka.kick` (the engine's own disconnect
+  call), `vyshka.ban` and `vyshka.unban` (the plugin's own list at
+  `<profiles>/Vyshka/bans.json`, enforced at connect with expiries, because the engine has no
+  scripted ban API), and `vyshka.message` and `vyshka.broadcast` (the vanilla notification
+  pop-up or a chat line, so nothing is installed on clients). Three core event types join
+  the feed: `core.player.chat` from the server mission's chat event (sender resolved by name
+  against the roster, with the engine's raw `channelId`), `core.player.kick` and
+  `core.player.ban` carrying the dispatching `actionId`, plus `core.server.fps` every
+  `fpsIntervalSeconds` (default 60) and the custom `vyshka.player.unban`. Actions now
+  receive the dispatch's `actionId`. Two engine facts measured on the way, both recorded in
+  the plugin README: the engine's bare disconnect call fires no disconnect event and saves
+  nothing, so a kick runs the mission's own logout finalization instead (the disconnect
+  event follows the kick event, the character is saved); and the engine's `GetFps()` reads a
+  constant 0.1 on a dedicated server, so the sample counts mission update frames over wall
+  time. Verified live on DayZ 1.29 with one client: chat line in the feed with the sender
+  resolved, notification and chat-style messages on the client's screen, kick to the main
+  menu with kick then disconnect in the feed, ban kicking the player and refusing the
+  rejoin at connect (connect, kick with `cause: "ban"`, disconnect), unban admitting the
+  next join. New files: `VyshkaBans.c`, `VyshkaModerationActions.c`.
+=======
 - 2026-09-14: the `discord` webhook template (issue #60, protocol draft 0.21). A webhook
   registered with `template: "discord"` receives a Discord webhook execution body instead
   of generic-json: one embed worded from the notification (deaths as a kill feed line with
@@ -26,6 +48,7 @@ point if needed.
   unchanged. Section 11.2 stops reserving the name and section 11.3 defines the minimal
   shape; the hub conformance suite gains `webhooks.discordTemplate`. The notify
   transactions now read server names alongside webhooks, for the footer. Shown live the same day: a DayZ 1.29 server's start, connect, death, kick, and disconnect, and the action completions, rendered in a Discord channel from a local hub built from the branch, every delivery accepted on the first attempt.
+>>>>>>> origin/main
 - 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
   `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
   sixteen connections; SQLite stays the zero-configuration default. The slice is the row

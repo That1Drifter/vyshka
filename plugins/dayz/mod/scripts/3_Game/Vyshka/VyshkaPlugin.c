@@ -17,7 +17,7 @@ class VyshkaPlugin
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.3.0";
+	static const string PLUGIN_VERSION = "0.4.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -53,6 +53,8 @@ class VyshkaPlugin
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	int m_LastSnapshotMs;      // monotonic time of the last capture; 0 before the first
 	int m_SnapshotsHeld;       // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
+	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
+	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -153,11 +155,15 @@ class VyshkaPlugin
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
+		m_LastFpsMs = VyshkaClock.MonotonicMs();
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
 		string snapshotNote = "snapshots off";
 		if (m_SnapshotsOn)
 			snapshotNote = "state.players with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
-		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared, " + snapshotNote);
+		string fpsNote = "fps samples off";
+		if (m_Config.m_FpsIntervalSeconds > 0)
+			fpsNote = "core.server.fps every " + m_Config.m_FpsIntervalSeconds.ToString() + " s";
+		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared, " + snapshotNote + ", " + fpsNote);
 		Emit("core.server.start", ServerEventData());
 	}
 
@@ -199,6 +205,7 @@ class VyshkaPlugin
 		// Events go into the outbox whether or not a request is in flight;
 		// whatever is queued rides the next poll. Snapshots are captured by
 		// the poll itself (PublishSnapshot), so they never wait for one.
+		SampleFps();
 		if (m_Events.Due())
 			FlushEvents();
 		m_Transport.CheckWatchdog();
@@ -210,6 +217,46 @@ class VyshkaPlugin
 	}
 
 	// ---- telemetry (spec section 8) ----
+
+	// OnFrame counts the mission's update frames, from which SampleFps
+	// derives the server's frame rate. The engine's own GetFps() reads 0.1
+	// on a dedicated server (measured on DayZ 1.29, issue #59), so the rate
+	// is measured here instead: frames between two samples over the wall
+	// time between them.
+	static void OnFrame(float timeslice)
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return;
+		s_Instance.m_FramesSinceSample++;
+	}
+
+	// SampleFps emits core.server.fps, the periodic performance sample of
+	// section 8.1, every fpsIntervalSeconds: the server's measured frame
+	// rate over the interval and how many players it is simulating for. The
+	// first sample is one interval after start, because the rate during boot
+	// says nothing about the server.
+	void SampleFps()
+	{
+		int interval = m_Config.m_FpsIntervalSeconds;
+		if (interval <= 0)
+			return;
+		int now = VyshkaClock.MonotonicMs();
+		int elapsed = now - m_LastFpsMs;
+		if (elapsed < interval * 1000)
+			return;
+		float rate = m_FramesSinceSample * 1000.0 / elapsed;
+		m_LastFpsMs = now;
+		m_FramesSinceSample = 0;
+		VyshkaJsonValue fps = VyshkaJsonValue.NewFloat(Math.Round(rate * 10) / 10);
+		if (!fps)
+			return;
+		array<Man> men = new array<Man>;
+		GetGame().GetPlayers(men);
+		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+		data.Set("fps", fps);
+		data.Set("players", VyshkaJsonValue.NewInt(men.Count()));
+		Emit("core.server.fps", data);
+	}
 
 	// FlushEvents moves every pending event into event.batch envelopes of at
 	// most 200 events each (section 8.1). An outbox refusal (it is full)
@@ -940,7 +987,7 @@ class VyshkaPlugin
 		}
 
 		int started = VyshkaClock.MonotonicMs();
-		VyshkaActionOutcome outcome = m_Actions.Execute(code, context, referenceKey, body.Get("params"));
+		VyshkaActionOutcome outcome = m_Actions.Execute(actionId, code, context, referenceKey, body.Get("params"));
 		int durationMs = VyshkaClock.MonotonicMs() - started;
 		if (!outcome)
 			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
