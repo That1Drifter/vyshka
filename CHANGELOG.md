@@ -25,7 +25,7 @@ point if needed.
   rendered once at fan-out like generic-json, so retries and the section 11.4 signature are
   unchanged. Section 11.2 stops reserving the name and section 11.3 defines the minimal
   shape; the hub conformance suite gains `webhooks.discordTemplate`. The notify
-  transactions now read server names alongside webhooks, for the footer.
+  transactions now read server names alongside webhooks, for the footer. Shown live the same day: a DayZ 1.29 server's start, connect, death, kick, and disconnect, and the action completions, rendered in a Discord channel from a local hub built from the branch, every delivery accepted on the first attempt.
 - 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
   `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
   sixteen connections; SQLite stays the zero-configuration default. The slice is the row
