@@ -3298,6 +3298,12 @@ var checks = []Check{
 		Run:     checkWebhookSignedDelivery,
 	},
 	{
+		ID:      "webhooks.discordTemplate",
+		Title:   "A discord-template webhook receives a signed embed with mentions disabled",
+		Section: "11.3",
+		Run:     checkWebhookDiscordTemplate,
+	},
+	{
 		ID:      "webhooks.retryVisible",
 		Title:   "A failing target is retried promptly with the failures visible",
 		Section: "11.5",

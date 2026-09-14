@@ -150,7 +150,7 @@ func TestWebhookRegistrationValidation(t *testing.T) {
 			"url": "http://127.0.0.1:1/x", "events": []string{"core.*.death"},
 		}, http.StatusBadRequest, "bad_request"},
 		{"unknown template", map[string]any{
-			"url": "http://127.0.0.1:1/x", "template": "discord",
+			"url": "http://127.0.0.1:1/x", "template": "slack",
 		}, http.StatusBadRequest, "bad_request"},
 		{"unknown server id", map[string]any{
 			"url": "http://127.0.0.1:1/x", "serverIds": []string{"srv-none"},
@@ -316,6 +316,87 @@ func TestSignedDeliveryEndToEnd(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	if receiver.count() != 1 {
 		t.Errorf("receiver saw %d deliveries after a non-matching event, want 1", receiver.count())
+	}
+}
+
+// A webhook registered with the discord template receives a Discord embed
+// body, still signed, with mentions disabled (spec section 11.3).
+func TestDiscordTemplateDelivery(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	receiver := newTestReceiver(t, http.StatusNoContent)
+
+	created, session := enrolledSession(t, server, "webhook-discord")
+	serverID := created.Server.ID
+
+	var refused map[string]any
+	if status := call(t, server, http.MethodPost, "/api/v1/webhooks", testAdminToken, map[string]any{
+		"url": receiver.server.URL, "template": "slack",
+	}, &refused); status != http.StatusBadRequest {
+		t.Fatalf("an unknown template registered with status %d, want 400", status)
+	}
+
+	webhookID, secret := registerWebhook(t, server, map[string]any{
+		"url":       receiver.server.URL,
+		"events":    []string{"core.player.*"},
+		"serverIds": []string{serverID},
+		"template":  "discord",
+	})
+	var listed struct {
+		Webhooks []struct {
+			ID       string `json:"id"`
+			Template string `json:"template"`
+		} `json:"webhooks"`
+	}
+	call(t, server, http.MethodGet, "/api/v1/webhooks", testAdminToken, nil, &listed)
+	if len(listed.Webhooks) != 1 || listed.Webhooks[0].ID != webhookID || listed.Webhooks[0].Template != "discord" {
+		t.Fatalf("the webhook view does not echo the discord template: %+v", listed.Webhooks)
+	}
+
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.connect", 1)
+	receiver.awaitReceived(t, 1, 10*time.Second)
+
+	delivery := receiver.get(0)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(delivery.Body)
+	if want := "sha256=" + hex.EncodeToString(mac.Sum(nil)); delivery.Signature != want {
+		t.Errorf("a discord delivery is still signed; signature = %q, want %q", delivery.Signature, want)
+	}
+
+	var body struct {
+		Embeds []struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Timestamp   string `json:"timestamp"`
+			Footer      struct {
+				Text string `json:"text"`
+			} `json:"footer"`
+		} `json:"embeds"`
+		AllowedMentions struct {
+			Parse []string `json:"parse"`
+		} `json:"allowed_mentions"`
+		DeliveryID string `json:"deliveryId"`
+	}
+	if err := json.Unmarshal(delivery.Body, &body); err != nil {
+		t.Fatalf("decode discord body: %v\n%s", err, delivery.Body)
+	}
+	if len(body.Embeds) != 1 {
+		t.Fatalf("discord body carries %d embeds, want 1: %s", len(body.Embeds), delivery.Body)
+	}
+	if body.Embeds[0].Title != "Player connected" {
+		t.Errorf("embed title = %q", body.Embeds[0].Title)
+	}
+	if _, err := time.Parse(time.RFC3339, body.Embeds[0].Timestamp); err != nil {
+		t.Errorf("embed timestamp %q is not RFC 3339", body.Embeds[0].Timestamp)
+	}
+	if !strings.HasPrefix(body.Embeds[0].Footer.Text, "webhook-discord · ") {
+		t.Errorf("footer = %q, want the server's name", body.Embeds[0].Footer.Text)
+	}
+	if body.AllowedMentions.Parse == nil || len(body.AllowedMentions.Parse) != 0 {
+		t.Errorf("allowed_mentions.parse = %v, want an empty list", body.AllowedMentions.Parse)
+	}
+	if body.DeliveryID != "" {
+		t.Errorf("a discord body is the Discord shape, not generic-json with extras: %s", delivery.Body)
 	}
 }
 

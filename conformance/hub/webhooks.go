@@ -509,6 +509,91 @@ func checkWebhookSignedDelivery(ctx context.Context, env Env) error {
 	return nil
 }
 
+// checkWebhookDiscordTemplate grades the discord template (section 11.3): the
+// registration is accepted and echoed, the delivery is a Discord embed body
+// stamped with the event's own time, mentions are disabled, and the delivery
+// is signed like any other.
+func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
+	receiver, err := env.startHookReceiver(http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	defer receiver.close()
+
+	plugin, err := env.newFakePlugin(ctx, "conformance:webhook-discord", shortPollTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Server.Server.ID
+	eventType := uniqueWebhookEventType()
+
+	registered, err := env.registerWebhook(ctx, map[string]any{
+		"url": receiver.url, "events": []string{eventType}, "serverIds": []string{serverID},
+		"template": "discord",
+	})
+	if err != nil {
+		return fmt.Errorf("%w; a registration with template discord is accepted (section 11.2)", err)
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), registered.Webhook.ID)
+	if registered.Webhook.Template != "discord" {
+		return fmt.Errorf("the webhook view echoes template %q, want discord (section 11.2)", registered.Webhook.Template)
+	}
+
+	occurredAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := plugin.sendEvents(ctx, map[string]any{
+		"t": eventType, "ts": occurredAt.Format(time.RFC3339),
+		"data": map[string]any{"name": "**@everyone**", "probe": true},
+	}); err != nil {
+		return err
+	}
+	if err := receiver.await(ctx, 1, 30*time.Second, "the discord delivery"); err != nil {
+		return fmt.Errorf("%w; a stored event matching a discord webhook owes it a delivery (section 11.3)", err)
+	}
+
+	hook := receiver.get(0)
+	if fault := hook.wellFormed(); fault != "" {
+		return fmt.Errorf("the delivery was %s (section 11.3)", fault)
+	}
+	if err := verifySignature(hook, registered.Secret); err != nil {
+		return fmt.Errorf("%w; a discord delivery is signed like any other", err)
+	}
+	var body struct {
+		Embeds []struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Timestamp   string `json:"timestamp"`
+		} `json:"embeds"`
+		AllowedMentions *struct {
+			Parse []string `json:"parse"`
+		} `json:"allowed_mentions"`
+	}
+	if err := json.Unmarshal(hook.Body, &body); err != nil {
+		return fmt.Errorf("the discord delivery body is not a JSON object: %w", err)
+	}
+	if len(body.Embeds) == 0 {
+		return fmt.Errorf("the discord delivery carries no embeds (section 11.3)")
+	}
+	first := body.Embeds[0]
+	if first.Title == "" && first.Description == "" {
+		return fmt.Errorf("the first embed has neither title nor description (section 11.3)")
+	}
+	stamped, err := time.Parse(time.RFC3339, first.Timestamp)
+	if err != nil {
+		return fmt.Errorf("the first embed's timestamp %q is not RFC 3339 (section 11.3)", first.Timestamp)
+	}
+	if !stamped.Equal(occurredAt) {
+		return fmt.Errorf("the first embed's timestamp is %s; want the event's occurredAt %s (section 11.3)",
+			stamped.Format(time.RFC3339), occurredAt.Format(time.RFC3339))
+	}
+	if body.AllowedMentions == nil || body.AllowedMentions.Parse == nil || len(body.AllowedMentions.Parse) != 0 {
+		return fmt.Errorf("allowed_mentions.parse must be present and empty so player text cannot ping anyone (section 11.3)")
+	}
+	if strings.Contains(string(hook.Body), "**@everyone**") {
+		return fmt.Errorf("player-supplied text reached the embed unescaped (section 11.3)")
+	}
+	return nil
+}
+
 func checkWebhookRetryVisible(ctx context.Context, env Env) error {
 	receiver, err := env.startHookReceiver(http.StatusInternalServerError)
 	if err != nil {

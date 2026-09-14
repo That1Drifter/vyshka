@@ -12,6 +12,18 @@ point if needed.
 
 ### Added
 
+- 2026-09-14: the `discord` webhook template (issue #60, protocol draft 0.21). A webhook
+  registered with `template: "discord"` receives a Discord webhook execution body instead
+  of generic-json: one embed worded from the notification (deaths as a kill feed line with
+  killer, weapon, and distance; connects, disconnects, chat, kicks, bans; server start,
+  stop, and fps; `action.completed`; link lost and restored; any other type as the type plus
+  its top-level members), stamped with the notification's `occurredAt`, with a footer
+  naming the server. Player-written text is escaped, every member is cut to Discord's
+  limits, and `allowed_mentions.parse` is empty so nothing can ping a channel. The body is
+  rendered once at fan-out like generic-json, so retries and the section 11.4 signature are
+  unchanged. Section 11.2 stops reserving the name and section 11.3 defines the minimal
+  shape; the hub conformance suite gains `webhooks.discordTemplate`. The notify
+  transactions now read server names alongside webhooks, for the footer.
 - 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
   `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
   sixteen connections; SQLite stays the zero-configuration default. The slice is the row

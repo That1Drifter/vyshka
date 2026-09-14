@@ -197,10 +197,10 @@ func TestFanOutHonorsTheRegistrationBoundary(t *testing.T) {
 	newer := notification{Type: "core.player.death", ServerID: "srv-1",
 		OccurredAt: now, LandedAt: now}
 
-	if deliveries := fanOut([]store.Webhook{webhook}, []notification{older}); len(deliveries) != 0 {
+	if deliveries := fanOut([]store.Webhook{webhook}, []notification{older}, nil); len(deliveries) != 0 {
 		t.Fatalf("a notification that landed before registration produced %d deliveries; registration is not a backfill (section 11.2)", len(deliveries))
 	}
-	if deliveries := fanOut([]store.Webhook{webhook}, []notification{newer}); len(deliveries) != 1 {
+	if deliveries := fanOut([]store.Webhook{webhook}, []notification{newer}, nil); len(deliveries) != 1 {
 		t.Fatalf("a notification landing after registration produced %d deliveries, want 1", len(deliveries))
 	}
 }
