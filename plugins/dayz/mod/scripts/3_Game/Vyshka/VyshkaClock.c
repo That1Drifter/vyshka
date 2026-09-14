@@ -59,6 +59,51 @@ class VyshkaClock
 		return DaysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
 	}
 
+	// FormatRfc3339 renders epoch seconds as 2026-09-03T16:50:19Z; the
+	// inverse of EpochSeconds, for timestamps computed rather than read
+	// from the clock (a ban's expiry).
+	static string FormatRfc3339(int epoch)
+	{
+		int days = epoch / 86400;
+		int rest = epoch - days * 86400;
+		if (rest < 0)
+		{
+			rest += 86400;
+			days -= 1;
+		}
+		int year, month, day;
+		CivilFromDays(days, year, month, day);
+		int hour = rest / 3600;
+		int minute = (rest % 3600) / 60;
+		int second = rest % 60;
+		string y = year.ToString();
+		return y + "-" + Pad2(month) + "-" + Pad2(day) + "T" + Pad2(hour) + ":" + Pad2(minute) + ":" + Pad2(second) + "Z";
+	}
+
+	// CivilFromDays is the inverse of DaysFromCivil.
+	static void CivilFromDays(int days, out int year, out int month, out int day)
+	{
+		int z = days + 719468;
+		int era;
+		if (z >= 0)
+			era = z / 146097;
+		else
+			era = (z - 146096) / 146097;
+		int doe = z - era * 146097;
+		int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+		int y = yoe + era * 400;
+		int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+		int mp = (5 * doy + 2) / 153;
+		day = doy - (153 * mp + 2) / 5 + 1;
+		if (mp < 10)
+			month = mp + 3;
+		else
+			month = mp - 9;
+		if (month <= 2)
+			y += 1;
+		year = y;
+	}
+
 	// DaysFromCivil counts days from 1970-01-01 to the given proleptic
 	// Gregorian date (negative before it).
 	static int DaysFromCivil(int year, int month, int day)

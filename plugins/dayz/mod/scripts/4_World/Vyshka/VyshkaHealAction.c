@@ -29,7 +29,7 @@ class VyshkaHealAction : VyshkaAction
 		return schema;
 	}
 
-	override VyshkaActionOutcome Execute(string context, string referenceKey, VyshkaJsonValue params)
+	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
 	{
 		if (referenceKey == "")
 			return VyshkaActionOutcome.Failure("a player-context action needs the player's identity as referenceKey");

@@ -12,6 +12,17 @@ point if needed.
 
 ### Added
 
+- 2026-09-14: DayZ moderation actions and events (issue #59, plugin 0.4.0, manifest
+  revision 2). Five actions join `vyshka.heal`: `vyshka.kick` (the engine's own disconnect
+  call), `vyshka.ban` and `vyshka.unban` (the plugin's own list at
+  `<profiles>/Vyshka/bans.json`, enforced at connect with expiries, because the engine has no
+  scripted ban API), and `vyshka.message` and `vyshka.broadcast` (the vanilla notification
+  pop-up or a chat line, so nothing is installed on clients). Three core event types join
+  the feed: `core.player.chat` from the server mission's chat event (sender resolved by name
+  against the roster), `core.player.kick` and `core.player.ban` carrying the dispatching
+  `actionId`, plus `core.server.fps` every `fpsIntervalSeconds` (default 60) and the custom
+  `vyshka.player.unban`. Actions now receive the dispatch's `actionId`. New files:
+  `VyshkaBans.c`, `VyshkaModerationActions.c`.
 - 2026-09-13: Postgres backend (issue #20). `DATABASE_URL=postgres://...` (or
   `postgresql://`) boots the hub on Postgres through the pure-Go pgx driver with a pool of
   sixteen connections; SQLite stays the zero-configuration default. The slice is the row

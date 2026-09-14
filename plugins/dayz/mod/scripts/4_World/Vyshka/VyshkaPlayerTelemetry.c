@@ -99,6 +99,81 @@ class VyshkaPlayers
 		data.Set("player", Identity(id));
 		data.Set("name", VyshkaJsonValue.NewString(entry.m_Name));
 		VyshkaPlugin.Emit("core.player.connect", data);
+
+		// A banned identity is refused here, the earliest hook that has a
+		// character to disconnect through the engine's ordinary path. The
+		// connect above is reported first so the feed shows the attempt and
+		// the refusal in order.
+		VyshkaBanEntry ban = VyshkaBans.Find(id);
+		if (ban)
+		{
+			string reason = "banned";
+			if (ban.m_Reason != "")
+				reason = "banned: " + ban.m_Reason;
+			string error;
+			if (!VyshkaModeration.Kick(player, reason, "ban", ban.m_ActionId, error))
+				VyshkaLog.Error("banned player " + id + " connected and could not be kicked: " + error);
+		}
+	}
+
+	// OnChat runs from the server mission's chat event: channel is the
+	// engine's channel bitmask, sender the display name the engine attached.
+	// The engine identifies the sender by name only, so the identity is
+	// resolved against the roster and omitted when two online players share
+	// the name (or none has it: a system line).
+	static void OnChat(int channel, string sender, string text)
+	{
+		if (text == "")
+			return;
+		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+		int matches;
+		VyshkaRosterEntry entry = FindByName(sender, matches);
+		if (entry && matches == 1)
+			data.Set("player", Identity(entry.m_Id));
+		data.Set("name", VyshkaJsonValue.NewString(sender));
+		data.Set("channel", VyshkaJsonValue.NewString(ChannelName(channel)));
+		data.Set("text", VyshkaJsonValue.NewString(text));
+		VyshkaPlugin.Emit("core.player.chat", data);
+	}
+
+	// ChannelName renders the engine's chat channel bitmask as a word. The
+	// values are the engine's CC* constants; a message on more than one
+	// channel is named by the first matched.
+	static string ChannelName(int channel)
+	{
+		if (channel & CCDirect)
+			return "direct";
+		if (channel & CCMegaphone)
+			return "megaphone";
+		if (channel & CCTransmitter)
+			return "transmitter";
+		if (channel & CCPublicAddressSystem)
+			return "publicAddress";
+		if (channel & CCAdmin)
+			return "admin";
+		if (channel & CCSystem)
+			return "system";
+		if (channel & CCBattlEye)
+			return "battleye";
+		return "other";
+	}
+
+	// FindByName returns the first roster entry with the name and counts
+	// how many have it.
+	static VyshkaRosterEntry FindByName(string name, out int matches)
+	{
+		matches = 0;
+		VyshkaRosterEntry found = null;
+		for (int i = 0; i < Roster().Count(); i++)
+		{
+			VyshkaRosterEntry entry = Roster().GetElement(i);
+			if (entry.m_Name != name)
+				continue;
+			matches++;
+			if (!found)
+				found = entry;
+		}
+		return found;
 	}
 
 	// OnDisconnect runs once the logout is final. The identity may already be

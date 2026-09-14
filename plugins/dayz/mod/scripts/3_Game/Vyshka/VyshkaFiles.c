@@ -12,6 +12,7 @@
 //   $profile:Vyshka/rejected/<n>.json  an envelope the hub refused as malformed, set
 //                                      aside with the hub's reason for the operator
 //                                      (section 2.3); never sent again
+//   $profile:Vyshka/bans.json          the plugin's ban list (VyshkaBans); operator-editable
 
 class VyshkaFiles
 {
@@ -21,6 +22,7 @@ class VyshkaFiles
 	static const string OUTBOX_DIR = "$profile:Vyshka/outbox";
 	static const string REJECTED_DIR = "$profile:Vyshka/rejected";
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
+	static const string BANS_PATH = "$profile:Vyshka/bans.json";
 
 	// EnsureLayout creates the directories, one level at a time, because
 	// MakeDirectory creates only the last path segment.
@@ -120,10 +122,16 @@ class VyshkaConfig
 	// 0 turns snapshots off. Bounded below so a typo cannot make the plugin
 	// sample every tick, and above so a stale map is still a map.
 	int m_SnapshotIntervalSeconds;
+	// How often a core.server.fps sample is published (spec section 8.1);
+	// 0 turns the samples off. Bounded like the snapshot interval.
+	int m_FpsIntervalSeconds;
 
 	static const int SNAPSHOT_INTERVAL_DEFAULT = 10;
 	static const int SNAPSHOT_INTERVAL_MIN = 2;
 	static const int SNAPSHOT_INTERVAL_MAX = 600;
+	static const int FPS_INTERVAL_DEFAULT = 60;
+	static const int FPS_INTERVAL_MIN = 5;
+	static const int FPS_INTERVAL_MAX = 3600;
 
 	static VyshkaConfig Load()
 	{
@@ -142,6 +150,13 @@ class VyshkaConfig
 			config.m_SnapshotIntervalSeconds = SNAPSHOT_INTERVAL_MIN;
 		if (config.m_SnapshotIntervalSeconds > SNAPSHOT_INTERVAL_MAX)
 			config.m_SnapshotIntervalSeconds = SNAPSHOT_INTERVAL_MAX;
+		config.m_FpsIntervalSeconds = root.GetInt("fpsIntervalSeconds", FPS_INTERVAL_DEFAULT);
+		if (config.m_FpsIntervalSeconds < 0)
+			config.m_FpsIntervalSeconds = 0;
+		if (config.m_FpsIntervalSeconds > 0 && config.m_FpsIntervalSeconds < FPS_INTERVAL_MIN)
+			config.m_FpsIntervalSeconds = FPS_INTERVAL_MIN;
+		if (config.m_FpsIntervalSeconds > FPS_INTERVAL_MAX)
+			config.m_FpsIntervalSeconds = FPS_INTERVAL_MAX;
 		if (config.m_HubUrl == "")
 			return null;
 		// The plugin appends the Plugin API path itself, so accept the hub's

@@ -48,13 +48,33 @@ class VyshkaAction
 		return schema;
 	}
 
-	// Execute runs the action. params is the dispatched params value, which
+	// Execute runs the action. actionId is the hub's id for this dispatch,
+	// which an action puts in any event it emits so a feed entry can be
+	// joined to the audit log. params is the dispatched params value, which
 	// the hub has validated against ParamsSchema; it may still be null or
 	// of a surprising shape when a non-conformant hub sends it, so
 	// implementations read it defensively.
-	VyshkaActionOutcome Execute(string context, string referenceKey, VyshkaJsonValue params)
+	VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
 	{
 		return VyshkaActionOutcome.Failure("action not implemented");
+	}
+
+	// ReadText reads a string param, trimmed and cut to maxLength characters;
+	// "" when absent or not a string. The section 6.1 subset has no length
+	// keyword, so the bound lives here, and a value over it is shortened
+	// rather than refused because a long reason is still a reason.
+	static string ReadText(VyshkaJsonValue params, string key, int maxLength)
+	{
+		if (!params || !params.IsObject())
+			return "";
+		VyshkaJsonValue value = params.Get(key);
+		if (!value || !value.IsString())
+			return "";
+		string text = value.m_Text;
+		text = text.Trim();
+		if (text.Length() > maxLength)
+			text = text.Substring(0, maxLength);
+		return text;
 	}
 
 	VyshkaJsonValue Declaration()
@@ -74,7 +94,7 @@ class VyshkaActionRegistry
 {
 	// Bump when the set of actions or any schema changes; the hub ignores a
 	// manifest whose revision is not above the one it stored (section 6.1).
-	static const int MANIFEST_REVISION = 1;
+	static const int MANIFEST_REVISION = 2;
 
 	ref array<ref VyshkaAction> m_Actions;
 
@@ -110,12 +130,12 @@ class VyshkaActionRegistry
 		return m_Actions.Count();
 	}
 
-	VyshkaActionOutcome Execute(string code, string context, string referenceKey, VyshkaJsonValue params)
+	VyshkaActionOutcome Execute(string actionId, string code, string context, string referenceKey, VyshkaJsonValue params)
 	{
 		VyshkaAction action = Find(code);
 		if (!action)
 			return VyshkaActionOutcome.Failure("this plugin declares no action " + code);
-		return action.Execute(context, referenceKey, params);
+		return action.Execute(actionId, context, referenceKey, params);
 	}
 
 	// ManifestBody is the manifest.publish body of spec section 6.

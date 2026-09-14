@@ -6,7 +6,9 @@
 // The connect and disconnect hooks feed the player roster; the engine calls
 // InvokeOnConnect for a new and for a loaded character alike, and
 // InvokeOnDisconnect only once a logout is final (a cancelled logout never
-// reaches it), which is exactly the pair a feed wants.
+// reaches it), which is exactly the pair a feed wants. The chat event
+// reaches the mission through OnEvent, the same dispatcher the engine's own
+// client and disconnect events use.
 
 class VyshkaBoot
 {
@@ -14,7 +16,14 @@ class VyshkaBoot
 	{
 		VyshkaActionRegistry registry = new VyshkaActionRegistry();
 		registry.Register(new VyshkaHealAction());
+		registry.Register(new VyshkaKickAction());
+		registry.Register(new VyshkaBanAction());
+		registry.Register(new VyshkaUnbanAction());
+		registry.Register(new VyshkaMessageAction());
+		registry.Register(new VyshkaBroadcastAction());
 		VyshkaPlayers.Reset();
+		VyshkaBans.Reset();
+		VyshkaBans.Load();
 		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());
 	}
 }
@@ -31,6 +40,17 @@ modded class MissionServer
 	{
 		VyshkaPlugin.Stop();
 		super.OnMissionFinish();
+	}
+
+	override void OnEvent(EventType eventTypeId, Param params)
+	{
+		super.OnEvent(eventTypeId, params);
+		if (eventTypeId == ChatMessageEventTypeID)
+		{
+			ChatMessageEventParams chat = ChatMessageEventParams.Cast(params);
+			if (chat)
+				VyshkaPlayers.OnChat(chat.param1, chat.param2, chat.param3);
+		}
 	}
 
 	override void InvokeOnConnect(PlayerBase player, PlayerIdentity identity)
