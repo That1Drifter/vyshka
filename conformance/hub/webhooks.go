@@ -539,10 +539,15 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 		return fmt.Errorf("the webhook view echoes template %q, want discord (section 11.2)", registered.Webhook.Template)
 	}
 
+	// The name carries hostile formatting and a harmless marker apart from
+	// it: the marker must survive rendering, so a hub cannot pass by
+	// dropping the name, while the hostile part may be escaped any way the
+	// hub likes as long as it no longer reads as formatting.
+	marker := "probe" + strings.ReplaceAll(eventType, ".", "")
 	occurredAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	if _, err := plugin.sendEvents(ctx, map[string]any{
 		"t": eventType, "ts": occurredAt.Format(time.RFC3339),
-		"data": map[string]any{"name": "**@everyone**", "probe": true},
+		"data": map[string]any{"name": marker + " **@everyone**", "probe": true},
 	}); err != nil {
 		return err
 	}
@@ -598,7 +603,7 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 	// The escaping is graded on the decoded text of every member Discord
 	// renders, not on the JSON spelling: a Unicode escape in the body would
 	// hide an asterisk from a byte search and still reach Discord as one.
-	// The probe must also survive rendering, or omitting the name would
+	// The marker must also survive rendering, or omitting the name would
 	// pass as escaping it.
 	var texts []string
 	for _, embed := range body.Embeds {
@@ -612,7 +617,7 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 		if strings.Contains(text, "**@everyone**") {
 			return fmt.Errorf("player-supplied text reached an embed member unescaped: %q (section 11.3)", text)
 		}
-		if strings.Contains(text, "@everyone") {
+		if strings.Contains(text, marker) {
 			survived = true
 		}
 	}
