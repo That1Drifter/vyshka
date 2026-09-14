@@ -543,7 +543,14 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 	// it: the marker must survive rendering, so a hub cannot pass by
 	// dropping the name, while the hostile part may be escaped any way the
 	// hub likes as long as it no longer reads as formatting.
-	marker := "probe" + strings.ReplaceAll(eventType, ".", "")
+	marker := "probe" + strings.Map(func(r rune) rune {
+		// Letters and digits only: a hyphen or a dot is punctuation a
+		// legitimate escaper may prefix, which would hide the marker.
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, eventType)
 	occurredAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	if _, err := plugin.sendEvents(ctx, map[string]any{
 		"t": eventType, "ts": occurredAt.Format(time.RFC3339),
