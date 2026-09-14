@@ -66,19 +66,43 @@ modded class MissionServer
 		VyshkaPlugin.OnFrame(timeslice);
 	}
 
+	// Players retired from the pending-logout queue by a kick whose queued
+	// AddNewPlayerLogout call has not run yet; that call is swallowed once.
+	ref map<PlayerBase, bool> m_VyshkaRetiredLogouts;
+
 	// VyshkaFinishLogout finalizes a player's logout now, the way the
 	// logout timer running out does. A player already counting down a
 	// logout (the client left, the timer has not run out) is retired from
 	// both logout queues first, exactly as the vanilla timer path removes
 	// its entry before finalizing, so the timer cannot finalize the same
-	// character a second time.
+	// character a second time. A player whose logout was registered this
+	// very tick sits in the pending queue with an AddNewPlayerLogout call
+	// still queued that would put it back; that call is marked to be
+	// swallowed below.
 	void VyshkaFinishLogout(PlayerBase player, PlayerIdentity identity)
 	{
 		if (m_LogoutPlayers)
 			m_LogoutPlayers.Remove(player);
-		if (m_NewLogoutPlayers)
+		if (m_NewLogoutPlayers && m_NewLogoutPlayers.Contains(player))
+		{
 			m_NewLogoutPlayers.Remove(player);
+			if (!m_VyshkaRetiredLogouts)
+				m_VyshkaRetiredLogouts = new map<PlayerBase, bool>;
+			m_VyshkaRetiredLogouts.Set(player, true);
+		}
 		PlayerDisconnected(player, identity, identity.GetId());
+	}
+
+	override protected void AddNewPlayerLogout(PlayerBase player, notnull LogoutInfo info)
+	{
+		if (m_VyshkaRetiredLogouts && m_VyshkaRetiredLogouts.Contains(player))
+		{
+			// The kick already finalized this logout; putting the character
+			// back on the timer would finalize it twice.
+			m_VyshkaRetiredLogouts.Remove(player);
+			return;
+		}
+		super.AddNewPlayerLogout(player, info);
 	}
 
 	override void OnEvent(EventType eventTypeId, Param params)

@@ -95,8 +95,9 @@ not online` otherwise.
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
 out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
 the character is saved, and the body is handled before the engine drops the client. A
-player already counting down a logout is retired from the logout queue first, so the timer
-cannot finalize the same character again. The
+player already counting down a logout, or whose logout was registered in the same tick, is
+retired from the logout queues first, so the timer cannot finalize the same character
+again. The
 engine's bare disconnect call alone does none of that, measured on DayZ 1.29 while building
 this slice: it drops the connection, fires no disconnect event, and leaves the plugin's
 roster believing the player is still there. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to
@@ -124,7 +125,8 @@ lifts the ban), one that does not parse is treated as permanent so a typo cannot
 and every text member is cut to the same bounds a dispatch gets. A file that does not parse
 is left alone, enforces nothing, and makes the ban and unban actions refuse until it is
 fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
-duration that would end after 2038-01-19 is clamped to that instant.
+duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
+as that instant rather than wrapped into the past.
 
 ## Telemetry
 

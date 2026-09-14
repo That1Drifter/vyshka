@@ -179,7 +179,16 @@ class VyshkaClock
 		if (pos != text.Length())
 			return false;
 
-		epoch = DaysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offsetSeconds;
+		// The epoch is a 32-bit int: an instant past 2038-01-19T03:14:07Z
+		// would wrap negative and read as the distant past, so it is clamped
+		// to the clock's last instant instead. 24855 days is the last day
+		// the clock reaches, and 11647 s into it its last second.
+		int days = DaysFromCivil(year, month, day);
+		int rest = hour * 3600 + minute * 60 + second - offsetSeconds;
+		if (days > 24855 || (days == 24855 && rest > 11647))
+			epoch = int.MAX;
+		else
+			epoch = days * 86400 + rest;
 		return true;
 	}
 
