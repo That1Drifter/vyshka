@@ -18,16 +18,23 @@
 
 class VyshkaBanEntry
 {
+	// Bounds on what an entry carries into a kick event, whether the entry
+	// came from a dispatch (already bounded) or from the operator's editor.
+	static const int MAX_NAME = 200;
+	static const int MAX_REASON = 200;
+	static const int MAX_ACTION_ID = 64;
+
 	string m_Id;          // plain Steam64 id
 	string m_Name;        // the name the player had when banned, for the operator
 	string m_Reason;
 	string m_BannedAt;    // RFC 3339
-	int m_ExpiresEpoch;   // 0 for permanent
+	bool m_Permanent;     // no expiry; m_ExpiresEpoch is then meaningless
+	int m_ExpiresEpoch;   // when a finite ban ends, epoch seconds
 	string m_ActionId;    // the dispatch that made the entry, for the audit log
 
 	bool Expired(int nowEpoch)
 	{
-		return m_ExpiresEpoch > 0 && nowEpoch >= m_ExpiresEpoch;
+		return !m_Permanent && nowEpoch >= m_ExpiresEpoch;
 	}
 
 	VyshkaJsonValue ToJson()
@@ -37,40 +44,50 @@ class VyshkaBanEntry
 		entry.Set("name", VyshkaJsonValue.NewString(m_Name));
 		entry.Set("reason", VyshkaJsonValue.NewString(m_Reason));
 		entry.Set("bannedAt", VyshkaJsonValue.NewString(m_BannedAt));
-		if (m_ExpiresEpoch > 0)
-			entry.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(m_ExpiresEpoch)));
-		else
+		if (m_Permanent)
 			entry.Set("expiresAt", VyshkaJsonValue.NewNull());
+		else
+			entry.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(m_ExpiresEpoch)));
 		if (m_ActionId != "")
 			entry.Set("actionId", VyshkaJsonValue.NewString(m_ActionId));
 		return entry;
 	}
 
-	// FromJson reads one entry; null when it carries no id. An expiresAt
+	// FromJson reads one entry; null when it carries no id. A missing or
+	// null expiresAt is a permanent ban; one that parses is finite, whatever
+	// instant it names (an operator who writes 1970 has lifted the ban); one
 	// that does not parse reads as permanent rather than as expired, so a
-	// hand-edited typo widens a ban instead of lifting it.
+	// hand-edited typo widens a ban instead of lifting it. Text members are
+	// bounded here because the file is operator-editable and the reason
+	// travels in the kick event.
 	static VyshkaBanEntry FromJson(VyshkaJsonValue value)
 	{
 		if (!value || !value.IsObject())
 			return null;
 		VyshkaBanEntry entry = new VyshkaBanEntry();
-		entry.m_Id = value.GetString("id", "");
+		entry.m_Id = VyshkaAction.Bound(value.GetString("id", ""), 128);
 		if (entry.m_Id == "")
 			return null;
-		entry.m_Name = value.GetString("name", "");
-		entry.m_Reason = value.GetString("reason", "");
-		entry.m_BannedAt = value.GetString("bannedAt", "");
-		entry.m_ActionId = value.GetString("actionId", "");
+		entry.m_Name = VyshkaAction.Bound(value.GetString("name", ""), MAX_NAME);
+		entry.m_Reason = VyshkaAction.Bound(value.GetString("reason", ""), MAX_REASON);
+		entry.m_BannedAt = VyshkaAction.Bound(value.GetString("bannedAt", ""), 40);
+		entry.m_ActionId = VyshkaAction.Bound(value.GetString("actionId", ""), MAX_ACTION_ID);
+		entry.m_Permanent = true;
 		entry.m_ExpiresEpoch = 0;
-		string expiresAt = value.GetString("expiresAt", "");
-		int epoch;
-		if (expiresAt != "")
+		VyshkaJsonValue expires = value.Get("expiresAt");
+		if (expires && expires.IsString())
 		{
-			if (VyshkaClock.ParseRfc3339(expiresAt, epoch))
+			int epoch;
+			if (VyshkaClock.ParseRfc3339(expires.m_Text, epoch))
+			{
+				entry.m_Permanent = false;
 				entry.m_ExpiresEpoch = epoch;
+			}
 			else
-				VyshkaLog.Warn("ban entry " + entry.m_Id + " has an unreadable expiresAt " + expiresAt + "; treating the ban as permanent");
+				VyshkaLog.Warn("ban entry " + entry.m_Id + " has an unreadable expiresAt " + expires.m_Text + "; treating the ban as permanent");
 		}
+		else if (expires && !expires.IsNull())
+			VyshkaLog.Warn("ban entry " + entry.m_Id + " has an expiresAt that is not a string; treating the ban as permanent");
 		return entry;
 	}
 }
@@ -201,10 +218,29 @@ class VyshkaBans
 		return true;
 	}
 
+	// Count is the number of active entries: expired ones are dropped first,
+	// so a result's activeBans never counts a ban that has already ended.
 	static int Count()
 	{
 		Load();
+		Prune();
 		return Entries().Count();
+	}
+
+	// Prune drops every expired entry and writes the file when any was.
+	static void Prune()
+	{
+		int now = VyshkaClock.EpochSeconds();
+		array<string> expired = new array<string>;
+		for (int i = 0; i < Entries().Count(); i++)
+		{
+			if (Entries().GetElement(i).Expired(now))
+				expired.Insert(Entries().GetKey(i));
+		}
+		for (int j = 0; j < expired.Count(); j++)
+			Entries().Remove(expired.Get(j));
+		if (expired.Count() > 0)
+			Save();
 	}
 
 	static bool Save()

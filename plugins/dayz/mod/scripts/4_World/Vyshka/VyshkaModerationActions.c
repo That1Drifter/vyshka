@@ -267,9 +267,20 @@ class VyshkaBanAction : VyshkaAction
 		}
 		entry.m_Reason = reason;
 		entry.m_BannedAt = VyshkaClock.NowRfc3339();
+		entry.m_Permanent = minutes == 0;
 		entry.m_ExpiresEpoch = 0;
 		if (minutes > 0)
-			entry.m_ExpiresEpoch = VyshkaClock.EpochSeconds() + minutes * 60;
+		{
+			// The clock is a 32-bit epoch (VyshkaClock): a duration that
+			// would run past 2038-01-19 is clamped to that instant rather
+			// than wrapped into the past, which would lift the ban at once.
+			int now = VyshkaClock.EpochSeconds();
+			int seconds = minutes * 60;
+			if (seconds > int.MAX - now)
+				entry.m_ExpiresEpoch = int.MAX;
+			else
+				entry.m_ExpiresEpoch = now + seconds;
+		}
 		entry.m_ActionId = actionId;
 		if (!VyshkaBans.Add(entry, error))
 			return VyshkaActionOutcome.Failure(error);
@@ -280,7 +291,7 @@ class VyshkaBanAction : VyshkaAction
 			data.Set("name", VyshkaJsonValue.NewString(entry.m_Name));
 		if (reason != "")
 			data.Set("reason", VyshkaJsonValue.NewString(reason));
-		if (entry.m_ExpiresEpoch > 0)
+		if (!entry.m_Permanent)
 			data.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(entry.m_ExpiresEpoch)));
 		data.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		VyshkaPlugin.Emit("core.player.ban", data);
@@ -300,10 +311,10 @@ class VyshkaBanAction : VyshkaAction
 		if (entry.m_Name != "")
 			result.Set("name", VyshkaJsonValue.NewString(entry.m_Name));
 		result.Set("kicked", VyshkaJsonValue.NewBool(kicked));
-		if (entry.m_ExpiresEpoch > 0)
-			result.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(entry.m_ExpiresEpoch)));
-		else
+		if (entry.m_Permanent)
 			result.Set("expiresAt", VyshkaJsonValue.NewNull());
+		else
+			result.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(entry.m_ExpiresEpoch)));
 		result.Set("activeBans", VyshkaJsonValue.NewInt(VyshkaBans.Count()));
 		return VyshkaActionOutcome.Success(result);
 	}

@@ -94,7 +94,9 @@ not online` otherwise.
 
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
 out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
-the character is saved, and the body is handled before the engine drops the client. The
+the character is saved, and the body is handled before the engine drops the client. A
+player already counting down a logout is retired from the logout queue first, so the timer
+cannot finalize the same character again. The
 engine's bare disconnect call alone does none of that, measured on DayZ 1.29 while building
 this slice: it drops the connection, fires no disconnect event, and leaves the plugin's
 roster believing the player is still there. A `reason` is cut to 200 characters, a `message` to 1000, a `title` to
@@ -113,11 +115,16 @@ player had, the reason, when the ban was made, when it expires (`null` for perma
 the `actionId` that made it. A banned identity that connects is kicked as soon as its
 character attaches, the earliest hook that has something to disconnect, so the feed shows
 the attempt (`core.player.connect`) and the refusal (`core.player.kick` with `cause: "ban"`)
-in order. Expired entries are dropped when the list is loaded and when the identity is next
-looked up. The list is independent of the engine's and BattlEye's own ban lists and an
-operator can edit it while the server is down; a file that does not parse is left alone,
-enforces nothing, and makes the ban and unban actions refuse until it is fixed or removed,
-which the log says at boot.
+in order; the ban is looked up again at that moment, so one lifted or expired in between is
+no ban. Expired entries are dropped when the list is loaded, when the identity is next
+looked up, and before a result counts `activeBans`. The list is independent of the engine's
+and BattlEye's own ban lists and an operator can edit it while the server is down: a `null`
+or absent `expiresAt` is permanent, a timestamp is honored whatever it says (one in the past
+lifts the ban), one that does not parse is treated as permanent so a typo cannot lift a ban,
+and every text member is cut to the same bounds a dispatch gets. A file that does not parse
+is left alone, enforces nothing, and makes the ban and unban actions refuse until it is
+fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
+duration that would end after 2038-01-19 is clamped to that instant.
 
 ## Telemetry
 

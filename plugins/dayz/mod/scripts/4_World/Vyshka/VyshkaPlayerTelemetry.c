@@ -106,24 +106,27 @@ class VyshkaPlayers
 		// the refusal in order. The kick runs on the next tick rather than
 		// inside the engine's connect event, which still has work to do for
 		// the new character after this hook returns.
-		VyshkaBanEntry ban = VyshkaBans.Find(id);
-		if (ban)
-		{
-			string reason = "banned";
-			if (ban.m_Reason != "")
-				reason = "banned: " + ban.m_Reason;
-			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(KickBanned, 100, false, player, reason, ban.m_ActionId);
-		}
+		if (VyshkaBans.Find(id))
+			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(KickBanned, 100, false, player);
 	}
 
-	// KickBanned is the deferred half of the ban check above.
-	static void KickBanned(PlayerBase player, string reason, string actionId)
+	// KickBanned is the deferred half of the ban check above. The ban is
+	// looked up again here: one that expired or was lifted in the meantime
+	// is no ban, and the entry's current reason is the one to report.
+	static void KickBanned(PlayerBase player)
 	{
 		if (!player || !player.GetIdentity())
 			return;
+		string id = player.GetIdentity().GetPlainId();
+		VyshkaBanEntry ban = VyshkaBans.Find(id);
+		if (!ban)
+			return;
+		string reason = "banned";
+		if (ban.m_Reason != "")
+			reason = "banned: " + ban.m_Reason;
 		string error;
-		if (!VyshkaModeration.Kick(player, reason, "ban", actionId, error))
-			VyshkaLog.Error("banned player " + player.GetIdentity().GetPlainId() + " connected and could not be kicked: " + error);
+		if (!VyshkaModeration.Kick(player, reason, "ban", ban.m_ActionId, error))
+			VyshkaLog.Error("banned player " + id + " connected and could not be kicked: " + error);
 	}
 
 	// OnChat runs from the server mission's chat event: channel is the

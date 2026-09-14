@@ -21,7 +21,7 @@ class VyshkaMissionDisconnector : VyshkaDisconnector
 	{
 		MissionServer mission = MissionServer.Cast(GetGame().GetMission());
 		if (mission)
-			mission.PlayerDisconnected(player, identity, identity.GetId());
+			mission.VyshkaFinishLogout(player, identity);
 		else
 			super.Disconnect(player, identity);
 	}
@@ -64,6 +64,21 @@ modded class MissionServer
 	{
 		super.OnUpdate(timeslice);
 		VyshkaPlugin.OnFrame(timeslice);
+	}
+
+	// VyshkaFinishLogout finalizes a player's logout now, the way the
+	// logout timer running out does. A player already counting down a
+	// logout (the client left, the timer has not run out) is retired from
+	// both logout queues first, exactly as the vanilla timer path removes
+	// its entry before finalizing, so the timer cannot finalize the same
+	// character a second time.
+	void VyshkaFinishLogout(PlayerBase player, PlayerIdentity identity)
+	{
+		if (m_LogoutPlayers)
+			m_LogoutPlayers.Remove(player);
+		if (m_NewLogoutPlayers)
+			m_NewLogoutPlayers.Remove(player);
+		PlayerDisconnected(player, identity, identity.GetId());
 	}
 
 	override void OnEvent(EventType eventTypeId, Param params)

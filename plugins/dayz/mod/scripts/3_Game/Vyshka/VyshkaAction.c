@@ -71,9 +71,16 @@ class VyshkaAction
 		if (!value || !value.IsString())
 			return "";
 		string text = value.m_Text;
-		text = text.Trim();
-		if (text.Length() > maxLength)
-			text = text.Substring(0, maxLength);
+		return Bound(text.Trim(), maxLength);
+	}
+
+	// Bound cuts text to maxLength characters, counted and cut in UTF-8
+	// characters rather than bytes, so a multi-byte character at the bound
+	// is dropped whole instead of leaving a partial sequence behind.
+	static string Bound(string text, int maxLength)
+	{
+		if (text.LengthUtf8() > maxLength)
+			return text.SubstringUtf8(0, maxLength);
 		return text;
 	}
 
