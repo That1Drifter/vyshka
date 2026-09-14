@@ -66,18 +66,16 @@ type notification struct {
 }
 
 // fanOut crosses notifications with webhooks: one delivery per match, each
-// with its payload rendered and its id minted, because the payload embeds it.
+// with its payload rendered for the webhook's template and its id minted,
+// because the generic payload embeds it. serverNames maps server ids to
+// display names for the templates that name the server; nil is tolerated.
 // A webhook observes only what landed at or after its registration (spec
 // section 11.2); the notified-flag outbox can legally hand this function older
 // rows, a migration backlog above all, and the boundary here is what keeps
 // them from becoming a backfill.
-func fanOut(webhooks []store.Webhook, notifications []notification) []store.NewWebhookDelivery {
+func fanOut(webhooks []store.Webhook, notifications []notification, serverNames map[string]string) []store.NewWebhookDelivery {
 	var deliveries []store.NewWebhookDelivery
 	for _, one := range notifications {
-		data := one.Data
-		if len(data) == 0 {
-			data = json.RawMessage(`{}`)
-		}
 		for _, webhook := range webhooks {
 			// Timestamps carry millisecond precision, so a notification and a
 			// registration in the same millisecond tie; the tie goes to
@@ -90,15 +88,7 @@ func fanOut(webhooks []store.Webhook, notifications []notification) []store.NewW
 				continue
 			}
 			deliveryID := id.New()
-			body, err := json.Marshal(webhookPayload{
-				DeliveryID: deliveryID,
-				WebhookID:  webhook.ID,
-				Type:       one.Type,
-				ServerID:   one.ServerID,
-				EventID:    one.EventID,
-				OccurredAt: envelopeTimestamp(one.OccurredAt),
-				Data:       data,
-			})
+			body, err := renderDeliveryBody(webhook, one, deliveryID, serverNames[one.ServerID])
 			if err != nil {
 				// Strings and raw JSON all the way down; this cannot happen.
 				continue
@@ -171,7 +161,7 @@ func (s *Server) dispatchPass(ctx context.Context, lastLinkCheck *time.Time) boo
 	// transaction, so a registration serializes against the pass instead of
 	// racing it, and the LandedAt boundary in fanOut keeps whatever backlog
 	// does exist from becoming a backfill.
-	eventsMarked, err := s.store.NotifyEvents(ctx, notifyBatch, func(events []store.Event, webhooks []store.Webhook) []store.NewWebhookDelivery {
+	eventsMarked, err := s.store.NotifyEvents(ctx, notifyBatch, func(events []store.Event, webhooks []store.Webhook, names map[string]string) []store.NewWebhookDelivery {
 		notifications := make([]notification, 0, len(events))
 		for _, event := range events {
 			notifications = append(notifications, notification{
@@ -183,7 +173,7 @@ func (s *Server) dispatchPass(ctx context.Context, lastLinkCheck *time.Time) boo
 				Data:       event.Data,
 			})
 		}
-		return fanOut(webhooks, notifications)
+		return fanOut(webhooks, notifications, names)
 	}, pendingDeliveryBound)
 	if err != nil {
 		s.log.Error("webhook pass could not fan out events", "error", err.Error())
@@ -192,7 +182,7 @@ func (s *Server) dispatchPass(ctx context.Context, lastLinkCheck *time.Time) boo
 
 	// action.completed fan-out: every action that reached a terminal state,
 	// expiry included (spec section 11.1).
-	actionsMarked, err := s.store.NotifyFinishedActions(ctx, notifyBatch, func(actions []store.Action, webhooks []store.Webhook) []store.NewWebhookDelivery {
+	actionsMarked, err := s.store.NotifyFinishedActions(ctx, notifyBatch, func(actions []store.Action, webhooks []store.Webhook, names map[string]string) []store.NewWebhookDelivery {
 		notifications := make([]notification, 0, len(actions))
 		for _, action := range actions {
 			notifications = append(notifications, notification{
@@ -203,7 +193,7 @@ func (s *Server) dispatchPass(ctx context.Context, lastLinkCheck *time.Time) boo
 				Data:       actionNotificationData(action),
 			})
 		}
-		return fanOut(webhooks, notifications)
+		return fanOut(webhooks, notifications, names)
 	}, pendingDeliveryBound)
 	if err != nil {
 		s.log.Error("webhook pass could not fan out finished actions", "error", err.Error())
@@ -293,19 +283,19 @@ func (s *Server) checkLinks(ctx context.Context) {
 		// The deliveries are built inside the transition's transaction against
 		// the webhooks as stored there, so a registration racing the monitor
 		// serializes instead of losing its first link notification.
-		var build func([]store.Webhook) []store.NewWebhookDelivery
+		var build func([]store.Webhook, map[string]string) []store.NewWebhookDelivery
 		if candidate.LinkState == store.LinkDown && target == store.LinkUp {
-			build = func(webhooks []store.Webhook) []store.NewWebhookDelivery {
+			build = func(webhooks []store.Webhook, names map[string]string) []store.NewWebhookDelivery {
 				return fanOut(webhooks, []notification{
 					linkNotification(notifyServerLinkRestore, candidate, now),
-				})
+				}, names)
 			}
 		}
 		if candidate.LinkState == store.LinkUp && target == store.LinkDown {
-			build = func(webhooks []store.Webhook) []store.NewWebhookDelivery {
+			build = func(webhooks []store.Webhook, names map[string]string) []store.NewWebhookDelivery {
 				return fanOut(webhooks, []notification{
 					linkNotification(notifyServerLinkLost, candidate, now),
-				})
+				}, names)
 			}
 		}
 

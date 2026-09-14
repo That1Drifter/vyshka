@@ -139,9 +139,8 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if template == "" {
 		template = templateGenericJSON
 	}
-	if template != templateGenericJSON {
-		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"template "+template+" is not one this hub implements; only "+templateGenericJSON+" exists in this draft")
+	if template != templateGenericJSON && template != templateDiscord {
+		writeError(w, http.StatusBadRequest, codeBadRequest, unknownTemplateMessage(template))
 		return
 	}
 

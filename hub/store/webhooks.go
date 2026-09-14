@@ -185,7 +185,7 @@ type WebhookDelivery struct {
 // timestamp order, and a skipped notification is exactly the silent loss
 // section 11 forbids.
 func (s *Store) NotifyEvents(ctx context.Context, limit int,
-	build func([]Event, []Webhook) []NewWebhookDelivery, pendingBound int) (int, error) {
+	build func([]Event, []Webhook, map[string]string) []NewWebhookDelivery, pendingBound int) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin notify events: %w", err)
@@ -236,7 +236,11 @@ func (s *Store) NotifyEvents(ctx context.Context, limit int,
 	if err != nil {
 		return 0, err
 	}
-	if err := insertDeliveries(ctx, tx, build(events, webhooks), pendingBound); err != nil {
+	names, err := serverNamesTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if err := insertDeliveries(ctx, tx, build(events, webhooks, names), pendingBound); err != nil {
 		return 0, err
 	}
 	if err := markNotified(ctx, tx, "events", ids); err != nil {
@@ -246,6 +250,31 @@ func (s *Store) NotifyEvents(ctx context.Context, limit int,
 		return 0, fmt.Errorf("commit notify events: %w", err)
 	}
 	return len(events), nil
+}
+
+// serverNamesTx reads every server's display name inside an open
+// transaction, for the delivery templates that name the server (section
+// 11.3). Read with the webhooks so a rename lands in the same pass as a
+// registration would.
+func serverNamesTx(ctx context.Context, tx *Tx) (map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, name FROM servers`)
+	if err != nil {
+		return nil, fmt.Errorf("read server names in transaction: %w", err)
+	}
+	defer rows.Close()
+
+	names := make(map[string]string, 8)
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("scan server name: %w", err)
+		}
+		names[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read server names in transaction: %w", err)
+	}
+	return names, nil
 }
 
 // webhooksTx reads every webhook inside an open transaction, for the fan-out
@@ -275,7 +304,7 @@ func webhooksTx(ctx context.Context, tx *Tx) ([]Webhook, error) {
 // NotifyFinishedActions is NotifyEvents for the action.completed lifecycle
 // notification (section 11.1): terminal actions not yet fanned out.
 func (s *Store) NotifyFinishedActions(ctx context.Context, limit int,
-	build func([]Action, []Webhook) []NewWebhookDelivery, pendingBound int) (int, error) {
+	build func([]Action, []Webhook, map[string]string) []NewWebhookDelivery, pendingBound int) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin notify actions: %w", err)
@@ -312,7 +341,11 @@ func (s *Store) NotifyFinishedActions(ctx context.Context, limit int,
 	if err != nil {
 		return 0, err
 	}
-	if err := insertDeliveries(ctx, tx, build(actions, webhooks), pendingBound); err != nil {
+	names, err := serverNamesTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if err := insertDeliveries(ctx, tx, build(actions, webhooks, names), pendingBound); err != nil {
 		return 0, err
 	}
 	if err := markNotified(ctx, tx, "actions", ids); err != nil {
@@ -647,7 +680,7 @@ func (s *Store) LinkCandidates(ctx context.Context) ([]LinkCandidate, error) {
 // this transaction, for the same reason NotifyEvents reads them in-tx: a
 // registration serializes against the transition instead of racing it.
 func (s *Store) ApplyLinkTransition(ctx context.Context, serverID, from, to string, observedLastSeen *time.Time,
-	build func([]Webhook) []NewWebhookDelivery, pendingBound int) (bool, error) {
+	build func([]Webhook, map[string]string) []NewWebhookDelivery, pendingBound int) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin link transition: %w", err)
@@ -700,7 +733,11 @@ func (s *Store) ApplyLinkTransition(ctx context.Context, serverID, from, to stri
 		if err != nil {
 			return false, err
 		}
-		if err := insertDeliveries(ctx, tx, build(webhooks), pendingBound); err != nil {
+		names, err := serverNamesTx(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if err := insertDeliveries(ctx, tx, build(webhooks, names), pendingBound); err != nil {
 			return false, err
 		}
 	}

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.20 (2026-09-13)
+**Status:** draft 0.21 (2026-09-14)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1706,8 +1706,8 @@ Authorization: Bearer <admin token>
   every server. An entry naming no server the hub knows is `not_found`, because a typo
   here would otherwise become a webhook that silently never fires.
 - `template` is OPTIONAL and defaults to `generic-json`, the shape of section 11.3.
-  `discord` is reserved for a future draft; a template the hub does not implement is
-  `bad_request`.
+  `discord` renders the Discord shape of section 11.3. A template the hub does not
+  implement is `bad_request`.
 - `secret` is minted by the hub and returned only in this response. Unlike the credentials
   of section 5, the hub cannot store a digest of it, because signing needs the secret
   itself; operators should treat read access to the hub's database as read access to
@@ -1774,6 +1774,26 @@ X-Vyshka-Signature: sha256=7f1d...
   URL scrutiny exists to prevent.
 - Delivery order between notifications is not guaranteed; a receiver that needs order has
   `occurredAt`.
+
+**The `discord` template.** A webhook registered with `template: "discord"` receives, in
+place of the body above, a Discord webhook execution request: a JSON object carrying an
+`embeds` array with at least one embed, the first of which has a `timestamp` equal to the
+delivery's `occurredAt` and a `title` or `description` written for a person reading a
+channel, so the target URL can be the one Discord issues for a channel and nothing sits in
+between. The rest of the delivery is unchanged: the same headers, the same signature over
+the rendered bytes (Discord ignores both), the same byte-for-byte stability across
+attempts, and the same retry and dead-letter rules. Two rules protect the channel, because
+the words in a notification come from players:
+
+- `allowed_mentions` MUST be present with an empty `parse` list, so no name, chat line, or
+  reason can ping a role or everyone.
+- Text a player may have written MUST be escaped so it cannot carry Discord formatting into
+  the embed, and every member MUST be cut to the length Discord accepts for it.
+
+What each notification type says is the hub's choice. A hub MUST still render a type it
+has no wording for (a custom event above all) rather than skip the delivery; the reference
+hub uses the type as the title and the payload's top-level members as fields, and words the
+core event types, `action.completed`, and the link notifications itself.
 
 ### 11.4 Signature
 

@@ -27,7 +27,7 @@ func newWebhook(t *testing.T, st *store.Store, id string, events, serverIDs []st
 func notifyAll(t *testing.T, st *store.Store, webhookID string, bound int) int {
 	t.Helper()
 	marked, err := st.NotifyEvents(context.Background(), 100,
-		func(events []store.Event, _ []store.Webhook) []store.NewWebhookDelivery {
+		func(events []store.Event, _ []store.Webhook, _ map[string]string) []store.NewWebhookDelivery {
 			deliveries := make([]store.NewWebhookDelivery, 0, len(events))
 			for i, event := range events {
 				deliveries = append(deliveries, store.NewWebhookDelivery{
@@ -221,7 +221,7 @@ func TestApplyLinkTransitionGuards(t *testing.T) {
 	startSession(t, st, serverID, "hash-hooks-4")
 	newWebhook(t, st, "wh-1", nil, nil)
 
-	build := func([]store.Webhook) []store.NewWebhookDelivery {
+	build := func([]store.Webhook, map[string]string) []store.NewWebhookDelivery {
 		return []store.NewWebhookDelivery{{
 			ID: "dlv-link-" + time.Now().Format("150405.000000000"), WebhookID: "wh-1",
 			Type: "server.link.lost", ServerID: serverID, Body: json.RawMessage(`{}`),
