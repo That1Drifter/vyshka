@@ -12,6 +12,17 @@ point if needed.
 
 ### Added
 
+- 2026-09-14: `ROADMAP.md`. The public roadmap: where each milestone stands, the next
+  slices in order (the live-player map demo on staging, the panel's management views,
+  the rest of the DayZ operator toolkit, the third-party mod surface, packaging and a
+  first release), the operational surface the design notes promise (`/metrics`, backup,
+  a config file, `--auto-tls`), the protocol items the spec names and the hub does not
+  implement (custom contexts, WebSocket, a server-scoped token dimension, a webhook
+  delivery cursor, snapshot diffs, batch dispatch), and the second game. Each item is
+  marked shipped, committed, or proposed; proposed items become committed by getting an
+  issue. The README's milestone table now points to it, and the README and the docs
+  site index no longer describe the protocol as draft 0.10 with the key/value store
+  still to come: both now state what runs as of draft 0.21.
 - 2026-09-14: DayZ moderation actions and events (issue #59, plugin 0.4.0, manifest
   revision 2). Five actions join `vyshka.heal`: `vyshka.kick` (the engine's own disconnect
   call), `vyshka.ban` and `vyshka.unban` (the plugin's own list at

@@ -17,15 +17,20 @@ protocol is game-agnostic by design.
 The project is **spec-first**: the [protocol specification](spec/protocol.html) and its
 conformance suites are the product; the hub and plugins are reference implementations.
 
-**Status:** early implementation. The protocol is at draft 0.10. The hub runs today with
-enrollment, sessions, the envelope exchange over long-poll, manifest publish with
-schema-subset validation, the full action lifecycle (dispatch, execute, observe, expire),
-telemetry ingest with a queryable event feed, and scoped Admin API tokens with an audit log,
-and webhooks with signed delivery, retries, and a dead letter, graded by sixty black-box
-conformance checks in CI. The plugin conformance harness runs too: a mock hub that grades
-any candidate plugin black-box, including the session-change renumbering rule that only
-shows up when a game server restarts with traffic in flight. The per-mod key/value store
-comes next.
+**Status:** early implementation, protocol at draft 0.21 (2026-09-14). The hub implements
+every protocol surface: enrollment, sessions, the envelope exchange over long-poll,
+manifest publish with schema-subset validation, the full action lifecycle (dispatch,
+execute, observe, expire), telemetry ingest with a queryable event feed, full-list state
+snapshots with a live state endpoint, webhooks with signed delivery, retries, a dead letter,
+and a Discord template, a per-mod key/value store, and scoped Admin API tokens with an
+audit log. It runs on embedded SQLite by default or on Postgres, and an embedded panel
+covers sign-in, the server list, manifest-driven action forms, the event feed, and a live
+map. Black-box conformance suites grade the hub and any candidate plugin in CI, including
+the session-change renumbering rule that only shows up when a game server restarts with
+traffic in flight. The clean-room DayZ plugin passes that harness against a live DayZ 1.29
+server with heal and moderation actions, core player and server telemetry, and player
+snapshots. The [roadmap](https://github.com/That1Drifter/vyshka/blob/main/ROADMAP.md) lists
+what comes next.
 
 ## Start here
 
