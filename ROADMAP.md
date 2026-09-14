@@ -31,7 +31,7 @@ it unattended.
 | M1 | Hub core: enrollment, sessions, long-poll, manifests, action lifecycle, SQLite | Shipped |
 | M2 | DayZ plugin (clean-room) | Shipped 2026-09-05; readable inline errors landed 2026-09-10; moderation slice landed 2026-09-14 |
 | M3 | Telemetry, state snapshots, webhooks, KV store; Discord kill feed from a live server | Shipped 2026-09-14 (the staging repeat of the Discord demo is the last box) |
-| M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Mostly shipped; the live-player map demo on staging and the panel's management views remain |
+| M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Panel v1 shipped, with a live DayZ player plotted on the staging map 2026-09-12 (issue #46); the panel's management views remain |
 | M5 | Custom contexts, Arma Reforger plugin, `--auto-tls` | Not started; Reforger on hold |
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document is
@@ -42,14 +42,7 @@ so.
 
 These are the next slices, in the order they are expected to land.
 
-### 1.1 Live map demo with a live player on staging (committed, M4)
-
-The last demonstration M4 asks for: a real DayZ player plotted on the staging hub's map over
-the public internet. It needs a play session and a decision on serving game-derived imagery
-from a public host. The Chernarus tileset has been published on staging with approval, so
-the remaining work is the session and its evidence in the issue.
-
-### 1.2 Panel management views (committed, M4)
+### 1.1 Panel management views (committed, M4)
 
 M4's definition of done is "an operator with zero API knowledge can run everything from the
 panel". Today the panel signs in, lists servers, dispatches actions, shows the event feed,
@@ -64,7 +57,7 @@ each a thin page over an Admin API surface that already exists:
 - Read the audit log with its filters (section 10.5).
 - Browse the key/value store by namespace (section 12), read-only first.
 
-### 1.3 DayZ plugin: the rest of the operator toolkit (committed in spirit, one issue per group)
+### 1.2 DayZ plugin: the rest of the operator toolkit (committed in spirit, one issue per group)
 
 The plugin has heal, kick, ban, unban, message, broadcast, the core player events, chat,
 fps, and `state.players`. The groups that turn it from a demonstration into a daily tool:
@@ -131,7 +124,7 @@ into the committed groups above when those are sliced.
   the custom-contexts row under Horizon 3: this is a candidate first customer for
   `context.enumerate`.
 
-### 1.4 The third-party mod surface on DayZ (committed by section 13 of the design notes)
+### 1.3 The third-party mod surface on DayZ (committed by section 13 of the design notes)
 
 The point of the manifest is that other mods add actions and events without touching the
 plugin. The surface is designed and not yet built: `class MyAction extends VyshkaAction`
@@ -142,10 +135,10 @@ that declares one custom action and one custom event, and a page in `plugins/day
 
 Two candidates for the sample mod (proposed): a map-specific world-event manager (list the
 events a map mod defines, start one, cancel one), because it exercises a custom context with
-`context.enumerate` and a mod-declared action together; or the item catalog from 1.3, which
+`context.enumerate` and a mod-declared action together; or the item catalog from 1.2, which
 exercises the context half alone.
 
-### 1.6 Hub and panel features an in-game menu cannot offer (proposed)
+### 1.4 Hub and panel features an in-game menu cannot offer (proposed)
 
 The same survey turned up things that only a hub with history across servers can do. None
 has an issue yet.
@@ -213,7 +206,7 @@ section so the spec reader is not surprised.
 
 | Item | Section | Status |
 |---|---|---|
-| Custom contexts and `context.enumerate` | 6.2 | Committed (M5). The hub accepts context declarations in the manifest and stores them; it never sends `context.enumerate` and the panel has no dropdown to feed. Needs a plugin with a real custom context to grade against; the item catalog and the world-event manager proposed under 1.3 and 1.4 are DayZ-side candidates that would unblock this without waiting for the second game |
+| Custom contexts and `context.enumerate` | 6.2 | Committed (M5). The hub accepts context declarations in the manifest and stores them; it never sends `context.enumerate` and the panel has no dropdown to feed. Needs a plugin with a real custom context to grade against; the item catalog and the world-event manager proposed under 1.2 and 1.3 are DayZ-side candidates that would unblock this without waiting for the second game |
 | WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD). Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins and Reforger are the customers |
 | Server-scoped token dimension | 10.1 | Proposed for a future draft. Scopes are installation-wide today; a term that names a server is the one narrowing operators keep asking for and the spec explicitly forbids a hub from inventing it |
 | Cursor over webhook deliveries | 11.3 | Proposed for a future draft; today the remedies are a wider `limit` and shorter retention |

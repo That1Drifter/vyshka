@@ -824,6 +824,14 @@ point if needed.
 
 ### Fixed
 
+- 2026-09-14: `ROADMAP.md` and the design notes listed the live-player map demo on staging
+  as remaining M4 work. It completed 2026-09-12 with issue #46, which closed on its
+  evidence: the world picked from `core.server.start`, a real player's marker registered
+  against the 15,360 m frame, the walk inland tracked, and the click-through into a
+  `vyshka.heal` that completed. The M4 row now reads as it stands, the stale Horizon 1.1
+  section is gone, and the remaining Horizon 1 sections are renumbered 1.1 to 1.5 (which
+  also puts the packaging section after, not before, the hub-and-panel section). Earlier
+  changelog entries keep the section numbers that were current when they landed.
 - 2026-09-13: the DayZ plugin captures `state.players` as it builds each poll request
   instead of on a timer (issue #55, plugin 0.3.0). A timer capture sat in the outbox until
   the poll already in flight returned, and its ack then rode the hold on the next poll, so
