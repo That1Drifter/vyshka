@@ -18,8 +18,10 @@ point if needed.
   killer, weapon, and distance; connects, disconnects, chat, kicks, bans; server start,
   stop, and fps; `action.completed`; link lost and restored; any other type as the type plus
   its top-level members), stamped with the notification's `occurredAt`, with a footer
-  naming the server. Player-written text is escaped, every member is cut to Discord's
-  limits, and `allowed_mentions.parse` is empty so nothing can ping a channel. The body is
+  naming the server. Player-written text is escaped, a web address in it is broken with a
+  zero-width space so Discord does not turn it into a live link, every member is cut to
+  Discord's limits, and `allowed_mentions.parse` is empty so nothing can ping a channel.
+  Payload numbers render as written (an id above 2^53 is not rounded through a float). The body is
   rendered once at fan-out like generic-json, so retries and the section 11.4 signature are
   unchanged. Section 11.2 stops reserving the name and section 11.3 defines the minimal
   shape; the hub conformance suite gains `webhooks.discordTemplate`. The notify

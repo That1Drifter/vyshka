@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,7 +87,11 @@ type discordField struct {
 func renderDiscord(one notification, serverName string) ([]byte, error) {
 	var data map[string]any
 	if len(one.Data) > 0 {
-		_ = json.Unmarshal(one.Data, &data)
+		// Numbers stay json.Number: an id above 2^53 in a custom payload
+		// must render as written, not rounded through a float64.
+		decoder := json.NewDecoder(bytes.NewReader(one.Data))
+		decoder.UseNumber()
+		_ = decoder.Decode(&data)
 	}
 	embed := discordEmbedFor(one.Type, data)
 	embed.Timestamp = envelopeTimestamp(one.OccurredAt)
@@ -218,7 +224,7 @@ func discordDeath(data map[string]any) discordEmbed {
 	if position, ok := data["position"].([]any); ok && len(position) == 3 {
 		parts := make([]string, 0, 3)
 		for _, component := range position {
-			if value, ok := component.(float64); ok {
+			if value, ok := numberValue(component); ok {
 				parts = append(parts, strconv.FormatFloat(value, 'f', 0, 64))
 			}
 		}
@@ -306,6 +312,8 @@ func scalarText(value any) string {
 			return "(empty)"
 		}
 		return escapeMarkdown(typed)
+	case json.Number:
+		return typed.String()
 	case float64:
 		return strconv.FormatFloat(typed, 'f', -1, 64)
 	case bool:
@@ -388,8 +396,19 @@ func stringField(data map[string]any, key string) string {
 }
 
 func numberField(data map[string]any, key string) (float64, bool) {
-	value, ok := data[key].(float64)
-	return value, ok
+	return numberValue(data[key])
+}
+
+// numberValue reads a decoded JSON number, whichever form the decoder gave it.
+func numberValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case float64:
+		return typed, true
+	}
+	return 0, false
 }
 
 func plural(count int, noun string) string {
@@ -402,7 +421,12 @@ func plural(count int, noun string) string {
 // escapeMarkdown neutralizes Discord's formatting characters in text a
 // player may have written, and replaces control characters other than a
 // newline with a space so a name cannot carry a terminal escape into a log.
+// A web address is broken with a zero-width space after its scheme, so
+// Discord does not turn what a player typed into a live link; the text
+// still reads as the address.
 func escapeMarkdown(text string) string {
+	text = urlScheme.ReplaceAllString(text, "${1}​//")
+	text = urlBareHost.ReplaceAllString(text, "${1}​.")
 	var out strings.Builder
 	out.Grow(len(text))
 	for _, r := range text {
@@ -422,6 +446,13 @@ func escapeMarkdown(text string) string {
 	}
 	return out.String()
 }
+
+// urlScheme and urlBareHost match what Discord would auto-link: a scheme
+// name followed by "://", and the bare "www." form.
+var (
+	urlScheme   = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*:)//`)
+	urlBareHost = regexp.MustCompile(`(?i)\b(www)\.`)
+)
 
 // clipText cuts text to limit runes, ending a cut text with an ellipsis.
 func clipText(text string, limit int) string {

@@ -103,6 +103,49 @@ func TestDiscordEscapesPlayerText(t *testing.T) {
 	if rendered.Embeds[0].Title != "Chat (direct)" {
 		t.Errorf("title = %q", rendered.Embeds[0].Title)
 	}
+
+	// A web address is not left as a live link, whatever its case or form.
+	linked := renderForTest(t, "core.player.chat", `{"name": "n", "channel": "direct",
+		"text": "see HTTPS://example.org/x and www.example.org and steam://run/221100"}`, "s")
+	description = linked.Embeds[0].Description
+	for _, live := range []string{"HTTPS://", "www.example", "steam://"} {
+		if strings.Contains(description, live) {
+			t.Errorf("description %q still carries the live address %q", description, live)
+		}
+	}
+	for _, broken := range []string{"HTTPS:​//example.org/x", "www​.example.org", "steam:​//run/221100"} {
+		if !strings.Contains(description, broken) {
+			t.Errorf("description %q lacks the broken address %q", description, broken)
+		}
+	}
+}
+
+func TestDiscordKeepsLargeIntegersExact(t *testing.T) {
+	t.Parallel()
+	rendered := renderForTest(t, "example-mod.record",
+		`{"recordId": 9007199254740993, "ratio": 0.5, "nested": {"id": 9007199254740993}}`, "s")
+	got := map[string]string{}
+	for _, field := range rendered.Embeds[0].Fields {
+		got[field.Name] = field.Value
+	}
+	if got["recordId"] != "9007199254740993" {
+		t.Errorf("recordId rendered as %q, want the integer as written", got["recordId"])
+	}
+	if got["ratio"] != "0.5" {
+		t.Errorf("ratio rendered as %q", got["ratio"])
+	}
+	if got["nested"] != `{"id":9007199254740993}` {
+		t.Errorf("nested rendered as %q", got["nested"])
+	}
+	// Numbers the wording reads (distance, fps, position) still read.
+	death := renderForTest(t, "core.player.death",
+		`{"name": "V", "cause": "player", "killerName": "K", "weapon": "W", "distance": 12.6, "position": [1, 2, 3]}`, "s")
+	if death.Embeds[0].Description != "**V** was killed by **K** with W from 13 m" {
+		t.Errorf("death with json.Number values rendered as %q", death.Embeds[0].Description)
+	}
+	if len(death.Embeds[0].Fields) != 1 || death.Embeds[0].Fields[0].Value != "1, 2, 3" {
+		t.Errorf("position with json.Number values rendered as %+v", death.Embeds[0].Fields)
+	}
 }
 
 func TestDiscordGenericEmbedForUnknownTypes(t *testing.T) {

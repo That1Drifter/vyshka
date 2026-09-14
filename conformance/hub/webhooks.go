@@ -562,6 +562,13 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 			Title       string `json:"title"`
 			Description string `json:"description"`
 			Timestamp   string `json:"timestamp"`
+			Footer      struct {
+				Text string `json:"text"`
+			} `json:"footer"`
+			Fields []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"fields"`
 		} `json:"embeds"`
 		AllowedMentions *struct {
 			Parse []string `json:"parse"`
@@ -588,8 +595,29 @@ func checkWebhookDiscordTemplate(ctx context.Context, env Env) error {
 	if body.AllowedMentions == nil || body.AllowedMentions.Parse == nil || len(body.AllowedMentions.Parse) != 0 {
 		return fmt.Errorf("allowed_mentions.parse must be present and empty so player text cannot ping anyone (section 11.3)")
 	}
-	if strings.Contains(string(hook.Body), "**@everyone**") {
-		return fmt.Errorf("player-supplied text reached the embed unescaped (section 11.3)")
+	// The escaping is graded on the decoded text of every member Discord
+	// renders, not on the JSON spelling: a Unicode escape in the body would
+	// hide an asterisk from a byte search and still reach Discord as one.
+	// The probe must also survive rendering, or omitting the name would
+	// pass as escaping it.
+	var texts []string
+	for _, embed := range body.Embeds {
+		texts = append(texts, embed.Title, embed.Description, embed.Footer.Text)
+		for _, field := range embed.Fields {
+			texts = append(texts, field.Name, field.Value)
+		}
+	}
+	survived := false
+	for _, text := range texts {
+		if strings.Contains(text, "**@everyone**") {
+			return fmt.Errorf("player-supplied text reached an embed member unescaped: %q (section 11.3)", text)
+		}
+		if strings.Contains(text, "@everyone") {
+			survived = true
+		}
+	}
+	if !survived {
+		return fmt.Errorf("the player-supplied name was dropped from the embed rather than escaped; a hub must render what the payload says (section 11.3)")
 	}
 	return nil
 }
