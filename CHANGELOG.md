@@ -12,6 +12,17 @@ point if needed.
 
 ### Added
 
+- 2026-09-14: `ROADMAP.md` gains the proposed items from a survey of established in-game
+  admin menus for DayZ. Under Horizon 1.3: vitals and persistent admin flags, inventory
+  actions and an on-request inventory snapshot, spawning extras, loadouts and teleport
+  locations in the key/value store, vehicle cleanup and unstuck, the full weather surface
+  with presets and a `state.world` snapshot, entity and base-building actions and events,
+  telemetry extras, and an item catalog. Under 1.4: two sample-mod candidates (a world-event
+  manager, the item catalog). A new section 1.6 lists what only a hub can offer: a player
+  profile across servers, an installation-wide ban list, per-webhook redaction, admin
+  actions as webhook material, roles as scope bundles, chat-triggered actions. The
+  non-goals now rule out unaudited admin actions and client-side tooling (ESP, cameras,
+  spectating). Everything added is proposed; nothing moved to committed.
 - 2026-09-14: `ROADMAP.md`. The public roadmap: where each milestone stands, the next
   slices in order (the live-player map demo on staging, the panel's management views,
   the rest of the DayZ operator toolkit, the third-party mod surface, packaging and a

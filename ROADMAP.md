@@ -84,6 +84,53 @@ fps, and `state.players`. The groups that turn it from a demonstration into a da
   measured behavior across a server crash. A spike that kills the server mid-batch and
   counts what the hub received is the prerequisite for calling unattended operation safe.
 
+The groups below are **proposed** as of 2026-09-14. They come from a survey of what
+established in-game admin menus for DayZ offer and Vyshka does not, translated into plugin
+actions, events, and snapshots. Each becomes committed by getting an issue; several can fold
+into the committed groups above when those are sliced.
+
+- **Vitals and admin flags** (proposed): set one vital at a time (health, blood, shock,
+  energy, water, stamina, heat buffer) as a single action with a `stat` parameter; stop
+  bleeding, dry, and the broken-legs and bloody-hands toggles. Per-player admin flags (god
+  mode, invisibility, freeze, unlimited ammo and stamina, admin night vision, ignored by AI,
+  no collision) persisted per identity so they survive a reconnect, and reported as a
+  `flags` object in `state.players` so the panel shows who has one set.
+- **Inventory** (proposed): strip (drop everything, `warning`) and clear cargo (delete
+  everything, `destructive`); an on-request `state.inventory` snapshot for one player, which
+  is the first snapshot that needs the 256 KiB body cap checked against a real payload.
+- **Spawning beyond the basics** (proposed): spawn into a target inventory with quantity and
+  health, an `attachments: auto` option that fills a weapon's compatible attachments from
+  config, random infected or animals near a point for event hosts, and a server-side
+  blocklist of class names that the manifest advertises so the panel greys them out.
+- **Loadouts and teleport locations** (proposed): named item trees captured from a player's
+  current gear or a placed object and applied to a player, a point, or a target; named
+  teleport locations with a scatter radius; teleport-to-previous as an undo. Both lists live
+  in the key/value store and get a panel editor, which makes them the store's first real
+  customers. Vehicle spawn presets that include the parts a car needs to drive (wheels,
+  battery, plugs) belong to the same family.
+- **Vehicle operations** (proposed, alongside the committed telemetry): intact, destroyed,
+  and exploded states in `state.vehicles`; delete one, delete all destroyed, delete all
+  unclaimed where an ownership mod defines that; refuel, unstuck (lift and reset), and
+  repair as vehicle-context actions. Wreck cleanup is the routine chore on a long-running
+  server and unstuck is the most-requested action in every admin tool.
+- **Weather and world beyond set-time** (proposed): every engine knob (overcast, static and
+  dynamic fog, rain, snow, storm, wind direction and magnitude, thresholds, behaviour mode)
+  as optional fields on one action; freeze time; named presets with clear, cloudy, and storm
+  shipped; and a `state.world` snapshot of current time and conditions, which the panel
+  needs before a weather form makes sense.
+- **Entities and base building** (proposed): set position, orientation, and health, heal,
+  delete, and duplicate on ids from `state.entities`; build, dismantle, and repair base
+  parts, with a build-without-materials option; and `dayz.build.place` and `dismantle`
+  events naming who built what where.
+- **Telemetry extras** (proposed): the natural-death breakdown (water, energy, bleeding
+  sources at the moment of death) as extra fields on `core.player.death` when the cause is
+  not a player, and a `talking` flag in `state.players` for voice transmissions.
+- **Item catalog** (proposed): the plugin publishes its class-name catalog with display
+  names and per-type stats (clothing, edibles, firearms, magazines, optics, vehicles) once
+  per session, so spawn and loadout forms autocomplete on names an operator recognizes. See
+  the custom-contexts row under Horizon 3: this is a candidate first customer for
+  `context.enumerate`.
+
 ### 1.4 The third-party mod surface on DayZ (committed by section 13 of the design notes)
 
 The point of the manifest is that other mods add actions and events without touching the
@@ -92,6 +139,38 @@ registered from a modded `MissionServer` hook, `#ifdef VYSHKA` guards so mods lo
 the plugin, a `GetVyshka()` accessor for link state, `VyshkaStore("my-mod")` for the KV
 store, and `VyshkaMapMarker` for map objects that are not players. Ships with a sample mod
 that declares one custom action and one custom event, and a page in `plugins/dayz/README.md`.
+
+Two candidates for the sample mod (proposed): a map-specific world-event manager (list the
+events a map mod defines, start one, cancel one), because it exercises a custom context with
+`context.enumerate` and a mod-declared action together; or the item catalog from 1.3, which
+exercises the context half alone.
+
+### 1.6 Hub and panel features an in-game menu cannot offer (proposed)
+
+The same survey turned up things that only a hub with history across servers can do. None
+has an issue yet.
+
+- **Player profile**: a page per identity with its history across every server on the
+  installation (connects, deaths, kicks, bans, chat, admin actions taken against it) and
+  operator notes. Every input is already in the event store and the audit log; the work is
+  the query and the page.
+- **Installation-wide ban list**: a hub-managed list pushed to every enrolled server's
+  plugin, with the per-server `vyshka.ban` staying the primitive. Needs a sync action or a
+  new envelope type, so it is a protocol change discussed in an issue first.
+- **Per-webhook redaction**: a webhook option that strips named fields (positions, killer
+  position) from events before delivery, so one `core.player.death` feeds both an admin
+  channel with coordinates and a public kill feed without them.
+- **Admin actions as webhook material**: treat audit entries as webhook-eligible events so an
+  operations channel sees who did what to whom, not only what the game reported.
+- **Roles as scope bundles**: named presets (moderator, event host, owner) when issuing an
+  Admin API token in the panel. Convenience over the existing scopes, no protocol change.
+  A future draft may also narrow scopes by action-code prefix; that belongs with the
+  server-scoped token dimension under Horizon 3.
+- **Chat-triggered actions**: a hub rule that dispatches an action when a whitelisted identity
+  sends a chat line matching a pattern, audited as that identity. Keeps the hub as the only
+  dispatch path instead of adding in-game commands that bypass it.
+- **Small conveniences**: pinned quick actions per server in the panel, and a soft delete
+  with a backup copy for key/value namespaces.
 
 ### 1.5 Packaging and first release (proposed)
 
@@ -134,7 +213,7 @@ section so the spec reader is not surprised.
 
 | Item | Section | Status |
 |---|---|---|
-| Custom contexts and `context.enumerate` | 6.2 | Committed (M5). The hub accepts context declarations in the manifest and stores them; it never sends `context.enumerate` and the panel has no dropdown to feed. Needs a plugin with a real custom context to grade against |
+| Custom contexts and `context.enumerate` | 6.2 | Committed (M5). The hub accepts context declarations in the manifest and stores them; it never sends `context.enumerate` and the panel has no dropdown to feed. Needs a plugin with a real custom context to grade against; the item catalog and the world-event manager proposed under 1.3 and 1.4 are DayZ-side candidates that would unblock this without waiting for the second game |
 | WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD). Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins and Reforger are the customers |
 | Server-scoped token dimension | 10.1 | Proposed for a future draft. Scopes are installation-wide today; a term that names a server is the one narrowing operators keep asking for and the spec explicitly forbids a hub from inventing it |
 | Cursor over webhook deliveries | 11.3 | Proposed for a future draft; today the remedies are a wider `limit` and shorter retention |
@@ -172,6 +251,11 @@ These are non-goals from the design notes, restated so they are not re-proposed 
 - Process supervision, mod deployment, file management. Vyshka is not a game server manager.
 - An RCON or BattlEye replacement. The hub complements them.
 - Interoperability with any existing commercial product's mods, endpoints, or accounts.
+- Unaudited admin actions. Some in-game admin menus offer a "no log" variant of an action;
+  Vyshka's audit log is unconditional and no action, scope, or flag may suppress an entry.
+- Client-side admin tooling: ESP overlays, free cameras, spectating. The hub's equivalents
+  are the live map and the snapshots; anything drawn in the player's own client is a mod's
+  business, not the plugin's.
 
 ## Keeping this document honest
 
