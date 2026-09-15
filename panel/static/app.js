@@ -193,6 +193,10 @@ function renderLogin(app, message) {
       event.preventDefault();
       const value = input.value.trim();
       if (!value) return;
+      // One probe at a time, and only the latest submission may store: a
+      // second submit on the same form (requestSubmit ignores a disabled
+      // button) retires the first, whose late answer then stores nothing.
+      const attempt = ++loginAttempt;
       button.disabled = true;
       // The candidate is proven before it is stored. While the probe is
       // out there is no signed-in token, so a secret-bearing answer that
@@ -219,9 +223,10 @@ function renderLogin(app, message) {
         }
       }
       // A probe that lands after its form is gone (a navigation drew a
-      // fresh one, or another candidate signed in meanwhile) belongs to an
-      // attempt nobody is waiting for, and must not replace what is current.
-      if (!form.isConnected) return;
+      // fresh one, or another candidate signed in meanwhile), or after a
+      // later submission on the same form, belongs to an attempt nobody is
+      // waiting for, and must not replace what is current.
+      if (!form.isConnected || attempt !== loginAttempt) return;
       sessionStorage.setItem(TOKEN_KEY, value);
       render();
     },
