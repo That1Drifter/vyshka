@@ -305,7 +305,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 	var pendingTypes []string
-	if update.URL != nil {
+	if update.URL != nil && *update.URL != existing.URL {
+		// Only a URL that actually moves carries the pending bodies
+		// anywhere; an edit that repeats the current one is not a retarget.
 		if pendingTypes, err = s.store.PendingDeliveryTypes(r.Context(), webhookID); err != nil {
 			s.writeInternalError(w, r, err)
 			return

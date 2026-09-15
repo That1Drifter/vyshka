@@ -1767,10 +1767,13 @@ paused webhook MUST NOT move it: pause is a state, not an event, and an operator
 twice has paused once. `paused: false` clears `pausedAt`.
 
 While a webhook is paused a hub MUST NOT begin any delivery attempt for it, including
-retries of deliveries that began before the pause; a hub MUST decide that at the moment an
-attempt starts, not when it planned the attempt, so a pause that lands between the two
-holds. An attempt already on the wire when the pause lands is the one thing a pause cannot
-recall, and it completes. Matching notifications still create deliveries,
+retries of deliveries that began before the pause. An attempt begins when the hub books it,
+which is where `attempts` moves and where the target URL is read, and a hub MUST make the
+pause decision and the booking one atomic step against the pause itself, so that a pause
+either precedes an attempt, and holds it, or follows it, and finds it begun; a pause that
+lands between the decision and the booking is not a state this document allows. An attempt
+already begun when the pause lands is the one thing a pause cannot recall, and it
+completes. Matching notifications still create deliveries,
 which wait in `pending` with their `nextAttemptAt` untouched; the per-webhook pending bound
 of section 11.5 still applies, so a pause long enough to fill the queue makes further
 deliveries arrive dead carrying that bound's `lastError`. On resume, everything due goes out

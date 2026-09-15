@@ -138,6 +138,12 @@ func TestDeliveryOutcomeBookkeeping(t *testing.T) {
 	}
 	deliveryID := due[0].Delivery.ID
 
+	// An attempt is counted when it begins, and begins with the webhook's
+	// current target and key.
+	begun, err := st.BeginDeliveryAttempt(ctx, deliveryID, 0)
+	if err != nil || begun.Attempt != 1 || begun.URL == "" || begun.Secret == "" {
+		t.Fatalf("begin attempt = %+v (%v), want attempt 1 with the target and key", begun, err)
+	}
 	// First failure schedules the retry.
 	status := 500
 	next := time.Now().UTC().Add(time.Hour)
@@ -160,6 +166,9 @@ func TestDeliveryOutcomeBookkeeping(t *testing.T) {
 	}
 
 	// Exhausted schedule means dead, and dead is terminal.
+	if begun, err := st.BeginDeliveryAttempt(ctx, deliveryID, 0); err != nil || begun.Attempt != 2 {
+		t.Fatalf("second attempt = %+v (%v), want attempt 2", begun, err)
+	}
 	if err := st.RecordDeliveryFailure(ctx, deliveryID, 0, nil, "connection refused", nil); err != nil {
 		t.Fatalf("record dead: %v", err)
 	}
@@ -455,6 +464,9 @@ func TestReplayWebhookDeliveryReArms(t *testing.T) {
 	deliveryID := due[0].Delivery.ID
 	body := string(due[0].Delivery.Body)
 
+	if _, err := st.BeginDeliveryAttempt(ctx, deliveryID, 0); err != nil {
+		t.Fatalf("begin attempt: %v", err)
+	}
 	status := 500
 	if err := st.RecordDeliveryFailure(ctx, deliveryID, 0, &status, "status 500", nil); err != nil {
 		t.Fatalf("record dead: %v", err)

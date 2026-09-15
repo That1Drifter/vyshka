@@ -394,8 +394,32 @@ feeding:
 // before the request would expire under a target slower than ten seconds and
 // leave a completed attempt looking like it never ran.
 func (s *Server) attemptDelivery(due store.DueDelivery) {
-	attempt := due.Delivery.Attempts + 1
 	body := []byte(due.Delivery.Body)
+
+	// The attempt begins by being booked, not by being selected into the
+	// batch: the store locks the webhook row, refuses if it is paused, refuses
+	// if the delivery was replayed or removed since the batch was read, and
+	// counts the attempt, answering with the URL and secret as of that instant.
+	// That booking is the boundary the protocol draws (spec section 11.2): a
+	// pause or a URL edit that commits before it holds, and one that commits
+	// after it finds this attempt already begun.
+	beginCtx, cancelBegin := context.WithTimeout(s.baseCtx, 10*time.Second)
+	begun, err := s.store.BeginDeliveryAttempt(beginCtx, due.Delivery.ID, due.Delivery.Generation)
+	cancelBegin()
+	switch {
+	case errors.Is(err, store.ErrWebhookPaused):
+		// Left pending and due: the resume's pass picks it up.
+		return
+	case errors.Is(err, store.ErrStaleAttempt):
+		// Replayed, finished, or deleted since the batch was read; whatever
+		// it became, it is not the attempt this batch owed.
+		return
+	case err != nil:
+		s.log.Error("delivery attempt could not be booked",
+			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID, "error", err.Error())
+		return
+	}
+	attempt := begun.Attempt
 
 	recording := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), 10*time.Second)
@@ -406,31 +430,9 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 		s.recordFailure(ctx, due, attempt, status, message)
 	}
 
-	// The webhook is read again at the moment of the attempt rather than
-	// trusted from the batch: a pause or a URL change that landed after the
-	// batch was selected, and before this worker reached the row, must hold
-	// (spec section 11.2) or be followed (an edited URL applies to the next
-	// attempt). What is already on the wire when a pause lands is the one
-	// thing a pause cannot recall.
-	lookupCtx, cancelLookup := context.WithTimeout(s.baseCtx, 10*time.Second)
-	webhook, err := s.store.WebhookByID(lookupCtx, due.Delivery.WebhookID)
-	cancelLookup()
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		// Deleted since the batch was read; its deliveries went with it.
-		return
-	case err != nil:
-		s.log.Error("webhook could not be re-read before an attempt",
-			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID, "error", err.Error())
-		return
-	case webhook.PausedAt != nil:
-		// Left pending and due: the resume's pass picks it up.
-		return
-	}
-
 	requestCtx, cancel := context.WithTimeout(s.baseCtx, s.cfg.WebhookDeliveryTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, webhook.URL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, begun.URL, bytes.NewReader(body))
 	if err != nil {
 		fail(nil, "request could not be built: "+err.Error())
 		return
@@ -438,16 +440,22 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Vyshka-Delivery", due.Delivery.ID)
 	request.Header.Set("X-Vyshka-Attempt", strconv.Itoa(attempt))
-	request.Header.Set("X-Vyshka-Signature", signWebhookBody(webhook.Secret, body))
+	request.Header.Set("X-Vyshka-Signature", signWebhookBody(begun.Secret, body))
 
 	response, err := s.webhookClient.Do(request)
 	if err != nil {
 		if s.baseCtx.Err() != nil {
 			// Shutdown aborted the attempt, not the target. As far as the
-			// schedule is concerned it never happened: the row stays pending
-			// and due, and the next boot's dispatcher picks it up with the
-			// same attempt number. Booking it would let a few restarts
-			// dead-letter a delivery whose target never failed once.
+			// schedule is concerned it never happened: the booking is given
+			// back, the row stays pending and due, and the next boot's
+			// dispatcher picks it up with the same attempt number. Keeping
+			// it would let a few restarts dead-letter a delivery whose
+			// target never failed once.
+			ctx, cancelAbandon := recording()
+			defer cancelAbandon()
+			if err := s.store.AbandonDeliveryAttempt(ctx, due.Delivery.ID, due.Delivery.Generation); err != nil {
+				s.logOutcomeNotBooked(due, err)
+			}
 			return
 		}
 		fail(nil, "delivery failed: "+err.Error())

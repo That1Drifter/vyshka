@@ -9,10 +9,3 @@
 -- so it needs no collation pin of its own (migration 0015) and plain ALTER
 -- TABLE ... ADD COLUMN is valid on both engines.
 ALTER TABLE webhooks ADD COLUMN paused_at TEXT;
-
--- Replaying a delivery (section 11.5) re-arms a row an attempt may still be
--- in flight for. The generation counts replays; an attempt books its outcome
--- only against the generation it was made under, so an outcome that lands
--- after a replay is discarded rather than consuming the attempt the replay
--- promised. Every existing row starts at 0.
-ALTER TABLE webhook_deliveries ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;

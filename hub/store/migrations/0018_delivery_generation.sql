@@ -1,0 +1,13 @@
+-- The replay generation of a delivery (spec/protocol.md section 11.5).
+--
+-- Replaying a delivery re-arms a row an attempt may still be in flight for.
+-- The generation counts replays; an attempt begins and books its outcome
+-- only against the generation it read, so an outcome that lands after a
+-- replay is discarded rather than consuming the attempt the replay promised.
+-- Every existing row starts at 0.
+--
+-- Its own migration rather than a late addition to 0016, so a database that
+-- ran 0016 before this column existed still gains it: the migrator applies
+-- files by number and never re-runs one it has recorded. Plain ADD COLUMN
+-- with a default is valid on both engines.
+ALTER TABLE webhook_deliveries ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;

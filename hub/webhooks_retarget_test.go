@@ -64,6 +64,13 @@ func TestRetargetAndReplayRequireCoverageOfWhatIsPending(t *testing.T) {
 		map[string]any{"events": []string{"public-mod.*"}}, nil); status != http.StatusOK {
 		t.Fatalf("narrowing the filter: status = %d, want 200", status)
 	}
+	// An edit that repeats the current URL is not a retarget: the panel's
+	// edit form sends every field, and a narrowing edit must not fail for
+	// carrying the URL it does not change.
+	if status := call(t, server, http.MethodPatch, path, narrow,
+		map[string]any{"events": []string{"public-mod.*"}, "url": receiver.server.URL}, nil); status != http.StatusOK {
+		t.Fatalf("an edit repeating the current URL: status = %d, want 200", status)
+	}
 	// Moving the URL is not, while a delivery the token may not read is
 	// pending: that body would follow the URL.
 	if code := errorCode(t, server, http.MethodPatch, path, narrow,

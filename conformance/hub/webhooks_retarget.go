@@ -70,6 +70,12 @@ func checkWebhookRetargetCoverage(ctx context.Context, env Env) error {
 		map[string]any{"events": []string{"conformance-webhook.*"}}, http.StatusOK, nil); err != nil {
 		return fmt.Errorf("a narrowing edit within the token's grants was refused: %w", err)
 	}
+	// An edit that repeats the current URL is not a retarget; a client that
+	// sends every field on every edit must not be refused for it.
+	if err := env.expect(ctx, http.MethodPatch, path, narrow.Secret,
+		map[string]any{"events": []string{"conformance-webhook.*"}, "url": receiver.url}, http.StatusOK, nil); err != nil {
+		return fmt.Errorf("an edit repeating the current URL was treated as a retarget: %w (section 11.2)", err)
+	}
 	// Moving the URL would carry the private delivery along.
 	if err := env.expectError(ctx, http.MethodPatch, path, narrow.Secret,
 		map[string]any{"url": receiver.url + "/elsewhere"}, http.StatusForbidden, "forbidden"); err != nil {
