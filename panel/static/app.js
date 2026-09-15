@@ -229,11 +229,34 @@ function renderLogin(app, message) {
 
 async function viewServers(app, seq) {
   setCrumbs([{ label: 'Servers' }]);
+  clear(app);
+  const tbody = el('tbody', {});
+  const table = el('table', { id: 'servers', hidden: true },
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Name'), el('th', {}, 'Game'), el('th', {}, 'Link'), el('th', {}, 'Credentials'),
+      el('th', {}, 'Plugin'), el('th', {}, 'Last seen'), el('th', {}, 'Queued'))),
+    tbody);
+  const empty = el('p', { class: 'notice', id: 'servers-empty', hidden: true },
+    'No servers yet. Register one above, or with POST /api/v1/servers (scripts/demo-enrollment.sh walks through it); it appears here once it exists, and carries a plugin once one enrolls.');
   const load = async () => {
     const data = await api('GET', '/servers');
     if (stale(seq)) return;
-    drawServers(app, data.servers || []);
+    drawServers(tbody, table, empty, data.servers || []);
   };
+  // Only the table is redrawn on the refresh tick. The registration form is
+  // built once and left alone, because a redraw would take a half-typed name
+  // with it, and take the one-time enrollment token of the server just
+  // registered with it too: that value exists nowhere else.
+  app.append(
+    el('h1', {}, 'Servers'),
+    registerServerForm(() => {
+      load().catch(() => {
+        // The new server is on the hub whatever this refresh did, and the
+        // next tick lists it; the token above must stay on the page.
+      });
+    }),
+    empty, table,
+    el('p', { class: 'muted' }, 'The list refreshes every ' + (SERVER_LIST_REFRESH_MS / 1000) + ' s.'));
   await load();
   // A navigation during the first load has already replaced this view; a
   // timer armed now would outlive it.
@@ -250,37 +273,25 @@ async function viewServers(app, seq) {
   setTeardown(() => clearInterval(timer));
 }
 
-function drawServers(app, servers) {
-  clear(app);
-  app.append(el('h1', {}, 'Servers'));
-  // A newly registered server appears on the next refresh tick as well, but
-  // redrawing at once is what puts it under the enrollment token the form
-  // just showed.
-  app.append(registerServerForm(() => { render(); }));
-  if (servers.length === 0) {
-    app.append(el('p', { class: 'notice' },
-      'No servers yet. Register one above, or with POST /api/v1/servers (scripts/demo-enrollment.sh walks through it); it appears here once it exists, and carries a plugin once one enrolls.'));
-    return;
+function drawServers(tbody, table, empty, servers) {
+  clear(tbody);
+  for (const server of servers) {
+    tbody.append(el('tr', {
+      class: 'row-link', 'data-server-id': server.id,
+      onclick: () => { location.hash = serverHref(server.id); },
+    },
+    el('td', {}, el('a', { href: serverHref(server.id) }, server.name)),
+    el('td', {}, server.game || el('span', { class: 'muted' }, 'any')),
+    el('td', {}, badge(server.linkState || 'unknown', server.linkState)),
+    el('td', {}, badge(server.credentialState || '', server.credentialState)),
+    el('td', {}, server.plugin ? server.plugin.name + ' ' + (server.plugin.version || '') : el('span', { class: 'muted' }, 'none')),
+    el('td', {}, ago(server.lastSeenAt)),
+    el('td', {}, server.pendingEnvelopeCount > 0
+      ? badge(String(server.pendingEnvelopeCount), 'pending')
+      : el('span', { class: 'muted' }, '0'))));
   }
-  const rows = servers.map((server) => el('tr', {
-    class: 'row-link', 'data-server-id': server.id,
-    onclick: () => { location.hash = serverHref(server.id); },
-  },
-  el('td', {}, el('a', { href: serverHref(server.id) }, server.name)),
-  el('td', {}, server.game || el('span', { class: 'muted' }, 'any')),
-  el('td', {}, badge(server.linkState || 'unknown', server.linkState)),
-  el('td', {}, badge(server.credentialState || '', server.credentialState)),
-  el('td', {}, server.plugin ? server.plugin.name + ' ' + (server.plugin.version || '') : el('span', { class: 'muted' }, 'none')),
-  el('td', {}, ago(server.lastSeenAt)),
-  el('td', {}, server.pendingEnvelopeCount > 0
-    ? badge(String(server.pendingEnvelopeCount), 'pending')
-    : el('span', { class: 'muted' }, '0'))));
-  app.append(el('table', { id: 'servers' },
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Name'), el('th', {}, 'Game'), el('th', {}, 'Link'), el('th', {}, 'Credentials'),
-      el('th', {}, 'Plugin'), el('th', {}, 'Last seen'), el('th', {}, 'Queued'))),
-    el('tbody', {}, rows)));
-  app.append(el('p', { class: 'muted' }, 'Refreshes every ' + (SERVER_LIST_REFRESH_MS / 1000) + ' s.'));
+  table.hidden = servers.length === 0;
+  empty.hidden = servers.length > 0;
 }
 
 async function loadServerAndManifest(serverId) {

@@ -6,7 +6,8 @@ may not reach into hub internals, and anything it can do must be possible with `
 `/api/v1` alone. Action forms are rendered from the plugin manifest rather than hand-written
 per game, which is what keeps the hub game-agnostic.
 
-Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
+Tracked in issue #13 (panel v1), #47 (the event feed), #46 (the live map), and #64 (the
+management views).
 
 ## What it does
 
@@ -14,8 +15,29 @@ Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
   travels to the hub as a bearer token on every request; closing the tab forgets it, and
   "Sign out" forgets it sooner. The hub's own scopes apply unchanged: a token narrowed to
   `servers:read` sees the server list and nothing dispatches.
+- **Top-level nav** across the five sections: Servers, Tokens, Webhooks, Audit, Key/value.
+  It is in `index.html` because it is the shell rather than any view's output, and it is
+  hidden until a token is signed in, since every link behind it needs one.
 - **Server list** with link state, credential state, enrolled plugin, last-seen time, and the
-  count of envelopes queued for delivery, refreshed every five seconds.
+  count of envelopes queued for delivery, refreshed every five seconds. Only the table is
+  redrawn on that tick: the **"Register a server"** form above it (name, optional game,
+  optional enrollment token lifetime, over `POST /servers`) keeps whatever is half-typed in
+  it, and keeps the one-time enrollment token it has just shown, which exists nowhere else.
+  The token is shown in a `<code>` block with its expiry and a Copy button under a notice
+  saying it will not be shown again.
+- **Server credentials** on the server page: a new enrollment token over
+  `POST /servers/{id}/enrollment-token` (any unused earlier one stops working), shown the
+  same way and deliberately without a page reload, because a reload would take it with it;
+  and **Revoke credentials** over `DELETE /servers/{id}/credentials` behind an explicit
+  confirmation tick, after which the record is re-read.
+- **Pinned quick actions**: every action item on the server page carries a pin toggle
+  (`aria-pressed`), and pinned ones are repeated in a **Pinned** section above the namespace
+  groups. Pins live in this browser's `localStorage` under `vyshka.pins.{serverId}` as an
+  array of action codes. They are the operator's shortlist on the machine they work from,
+  not hub state: another browser sees its own, and nothing about them travels to the hub.
+  A pinned code the current manifest no longer declares stays listed, dimmed, saying which
+  manifest revision dropped it, and can be unpinned. The presets slice (issue #76) may move
+  them into the store.
 - **Actions** from the server's stored manifest, grouped by namespace, with context and
   danger badges.
 - **Forms generated from the manifest schema** (protocol section 6.1's JSON Schema subset):
@@ -93,6 +115,48 @@ Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
   `z` north); a position the manifest cannot read, or a player without one, is listed and
   not plotted. Drag or arrow keys pan, wheel and the `+`/`−` buttons zoom (past the
   imagery's native level too), `0` or Fit shows the whole world.
+- **Tokens** at `#/tokens`, over `GET /tokens` (protocol section 10.4): name, one badge per
+  scope, state, created, expires, and id, with revoked and expired rows dimmed and badged,
+  because the audit log points at records that no longer work. The mint form takes a name, a
+  role bundle, a scope list, and an expiry (never, 1, 7, 30, or 90 days, or custom seconds).
+  Revoking asks for a second click on the row before it sends `DELETE /tokens/{id}`. The
+  whole view needs `admin`, and a refusal is one notice naming that scope rather than one
+  per call that failed.
+- **Role bundles** are a panel convenience and no part of the protocol: they only fill the
+  scope list, which stays editable, and the panel sends exactly what is shown. **Owner** is
+  `admin`. **Moderator** is `servers:read`, `events:read`, and one
+  `actions:dispatch:{prefix}.*` per action-code prefix found in the hub's stored manifests
+  (a server with no manifest narrows nothing), falling back to an unnarrowed
+  `actions:dispatch` with section 10.1's warning when no manifest declares one. **Event
+  host** is the moderator set plus `kv:rw:{namespace}` for every namespace the manifests
+  declare in `kvNamespaces`. The prefix is taken from each action's `code`, not from its
+  display `namespace`, because a scope pattern is matched against the code.
+- **Webhooks** at `#/webhooks`, over `GET /webhooks` (protocol section 11): url, events as
+  badges ("every type" when the filter is empty), servers resolved to names through
+  `GET /servers` when the token may read it and ids otherwise ("every server" when empty),
+  template, a paused badge, and created. The register form takes a url, a one-per-line event
+  filter, a server checklist (nothing ticked means every server), and a template; the
+  signing secret is shown once. A row opens the webhook page: the record, an edit form that
+  `PATCH`es url, events, serverIds, and template, a Pause/Resume toggle that `PATCH`es
+  `paused`, Delete behind a confirmation, and the deliveries table over
+  `GET /webhooks/{id}/deliveries?limit=500` (state badge, type, server, attempts, last
+  status and error, created, next attempt, delivered) refreshed every five seconds, with a
+  "Dead letter only" filter applied in the page and a Replay button per row. The view needs
+  `webhooks:manage`. There is no read of a single webhook in the Admin API, so the page
+  finds its record in the list.
+- **Audit** at `#/audit`, over `GET /audit` (protocol section 10.5): at, token name with its
+  id on hover, method and path, a status badge (2xx ok, 4xx refused, 5xx error), source ip,
+  server, and the detail as one line with the full JSON behind a disclosure, the same
+  summariser the event feed uses. The filters (token id with a datalist, server, since,
+  until as datetime-local converted to UTC) live in the route, so a reload keeps them and
+  the URL can be shared; a since the hub cannot parse is shown as the hub's refusal beside
+  the form rather than dropped. "Load older" walks the hub's cursor. Needs `admin`.
+- **Key/value** at `#/kv` and `#/kv/{namespace}` (protocol section 12), read-only in this
+  slice: the namespaces the token's grants cover that hold at least one live key, with their
+  key counts, plus a free-text input for a namespace that holds none yet; then that
+  namespace's keys, key ascending, with a `prefix` filter in the route and "Load more"
+  behind the cursor. Opening a key fetches its value with the ordinary get and shows the
+  value, revision, and expiry. Editing arrives with presets, issue #76.
 
 ## Map tilesets
 
@@ -172,18 +236,23 @@ then serves nothing at `/panel/` and `/` is an ordinary 404.
 panel/
   panel.go         // http.Handler over the embedded files and the maps directory, plus the security headers
   static/
-    index.html     // the shell: header, breadcrumbs, one <main>
-    app.js         // routing, the Admin API client, the form builder, dispatch and result, the event feed, the map view
+    index.html     // the shell: header, breadcrumbs, the section nav, one <main>
+    lib.js         // the shared parts: DOM building, the Admin API client, the render lifecycle, the hash routes, the one-time secret and JSON widgets
+    app.js         // routing, sign-in, the server and action views, the form builder, dispatch and result, the event feed, the map view
+    manage.js      // the management views: server registration and credentials, tokens, webhooks and deliveries, audit, key/value, pinned actions
     map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame
     style.css      // one stylesheet, light and dark
   panel_test.go    // the handler: headers, what it serves, what it refuses, the maps surface
   e2e_test.go      // headless Chrome against a real hub, a fake plugin, and a generated tileset
 ```
 
-No build step: the files are served as written. The hub takes the handler through
-`hub.Config.Panel` (`panel.NewHandler(panel.Config{MapsDir: ...})`, or `panel.Handler()`
-for no maps) and does not import this package, so an embedder can mount a different panel
-or none.
+No build step: the files are served as written, as ES modules the browser resolves against
+each other. The hub takes the handler through `hub.Config.Panel`
+(`panel.NewHandler(panel.Config{MapsDir: ...})`, or `panel.Handler()` for no maps) and does
+not import this package, so an embedder can mount a different panel or none.
+
+The files are embedded in the binary at compile time, so a hub already running keeps serving
+the panel it was built with: rebuild it after editing anything under `static/`.
 
 ## Tests
 

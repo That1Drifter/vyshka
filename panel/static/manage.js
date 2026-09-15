@@ -181,7 +181,9 @@ export function serverCredentials(server, reload) {
           expiresAt: minted.expiresAt,
           note: 'Shown once, and any unused earlier token for this server has stopped working (protocol section 5.1).',
         }));
-        if (reload) reload();
+        // The page is deliberately not reloaded here: a redraw would take
+        // this token with it, and it exists nowhere else. Nothing on the
+        // record changes until a plugin enrolls with it anyway.
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           signOut('The hub rejected this token.');
@@ -1161,7 +1163,7 @@ export async function viewAudit(app, route, seq) {
         el('td', { class: 'when' }, formatTime(record.at)),
         el('td', { title: record.tokenId || 'a bootstrap credential has no token record' },
           record.tokenName || el('span', { class: 'muted' }, 'unnamed'),
-          record.tokenId ? null : el('span', { class: 'muted' }, ' (bootstrap)')),
+          record.tokenId ? null : el('span', { class: 'muted' }, ' (no token record)')),
         el('td', {}, el('span', { class: 'mono' }, record.method + ' ' + record.path)),
         el('td', {}, badge(String(record.status), statusKind(record.status))),
         el('td', { class: 'mono' }, record.sourceIp || ''),
