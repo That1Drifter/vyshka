@@ -12,6 +12,25 @@ point if needed.
 
 ### Added
 
+- 2026-09-15: the panel's management views (issue #64, closing M4): a "Register a server"
+  form and per-server enrollment token and credential revocation; Admin API tokens with
+  role bundles (owner, moderator, event host) expanded from the stored manifests into an
+  editable scope list before minting; webhooks with an edit form, pause and resume, the
+  delivery record with a dead-letter filter and a per-delivery replay; the audit log with
+  its filters kept in the route; the key/value store browsed by namespace and key,
+  read-only until the presets slice; pinned quick actions per server kept in the browser's
+  `localStorage`; a top-level nav. The shared helpers moved to `panel/static/lib.js` and
+  the new views live in `panel/static/manage.js`; the headless-browser test grades them.
+- 2026-09-15: protocol draft 0.23: `PATCH /api/v1/webhooks/{id}` edits a registration
+  under the same validation and coverage rule as registration and carries `paused`; a
+  paused webhook holds every delivery without attempting one, and the pending bound still
+  applies; `POST /api/v1/webhooks/{id}/deliveries/{deliveryId}/replay` re-arms one
+  delivery with its id and body unchanged (sections 11.2 and 11.5). `GET /api/v1/kv/{ns}`
+  lists a namespace's live keys with a prefix filter and cursor, and `GET /api/v1/kv` lists
+  the namespaces the token's grants cover with live key counts (section 12.2). Migration
+  0016 adds `paused_at` to webhooks; 0017 pins the KV name columns to byte order on
+  Postgres. Conformance checks grade edit, pause, replay, key paging, prefix, and the
+  scope-filtered namespace list.
 - 2026-09-14: `CONTEXT.md`, a glossary of the roadmap and process terms (shipped,
   committed, proposed, parked, tabled, dropped; slice, spike, tripwire; operator,
   installation). Wire terms stay in `spec/protocol.md` and are not repeated there. The
