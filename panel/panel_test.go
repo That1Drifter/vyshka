@@ -98,6 +98,26 @@ func TestHandlerServesEmbeddedFilesWithSecurityHeaders(t *testing.T) {
 			t.Errorf("GET %s Cache-Control = %q, want no-cache", tc.path, got)
 		}
 	}
+	// The tray that holds a secret whose own view had gone before the hub
+	// answered is the last copy of a live credential, so its hooks are part
+	// of the contract the browser test drives, not an implementation detail.
+	lib := serve(t, http.MethodGet, "/lib.js").Body.String()
+	for _, hook := range []string{"held-secrets", "data-held-secret", "data-dismiss-secret"} {
+		if !strings.Contains(lib, hook) {
+			t.Errorf("lib.js lacks the held-secret hook %q", hook)
+		}
+	}
+	// Nothing about a held secret may reach storage: it lives in module
+	// memory for the tab's lifetime and goes at sign-out.
+	for _, store := range []string{"sessionStorage.setItem", "localStorage.setItem"} {
+		if strings.Contains(lib, store) {
+			t.Errorf("lib.js calls %s; a held secret must never reach storage", store)
+		}
+	}
+	manage := serve(t, http.MethodGet, "/manage.js").Body.String()
+	if strings.Count(manage, "holdSecret(") < 4 {
+		t.Errorf("manage.js holds fewer than the four one-time secrets it mints: %d", strings.Count(manage, "holdSecret("))
+	}
 }
 
 // The page must not carry inline script or style: the policy would block it,

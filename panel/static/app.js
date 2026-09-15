@@ -19,8 +19,8 @@ import { createMap, validateManifest, worldPoint } from './map.js';
 import {
   ApiError, ago, api, append, attempt, badge, beginRender, clear, disclosure, el,
   eventsHref, formatTime, go, mapHref, markNav, onRender, onSignOut, pretty, randomKey,
-  renderSession, serverHref, setCrumbs, setTeardown, showError, signOut, stale,
-  summarizeEventData, token, TOKEN_KEY,
+  renderHeldSecrets, renderSession, serverHref, setCrumbs, setTeardown, showError, signOut,
+  stale, summarizeEventData, token, TOKEN_KEY,
 } from './lib.js';
 import {
   actionsSection, registerServerForm, serverCredentials, viewAudit, viewKVKeys,
@@ -164,6 +164,11 @@ async function render() {
     }
     showError(app, err);
   }
+  // A secret-bearing answer that landed after its own view had gone is shown
+  // at the top of whatever rendered next, whichever view that is, until it is
+  // dismissed. Drawn after the view returns, because every view clears #app.
+  if (stale(seq)) return;
+  renderHeldSecrets(app);
 }
 
 // The sign-in form is app.js's, so lib.js is told to draw it once the token
@@ -249,7 +254,7 @@ async function viewServers(app, seq) {
   // registered with it too: that value exists nowhere else.
   app.append(
     el('h1', {}, 'Servers'),
-    registerServerForm(() => {
+    registerServerForm(seq, () => {
       load().catch(() => {
         // The new server is on the hub whatever this refresh did, and the
         // next tick lists it; the token above must stay on the page.
@@ -349,7 +354,7 @@ async function viewServer(app, route, seq) {
       el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
   }
 
-  app.append(serverCredentials(server, () => { render(); }));
+  app.append(serverCredentials(server, seq, () => { render(); }));
 
   if (!manifest) {
     app.append(el('p', { class: 'notice', id: 'no-manifest' },

@@ -256,6 +256,9 @@ export function onSignOut(handler) {
 
 export function signOut(message) {
   sessionStorage.removeItem(TOKEN_KEY);
+  // A held secret belongs to the session that minted it; signing out drops
+  // it with the token, unshown if it was never dismissed.
+  clearHeldSecrets();
   beginRender();
   renderSession();
   setCrumbs([]);
@@ -463,6 +466,89 @@ export function secretOnce(options) {
     el('div', { class: 'secret-row' }, value, copy),
     state,
     options.expiresAt ? el('p', { class: 'muted' }, 'Expires ' + formatTime(options.expiresAt) + '.') : null);
+}
+
+// ---------------------------------------------------------------------------
+// Secrets held for a view that has gone
+//
+// A secret-bearing answer can land after its view has been replaced: the
+// operator submits "Mint token" and clicks a nav link before the hub answers.
+// The credential exists on the hub either way, and its secret is in that one
+// answer and nowhere else, so discarding the answer with the view would lose
+// the only copy of a live credential. A handler that finds itself stale hands
+// the result here instead, and the next view to render shows it at the top,
+// through the same one-time widget, until it is dismissed or the session ends.
+//
+// Module memory only: never sessionStorage, never localStorage, never the
+// route. A secret that outlives the tab is a secret written down.
+
+const heldSecrets = [];
+let heldSerial = 0;
+
+function heldEntryNode(entry) {
+  const row = el('div', {
+    class: 'held-secret', 'data-held-secret': entry.kind || 'secret', 'data-held-id': entry.heldId,
+  });
+  row.append(
+    secretOnce(Object.assign({}, entry, { id: entry.heldId })),
+    el('div', { class: 'actions-row' }, el('button', {
+      type: 'button', class: 'small', 'data-dismiss-secret': entry.heldId,
+      onclick: () => {
+        const at = heldSecrets.findIndex((held) => held.heldId === entry.heldId);
+        if (at !== -1) heldSecrets.splice(at, 1);
+        row.remove();
+        const tray = document.getElementById('held-secrets');
+        if (heldSecrets.length === 0 && tray) tray.remove();
+      },
+    }, 'Dismiss')));
+  return row;
+}
+
+function trayNode() {
+  return el('section', { id: 'held-secrets', 'aria-label': 'Secrets the hub will not show again' },
+    el('p', { class: 'notice' },
+      'These answers arrived after the page that asked for them had gone. The hub keeps a digest, not the value, so this is the only copy: it is held in this tab’s memory, and goes when it is dismissed or when the session ends.'));
+}
+
+// holdSecret keeps one result the view that asked for it can no longer show.
+// The options are secretOnce's (label, secret, note, expiresAt), plus kind,
+// which is what the tray's data hook carries. It is put on the page at once
+// when a view is already drawn, because the answer has landed and waiting for
+// the next navigation to reveal it is one more chance to lose it.
+export function holdSecret(options) {
+  // A session that has ended is not handed a secret: sign-out drops what is
+  // held, and an answer arriving after it must not reappear for whoever signs
+  // in next in this tab.
+  if (!token()) return;
+  heldSerial++;
+  const entry = Object.assign({}, options, { heldId: 'held-secret-' + heldSerial });
+  heldSecrets.push(entry);
+  const app = document.getElementById('app');
+  if (!app) return;
+  let tray = document.getElementById('held-secrets');
+  if (!tray) {
+    tray = trayNode();
+    app.prepend(tray);
+  }
+  tray.append(heldEntryNode(entry));
+}
+
+export function clearHeldSecrets() {
+  heldSecrets.length = 0;
+}
+
+// renderHeldSecrets puts every held secret at the top of the view that has
+// just drawn. The router calls it after the view returns, so the view's own
+// clear() cannot take the tray away again.
+export function renderHeldSecrets(app) {
+  if (!app || heldSecrets.length === 0) return;
+  // A view that returned without clearing #app may still hold the tray
+  // holdSecret mounted; there is one tray on a page, never two.
+  const mounted = document.getElementById('held-secrets');
+  if (mounted) mounted.remove();
+  const tray = trayNode();
+  for (const entry of heldSecrets) tray.append(heldEntryNode(entry));
+  app.prepend(tray);
 }
 
 // confirmation is the explicit tick a destructive control needs, the same
