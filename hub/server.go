@@ -584,13 +584,21 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/webhooks", s.admin(resourceWebhooks, verbManage, s.handleListWebhooks))
 	mux.HandleFunc("/api/v1/webhooks", methodNotAllowed("GET", "POST"))
 
+	mux.HandleFunc("PATCH /api/v1/webhooks/{webhookId}",
+		s.admin(resourceWebhooks, verbManage, s.handleUpdateWebhook))
 	mux.HandleFunc("DELETE /api/v1/webhooks/{webhookId}",
 		s.admin(resourceWebhooks, verbManage, s.handleDeleteWebhook))
-	mux.HandleFunc("/api/v1/webhooks/{webhookId}", methodNotAllowed("DELETE"))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}", methodNotAllowed("DELETE", "PATCH"))
 
 	mux.HandleFunc("GET /api/v1/webhooks/{webhookId}/deliveries",
 		s.admin(resourceWebhooks, verbManage, s.handleListWebhookDeliveries))
 	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries", methodNotAllowed("GET"))
+
+	// Replaying one delivery (spec section 11.5): an operator action on a
+	// record that already exists, so it carries the same scope as reading it.
+	mux.HandleFunc("POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay",
+		s.admin(resourceWebhooks, verbManage, s.handleReplayWebhookDelivery))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay", methodNotAllowed("POST"))
 
 	// The key/value store (spec section 12), the same operations on both
 	// realms. The namespace lives in the path, so the exact kv:rw:{namespace}

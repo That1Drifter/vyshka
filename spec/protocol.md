@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.22 (2026-09-14)
+**Status:** draft 0.23 (2026-09-15)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1694,7 +1694,8 @@ Authorization: Bearer <admin token>
     "events": ["core.player.*", "action.completed"],
     "serverIds": [],
     "template": "generic-json",
-    "createdAt": "2026-08-20T18:00:00.000Z"
+    "createdAt": "2026-08-20T18:00:00.000Z",
+    "pausedAt": null
   },
   "secret": "<signing secret>"
 }
@@ -1714,23 +1715,63 @@ Authorization: Bearer <admin token>
   of section 5, the hub cannot store a digest of it, because signing needs the secret
   itself; operators should treat read access to the hub's database as read access to
   webhook secrets.
+- `pausedAt` is the instant the webhook was paused, or `null` while it is active (below).
 - A webhook observes only what lands after it is registered. Registration is not a
   backfill request, and a hub MUST NOT replay stored history into a new webhook.
 
 | Request | Result |
 |---|---|
 | `GET /api/v1/webhooks` | `{ "webhooks": [ ... ] }`, newest first, without secrets |
+| `PATCH /api/v1/webhooks/{webhookId}` | `200` with `{ "webhook": ... }`; edits the registration in place (below) |
 | `DELETE /api/v1/webhooks/{webhookId}` | `204`; the webhook's pending deliveries are abandoned |
 | `GET /api/v1/webhooks/{webhookId}/deliveries` | The webhook's most recent deliveries, newest first (see section 11.5) |
+| `POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay` | `202`; re-arms one delivery for a further attempt (see section 11.5) |
 
 A hub SHOULD redact the query, fragment, and userinfo of a webhook's URL wherever it logs
 or audits one: target URLs routinely embed bearer credentials in exactly those parts, and
 logs outlive and outtravel webhook configuration.
 
+**Editing a registration.** `PATCH /api/v1/webhooks/{webhookId}` takes any subset of `url`,
+`events`, `serverIds`, `template`, and `paused`. An absent member leaves that field
+unchanged; a present member replaces it whole, so `"events": []` subscribes to every type
+exactly as an empty filter does at registration. A body naming no member this draft knows,
+an empty body included, is `bad_request`: a request that cannot have been meant MUST NOT be
+answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The answer is
+`200` with `{ "webhook": ... }`, the same view registration returns.
+
+- `url`, `events`, `serverIds`, and `template` are validated exactly as at registration and
+  raise exactly the same codes. An edit is not a second, laxer spelling of the same rules.
+- The coverage rule above is re-applied to the **resulting** subscription, meaning the
+  merged `events` and `serverIds` rather than only the members the request changed. An edit
+  therefore can never widen a webhook past what the editing token could have registered
+  itself, and a refusal is `forbidden`.
+- The secret is never rotated by an edit and never returned by one, so a receiver's
+  verification survives one. Rotating a secret is a separate act this draft does not define.
+- Deliveries already queued are affected one way but not the other. A delivery's body was
+  rendered at enqueue and is byte-stable for its whole life (section 11.3), so a `template`
+  change applies only to deliveries created after the edit. The target URL is read at
+  attempt time, so a delivery already pending goes to the **new** URL on its next attempt.
+
+**Pausing.** `paused: true` sets `pausedAt` to the current instant, and pausing an already
+paused webhook MUST NOT move it: pause is a state, not an event, and an operator who pauses
+twice has paused once. `paused: false` clears `pausedAt`.
+
+While a webhook is paused a hub MUST NOT attempt any delivery for it, including retries of
+deliveries that began before the pause. Matching notifications still create deliveries,
+which wait in `pending` with their `nextAttemptAt` untouched; the per-webhook pending bound
+of section 11.5 still applies, so a pause long enough to fill the queue makes further
+deliveries arrive dead carrying that bound's `lastError`. On resume, everything due goes out
+on the next delivery pass.
+
+The asymmetry is deliberate. Pause stops the hub talking to the target; it does not stop the
+hub remembering what it owed, because nothing in this section may be dropped silently. An
+operator who wants the queue gone deletes the webhook, where the record above says plainly
+that its pending deliveries are abandoned.
+
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template |
-| `forbidden` | 403 | The token's grants do not cover what the filter subscribes to |
+| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template, an edit naming no member this draft knows |
+| `forbidden` | 403 | The token's grants do not cover what the filter subscribes to, at registration or after an edit |
 | `not_found` | 404 | Unknown webhook id, or a `serverIds` entry naming no server |
 
 ### 11.3 Delivery
@@ -1862,6 +1903,42 @@ the last HTTP status received, absent when the failure was transport-level, and
 while the delivery is pending. The page is bounded, but the bound is the caller's to
 widen: `limit` is clamped into the hub's range (reference default 100, cap 500) rather
 than refused, the same contract as section 8.5's feed.
+
+**Replaying one delivery.** A dead letter an operator has fixed the cause of is worth
+sending, so one delivery can be re-armed by hand:
+
+```
+POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay
+
+-> 202 Accepted
+{ "delivery": { "id": "01J5QN...", "state": "pending", "attempts": 3,
+                "lastStatus": 500, "lastError": "status 500", "nextAttemptAt": "..." } }
+```
+
+- A replay sets the delivery's `state` back to `pending` and its `nextAttemptAt` to the
+  current instant, and clears `deliveredAt`. `attempts`, `lastStatus`, and `lastError` are
+  kept until the next attempt overwrites them, so what the record says about the last
+  failure survives until there is something newer to say.
+- The delivery keeps its id and its stored body, so its signature is unchanged and
+  `X-Vyshka-Attempt` goes on counting from where it stood. That is what keeps section 11.3's
+  stable id and byte-identical body true across a replay: a receiver that deduplicates on
+  `deliveryId` discards a replay exactly as it discards a retry, which is the right outcome
+  when the operator is replaying something the receiver did in fact get.
+- A replay grants one further attempt and no more standing than that. A failure re-enters
+  the retry schedule where the attempt count already stands, so a dead delivery whose replay
+  fails is dead again with the new `lastError`, and the operator may replay it again.
+- Replay is allowed in every state; a pending delivery is simply brought forward. It is not
+  subject to the pending bound above, which governs fan-out rather than one operator-driven
+  attempt.
+- An unknown `{webhookId}`, or a `{deliveryId}` that does not belong to that webhook, is
+  `not_found`. The route requires `webhooks:manage` like every other route of this section.
+
+**Pause and the schedule.** While its webhook is paused (section 11.2) a delivery is never
+due, however far past its `nextAttemptAt` it stands, so a paused webhook's backlog cannot be
+dead-lettered by the mere passage of time: the schedule advances when an attempt is made,
+not when a clock ticks. Replaying a delivery on a paused webhook succeeds and the delivery
+waits for the resume, like everything else that webhook owes. A pause is no pardon either,
+since the pending bound keeps counting the queue it is filling.
 
 ## 12. Key/value store
 

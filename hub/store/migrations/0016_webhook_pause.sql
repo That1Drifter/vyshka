@@ -1,0 +1,11 @@
+-- Pausing a webhook (spec/protocol.md sections 11.2 and 11.5).
+--
+-- A paused webhook is one the hub may not talk to: no attempt, no retry. It
+-- still owes what it matched, so matching notifications keep creating pending
+-- deliveries that wait for the resume, because nothing may be dropped
+-- silently. NULL means active, which is what every existing row is.
+--
+-- The column is compared only against NULL and written only as a timestamp,
+-- so it needs no collation pin of its own (migration 0015) and plain ALTER
+-- TABLE ... ADD COLUMN is valid on both engines.
+ALTER TABLE webhooks ADD COLUMN paused_at TEXT;
