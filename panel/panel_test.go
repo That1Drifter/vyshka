@@ -56,15 +56,19 @@ func serve(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	return recorder
 }
 
-// The four files the panel is made of are served from the root, with the
-// headers that confine a page holding a bearer token to its own origin.
+// The files the panel is made of are served from the root, with the headers
+// that confine a page holding a bearer token to its own origin. Every module
+// is listed here, because a module the handler does not serve is a page that
+// fails to import it.
 func TestHandlerServesEmbeddedFilesWithSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		path, contentType, marker string
 	}{
 		{"/", "text/html", `<script type="module" src="app.js">`},
-		{"/app.js", "text/javascript", "const API = '/api/v1'"},
+		{"/app.js", "text/javascript", "import { createMap"},
+		{"/lib.js", "text/javascript", "export const API = '/api/v1'"},
+		{"/manage.js", "text/javascript", "export async function viewTokens"},
 		{"/map.js", "text/javascript", "export function createMap"},
 		{"/style.css", "text/css", ":root"},
 	} {
@@ -106,10 +110,10 @@ func TestIndexHasNoInlineScriptOrStyle(t *testing.T) {
 			t.Errorf("index.html contains %q, which the Content-Security-Policy forbids", forbidden)
 		}
 	}
-	// app.js and map.js build every node through createElement and text
-	// nodes; a markup sink would let a plugin's manifest label or a player's
-	// name become script.
-	for _, file := range []string{"/app.js", "/map.js"} {
+	// Every module builds its nodes through createElement and text nodes; a
+	// markup sink would let a plugin's manifest label, a player's name, a
+	// webhook URL, or a stored value become script.
+	for _, file := range []string{"/app.js", "/lib.js", "/manage.js", "/map.js"} {
 		script := serve(t, http.MethodGet, file).Body.String()
 		for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("} {
 			if strings.Contains(script, sink) {
