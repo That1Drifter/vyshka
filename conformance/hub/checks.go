@@ -3381,6 +3381,24 @@ var checks = []Check{
 		Section: "12.1",
 		Run:     checkKVValidation,
 	},
+	{
+		ID:      "kv.listPaging",
+		Title:   "A key listing walks its cursor with no duplicate and no gap",
+		Section: "12.2",
+		Run:     checkKVListPaging,
+	},
+	{
+		ID:      "kv.listPrefix",
+		Title:   "A key listing filters by literal prefix and omits expired keys",
+		Section: "12.2",
+		Run:     checkKVListPrefixAndExpiry,
+	},
+	{
+		ID:      "kv.listNamespaces",
+		Title:   "The namespace listing counts live keys and is filtered by scope",
+		Section: "12.2",
+		Run:     checkKVNamespaceListing,
+	},
 }
 
 func truncate(body []byte) string {

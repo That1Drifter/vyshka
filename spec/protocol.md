@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.22 (2026-09-14)
+**Status:** draft 0.23 (2026-09-15)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1434,7 +1434,8 @@ in the request, the check MUST run against that value:
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |
 | `GET /api/v1/actions/{actionId}` | `actions:read:{the action's code}` |
 | `GET /api/v1/servers/{id}/events` | `events:read`, intersected per section 10.3 |
-| `/api/v1/kv/{namespace}/{key}`, `POST .../incr` | `kv:rw:{the path's namespace}` |
+| `/api/v1/kv/{namespace}/{key}`, `POST .../incr`, `GET /api/v1/kv/{namespace}` | `kv:rw:{the path's namespace}` |
+| `GET /api/v1/kv` | any `kv:rw` grant; the namespaces listed are filtered to those the grants cover (section 12.2) |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
 
 The raw envelope endpoint of section 5.5 requires `admin` because no narrower scope in the
@@ -1894,12 +1895,12 @@ server in the key. Isolation between mods is the namespace, and nothing else.
 
 ### 12.2 Operations
 
-The same operations exist in both realms, as synchronous HTTP request/response, never as
-envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
-whether it won. There are four endpoints; the decrement rides `incr` as a negative delta,
+The four per-key operations exist in both realms, as synchronous HTTP request/response,
+never as envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
+whether it won. The decrement rides `incr` as a negative delta,
 and the compare-and-swap rides `set` as `ifRevision`. They carry no sequence numbers and no acks; a client that retries a write
 after a network failure uses `ifRevision` when it needs to know whether the first attempt
-landed.
+landed. The two listings are Admin API only.
 
 | Operation | Plugin API | Admin API |
 |---|---|---|
@@ -1907,9 +1908,16 @@ landed.
 | set | `PUT /plugin/v1/kv/{namespace}/{key}` | `PUT /api/v1/kv/{namespace}/{key}` |
 | delete | `DELETE /plugin/v1/kv/{namespace}/{key}` | `DELETE /api/v1/kv/{namespace}/{key}` |
 | incr | `POST /plugin/v1/kv/{namespace}/{key}/incr` | `POST /api/v1/kv/{namespace}/{key}/incr` |
+| list keys | none | `GET /api/v1/kv/{namespace}` |
+| list namespaces | none | `GET /api/v1/kv` |
 
 The Plugin API side authenticates with the session token of section 5.3; the Admin API
 side with a bearer token holding `kv:rw:{namespace}` (section 10).
+
+The listings have no Plugin API spelling in this draft. A plugin already knows the keys it
+writes, its confinement (section 12.3) means enumeration would only ever hand it back its
+own manifest's namespaces, and an engine that has to build an operator's browse view has
+bigger problems. A later draft MAY add one; a plugin MUST NOT assume it exists.
 
 **get** answers `200` with the key, or `not_found` when it is absent or expired:
 
@@ -1969,6 +1977,70 @@ land exactly once: two clients adding 1 to a key at revision n leave it at n+2 w
 deltas applied, never n+1. This is the one operation whose atomicity the hub owes the
 client outright, with no `ifRevision` in the loop.
 
+**list keys** answers `200` with one page of the namespace's live keys, key ascending in
+byte order:
+
+```
+GET /api/v1/kv/{namespace}?prefix=balance.&limit=100&cursor=...
+
+-> 200 OK
+{
+  "namespace": "example-mod",
+  "keys": [
+    { "key": "balance.76561198000000000", "revision": 7,
+      "expiresAt": "2026-09-01T00:00:00Z" }
+  ],
+  "nextCursor": "..."
+}
+```
+
+| Parameter | Rules |
+|---|---|
+| `prefix` | OPTIONAL. A literal prefix of the key, not a pattern and not a grammar. A prefix drawn outside the key alphabet of section 12.1 matches nothing rather than failing. |
+| `limit` | Page size. The hub bounds it (reference default 100, cap 500) and clamps rather than refusing, as in section 8.5. |
+| `cursor` | An opaque `nextCursor` from a previous page. |
+
+Values are not included. A page of 500 keys at 16384 bytes each is not a browse, and the
+caller that opens one key reads it with **get**.
+
+`expiresAt` is present on a listed key only when that key carries a TTL. A key whose expiry
+has passed MUST NOT appear, whether or not the hub has physically deleted it yet: the
+listing follows the same "reads as absent" rule as every other operation (section 12.1).
+
+`nextCursor` is opaque per section 2.1 and follows the contract of section 8.5: it is absent
+on the last page, clients MUST NOT parse one or derive one, and a hub MUST NOT return the
+same key on two pages of one walk nor skip one that was present and live when the walk
+began. Keys are unique inside a namespace, so the key alone already orders the page totally
+and no tiebreak is needed. A cursor whose key has since been deleted or expired MUST still
+resume correctly, because a cursor names a position and not a row.
+
+A token needs `kv:rw:{namespace}` for the namespace in the path, the same grant and the same
+path-carried check as the per-key operations (section 12.3).
+
+**list namespaces** answers `200` with every namespace that holds at least one live key
+**and** that the token's grants cover, name ascending, with that live key count:
+
+```
+GET /api/v1/kv
+
+-> 200 OK
+{ "namespaces": [ { "namespace": "example-mod", "keys": 12 } ] }
+```
+
+A token holding no `kv:rw` grant at all is `forbidden`. A namespace the token's grants do
+not cover MUST be omitted rather than refused: enumeration must reveal nothing the token
+could not have found key by key, and refusing the whole call because one namespace is out
+of reach would make the endpoint useless to exactly the narrowed tokens it exists for. A
+grant covers a namespace when it names it exactly, when it is a `{prefix}.*` grant the name
+falls under, when it is unnarrowed `kv:rw`, or when the token holds `admin` (section 10.3).
+
+The answer is not paged. Namespaces are declared by mods, so an installation has as many as
+it has mods, and a client MUST NOT expect a `nextCursor` here.
+
+A namespace the token may read but that holds no live key does not appear, because the
+listing reports what the store holds, not what the token could write. A client that wants
+to write into such a namespace uses **set** on it directly; no create step exists.
+
 ### 12.3 Confinement
 
 - **Plugins** may operate only on the namespaces the server's stored manifest declares in
@@ -1986,8 +2058,8 @@ client outright, with no `ifRevision` in the loop.
 
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | Malformed namespace, key, value, `ifRevision`, `ttlSeconds`, or `delta`; value over 16384 bytes |
-| `forbidden` | 403 | Undeclared namespace (Plugin API) or missing `kv:rw` grant (Admin API) |
+| `bad_request` | 400 | Malformed namespace, key, value, `ifRevision`, `ttlSeconds`, `delta`, `limit`, or `cursor`; value over 16384 bytes |
+| `forbidden` | 403 | Undeclared namespace (Plugin API), missing `kv:rw:{namespace}` grant, or, on `GET /api/v1/kv`, no `kv:rw` grant at all (Admin API) |
 | `not_found` | 404 | get or delete on a key that is absent or expired |
 | `revision_mismatch` | 409 | `ifRevision` does not match the current revision; `details.revision` carries it |
 | `conflict` | 409 | incr on a non-integer value, an arithmetic result outside `(-2^53, 2^53)`, or a revision at the `2^53` bound |

@@ -329,6 +329,149 @@ func kvUpsert(ctx context.Context, tx *Tx, namespace, key, value string, revisio
 	return nil
 }
 
+// KVKey is one row of a key listing (spec section 12.2). The value is
+// deliberately absent: a page of keys is a browse, and a page of 500 values at
+// 16 KiB each is not one. ExpiresAt is nil when the key never expires.
+type KVKey struct {
+	Key       string
+	Revision  int64
+	ExpiresAt *time.Time
+}
+
+// KVListQuery is one page of a namespace's live keys, key ascending in byte
+// order.
+type KVListQuery struct {
+	Namespace string
+	// Prefix narrows the page to keys starting with it, as a byte prefix and
+	// not a pattern. Empty means every key in the namespace.
+	Prefix string
+	Limit  int
+	// After is the last key of the previous page, exclusive. Empty starts at
+	// the beginning. Exclusive is the whole contract: an inclusive comparison
+	// would repeat the boundary key on every page.
+	After string
+}
+
+// KVList answers one page of a namespace's live keys, ordered by key ascending
+// in byte order. Expired keys are skipped whether or not the retention pass has
+// reached them yet, which is what makes an expiry observable at the moment it
+// passes (spec section 12.1).
+//
+// The ordering is the same byte order every other range in this package
+// assumes, so a cursor walk neither repeats nor skips a key: keys are unique
+// inside a namespace, so the key alone is a total order and needs no tiebreak.
+func (s *Store) KVList(ctx context.Context, query KVListQuery) ([]KVKey, error) {
+	if query.Limit <= 0 {
+		query.Limit = 100
+	}
+
+	conditions := []string{"namespace = ?", "(expires_at IS NULL OR expires_at > ?)"}
+	args := []any{query.Namespace, formatTime(time.Now().UTC())}
+	if query.After != "" {
+		conditions = append(conditions, "key > ?")
+		args = append(args, query.After)
+	}
+	// A prefix is a half-open byte range rather than a LIKE: LIKE would need
+	// its own escaping for the wildcards, and its collation is the database's,
+	// while a range comparison runs on the primary key's index under the "C"
+	// collation migration 0017 pins. A prefix whose bytes are all 0xFF has no
+	// successor, and then the lower bound alone is the whole range.
+	if query.Prefix != "" {
+		conditions = append(conditions, "key >= ?")
+		args = append(args, query.Prefix)
+		if successor := prefixSuccessor(query.Prefix); successor != "" {
+			conditions = append(conditions, "key < ?")
+			args = append(args, successor)
+		}
+	}
+	args = append(args, query.Limit)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, revision, expires_at
+		   FROM kv
+		  WHERE `+strings.Join(conditions, " AND ")+`
+		  ORDER BY key ASC
+		  LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list kv keys: %w", err)
+	}
+	defer rows.Close()
+
+	keys := make([]KVKey, 0, min(query.Limit, 128))
+	for rows.Next() {
+		var (
+			entry     KVKey
+			expiresAt sql.NullString
+		)
+		if err := rows.Scan(&entry.Key, &entry.Revision, &expiresAt); err != nil {
+			return nil, fmt.Errorf("scan kv key: %w", err)
+		}
+		if entry.ExpiresAt, err = scanTime(expiresAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list kv keys: %w", err)
+	}
+	return keys, nil
+}
+
+// prefixSuccessor returns the smallest string greater than every string
+// starting with prefix, or "" when there is none (a prefix of nothing but
+// 0xFF bytes). It is the exclusive upper bound of the prefix's byte range.
+func prefixSuccessor(prefix string) string {
+	raw := []byte(prefix)
+	for i := len(raw) - 1; i >= 0; i-- {
+		if raw[i] != 0xFF {
+			raw[i]++
+			return string(raw[:i+1])
+		}
+	}
+	return ""
+}
+
+// KVNamespaceCount is one namespace of the store and how many live keys it
+// holds.
+type KVNamespaceCount struct {
+	Namespace string
+	Keys      int64
+}
+
+// KVNamespaces lists every namespace holding at least one live key, name
+// ascending in byte order, with that count. A namespace whose every key has
+// expired does not appear, which is the same "reads as absent from the moment
+// its expiry passes" rule the per-key operations follow.
+//
+// The answer is not paged: a namespace is a mod, an installation has as many as
+// it has mods, and a count query over the primary key's index is cheap enough
+// that a cursor would buy nothing but a contract to keep.
+func (s *Store) KVNamespaces(ctx context.Context) ([]KVNamespaceCount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT namespace, COUNT(*)
+		   FROM kv
+		  WHERE expires_at IS NULL OR expires_at > ?
+		  GROUP BY namespace
+		  ORDER BY namespace ASC`, formatTime(time.Now().UTC()))
+	if err != nil {
+		return nil, fmt.Errorf("list kv namespaces: %w", err)
+	}
+	defer rows.Close()
+
+	counts := []KVNamespaceCount{}
+	for rows.Next() {
+		var one KVNamespaceCount
+		if err := rows.Scan(&one.Namespace, &one.Keys); err != nil {
+			return nil, fmt.Errorf("scan kv namespace: %w", err)
+		}
+		counts = append(counts, one)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list kv namespaces: %w", err)
+	}
+	return counts, nil
+}
+
 // PruneKV deletes up to limit keys past their expiry and reports how many
 // went. Bounded like every other retention pass: on SQLite the one connection
 // it holds is the whole hub's critical section, and on Postgres an unbounded
