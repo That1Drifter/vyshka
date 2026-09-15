@@ -38,7 +38,16 @@ management views).
   with a `button[data-dismiss-secret]`. It stays until dismissed or until sign-out. Nothing
   about it is written to `sessionStorage`, `localStorage`, or the route: a secret that
   outlives the tab is a secret written down. The credential is live on the hub either way,
-  so the alternative is a credential nobody saw.
+  so the alternative is a credential nobody saw. Every such request records the bearer it
+  went out under, and an answer is held, and drawn, only while that bearer is still the
+  token signed in: one administrator can sign out and another sign in to the same tab
+  before a slow mint answers, and the sign-in form stores its candidate bearer before the
+  probe that checks it, so "a token is present" is not the question. An answer whose
+  session has gone is dropped unshown and the drop is logged to the console, which loses a
+  live credential rather than mount one operator's secret on another's page. A slot that is
+  no longer connected to the document routes its answer to the tray the same way: a view
+  can leave the screen without the render sequence moving, because the router clears `#app`
+  to show the error when a page's first load fails while a form on it is mid-flight.
 - **Pinned quick actions**: every action item on the server page carries a pin toggle
   (`aria-pressed`), and pinned ones are repeated in a **Pinned** section above the namespace
   groups. Pins live in this browser's `localStorage` under `vyshka.pins.{serverId}` as an
@@ -144,7 +153,11 @@ management views).
   removed; a code with no dot narrows nothing and contributes no line. Taking the first
   segment instead would widen `family.child.heal` to `family.*`, which covers every sibling
   namespace under `family`. A scope pattern is matched against the code, so what the bundle
-  writes is always a prefix of the codes it means.
+  writes is always a prefix of the codes it means. Reading the manifests is one call per
+  server, so a stalled server can leave an enumeration outstanding while another finishes
+  and fills the list; only the enumeration started last may write the cache or the scope
+  box, and one overtaken is dropped whole rather than replacing a reviewed list with an
+  older, wider one.
 - **Webhooks** at `#/webhooks`, over `GET /webhooks` (protocol section 11): url, events as
   badges ("every type" when the filter is empty), servers resolved to names through
   `GET /servers` when the token may read it and ids otherwise ("every server" when empty),
@@ -168,8 +181,11 @@ management views).
   boundary the operator did not touch goes back into the route exactly as the link carried
   it: the control has no room for milliseconds, so re-encoding an untouched field would
   quietly move a `12:00:30.500Z` boundary to `12:00:30.000Z`. Only a field that was changed
-  is read back out of the control; Clear drops the filters whole. "Load older" walks the
-  hub's cursor. Needs `admin`.
+  is read back out of the control; Clear drops the filters whole. A `serverId` in the route
+  that the server list does not hold (one deleted, or one this token cannot read) gets an
+  option of its own carrying the id, so the select holds it and Apply sends it back
+  unchanged rather than widening the filter to every server. "Load older" walks the hub's
+  cursor. Needs `admin`.
 - **Key/value** at `#/kv` and `#/kv/{namespace}` (protocol section 12), read-only in this
   slice: the namespaces the token's grants cover that hold at least one live key, with their
   key counts, plus a free-text input for a namespace that holds none yet; then that

@@ -481,6 +481,13 @@ export function secretOnce(options) {
 //
 // Module memory only: never sessionStorage, never localStorage, never the
 // route. A secret that outlives the tab is a secret written down.
+//
+// Every entry carries the bearer its request went out under. "Is someone
+// signed in" is the wrong question: an administrator can sign out while a
+// mint is in flight and someone else can sign in to the same tab before the
+// answer lands, and the sign-in form stores its candidate bearer before the
+// probe that checks it has answered, so a late answer would find a token
+// present and mount one administrator's secret on another's page.
 
 const heldSecrets = [];
 let heldSerial = 0;
@@ -512,14 +519,21 @@ function trayNode() {
 
 // holdSecret keeps one result the view that asked for it can no longer show.
 // The options are secretOnce's (label, secret, note, expiresAt), plus kind,
-// which is what the tray's data hook carries. It is put on the page at once
-// when a view is already drawn, because the answer has landed and waiting for
-// the next navigation to reveal it is one more chance to lose it.
+// which is what the tray's data hook carries, and owner, the bearer the
+// request was sent under, read with token() at the moment of submission. It
+// is put on the page at once when a view is already drawn, because the answer
+// has landed and waiting for the next navigation to reveal it is one more
+// chance to lose it.
 export function holdSecret(options) {
-  // A session that has ended is not handed a secret: sign-out drops what is
-  // held, and an answer arriving after it must not reappear for whoever signs
-  // in next in this tab.
-  if (!token()) return;
+  // An answer whose session has gone is dropped unshown, whether the tab is
+  // signed out or signed in again as someone else. That loses a live
+  // credential, which is the cheaper half of the trade: the other half is
+  // showing an administrator's secret to whoever holds the tab now.
+  const owner = options && options.owner ? options.owner : '';
+  if (owner === '' || owner !== token()) {
+    console.warn('vyshka: a secret arrived for a session that has gone, and was dropped unshown');
+    return;
+  }
   heldSerial++;
   const entry = Object.assign({}, options, { heldId: 'held-secret-' + heldSerial });
   heldSecrets.push(entry);
@@ -537,18 +551,42 @@ export function clearHeldSecrets() {
   heldSecrets.length = 0;
 }
 
-// renderHeldSecrets puts every held secret at the top of the view that has
-// just drawn. The router calls it after the view returns, so the view's own
-// clear() cannot take the tray away again.
+// renderHeldSecrets puts this session's held secrets at the top of the view
+// that has just drawn. The router calls it after the view returns, so the
+// view's own clear() cannot take the tray away again. An entry whose owner is
+// not the token signed in now belongs to nobody on this page and is not
+// drawn, the same rule holdSecret applies on the way in.
 export function renderHeldSecrets(app) {
-  if (!app || heldSecrets.length === 0) return;
+  if (!app) return;
+  const mine = heldSecrets.filter((entry) => entry.owner === token());
   // A view that returned without clearing #app may still hold the tray
   // holdSecret mounted; there is one tray on a page, never two.
   const mounted = document.getElementById('held-secrets');
   if (mounted) mounted.remove();
+  if (mine.length === 0) return;
   const tray = trayNode();
-  for (const entry of heldSecrets) tray.append(heldEntryNode(entry));
+  for (const entry of mine) tray.append(heldEntryNode(entry));
   app.prepend(tray);
+}
+
+// mountSecret puts a one-time answer in the slot its view built for it, and
+// hands it to holdSecret when that slot is no longer on the page.
+//
+// A page can leave the screen without the render sequence moving: the
+// router's error handler clears #app when a view's first load fails, and a
+// form mounted before that load finished goes on running against nodes
+// nothing will ever draw. stale() answers "has another render begun", which
+// is not the same question, so the slot is asked whether it is still
+// connected. Returns true when the secret is on the page the caller holds, so
+// the caller can drop the rest of its success path when it is not.
+export function mountSecret(slot, shown) {
+  if (!slot || !slot.isConnected) {
+    holdSecret(shown);
+    return false;
+  }
+  clear(slot);
+  slot.append(secretOnce(shown));
+  return true;
 }
 
 // confirmation is the explicit tick a destructive control needs, the same

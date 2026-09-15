@@ -807,6 +807,24 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	waitJS("the unfiltered log is back",
 		`location.hash === "#/audit" && document.querySelectorAll("#audit tbody tr").length > 3`)
 
+	// A link can name a server this hub's list does not hold: one deleted, or
+	// one this token cannot read. The select has no option for it, so without
+	// one of its own it would sit empty and Apply would widen the filter from
+	// that server back to every server, silently, on a page the operator only
+	// meant to re-apply. The probe attribute is what makes the assertion mean
+	// something: it is gone once the view has been redrawn, so the hash is
+	// read after the Apply rather than before it.
+	const unlisted = "01ZZDELETEDSERVER0000000000"
+	run("open the audit log filtered to a server the list does not hold",
+		chromedp.Evaluate(`location.hash = "#/audit?serverId=`+unlisted+`"`, nil))
+	waitJS("the unlisted id is what the select holds",
+		`document.querySelector("#audit-server").value === "`+unlisted+`"`)
+	run("apply the filter unchanged",
+		chromedp.Evaluate(`document.querySelector("#audit-server").dataset.probe = "before"`, nil),
+		chromedp.Click("#audit-apply", chromedp.ByQuery))
+	waitJS("the unlisted id round-trips through Apply rather than widening the filter",
+		`!document.querySelector("#audit-server").dataset.probe && location.hash === "#/audit?serverId=`+unlisted+`"`)
+
 	// 8. Key/value, read-only in this slice. The expired key's namespace
 	// holds nothing live, so it is not listed at all.
 	run("open the key/value view", chromedp.Click("#nav a[data-nav=kv]", chromedp.ByQuery),

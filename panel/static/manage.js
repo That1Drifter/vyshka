@@ -17,8 +17,8 @@
 import {
   ApiError, actionHref, api, append, attempt, auditHref, badge, clear, confirmation, disclosure,
   el, eventPayloadText, forbidden, formatTime, go, holdSecret, isForbidden, kvHref,
-  kvNamespaceHref, linesOf, problemBox, secretOnce, setCrumbs, setTeardown, signOut, stale,
-  statusKind, summarizeEventData, webhookHref, webhooksHref,
+  kvNamespaceHref, linesOf, mountSecret, problemBox, setCrumbs, setTeardown,
+  signOut, stale, statusKind, summarizeEventData, token, webhookHref, webhooksHref,
 } from './lib.js';
 
 // The deliveries table refreshes on the same cadence as the event feed and
@@ -98,10 +98,12 @@ async function loadServerNames() {
 // Servers: registration and credentials
 //
 // Both forms hand back a one-time secret the hub will not show again, so both
-// draw it through secretOnce and leave it on the page until the operator
+// draw it through mountSecret and leave it on the page until the operator
 // navigates away. An answer that arrives after the page has already gone is
 // held instead (lib.js), because the server exists on the hub whatever the
-// browser was doing when the answer landed.
+// browser was doing when the answer landed; an answer that arrives after the
+// session has gone is dropped, which is why every request here records the
+// bearer it went out under.
 
 // registerServerForm is the "Register a server" card on the server list. It
 // takes the render sequence its page began with, so a late answer or a late
@@ -126,11 +128,15 @@ export function registerServerForm(seq, onCreated) {
       }
       if (game.value.trim() !== '') request.game = game.value.trim();
       if (ttl.value.trim() !== '') request.enrollmentTokenTtlSeconds = Number(ttl.value);
+      // The bearer this request goes out under, read before the await: the
+      // answer belongs to this session and to no session that replaces it.
+      const owner = token();
       submit.disabled = true;
       try {
         const created = await api('POST', '/servers', request);
         const shown = {
           kind: 'enrollment',
+          owner,
           id: 'enrollment-token',
           label: 'Enrollment token for ' + created.server.name,
           secret: created.enrollment.token,
@@ -144,8 +150,9 @@ export function registerServerForm(seq, onCreated) {
           holdSecret(shown);
           return;
         }
-        clear(secretSlot);
-        secretSlot.append(secretOnce(shown));
+        // The slot can be off the page with the sequence unmoved: the first
+        // load of the server list failing clears #app under this form.
+        if (!mountSecret(secretSlot, shown)) return;
         name.value = '';
         game.value = '';
         ttl.value = '';
@@ -186,12 +193,14 @@ export function serverCredentials(server, seq, reload) {
     type: 'button', class: 'primary', id: 'new-enrollment-token',
     onclick: async () => {
       problem.hide();
+      const owner = token();
       issue.disabled = true;
       try {
         const body = ttl.value.trim() === '' ? {} : { ttlSeconds: Number(ttl.value) };
         const minted = await api('POST', '/servers/' + encodeURIComponent(server.id) + '/enrollment-token', body);
         const shown = {
           kind: 'enrollment',
+          owner,
           id: 'enrollment-token',
           label: 'Enrollment token for ' + server.name,
           secret: minted.token,
@@ -202,8 +211,7 @@ export function serverCredentials(server, seq, reload) {
           holdSecret(shown);
           return;
         }
-        clear(secretSlot);
-        secretSlot.append(secretOnce(shown));
+        mountSecret(secretSlot, shown);
         // The page is deliberately not reloaded here: a redraw would take
         // this token with it, and it exists nowhere else. Nothing on the
         // record changes until a plugin enrolls with it anyway.
@@ -625,6 +633,15 @@ export async function viewTokens(app, route, seq) {
   // picks custom, and types a list must not have it overwritten when that
   // enumeration finally lands.
   let scopesEdited = false;
+  // Every enumeration takes a serial, and only the one started last may write
+  // the cache or the scope list. An enumeration is as many calls as there are
+  // servers and any one of them can stall, so a later enumeration can finish
+  // first, fill the cache with newer manifests, and have that cache expanded
+  // into the textarea the operator is reading. The stalled one landing after
+  // that carries the older, wider list, and "is this still the chosen bundle"
+  // cannot tell the two apart when the choice has come back round to the same
+  // one. An enumeration overtaken by a later one is dropped whole.
+  let enumeration = 0;
   const applyBundle = async () => {
     const chosen = bundle.value;
     if (chosen === '') {
@@ -633,8 +650,11 @@ export async function viewTokens(app, route, seq) {
     }
     if (chosen !== 'owner' && namespaces === null) {
       bundleNote.textContent = 'Reading the stored manifests to narrow the dispatch and key/value scopes…';
+      enumeration++;
+      const mine = enumeration;
       const read = await manifestNamespaces();
       if (stale(seq)) return;
+      if (mine !== enumeration) return;
       // The read is kept whatever became of the choice that started it: it
       // is the hub's answer, not this expansion's, and the next bundle
       // change spends it without asking again.
@@ -689,11 +709,13 @@ export async function viewTokens(app, route, seq) {
       } else if (expiry.value !== '') {
         request.expiresInSeconds = Number(expiry.value);
       }
+      const owner = token();
       submit.disabled = true;
       try {
         const minted = await api('POST', '/tokens', request);
         const shown = {
           kind: 'token',
+          owner,
           id: 'token-secret',
           label: 'Secret for ' + (minted.token.name || 'the new token'),
           secret: minted.secret,
@@ -707,8 +729,7 @@ export async function viewTokens(app, route, seq) {
           holdSecret(shown);
           return;
         }
-        clear(secretSlot);
-        secretSlot.append(secretOnce(shown));
+        if (!mountSecret(secretSlot, shown)) return;
         name.value = '';
         await reload();
       } finally {
@@ -827,6 +848,7 @@ export async function viewWebhooks(app, route, seq) {
         problem.show(new ApiError(0, 'bad_request', 'a url is required, http or https'));
         return;
       }
+      const owner = token();
       submit.disabled = true;
       try {
         const created = await api('POST', '/webhooks', {
@@ -837,6 +859,7 @@ export async function viewWebhooks(app, route, seq) {
         });
         const shown = {
           kind: 'webhook',
+          owner,
           id: 'webhook-secret',
           label: 'Signing secret for ' + created.webhook.url,
           secret: created.secret,
@@ -848,8 +871,7 @@ export async function viewWebhooks(app, route, seq) {
           holdSecret(shown);
           return;
         }
-        clear(secretSlot);
-        secretSlot.append(secretOnce(shown));
+        if (!mountSecret(secretSlot, shown)) return;
         url.value = '';
         events.value = '';
         const latest = await api('GET', '/webhooks');
@@ -1213,6 +1235,18 @@ export async function viewAudit(app, route, seq) {
     el('option', { value: '' }, 'every server'),
     servers.servers.map((server) => el('option', { value: server.id }, server.name)));
   serverSelect.value = filters.serverId || '';
+  // A route can name a server this list does not hold: one deleted, or one
+  // this token cannot read. Assigning it to a select with no matching option
+  // leaves the select empty, and Apply would then silently widen the filter
+  // the operator is looking at from one server to every server. The id gets
+  // an option of its own so it round-trips untouched, the same discipline the
+  // timestamp boundaries keep.
+  if (filters.serverId && serverSelect.value !== filters.serverId) {
+    serverSelect.append(el('option', {
+      value: filters.serverId, class: 'mono', 'data-unlisted-server': filters.serverId,
+    }, filters.serverId));
+    serverSelect.value = filters.serverId;
+  }
   const since = el('input', { type: 'datetime-local', id: 'audit-since', name: 'since', step: '1' });
   since.value = toLocalInput(filters.since);
   // What the control kept, not what it was given: an untouched field is one
