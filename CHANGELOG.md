@@ -12,6 +12,15 @@ point if needed.
 
 ### Added
 
+- 2026-09-15: `panel/e2e_manage_test.go`, the headless-browser test of the management views
+  (issue #64): server registration and the one-time enrollment token across a refresh tick,
+  credential revocation refusing the plugin's next poll, pins over a reload including a code
+  the manifest no longer declares, the role bundles expanded from the stored manifests, a
+  minted token used and then revoked, a webhook paused while a receiver counts nothing and
+  resumed, edited, replayed and deleted, the audit log's order and filters, and the
+  key/value views. Each guard gets its negative control. The browser scaffolding the two
+  browser tests share moved to `panel/e2e_harness_test.go`, which the fake plugin now uses
+  to count the polls a revoked credential is refused.
 - 2026-09-15: the panel's management views (issue #64, closing M4): a "Register a server"
   form and per-server enrollment token and credential revocation; Admin API tokens with
   role bundles (owner, moderator, event host) expanded from the stored manifests into an
