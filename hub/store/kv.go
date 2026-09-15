@@ -374,15 +374,18 @@ func (s *Store) KVList(ctx context.Context, query KVListQuery) ([]KVKey, error) 
 	// A prefix is a half-open byte range rather than a LIKE: LIKE would need
 	// its own escaping for the wildcards, and its collation is the database's,
 	// while a range comparison runs on the primary key's index under the "C"
-	// collation migration 0017 pins. A prefix whose bytes are all 0xFF has no
-	// successor, and then the lower bound alone is the whole range.
+	// collation migration 0017 pins. A prefix with any byte outside the key
+	// alphabet can match no key at all, and is answered here without a query:
+	// Postgres refuses a text parameter that is not valid UTF-8, and a key
+	// alphabet of ASCII letters, digits, "_", "-", and "." also keeps the
+	// successor inside ASCII, so neither bound can ever be a byte sequence
+	// the database will not take.
 	if query.Prefix != "" {
-		conditions = append(conditions, "key >= ?")
-		args = append(args, query.Prefix)
-		if successor := prefixSuccessor(query.Prefix); successor != "" {
-			conditions = append(conditions, "key < ?")
-			args = append(args, successor)
+		if !keyAlphabet(query.Prefix) {
+			return []KVKey{}, nil
 		}
+		conditions = append(conditions, "key >= ?", "key < ?")
+		args = append(args, query.Prefix, prefixSuccessor(query.Prefix))
 	}
 	args = append(args, query.Limit)
 
@@ -417,18 +420,32 @@ func (s *Store) KVList(ctx context.Context, query KVListQuery) ([]KVKey, error) 
 	return keys, nil
 }
 
-// prefixSuccessor returns the smallest string greater than every string
-// starting with prefix, or "" when there is none (a prefix of nothing but
-// 0xFF bytes). It is the exclusive upper bound of the prefix's byte range.
-func prefixSuccessor(prefix string) string {
-	raw := []byte(prefix)
-	for i := len(raw) - 1; i >= 0; i-- {
-		if raw[i] != 0xFF {
-			raw[i]++
-			return string(raw[:i+1])
+// keyAlphabet reports whether every byte of value is one a key may contain
+// (the section 12.1 alphabet: ASCII letters, digits, "_", "-", and the "."
+// separator). It checks bytes and not grammar: a prefix may end mid-segment
+// or in a dot, and still name a range a real key can fall in.
+func keyAlphabet(value string) bool {
+	for i := range len(value) {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '-', c == '.':
+		default:
+			return false
 		}
 	}
-	return ""
+	return true
+}
+
+// prefixSuccessor returns the smallest string greater than every string
+// starting with prefix: the prefix with its last byte incremented. It is the
+// exclusive upper bound of the prefix's byte range. The caller has checked
+// the prefix against the key alphabet, whose highest byte is "z", so the
+// increment never carries and the result stays printable ASCII.
+func prefixSuccessor(prefix string) string {
+	raw := []byte(prefix)
+	raw[len(raw)-1]++
+	return string(raw)
 }
 
 // KVNamespaceCount is one namespace of the store and how many live keys it
