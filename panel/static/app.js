@@ -197,27 +197,31 @@ function renderLogin(app, message) {
       // The candidate is proven before it is stored. While the probe is
       // out there is no signed-in token, so a secret-bearing answer that
       // arrives for an earlier session (its owner being this very bearer,
-      // since revoked) finds no session to show itself to; and a probe the
-      // hub refuses leaves nothing behind.
+      // since revoked) finds no session to show itself to. Only an answer
+      // that proves authentication stores it: a success, or a 403, which
+      // the hub gives only after the bearer authenticated and is what a
+      // token scoped away from the server list gets. A 401, a 5xx, an
+      // unreachable hub, or a connection lost mid-answer all leave nothing
+      // behind, because an answer that is not authentication is not one.
+      let accepted = false;
       try {
-        // Any authenticated answer will do, including a 403 from a token
-        // scoped away from the server list; only a 401 means the token
-        // itself is no good.
         await api('GET', '/servers', undefined, value);
+        accepted = true;
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          error.textContent = 'The hub rejected this token (' + err.code + ').';
-          error.hidden = false;
-          button.disabled = false;
-          return;
-        }
-        if (err instanceof ApiError && err.status === 0) {
-          error.textContent = err.message;
+        accepted = err instanceof ApiError && err.status === 403;
+        if (!accepted) {
+          error.textContent = err instanceof ApiError && err.status === 401
+            ? 'The hub rejected this token (' + err.code + ').'
+            : 'The hub could not confirm this token: ' + (err.message || String(err));
           error.hidden = false;
           button.disabled = false;
           return;
         }
       }
+      // A probe that lands after its form is gone (a navigation drew a
+      // fresh one, or another candidate signed in meanwhile) belongs to an
+      // attempt nobody is waiting for, and must not replace what is current.
+      if (!form.isConnected) return;
       sessionStorage.setItem(TOKEN_KEY, value);
       render();
     },
