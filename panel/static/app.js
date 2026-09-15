@@ -41,6 +41,9 @@ const MAP_REFRESH_MS = SERVER_LIST_REFRESH_MS;
 // Map tilesets are served by the panel's own handler beside the page, so
 // the path is relative to it rather than to the Admin API.
 const MAPS_PATH = 'maps/';
+// loginAttempt numbers sign-in submissions, so that only the latest one may
+// store the token it proved.
+let loginAttempt = 0;
 // The core event types of section 8.1, offered as filter suggestions. The
 // feed itself accepts whatever the hub's grammar accepts.
 const CORE_EVENT_TYPES = [
