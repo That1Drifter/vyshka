@@ -176,9 +176,13 @@ export function token() {
   return sessionStorage.getItem(TOKEN_KEY) || '';
 }
 
-export async function api(method, path, body) {
+// api issues one Admin API call as the signed-in token. The sign-in probe is
+// the one caller that passes a bearer of its own: a candidate token is proven
+// against the hub before it is stored, so that nothing in the page (a late
+// secret-bearing answer above all) can take an unproven bearer for a session.
+export async function api(method, path, body, bearerOverride) {
   const headers = { Accept: 'application/json' };
-  const bearer = token();
+  const bearer = bearerOverride === undefined ? token() : bearerOverride;
   if (bearer) headers.Authorization = 'Bearer ' + bearer;
   const init = { method, headers };
   if (body !== undefined) {

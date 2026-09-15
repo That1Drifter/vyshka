@@ -85,9 +85,10 @@ func TestReplayOutranksAnInFlightOutcome(t *testing.T) {
 	}
 }
 
-// A paused webhook refuses to begin an attempt without counting one, and an
-// attempt the hub abandons at shutdown gives its count back.
-func TestBeginDeliveryAttemptHonoursPauseAndAbandon(t *testing.T) {
+// A paused webhook refuses to begin an attempt without counting one, and a
+// booked attempt whose outcome is never recorded keeps its count: the request
+// may have reached the target, so the attempt was made.
+func TestBeginDeliveryAttemptHonoursPause(t *testing.T) {
 	ctx := context.Background()
 	st := migrated(t)
 	serverID := enrolledServer(t, st, "hooks-begin")
@@ -119,14 +120,16 @@ func TestBeginDeliveryAttemptHonoursPauseAndAbandon(t *testing.T) {
 	if begun, err := st.BeginDeliveryAttempt(ctx, deliveryID, 0); err != nil || begun.Attempt != 1 {
 		t.Fatalf("begin after resume = %+v (%v)", begun, err)
 	}
-	if err := st.AbandonDeliveryAttempt(ctx, deliveryID, 0); err != nil {
-		t.Fatalf("abandon: %v", err)
+	// No outcome booked: the row stays pending and due with the attempt
+	// counted, and the next booking is attempt 2.
+	if listed, _ := st.WebhookDeliveries(ctx, "wh-1", 10); listed[0].Attempts != 1 || listed[0].State != store.DeliveryPending {
+		t.Fatalf("after an unbooked outcome: %s with %d attempts, want pending with 1", listed[0].State, listed[0].Attempts)
 	}
-	if listed, _ := st.WebhookDeliveries(ctx, "wh-1", 10); listed[0].Attempts != 0 || listed[0].State != store.DeliveryPending {
-		t.Fatalf("after abandon: %s with %d attempts, want pending with 0", listed[0].State, listed[0].Attempts)
+	if due, _ := st.DueWebhookDeliveries(ctx, time.Now().UTC().Add(time.Second), 10); len(due) != 1 {
+		t.Fatalf("a delivery whose attempt booked no outcome is not due: %d", len(due))
 	}
-	if err := st.AbandonDeliveryAttempt(ctx, deliveryID, 0); !errors.Is(err, store.ErrStaleAttempt) {
-		t.Fatalf("abandoning with nothing booked: err = %v, want ErrStaleAttempt", err)
+	if begun, err := st.BeginDeliveryAttempt(ctx, deliveryID, 0); err != nil || begun.Attempt != 2 {
+		t.Fatalf("the next booking = %+v (%v), want attempt 2", begun, err)
 	}
 }
 

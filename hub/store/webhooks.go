@@ -773,22 +773,6 @@ func (s *Store) BeginDeliveryAttempt(ctx context.Context, deliveryID string, gen
 	return attempt, nil
 }
 
-// AbandonDeliveryAttempt gives back a booked attempt that never reached the
-// target because the hub itself shut down mid-request. The count moves back
-// by one so that a restart does not spend the schedule on attempts the
-// target never saw; the row stays pending and due. Stale under the same rules
-// as an outcome.
-func (s *Store) AbandonDeliveryAttempt(ctx context.Context, deliveryID string, generation int) error {
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE webhook_deliveries SET attempts = attempts - 1
-		  WHERE id = ? AND state = ? AND generation = ? AND attempts > 0`,
-		deliveryID, DeliveryPending, generation)
-	if err != nil {
-		return fmt.Errorf("abandon delivery attempt: %w", err)
-	}
-	return bookedOrStale(result, "abandon delivery attempt")
-}
-
 // RecordDeliverySuccess finishes a delivery after a 2xx answer. generation is
 // the one the attempt began under; a row that has been replayed since carries
 // a later one, and the outcome is then ErrStaleAttempt rather than booked,

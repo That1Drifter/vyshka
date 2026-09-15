@@ -445,17 +445,14 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	response, err := s.webhookClient.Do(request)
 	if err != nil {
 		if s.baseCtx.Err() != nil {
-			// Shutdown aborted the attempt, not the target. As far as the
-			// schedule is concerned it never happened: the booking is given
-			// back, the row stays pending and due, and the next boot's
-			// dispatcher picks it up with the same attempt number. Keeping
-			// it would let a few restarts dead-letter a delivery whose
-			// target never failed once.
-			ctx, cancelAbandon := recording()
-			defer cancelAbandon()
-			if err := s.store.AbandonDeliveryAttempt(ctx, due.Delivery.ID, due.Delivery.Generation); err != nil {
-				s.logOutcomeNotBooked(due, err)
-			}
+			// Shutdown aborted the wait, not the target: the request may
+			// well have reached the receiver, which is why the booking
+			// stands and the count is not given back (an attempt that may
+			// have been seen was made). No outcome is booked and the
+			// schedule does not advance: the row stays pending and due, and
+			// the next boot's dispatcher tries it again. A restart therefore
+			// costs one slot of the retry schedule, never a dead letter on
+			// its own.
 			return
 		}
 		fail(nil, "delivery failed: "+err.Error())

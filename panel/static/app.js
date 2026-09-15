@@ -194,28 +194,31 @@ function renderLogin(app, message) {
       const value = input.value.trim();
       if (!value) return;
       button.disabled = true;
-      sessionStorage.setItem(TOKEN_KEY, value);
+      // The candidate is proven before it is stored. While the probe is
+      // out there is no signed-in token, so a secret-bearing answer that
+      // arrives for an earlier session (its owner being this very bearer,
+      // since revoked) finds no session to show itself to; and a probe the
+      // hub refuses leaves nothing behind.
       try {
         // Any authenticated answer will do, including a 403 from a token
         // scoped away from the server list; only a 401 means the token
         // itself is no good.
-        await api('GET', '/servers');
+        await api('GET', '/servers', undefined, value);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          sessionStorage.removeItem(TOKEN_KEY);
           error.textContent = 'The hub rejected this token (' + err.code + ').';
           error.hidden = false;
           button.disabled = false;
           return;
         }
         if (err instanceof ApiError && err.status === 0) {
-          sessionStorage.removeItem(TOKEN_KEY);
           error.textContent = err.message;
           error.hidden = false;
           button.disabled = false;
           return;
         }
       }
+      sessionStorage.setItem(TOKEN_KEY, value);
       render();
     },
   },
