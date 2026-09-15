@@ -340,3 +340,164 @@ func TestPruneWebhookDeliveriesSparesPending(t *testing.T) {
 		t.Errorf("survivors = %+v, want the pending delivery", listed)
 	}
 }
+
+func boolPtr(value bool) *bool       { return &value }
+func stringPtr(value string) *string { return &value }
+
+// An edit replaces the members it names and leaves the rest alone; pausing is
+// idempotent, and unpausing clears the instant (spec section 11.2).
+func TestUpdateWebhookReplacesNamedFieldsOnly(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	newWebhook(t, st, "wh-1", []string{"core.player.*"}, []string{"srv-1"})
+
+	edited, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Events: &[]string{}})
+	if err != nil {
+		t.Fatalf("update webhook: %v", err)
+	}
+	if len(edited.Events) != 0 {
+		t.Errorf("events = %v, want the empty filter the edit named", edited.Events)
+	}
+	if len(edited.ServerIDs) != 1 || edited.ServerIDs[0] != "srv-1" {
+		t.Errorf("serverIds = %v, want the untouched registration value", edited.ServerIDs)
+	}
+	if edited.URL == "" || edited.Secret == "" {
+		t.Errorf("an edit lost the url or the secret: %+v", edited)
+	}
+	if edited.PausedAt != nil {
+		t.Errorf("an edit that never mentioned paused set pausedAt to %v", edited.PausedAt)
+	}
+
+	paused, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)})
+	if err != nil || paused.PausedAt == nil {
+		t.Fatalf("pause: pausedAt = %v, err = %v", paused.PausedAt, err)
+	}
+	// Idempotent: pausing a paused webhook does not move the instant, even
+	// when the same edit changes something else.
+	again, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{
+		Paused: boolPtr(true), URL: stringPtr("http://127.0.0.1:2/hook"),
+	})
+	if err != nil {
+		t.Fatalf("pause again: %v", err)
+	}
+	if again.PausedAt == nil || !again.PausedAt.Equal(*paused.PausedAt) {
+		t.Errorf("pausing twice moved pausedAt from %v to %v", paused.PausedAt, again.PausedAt)
+	}
+	if again.URL != "http://127.0.0.1:2/hook" {
+		t.Errorf("url = %q, want the edited value", again.URL)
+	}
+
+	resumed, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)})
+	if err != nil || resumed.PausedAt != nil {
+		t.Fatalf("resume: pausedAt = %v, err = %v", resumed.PausedAt, err)
+	}
+
+	if _, err := st.UpdateWebhook(ctx, "wh-none", store.WebhookUpdate{Paused: boolPtr(true)}); err != store.ErrNotFound {
+		t.Errorf("update of an unknown webhook = %v, want ErrNotFound", err)
+	}
+}
+
+// A paused webhook's deliveries are never due, and they are not dropped
+// either: the resume finds them waiting (spec section 11.2).
+func TestPausedWebhookHoldsItsDeliveries(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "hooks-pause")
+	session := startSession(t, st, serverID, "hash-hooks-pause")
+	newWebhook(t, st, "wh-1", nil, nil)
+
+	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	ingest(t, st, session.ID, event("core.player.chat", time.Now(), `{}`))
+	notifyAll(t, st, "wh-1", 100)
+
+	// The delivery exists and waits: a pause stops the attempt, not the record.
+	listed, err := st.WebhookDeliveries(ctx, "wh-1", 10)
+	if err != nil || len(listed) != 1 || listed[0].State != store.DeliveryPending {
+		t.Fatalf("deliveries = %+v (%v), want one pending", listed, err)
+	}
+	due, err := st.DueWebhookDeliveries(ctx, time.Now().UTC().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("due deliveries: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("%d deliveries are due on a paused webhook, want 0", len(due))
+	}
+
+	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	due, err = st.DueWebhookDeliveries(ctx, time.Now().UTC().Add(time.Second), 10)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("after the resume %d deliveries are due (%v), want 1", len(due), err)
+	}
+}
+
+// Replay re-arms one delivery whatever state it reached, keeping the id, the
+// body bytes, and the attempt count (spec section 11.5).
+func TestReplayWebhookDeliveryReArms(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "hooks-replay")
+	session := startSession(t, st, serverID, "hash-hooks-replay")
+	newWebhook(t, st, "wh-1", nil, nil)
+	ingest(t, st, session.ID, event("core.player.chat", time.Now(), `{}`))
+	notifyAll(t, st, "wh-1", 100)
+
+	due, err := st.DueWebhookDeliveries(ctx, time.Now().UTC().Add(time.Second), 10)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("due = %d (%v), want 1", len(due), err)
+	}
+	deliveryID := due[0].Delivery.ID
+	body := string(due[0].Delivery.Body)
+
+	status := 500
+	if err := st.RecordDeliveryFailure(ctx, deliveryID, &status, "status 500", nil); err != nil {
+		t.Fatalf("record dead: %v", err)
+	}
+	if listed, _ := st.WebhookDeliveries(ctx, "wh-1", 10); listed[0].State != store.DeliveryDead {
+		t.Fatalf("state = %q, want dead before the replay", listed[0].State)
+	}
+
+	replayed, err := st.ReplayWebhookDelivery(ctx, "wh-1", deliveryID)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if replayed.ID != deliveryID || string(replayed.Body) != body {
+		t.Error("the replay changed the id or the body; the signature must survive it")
+	}
+	if replayed.State != store.DeliveryPending {
+		t.Errorf("state = %q, want pending after a replay", replayed.State)
+	}
+	if replayed.Attempts != 1 {
+		t.Errorf("attempts = %d, want the 1 already made; X-Vyshka-Attempt keeps counting", replayed.Attempts)
+	}
+	if replayed.LastStatus == nil || *replayed.LastStatus != 500 || replayed.LastError != "status 500" {
+		t.Errorf("the last failure was erased by the replay: %+v", replayed)
+	}
+	if replayed.DeliveredAt != nil {
+		t.Errorf("deliveredAt = %v, want it cleared", replayed.DeliveredAt)
+	}
+	if due, _ := st.DueWebhookDeliveries(ctx, time.Now().UTC(), 10); len(due) != 1 {
+		t.Error("a replayed delivery is not due now")
+	}
+
+	// A delivered delivery replays too, and the terminal timestamp goes with it.
+	if err := st.RecordDeliverySuccess(ctx, deliveryID, 204); err != nil {
+		t.Fatalf("record success: %v", err)
+	}
+	replayed, err = st.ReplayWebhookDelivery(ctx, "wh-1", deliveryID)
+	if err != nil || replayed.State != store.DeliveryPending || replayed.DeliveredAt != nil {
+		t.Fatalf("replay of a delivered delivery: %+v (%v)", replayed, err)
+	}
+
+	// The delivery must belong to the webhook the path names.
+	newWebhook(t, st, "wh-2", nil, nil)
+	if _, err := st.ReplayWebhookDelivery(ctx, "wh-2", deliveryID); err != store.ErrNotFound {
+		t.Errorf("replay across webhooks = %v, want ErrNotFound", err)
+	}
+	if _, err := st.ReplayWebhookDelivery(ctx, "wh-1", "dlv-none"); err != store.ErrNotFound {
+		t.Errorf("replay of an unknown delivery = %v, want ErrNotFound", err)
+	}
+}

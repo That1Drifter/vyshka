@@ -212,6 +212,7 @@ type webhookRecord struct {
 	ServerIDs []string `json:"serverIds"`
 	Template  string   `json:"template"`
 	CreatedAt string   `json:"createdAt"`
+	PausedAt  *string  `json:"pausedAt"`
 }
 
 type registeredWebhook struct {
@@ -812,6 +813,361 @@ func checkWebhookLinkTransitions(ctx context.Context, env Env) error {
 
 	if count := receiver.countOfType("server.link.lost"); count != 1 {
 		return fmt.Errorf("server.link.lost fired %d times for one outage; transitions fire once per edge (section 11.1)", count)
+	}
+	return nil
+}
+
+// checkWebhookEdit grades PATCH (section 11.2): the same validation as
+// registration, the coverage rule re-applied to the merged subscription, and
+// an edit that replaces only the members it names.
+func checkWebhookEdit(ctx context.Context, env Env) error {
+	plugin, err := env.newFakePlugin(ctx, "conformance:webhook-edit", shortPollTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Server.Server.ID
+
+	registered, err := env.registerWebhook(ctx, map[string]any{
+		"url": "http://127.0.0.1:9/hook", "events": []string{uniqueWebhookEventType()},
+	})
+	if err != nil {
+		return err
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), registered.Webhook.ID)
+	path := "/api/v1/webhooks/" + registered.Webhook.ID
+	if registered.Webhook.PausedAt != nil {
+		return fmt.Errorf("a freshly registered webhook reports pausedAt %q, want null (section 11.2)", *registered.Webhook.PausedAt)
+	}
+
+	refusals := []struct {
+		what       string
+		body       map[string]any
+		wantStatus int
+		wantCode   string
+	}{
+		{"an edit naming no member this draft knows", map[string]any{}, http.StatusBadRequest, "bad_request"},
+		{"an edit naming only unknown members", map[string]any{"colour": "red"}, http.StatusBadRequest, "bad_request"},
+		{"a non-http url", map[string]any{"url": "ftp://example.net/hook"}, http.StatusBadRequest, "bad_request"},
+		{"a pattern outside the section 10.1 grammar", map[string]any{"events": []string{"core.*.death"}}, http.StatusBadRequest, "bad_request"},
+		{"an unknown template", map[string]any{"template": "conformance-no-such-template"}, http.StatusBadRequest, "bad_request"},
+		{"a serverIds entry naming no server", map[string]any{"serverIds": []string{"conformance-no-such-server"}}, http.StatusNotFound, "not_found"},
+	}
+	for _, refusal := range refusals {
+		if err := env.expectError(ctx, http.MethodPatch, path, env.AdminToken,
+			refusal.body, refusal.wantStatus, refusal.wantCode); err != nil {
+			return fmt.Errorf("%s must be refused by an edit exactly as by a registration: %w", refusal.what, err)
+		}
+	}
+	if err := env.expectError(ctx, http.MethodPatch, "/api/v1/webhooks/conformance-no-such-webhook",
+		env.AdminToken, map[string]any{"paused": true}, http.StatusNotFound, "not_found"); err != nil {
+		return fmt.Errorf("an edit of an unknown webhook must answer not_found: %w", err)
+	}
+
+	// A present member replaces its field whole, an absent one is left alone,
+	// and the secret is neither rotated nor returned.
+	response, body, err := env.do(ctx, http.MethodPatch, path, env.AdminToken, map[string]any{
+		"events": []string{}, "serverIds": []string{serverID},
+	})
+	if err != nil {
+		return fmt.Errorf("PATCH %s: %w", path, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("PATCH %s: status %d, want 200 (section 11.2)", path, response.StatusCode)
+	}
+	if strings.Contains(string(body), registered.Secret) {
+		return fmt.Errorf("an edit returned the signing secret; it leaves the hub once, at registration (section 11.2)")
+	}
+	var edited struct {
+		Webhook map[string]any `json:"webhook"`
+	}
+	if err := json.Unmarshal(body, &edited); err != nil {
+		return fmt.Errorf("PATCH %s: decode body %q: %w", path, truncate(body), err)
+	}
+	if edited.Webhook == nil {
+		return fmt.Errorf("an edit answered without a webhook view (section 11.2)")
+	}
+	if events, ok := edited.Webhook["events"].([]any); !ok || len(events) != 0 {
+		return fmt.Errorf("events is %v after an edit naming the empty filter; a present member replaces its field whole (section 11.2)", edited.Webhook["events"])
+	}
+	servers, ok := edited.Webhook["serverIds"].([]any)
+	if !ok || len(servers) != 1 || servers[0] != serverID {
+		return fmt.Errorf("serverIds is %v after an edit naming one server (section 11.2)", edited.Webhook["serverIds"])
+	}
+	if edited.Webhook["url"] != "http://127.0.0.1:9/hook" {
+		return fmt.Errorf("url is %v after an edit that never named it; an absent member is left alone (section 11.2)", edited.Webhook["url"])
+	}
+	pausedAt, present := edited.Webhook["pausedAt"]
+	if !present || pausedAt != nil {
+		return fmt.Errorf("the webhook view reports pausedAt as %v (present %v); an active webhook reports it null (section 11.2)", pausedAt, present)
+	}
+
+	// The coverage rule is re-applied to the resulting subscription, so no
+	// edit can widen a webhook past what the editing token could register.
+	granted := uniqueWebhookEventType()
+	manager, err := env.mintToken(ctx, "conformance: webhook editor",
+		"webhooks:manage", "events:read:"+granted)
+	if err != nil {
+		return err
+	}
+	var owned struct {
+		Webhook webhookRecord `json:"webhook"`
+	}
+	if err := env.expect(ctx, http.MethodPost, "/api/v1/webhooks", manager.Secret,
+		map[string]any{"url": "http://127.0.0.1:9/hook", "events": []string{granted}},
+		http.StatusCreated, &owned); err != nil {
+		return err
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), owned.Webhook.ID)
+	if err := env.expectError(ctx, http.MethodPatch, "/api/v1/webhooks/"+owned.Webhook.ID,
+		manager.Secret, map[string]any{"events": []string{uniqueWebhookEventType()}},
+		http.StatusForbidden, "forbidden"); err != nil {
+		return fmt.Errorf("an edit widened a subscription past the editing token's grants: %w", err)
+	}
+	if err := env.expectError(ctx, http.MethodPatch, "/api/v1/webhooks/"+owned.Webhook.ID,
+		manager.Secret, map[string]any{"serverIds": []string{serverID}},
+		http.StatusForbidden, "forbidden"); err != nil {
+		return fmt.Errorf("an edit named serverIds without servers:read: %w", err)
+	}
+	// The edit whose resulting subscription the token does cover is accepted.
+	return env.expect(ctx, http.MethodPatch, "/api/v1/webhooks/"+owned.Webhook.ID,
+		manager.Secret, map[string]any{"paused": true}, http.StatusOK, nil)
+}
+
+// checkWebhookPause grades the pause semantics of section 11.2: no attempt
+// while paused, the delivery held rather than dropped, an idempotent pause,
+// and the resume sending what was owed.
+func checkWebhookPause(ctx context.Context, env Env) error {
+	receiver, err := env.startHookReceiver(http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	defer receiver.close()
+
+	plugin, err := env.newFakePlugin(ctx, "conformance:webhook-pause", shortPollTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Server.Server.ID
+	eventType := uniqueWebhookEventType()
+
+	registered, err := env.registerWebhook(ctx, map[string]any{
+		"url": receiver.url, "events": []string{eventType}, "serverIds": []string{serverID},
+	})
+	if err != nil {
+		return err
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), registered.Webhook.ID)
+	path := "/api/v1/webhooks/" + registered.Webhook.ID
+
+	var paused struct {
+		Webhook webhookRecord `json:"webhook"`
+	}
+	if err := env.expect(ctx, http.MethodPatch, path, env.AdminToken,
+		map[string]any{"paused": true}, http.StatusOK, &paused); err != nil {
+		return err
+	}
+	if paused.Webhook.PausedAt == nil {
+		return fmt.Errorf("paused: true left pausedAt null (section 11.2)")
+	}
+	if _, err := time.Parse(time.RFC3339, *paused.Webhook.PausedAt); err != nil {
+		return fmt.Errorf("pausedAt %q is not RFC 3339 (section 11.2)", *paused.Webhook.PausedAt)
+	}
+
+	if _, err := plugin.sendEvents(ctx, map[string]any{
+		"t": eventType, "data": map[string]any{"probe": true},
+	}); err != nil {
+		return err
+	}
+
+	// The delivery is created and waits: a pause stops the hub talking to the
+	// target, it does not stop the hub remembering what it owed. Waiting for
+	// the record also gives the hub every chance to make the attempt this
+	// check then asserts it did not make.
+	held, err := env.awaitDelivery(ctx, registered.Webhook.ID, 30*time.Second, "the held delivery",
+		func(delivery deliveryRecord) bool { return delivery.Type == eventType })
+	if err != nil {
+		return fmt.Errorf("%w; a paused webhook still queues what matches it (section 11.2)", err)
+	}
+	if held.State != "pending" {
+		return fmt.Errorf("a paused webhook's delivery is %q, want pending (section 11.2)", held.State)
+	}
+	time.Sleep(5 * time.Second)
+	if receiver.count() != 0 {
+		return fmt.Errorf("a paused webhook was delivered to %d times; while paused a hub attempts nothing for it, retries included (section 11.2)", receiver.count())
+	}
+	after, err := env.webhookDeliveries(ctx, registered.Webhook.ID)
+	if err != nil {
+		return err
+	}
+	for _, delivery := range after {
+		if delivery.ID == held.ID && delivery.Attempts != 0 {
+			return fmt.Errorf("a paused webhook's delivery records %d attempts, want 0 (section 11.2)", delivery.Attempts)
+		}
+	}
+
+	// Pause is a state, not an event: pausing twice does not move the instant.
+	var again struct {
+		Webhook webhookRecord `json:"webhook"`
+	}
+	if err := env.expect(ctx, http.MethodPatch, path, env.AdminToken,
+		map[string]any{"paused": true}, http.StatusOK, &again); err != nil {
+		return err
+	}
+	if again.Webhook.PausedAt == nil || *again.Webhook.PausedAt != *paused.Webhook.PausedAt {
+		return fmt.Errorf("pausing an already paused webhook moved pausedAt from %q to %v (section 11.2)",
+			*paused.Webhook.PausedAt, again.Webhook.PausedAt)
+	}
+
+	var resumed struct {
+		Webhook webhookRecord `json:"webhook"`
+	}
+	if err := env.expect(ctx, http.MethodPatch, path, env.AdminToken,
+		map[string]any{"paused": false}, http.StatusOK, &resumed); err != nil {
+		return err
+	}
+	if resumed.Webhook.PausedAt != nil {
+		return fmt.Errorf("paused: false left pausedAt at %q (section 11.2)", *resumed.Webhook.PausedAt)
+	}
+	if err := receiver.await(ctx, 1, 30*time.Second, "the delivery the pause held"); err != nil {
+		return fmt.Errorf("%w; on resume everything due goes out (section 11.2)", err)
+	}
+	hook := receiver.get(0)
+	if fault := hook.wellFormed(); fault != "" {
+		return fmt.Errorf("the resumed delivery was %s (section 11.3)", fault)
+	}
+	return verifySignature(hook, registered.Secret)
+}
+
+// checkWebhookReplay grades the replay endpoint of section 11.5: the same
+// delivery goes out again, byte for byte, under the same id and signature,
+// with the attempt counter carrying on.
+func checkWebhookReplay(ctx context.Context, env Env) error {
+	receiver, err := env.startHookReceiver(http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	defer receiver.close()
+
+	plugin, err := env.newFakePlugin(ctx, "conformance:webhook-replay", shortPollTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Server.Server.ID
+	eventType := uniqueWebhookEventType()
+
+	registered, err := env.registerWebhook(ctx, map[string]any{
+		"url": receiver.url, "events": []string{eventType}, "serverIds": []string{serverID},
+	})
+	if err != nil {
+		return err
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), registered.Webhook.ID)
+
+	if _, err := plugin.sendEvents(ctx, map[string]any{
+		"t": eventType, "data": map[string]any{"probe": true},
+	}); err != nil {
+		return err
+	}
+	if err := receiver.await(ctx, 1, 30*time.Second, "the first delivery"); err != nil {
+		return err
+	}
+	delivered, err := env.awaitDelivery(ctx, registered.Webhook.ID, 30*time.Second, "state delivered",
+		func(delivery deliveryRecord) bool { return delivery.Type == eventType && delivery.State == "delivered" })
+	if err != nil {
+		return err
+	}
+
+	// A delivery is replayable only through the webhook that owns it, and only
+	// by a token holding webhooks:manage.
+	if err := env.expectError(ctx, http.MethodPost,
+		"/api/v1/webhooks/conformance-no-such-webhook/deliveries/"+delivered.ID+"/replay",
+		env.AdminToken, nil, http.StatusNotFound, "not_found"); err != nil {
+		return fmt.Errorf("a replay on an unknown webhook must answer not_found: %w", err)
+	}
+	if err := env.expectError(ctx, http.MethodPost,
+		"/api/v1/webhooks/"+registered.Webhook.ID+"/deliveries/conformance-no-such-delivery/replay",
+		env.AdminToken, nil, http.StatusNotFound, "not_found"); err != nil {
+		return fmt.Errorf("a replay of an unknown delivery must answer not_found: %w", err)
+	}
+	other, err := env.registerWebhook(ctx, map[string]any{"url": "http://127.0.0.1:9/hook"})
+	if err != nil {
+		return err
+	}
+	defer env.deleteWebhook(context.WithoutCancel(ctx), other.Webhook.ID)
+	if err := env.expectError(ctx, http.MethodPost,
+		"/api/v1/webhooks/"+other.Webhook.ID+"/deliveries/"+delivered.ID+"/replay",
+		env.AdminToken, nil, http.StatusNotFound, "not_found"); err != nil {
+		return fmt.Errorf("a delivery replayed through a webhook that does not own it must answer not_found: %w", err)
+	}
+	narrow, err := env.mintToken(ctx, "conformance: no replay scope", "servers:read")
+	if err != nil {
+		return err
+	}
+	if err := env.expectError(ctx, http.MethodPost,
+		"/api/v1/webhooks/"+registered.Webhook.ID+"/deliveries/"+delivered.ID+"/replay",
+		narrow.Secret, nil, http.StatusForbidden, "forbidden"); err != nil {
+		return fmt.Errorf("a replay without webhooks:manage was not refused: %w", err)
+	}
+
+	var replayed struct {
+		Delivery deliveryRecord `json:"delivery"`
+	}
+	if err := env.expect(ctx, http.MethodPost,
+		"/api/v1/webhooks/"+registered.Webhook.ID+"/deliveries/"+delivered.ID+"/replay",
+		env.AdminToken, nil, http.StatusAccepted, &replayed); err != nil {
+		return fmt.Errorf("%w; a replay answers 202 with the re-armed delivery (section 11.5)", err)
+	}
+	if replayed.Delivery.ID != delivered.ID {
+		return fmt.Errorf("the replay answered with delivery %q, want the one replayed, %q; a replay keeps the delivery's id (section 11.5)",
+			replayed.Delivery.ID, delivered.ID)
+	}
+	if replayed.Delivery.State != "pending" {
+		return fmt.Errorf("the replayed delivery is %q, want pending (section 11.5)", replayed.Delivery.State)
+	}
+	if replayed.Delivery.Attempts != delivered.Attempts {
+		return fmt.Errorf("the replay moved attempts from %d to %d; the count is kept until the next attempt overwrites it (section 11.5)",
+			delivered.Attempts, replayed.Delivery.Attempts)
+	}
+
+	if err := receiver.await(ctx, 2, 30*time.Second, "the replayed delivery"); err != nil {
+		return fmt.Errorf("%w; a replayed delivery is attempted again (section 11.5)", err)
+	}
+	first, second := receiver.get(0), receiver.get(1)
+	if fault := second.wellFormed(); fault != "" {
+		return fmt.Errorf("the replayed delivery was %s (section 11.3)", fault)
+	}
+	if string(first.Body) != string(second.Body) {
+		return fmt.Errorf("the replay changed the body; a replay re-sends the delivery that already existed, byte for byte (section 11.5)")
+	}
+	if first.Signature != second.Signature {
+		return fmt.Errorf("the replay changed the signature; the body is unchanged, so the signature is too (section 11.5)")
+	}
+	if err := verifySignature(second, registered.Secret); err != nil {
+		return err
+	}
+	if second.DeliveryID != delivered.ID {
+		return fmt.Errorf("the replayed attempt carries X-Vyshka-Delivery %q, want the delivery's own id %q (section 11.5)",
+			second.DeliveryID, delivered.ID)
+	}
+	firstAttempt, err := strconv.Atoi(first.Attempt)
+	if err != nil {
+		return fmt.Errorf("X-Vyshka-Attempt %q is not a number (section 11.3)", first.Attempt)
+	}
+	secondAttempt, err := strconv.Atoi(second.Attempt)
+	if err != nil {
+		return fmt.Errorf("X-Vyshka-Attempt %q is not a number (section 11.3)", second.Attempt)
+	}
+	if secondAttempt != firstAttempt+1 {
+		return fmt.Errorf("X-Vyshka-Attempt went from %d to %d across a replay; the counter carries on from where it stood (section 11.5)",
+			firstAttempt, secondAttempt)
+	}
+
+	if _, err := env.awaitDelivery(ctx, registered.Webhook.ID, 30*time.Second, "delivered again after the replay",
+		func(delivery deliveryRecord) bool {
+			return delivery.ID == delivered.ID && delivery.State == "delivered" &&
+				delivery.Attempts == secondAttempt
+		}); err != nil {
+		return fmt.Errorf("%w; the record follows the replayed attempt (section 11.5)", err)
 	}
 	return nil
 }

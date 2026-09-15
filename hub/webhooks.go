@@ -36,15 +36,28 @@ type createWebhookRequest struct {
 	Template  string   `json:"template"`
 }
 
+// updateWebhookRequest is the section 11.2 edit: every member is optional and
+// a pointer, because absent and empty mean different things here. An absent
+// member leaves the field alone; a present one replaces it whole, so
+// `"events": []` subscribes to every type exactly as it does at registration.
+type updateWebhookRequest struct {
+	URL       *string   `json:"url"`
+	Events    *[]string `json:"events"`
+	ServerIDs *[]string `json:"serverIds"`
+	Template  *string   `json:"template"`
+	Paused    *bool     `json:"paused"`
+}
+
 // webhookView is a webhook as the Admin API reports it: everything but the
 // secret, which left the hub exactly once, in the registration response.
 type webhookView struct {
-	ID        string    `json:"id"`
-	URL       string    `json:"url"`
-	Events    []string  `json:"events"`
-	ServerIDs []string  `json:"serverIds"`
-	Template  string    `json:"template"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        string     `json:"id"`
+	URL       string     `json:"url"`
+	Events    []string   `json:"events"`
+	ServerIDs []string   `json:"serverIds"`
+	Template  string     `json:"template"`
+	CreatedAt time.Time  `json:"createdAt"`
+	PausedAt  *time.Time `json:"pausedAt"`
 }
 
 func newWebhookView(webhook store.Webhook) webhookView {
@@ -55,6 +68,7 @@ func newWebhookView(webhook store.Webhook) webhookView {
 		ServerIDs: webhook.ServerIDs,
 		Template:  webhook.Template,
 		CreatedAt: webhook.CreatedAt,
+		PausedAt:  webhook.PausedAt,
 	}
 	if view.Events == nil {
 		view.Events = []string{}
@@ -73,37 +87,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := strings.TrimSpace(request.URL)
-	switch {
-	case target == "":
-		writeError(w, http.StatusBadRequest, codeBadRequest, "url is required")
-		return
-	case len(target) > maxWebhookURLLength:
-		writeError(w, http.StatusBadRequest, codeBadRequest, "url is too long")
+	target, parsed, ok := validateWebhookURL(w, request.URL)
+	if !ok {
 		return
 	}
-	parsed, err := url.Parse(target)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "url must be http or https")
+	events, ok := validateWebhookEvents(w, request.Events)
+	if !ok {
 		return
-	}
-
-	if len(request.Events) > maxWebhookEventFilters {
-		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"a webhook subscribes with at most "+strconv.Itoa(maxWebhookEventFilters)+" event patterns")
-		return
-	}
-	events := make([]string, 0, len(request.Events))
-	for _, value := range request.Events {
-		pattern := strings.TrimSpace(value)
-		// The section 10.1 grammar, verbatim: a pattern outside it must be
-		// refused rather than become a filter that silently matches nothing.
-		if pattern != "*" && !validScopePattern(pattern) {
-			writeError(w, http.StatusBadRequest, codeBadRequest,
-				"event pattern "+pattern+" is not *, a {namespace}.* prefix, or an exact type")
-			return
-		}
-		events = append(events, pattern)
 	}
 
 	// A webhook is a standing export of everything its filter matches, so the
@@ -114,33 +104,12 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(request.ServerIDs) > maxWebhookServerIDs {
-		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"a webhook observes at most "+strconv.Itoa(maxWebhookServerIDs)+" named servers; leave serverIds empty to observe every server")
+	serverIDs, ok := s.validateWebhookServerIDs(w, r, request.ServerIDs)
+	if !ok {
 		return
 	}
-	serverIDs := make([]string, 0, len(request.ServerIDs))
-	for _, value := range request.ServerIDs {
-		serverID := strings.TrimSpace(value)
-		// A typo here would otherwise become a webhook that never fires, which
-		// looks exactly like a hub that never delivers (spec section 11.2).
-		if _, err := s.store.Server(r.Context(), serverID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, http.StatusNotFound, codeNotFound, "no such server: "+serverID)
-				return
-			}
-			s.writeInternalError(w, r, err)
-			return
-		}
-		serverIDs = append(serverIDs, serverID)
-	}
-
-	template := strings.TrimSpace(request.Template)
-	if template == "" {
-		template = templateGenericJSON
-	}
-	if template != templateGenericJSON && template != templateDiscord {
-		writeError(w, http.StatusBadRequest, codeBadRequest, unknownTemplateMessage(template))
+	template, ok := validateWebhookTemplate(w, request.Template)
+	if !ok {
 		return
 	}
 
@@ -169,6 +138,248 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		"webhook": newWebhookView(webhook),
 		"secret":  webhook.Secret,
 	})
+}
+
+// The registration validators of section 11.2, shared by POST and PATCH so an
+// edit can never be a second, laxer spelling of the same rules. Each answers
+// the client itself and reports false when the value is refused.
+
+// validateWebhookURL checks the target URL and hands back both the trimmed
+// value to store and the parsed form the audit trail redacts.
+func validateWebhookURL(w http.ResponseWriter, value string) (string, *url.URL, bool) {
+	target := strings.TrimSpace(value)
+	switch {
+	case target == "":
+		writeError(w, http.StatusBadRequest, codeBadRequest, "url is required")
+		return "", nil, false
+	case len(target) > maxWebhookURLLength:
+		writeError(w, http.StatusBadRequest, codeBadRequest, "url is too long")
+		return "", nil, false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "url must be http or https")
+		return "", nil, false
+	}
+	return target, parsed, true
+}
+
+// validateWebhookEvents checks the filter against the section 10.1 grammar.
+func validateWebhookEvents(w http.ResponseWriter, values []string) ([]string, bool) {
+	if len(values) > maxWebhookEventFilters {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"a webhook subscribes with at most "+strconv.Itoa(maxWebhookEventFilters)+" event patterns")
+		return nil, false
+	}
+	events := make([]string, 0, len(values))
+	for _, value := range values {
+		pattern := strings.TrimSpace(value)
+		// The section 10.1 grammar, verbatim: a pattern outside it must be
+		// refused rather than become a filter that silently matches nothing.
+		if pattern != "*" && !validScopePattern(pattern) {
+			writeError(w, http.StatusBadRequest, codeBadRequest,
+				"event pattern "+pattern+" is not *, a {namespace}.* prefix, or an exact type")
+			return nil, false
+		}
+		events = append(events, pattern)
+	}
+	return events, true
+}
+
+// validateWebhookServerIDs checks that every named server exists.
+func (s *Server) validateWebhookServerIDs(w http.ResponseWriter, r *http.Request, values []string) ([]string, bool) {
+	if len(values) > maxWebhookServerIDs {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"a webhook observes at most "+strconv.Itoa(maxWebhookServerIDs)+" named servers; leave serverIds empty to observe every server")
+		return nil, false
+	}
+	serverIDs := make([]string, 0, len(values))
+	for _, value := range values {
+		serverID := strings.TrimSpace(value)
+		// A typo here would otherwise become a webhook that never fires, which
+		// looks exactly like a hub that never delivers (spec section 11.2).
+		if _, err := s.store.Server(r.Context(), serverID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, codeNotFound, "no such server: "+serverID)
+				return nil, false
+			}
+			s.writeInternalError(w, r, err)
+			return nil, false
+		}
+		serverIDs = append(serverIDs, serverID)
+	}
+	return serverIDs, true
+}
+
+// validateWebhookTemplate resolves the template, defaulting to generic-json.
+func validateWebhookTemplate(w http.ResponseWriter, value string) (string, bool) {
+	template := strings.TrimSpace(value)
+	if template == "" {
+		template = templateGenericJSON
+	}
+	if template != templateGenericJSON && template != templateDiscord {
+		writeError(w, http.StatusBadRequest, codeBadRequest, unknownTemplateMessage(template))
+		return "", false
+	}
+	return template, true
+}
+
+// handleUpdateWebhook edits one registration in place (spec section 11.2). An
+// absent member is left alone and a present one replaces its field whole; the
+// coverage rule is then re-applied to the **resulting** subscription, so an
+// edit can never widen a webhook past what the editing token could have
+// registered. The secret is neither rotated nor returned.
+func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
+	var request updateWebhookRequest
+	if !s.decodeJSON(w, r, &request) {
+		return
+	}
+
+	// A body carrying nothing this draft recognises is a request the caller
+	// cannot have meant; answering 200 to it would report success for an edit
+	// that never happened. It is refused before the webhook is read, so a
+	// malformed edit reads the same whatever id it names.
+	if len(updatedWebhookFields(request)) == 0 {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"an edit names at least one of url, events, serverIds, template, paused")
+		return
+	}
+
+	webhookID := r.PathValue("webhookId")
+	existing, err := s.store.WebhookByID(r.Context(), webhookID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "no such webhook")
+		return
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return
+	}
+
+	update := store.WebhookUpdate{Paused: request.Paused}
+
+	var parsedURL *url.URL
+	if request.URL != nil {
+		target, parsed, ok := validateWebhookURL(w, *request.URL)
+		if !ok {
+			return
+		}
+		update.URL, parsedURL = &target, parsed
+	}
+
+	// The merged subscription, not only the members that changed: a webhook
+	// that already matched everything must not survive an edit by a token
+	// that could never have registered it.
+	mergedEvents := existing.Events
+	if request.Events != nil {
+		events, ok := validateWebhookEvents(w, *request.Events)
+		if !ok {
+			return
+		}
+		mergedEvents, update.Events = events, &events
+	}
+	mergedServerIDs := existing.ServerIDs
+	if request.ServerIDs != nil {
+		mergedServerIDs = *request.ServerIDs
+	}
+	if !s.requireSubscriptionCoverage(w, r, mergedEvents, len(mergedServerIDs) > 0) {
+		return
+	}
+
+	if request.ServerIDs != nil {
+		serverIDs, ok := s.validateWebhookServerIDs(w, r, *request.ServerIDs)
+		if !ok {
+			return
+		}
+		update.ServerIDs = &serverIDs
+	}
+	if request.Template != nil {
+		template, ok := validateWebhookTemplate(w, *request.Template)
+		if !ok {
+			return
+		}
+		update.Template = &template
+	}
+
+	webhook, err := s.store.UpdateWebhook(r.Context(), webhookID, update)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "no such webhook")
+		return
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return
+	}
+
+	auditDetail(r, "webhookId", webhook.ID)
+	auditDetail(r, "fields", updatedWebhookFields(request))
+	if parsedURL != nil {
+		// Redacted for the same reason registration redacts it: target URLs
+		// routinely carry credentials past the host (spec section 11.2).
+		auditDetail(r, "url", redactURL(parsedURL))
+	}
+	if request.Paused != nil {
+		auditDetail(r, "paused", *request.Paused)
+	}
+	s.log.Info("webhook edited",
+		"webhookId", webhook.ID, "fields", updatedWebhookFields(request),
+		"paused", webhook.PausedAt != nil)
+	if request.Paused != nil && !*request.Paused {
+		// Everything the pause held back is due now; the dispatcher need not
+		// wait for its next tick to find out.
+		s.nudgeWebhooks()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"webhook": newWebhookView(webhook)})
+}
+
+// updatedWebhookFields names the members one edit carried, for the audit
+// record and the log. The values themselves stay out of both: a filter is
+// noise there, and a URL is a credential.
+func updatedWebhookFields(request updateWebhookRequest) []string {
+	fields := make([]string, 0, 5)
+	if request.URL != nil {
+		fields = append(fields, "url")
+	}
+	if request.Events != nil {
+		fields = append(fields, "events")
+	}
+	if request.ServerIDs != nil {
+		fields = append(fields, "serverIds")
+	}
+	if request.Template != nil {
+		fields = append(fields, "template")
+	}
+	if request.Paused != nil {
+		fields = append(fields, "paused")
+	}
+	return fields
+}
+
+// handleReplayWebhookDelivery re-arms one delivery for a further attempt (spec
+// section 11.5). The delivery keeps its id, its stored body, and its attempt
+// count, so what the receiver sees is the same signed bytes it was owed, not a
+// new delivery of an old notification.
+func (s *Server) handleReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) {
+	webhookID, deliveryID := r.PathValue("webhookId"), r.PathValue("deliveryId")
+	delivery, err := s.store.ReplayWebhookDelivery(r.Context(), webhookID, deliveryID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// One code for an unknown webhook and for a delivery belonging to
+		// another one: neither is a delivery this webhook can replay.
+		writeError(w, http.StatusNotFound, codeNotFound, "no such delivery on this webhook")
+		return
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return
+	}
+
+	auditDetail(r, "webhookId", webhookID)
+	auditDetail(r, "deliveryId", deliveryID)
+	s.log.Info("webhook delivery replayed",
+		"webhookId", webhookID, "deliveryId", deliveryID,
+		"type", delivery.Type, "attempts", delivery.Attempts)
+	s.nudgeWebhooks()
+	writeJSON(w, http.StatusAccepted, map[string]any{"delivery": newDeliveryView(delivery)})
 }
 
 // handleListWebhooks answers with every webhook, newest first, secrets omitted.
@@ -245,24 +456,28 @@ func (s *Server) handleListWebhookDeliveries(w http.ResponseWriter, r *http.Requ
 
 	views := make([]deliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
-		view := deliveryView{
-			ID:          delivery.ID,
-			Type:        delivery.Type,
-			ServerID:    delivery.ServerID,
-			State:       delivery.State,
-			Attempts:    delivery.Attempts,
-			LastStatus:  delivery.LastStatus,
-			LastError:   delivery.LastError,
-			CreatedAt:   delivery.CreatedAt,
-			DeliveredAt: delivery.DeliveredAt,
-		}
-		if delivery.State == store.DeliveryPending {
-			nextAttempt := delivery.NextAttemptAt
-			view.NextAttemptAt = &nextAttempt
-		}
-		views = append(views, view)
+		views = append(views, newDeliveryView(delivery))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deliveries": views})
+}
+
+func newDeliveryView(delivery store.WebhookDelivery) deliveryView {
+	view := deliveryView{
+		ID:          delivery.ID,
+		Type:        delivery.Type,
+		ServerID:    delivery.ServerID,
+		State:       delivery.State,
+		Attempts:    delivery.Attempts,
+		LastStatus:  delivery.LastStatus,
+		LastError:   delivery.LastError,
+		CreatedAt:   delivery.CreatedAt,
+		DeliveredAt: delivery.DeliveredAt,
+	}
+	if delivery.State == store.DeliveryPending {
+		nextAttempt := delivery.NextAttemptAt
+		view.NextAttemptAt = &nextAttempt
+	}
+	return view
 }
 
 // redactURL renders a webhook URL safe for logs and the audit trail: scheme

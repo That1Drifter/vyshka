@@ -57,6 +57,14 @@ func newTestReceiver(t *testing.T, status int) *testReceiver {
 	return receiver
 }
 
+// setStatus changes what the receiver answers from the next request on, which
+// is how a replay test lets a target that was failing start succeeding.
+func (tr *testReceiver) setStatus(status int) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.status = status
+}
+
 func (tr *testReceiver) count() int {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
@@ -588,5 +596,308 @@ func TestActionExpiryFiresActionCompleted(t *testing.T) {
 	}
 	if payload.Data.State != "expired" {
 		t.Errorf("state = %q, want expired", payload.Data.State)
+	}
+}
+
+// PATCH validates what registration validates, refuses an edit that widens a
+// subscription past the editing token's grants, and replaces only the members
+// it names (spec section 11.2).
+func TestWebhookEditValidation(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, _ := enrolledSession(t, server, "webhook-edit")
+	serverID := created.Server.ID
+
+	webhookID, _ := registerWebhook(t, server, map[string]any{
+		"url": "http://127.0.0.1:1/hook", "events": []string{"core.player.*"},
+	})
+	path := "/api/v1/webhooks/" + webhookID
+
+	cases := []struct {
+		name       string
+		body       map[string]any
+		wantStatus int
+		wantCode   string
+	}{
+		{"no recognised member", map[string]any{}, http.StatusBadRequest, "bad_request"},
+		{"nothing this draft knows", map[string]any{"colour": "red"}, http.StatusBadRequest, "bad_request"},
+		{"non-http url", map[string]any{"url": "ftp://example.net/x"}, http.StatusBadRequest, "bad_request"},
+		{"pattern outside the grammar", map[string]any{"events": []string{"core.*.death"}}, http.StatusBadRequest, "bad_request"},
+		{"unknown template", map[string]any{"template": "slack"}, http.StatusBadRequest, "bad_request"},
+		{"unknown server id", map[string]any{"serverIds": []string{"srv-none"}}, http.StatusNotFound, "not_found"},
+	}
+	for _, tc := range cases {
+		if code := errorCode(t, server, http.MethodPatch, path,
+			testAdminToken, tc.body, tc.wantStatus); code != tc.wantCode {
+			t.Errorf("%s: code = %q, want %q", tc.name, code, tc.wantCode)
+		}
+	}
+	// An empty body carries no edit at all.
+	if code := errorCode(t, server, http.MethodPatch, path, testAdminToken, nil,
+		http.StatusBadRequest); code != "bad_request" {
+		t.Errorf("empty body: code = %q, want bad_request", code)
+	}
+	if code := errorCode(t, server, http.MethodPatch, "/api/v1/webhooks/wh-none",
+		testAdminToken, map[string]any{"paused": true}, http.StatusNotFound); code != "not_found" {
+		t.Errorf("unknown webhook: code = %q, want not_found", code)
+	}
+
+	// The edit replaces the members it names and leaves the rest alone, and
+	// the answer never carries the secret.
+	var edited struct {
+		Webhook  map[string]any `json:"webhook"`
+		Secret   string         `json:"secret"`
+		PausedAt any            `json:"pausedAt"`
+	}
+	if status := call(t, server, http.MethodPatch, path, testAdminToken, map[string]any{
+		"events": []string{}, "serverIds": []string{serverID}, "template": "discord",
+	}, &edited); status != http.StatusOK {
+		t.Fatalf("edit: status = %d, want 200", status)
+	}
+	if edited.Secret != "" {
+		t.Error("an edit returned the signing secret; it leaves the hub once, at registration")
+	}
+	if events, _ := edited.Webhook["events"].([]any); len(events) != 0 {
+		t.Errorf("events = %v, want the empty filter the edit named", edited.Webhook["events"])
+	}
+	if edited.Webhook["template"] != "discord" {
+		t.Errorf("template = %v, want discord", edited.Webhook["template"])
+	}
+	if pausedAt, present := edited.Webhook["pausedAt"]; !present || pausedAt != nil {
+		t.Errorf("pausedAt = %v (present %v), want an explicit null on an active webhook", pausedAt, present)
+	}
+
+	// The coverage rule is re-applied to the merged subscription, so a
+	// narrowly granted token cannot widen a webhook it may edit.
+	scoped, _ := mintToken(t, server, "edit-scoped", "webhooks:manage", "events:read:example-mod.*")
+	narrowID, _ := registerWebhook(t, server, map[string]any{
+		"url": "http://127.0.0.1:1/hook", "events": []string{"example-mod.raid.*"},
+	})
+	if code := errorCode(t, server, http.MethodPatch, "/api/v1/webhooks/"+narrowID, scoped,
+		map[string]any{"events": []string{"core.player.*"}}, http.StatusForbidden); code != "forbidden" {
+		t.Errorf("widening edit: code = %q, want forbidden", code)
+	}
+	// An edit that only pauses still re-checks the stored filter, which this
+	// token does cover.
+	if status := call(t, server, http.MethodPatch, "/api/v1/webhooks/"+narrowID, scoped,
+		map[string]any{"paused": true}, nil); status != http.StatusOK {
+		t.Errorf("pausing a webhook the token's grants cover: status = %d, want 200", status)
+	}
+	// Naming serverIds needs servers:read even when the events filter is
+	// already covered, the same rule registration applies.
+	if code := errorCode(t, server, http.MethodPatch, "/api/v1/webhooks/"+narrowID, scoped,
+		map[string]any{"serverIds": []string{serverID}}, http.StatusForbidden); code != "forbidden" {
+		t.Errorf("edit naming serverIds without servers:read: code = %q, want forbidden", code)
+	}
+}
+
+// A paused webhook is one the hub does not talk to: the delivery is created
+// and held, and the resume sends it (spec section 11.2).
+func TestPausedWebhookIsNotDelivered(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	receiver := newTestReceiver(t, http.StatusNoContent)
+
+	created, session := enrolledSession(t, server, "webhook-pause")
+	serverID := created.Server.ID
+	webhookID, _ := registerWebhook(t, server, map[string]any{
+		"url": receiver.server.URL, "events": []string{"core.player.*"},
+		"serverIds": []string{serverID},
+	})
+
+	var paused struct {
+		Webhook struct {
+			PausedAt *string `json:"pausedAt"`
+		} `json:"webhook"`
+	}
+	if status := call(t, server, http.MethodPatch, "/api/v1/webhooks/"+webhookID,
+		testAdminToken, map[string]any{"paused": true}, &paused); status != http.StatusOK {
+		t.Fatalf("pause: status = %d, want 200", status)
+	}
+	if paused.Webhook.PausedAt == nil {
+		t.Fatal("pausing left pausedAt null")
+	}
+	if _, err := time.Parse(time.RFC3339, *paused.Webhook.PausedAt); err != nil {
+		t.Errorf("pausedAt %q is not RFC 3339", *paused.Webhook.PausedAt)
+	}
+
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 1)
+
+	// The delivery is queued: pause holds what the hub owes, it does not drop
+	// it. Waiting for the record first also gives the dispatcher every chance
+	// to make the attempt the test then asserts it did not make.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		deliveries := webhookDeliveries(t, server, webhookID)
+		if len(deliveries) == 1 {
+			if state := deliveries[0]["state"]; state != "pending" {
+				t.Fatalf("a paused webhook's delivery is %v, want pending", state)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a paused webhook queued no delivery: %+v", deliveries)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if receiver.count() != 0 {
+		t.Fatalf("a paused webhook was delivered to %d times", receiver.count())
+	}
+	if attempts := webhookDeliveries(t, server, webhookID)[0]["attempts"].(float64); attempts != 0 {
+		t.Errorf("a paused webhook's delivery was attempted %v times", attempts)
+	}
+
+	// Pausing twice does not move the instant.
+	var again struct {
+		Webhook struct {
+			PausedAt *string `json:"pausedAt"`
+		} `json:"webhook"`
+	}
+	call(t, server, http.MethodPatch, "/api/v1/webhooks/"+webhookID,
+		testAdminToken, map[string]any{"paused": true}, &again)
+	if again.Webhook.PausedAt == nil || *again.Webhook.PausedAt != *paused.Webhook.PausedAt {
+		t.Errorf("pausing twice moved pausedAt from %v to %v", paused.Webhook.PausedAt, again.Webhook.PausedAt)
+	}
+
+	// The resume sends what the pause held.
+	var resumed struct {
+		Webhook struct {
+			PausedAt *string `json:"pausedAt"`
+		} `json:"webhook"`
+	}
+	if status := call(t, server, http.MethodPatch, "/api/v1/webhooks/"+webhookID,
+		testAdminToken, map[string]any{"paused": false}, &resumed); status != http.StatusOK {
+		t.Fatalf("resume: status = %d, want 200", status)
+	}
+	if resumed.Webhook.PausedAt != nil {
+		t.Errorf("resuming left pausedAt at %v", *resumed.Webhook.PausedAt)
+	}
+	receiver.awaitReceived(t, 1, 10*time.Second)
+}
+
+// A dead delivery replays with the same id and the same bytes, one further
+// attempt, and the attempt counter carrying on (spec section 11.5).
+func TestReplayReArmsADeadDelivery(t *testing.T) {
+	t.Parallel()
+	server, err := hub.New(context.Background(), hub.Config{
+		DatabaseURL:        dbtest.URL(t),
+		AdminToken:         testAdminToken,
+		Logger:             slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		WebhookRetryDelays: []time.Duration{100 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("boot hub: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+
+	receiver := newTestReceiver(t, http.StatusInternalServerError)
+	created, session := enrolledSession(t, server, "webhook-replay")
+	serverID := created.Server.ID
+	webhookID, secret := registerWebhook(t, server, map[string]any{
+		"url": receiver.server.URL, "events": []string{"core.player.*"},
+		"serverIds": []string{serverID},
+	})
+
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 1)
+	receiver.awaitReceived(t, 2, 15*time.Second)
+
+	var dead map[string]any
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		deliveries := webhookDeliveries(t, server, webhookID)
+		if len(deliveries) == 1 && deliveries[0]["state"] == "dead" {
+			dead = deliveries[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delivery never dead-lettered: %+v", deliveries)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	deliveryID := dead["id"].(string)
+
+	// Refusals first: a delivery is replayable only through the webhook that
+	// owns it.
+	replayPath := "/api/v1/webhooks/" + webhookID + "/deliveries/" + deliveryID + "/replay"
+	if code := errorCode(t, server, http.MethodPost,
+		"/api/v1/webhooks/wh-none/deliveries/"+deliveryID+"/replay",
+		testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("replay on an unknown webhook: code = %q, want not_found", code)
+	}
+	if code := errorCode(t, server, http.MethodPost,
+		"/api/v1/webhooks/"+webhookID+"/deliveries/dlv-none/replay",
+		testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("replay of an unknown delivery: code = %q, want not_found", code)
+	}
+	other, _ := registerWebhook(t, server, map[string]any{"url": "http://127.0.0.1:1/hook"})
+	if code := errorCode(t, server, http.MethodPost,
+		"/api/v1/webhooks/"+other+"/deliveries/"+deliveryID+"/replay",
+		testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("replay across webhooks: code = %q, want not_found", code)
+	}
+	narrow, _ := mintToken(t, server, "replay-narrow", "servers:read")
+	if code := errorCode(t, server, http.MethodPost, replayPath, narrow, nil,
+		http.StatusForbidden); code != "forbidden" {
+		t.Errorf("replay without webhooks:manage: code = %q, want forbidden", code)
+	}
+
+	receiver.setStatus(http.StatusNoContent)
+	var replayed struct {
+		Delivery struct {
+			ID          string  `json:"id"`
+			State       string  `json:"state"`
+			Attempts    int     `json:"attempts"`
+			LastStatus  *int    `json:"lastStatus"`
+			LastError   string  `json:"lastError"`
+			DeliveredAt *string `json:"deliveredAt"`
+		} `json:"delivery"`
+	}
+	if status := call(t, server, http.MethodPost, replayPath, testAdminToken, nil, &replayed); status != http.StatusAccepted {
+		t.Fatalf("replay: status = %d, want 202", status)
+	}
+	if replayed.Delivery.ID != deliveryID || replayed.Delivery.State != "pending" {
+		t.Errorf("replay answered %+v, want the same id back as pending", replayed.Delivery)
+	}
+	if replayed.Delivery.Attempts != 2 {
+		t.Errorf("attempts = %d, want the 2 already made kept", replayed.Delivery.Attempts)
+	}
+	if replayed.Delivery.LastStatus == nil || *replayed.Delivery.LastStatus != 500 {
+		t.Errorf("the last failure was erased by the replay: %+v", replayed.Delivery)
+	}
+
+	receiver.awaitReceived(t, 3, 15*time.Second)
+	first, third := receiver.get(0), receiver.get(2)
+	if string(first.Body) != string(third.Body) {
+		t.Error("the replay changed the body; a replay sends the delivery that already existed")
+	}
+	if first.Signature != third.Signature {
+		t.Error("the replay changed the signature")
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(third.Body)
+	if want := "sha256=" + hex.EncodeToString(mac.Sum(nil)); third.Signature != want {
+		t.Errorf("replayed signature = %q, want %q", third.Signature, want)
+	}
+	if third.Delivery != deliveryID {
+		t.Errorf("X-Vyshka-Delivery = %q, want the replayed delivery's own id %q", third.Delivery, deliveryID)
+	}
+	if third.Attempt != "3" {
+		t.Errorf("X-Vyshka-Attempt = %q, want 3: the counter carries on across a replay", third.Attempt)
+	}
+
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		deliveries := webhookDeliveries(t, server, webhookID)
+		if len(deliveries) == 1 && deliveries[0]["state"] == "delivered" {
+			if attempts := deliveries[0]["attempts"].(float64); attempts != 3 {
+				t.Errorf("delivered after a replay with attempts = %v, want 3", attempts)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the replayed delivery never reached delivered: %+v", deliveries)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
