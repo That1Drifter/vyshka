@@ -3292,6 +3292,30 @@ var checks = []Check{
 		Run:     checkWebhookScope,
 	},
 	{
+		ID:      "webhooks.edit",
+		Title:   "An edit validates like a registration and cannot widen the subscription",
+		Section: "11.2",
+		Run:     checkWebhookEdit,
+	},
+	{
+		ID:      "webhooks.pause",
+		Title:   "A paused webhook queues what it matched and is never delivered to",
+		Section: "11.2",
+		Run:     checkWebhookPause,
+	},
+	{
+		ID:      "webhooks.replay",
+		Title:   "A replayed delivery goes out again with the same id, bytes, and signature",
+		Section: "11.5",
+		Run:     checkWebhookReplay,
+	},
+	{
+		ID:      "webhooks.retargetCoverage",
+		Title:   "Moving a webhook's URL or replaying a delivery is covered for what is pending",
+		Section: "11.2, 11.5",
+		Run:     checkWebhookRetargetCoverage,
+	},
+	{
 		ID:      "webhooks.signedDelivery",
 		Title:   "A matching event arrives as a signed generic-json delivery",
 		Section: "11.3",
@@ -3380,6 +3404,24 @@ var checks = []Check{
 		Title:   "Names, values, and guards outside section 12.1 are refused",
 		Section: "12.1",
 		Run:     checkKVValidation,
+	},
+	{
+		ID:      "kv.listPaging",
+		Title:   "A key listing walks its cursor with no duplicate and no gap",
+		Section: "12.2",
+		Run:     checkKVListPaging,
+	},
+	{
+		ID:      "kv.listPrefix",
+		Title:   "A key listing filters by literal prefix and omits expired keys",
+		Section: "12.2",
+		Run:     checkKVListPrefixAndExpiry,
+	},
+	{
+		ID:      "kv.listNamespaces",
+		Title:   "The namespace listing counts live keys and is filtered by scope",
+		Section: "12.2",
+		Run:     checkKVNamespaceListing,
 	},
 }
 

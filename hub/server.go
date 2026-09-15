@@ -584,13 +584,21 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/webhooks", s.admin(resourceWebhooks, verbManage, s.handleListWebhooks))
 	mux.HandleFunc("/api/v1/webhooks", methodNotAllowed("GET", "POST"))
 
+	mux.HandleFunc("PATCH /api/v1/webhooks/{webhookId}",
+		s.admin(resourceWebhooks, verbManage, s.handleUpdateWebhook))
 	mux.HandleFunc("DELETE /api/v1/webhooks/{webhookId}",
 		s.admin(resourceWebhooks, verbManage, s.handleDeleteWebhook))
-	mux.HandleFunc("/api/v1/webhooks/{webhookId}", methodNotAllowed("DELETE"))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}", methodNotAllowed("DELETE", "PATCH"))
 
 	mux.HandleFunc("GET /api/v1/webhooks/{webhookId}/deliveries",
 		s.admin(resourceWebhooks, verbManage, s.handleListWebhookDeliveries))
 	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries", methodNotAllowed("GET"))
+
+	// Replaying one delivery (spec section 11.5): an operator action on a
+	// record that already exists, so it carries the same scope as reading it.
+	mux.HandleFunc("POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay",
+		s.admin(resourceWebhooks, verbManage, s.handleReplayWebhookDelivery))
+	mux.HandleFunc("/api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay", methodNotAllowed("POST"))
 
 	// The key/value store (spec section 12), the same operations on both
 	// realms. The namespace lives in the path, so the exact kv:rw:{namespace}
@@ -598,6 +606,25 @@ func (s *Server) routes() http.Handler {
 	// keeps its own requireScope behind it as the belt if a route is ever
 	// rewired without the path-scoped gate.
 	kvNamespace := func(r *http.Request) string { return r.PathValue("namespace") }
+
+	// The two listings of section 12.2. The namespace listing is gated only on
+	// holding some kv:rw grant, because the namespace it would be checked
+	// against is exactly what the caller is asking for; the handler then
+	// filters the answer to what the token covers, so enumeration reveals
+	// nothing a key-by-key read could not have found. The key listing carries
+	// its namespace in the path like every other KV route, so it takes the
+	// same path-scoped gate.
+	//
+	// {namespace} and {namespace}/{key} are different patterns of different
+	// lengths, so neither shadows the other; TestKVListRoutesDoNotShadow holds
+	// that true.
+	mux.HandleFunc("GET /api/v1/kv", s.admin(resourceKV, verbRW, s.handleListKVNamespaces))
+	mux.HandleFunc("/api/v1/kv", methodNotAllowed("GET"))
+
+	mux.HandleFunc("GET /api/v1/kv/{namespace}",
+		s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.handleListKVKeys))
+	mux.HandleFunc("/api/v1/kv/{namespace}", methodNotAllowed("GET"))
+
 	mux.HandleFunc("GET /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvGet)))
 	mux.HandleFunc("PUT /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvSet)))
 	mux.HandleFunc("DELETE /api/v1/kv/{namespace}/{key}", s.adminPathScoped(resourceKV, verbRW, kvNamespace, s.adminKV(kvDelete)))

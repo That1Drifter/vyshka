@@ -37,7 +37,7 @@ trust. A hosting outfit running servers for other people is out of scope until 1
 | M1 | Hub core: enrollment, sessions, long-poll, manifests, action lifecycle, SQLite | Shipped |
 | M2 | DayZ plugin (clean-room) | Shipped 2026-09-05; readable inline errors landed 2026-09-10; moderation slice landed 2026-09-14 |
 | M3 | Telemetry, state snapshots, webhooks, KV store; Discord kill feed from a live server | Shipped 2026-09-14 (the staging repeat of the Discord demo is the last box) |
-| M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Panel v1 shipped, with a live DayZ player plotted on the staging map 2026-09-12 (issue #46); the management views (#64) remain |
+| M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Shipped 2026-09-15: panel v1 with a live DayZ player plotted on the staging map 2026-09-12 (issue #46), and the management views landed 2026-09-15 (issue #64) |
 | 1.0 | Protocol freeze | After at least one third-party plugin has been written from the spec alone |
 
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
@@ -46,19 +46,20 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.22 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.23 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
 These are the next slices, in the order they are expected to land. The first five gate the
 release.
 
-1. **Panel management views** (#64, M4): register a server and mint or revoke its
-   credentials; Admin API tokens with role bundles (moderator, event host, owner) as
-   scope-set presets; webhooks with deliveries, dead letter, and replay; the audit log
-   with its filters; the key/value store by namespace, read-only; pinned quick actions per
-   server. Closes M4: an operator with zero API knowledge can run everything from the
-   panel.
+1. **Panel management views** (#64, M4), landed 2026-09-15: register a server and mint
+   or revoke its credentials; Admin API tokens with role bundles (moderator, event host,
+   owner) as scope-set presets; webhooks with deliveries, dead letter, and replay; the
+   audit log with its filters; the key/value store by namespace, read-only; pinned quick
+   actions per server. Closed M4: an operator with zero API knowledge can run everything
+   from the panel. The webhook edit, pause, and replay endpoints and the two key/value
+   listings arrived with it as protocol draft 0.23.
 2. **Outbox across a server crash** (#65, spike): the file-backed outbox has an
    undocumented fsync window. Kill the server mid-batch, count what the hub received, fix
    what the number demands. The release cannot claim crash safety without it.

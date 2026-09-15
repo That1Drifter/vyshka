@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.22 (2026-09-14)
+**Status:** draft 0.23 (2026-09-15)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1434,7 +1434,8 @@ in the request, the check MUST run against that value:
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |
 | `GET /api/v1/actions/{actionId}` | `actions:read:{the action's code}` |
 | `GET /api/v1/servers/{id}/events` | `events:read`, intersected per section 10.3 |
-| `/api/v1/kv/{namespace}/{key}`, `POST .../incr` | `kv:rw:{the path's namespace}` |
+| `/api/v1/kv/{namespace}/{key}`, `POST .../incr`, `GET /api/v1/kv/{namespace}` | `kv:rw:{the path's namespace}` |
+| `GET /api/v1/kv` | any `kv:rw` grant; the namespaces listed are filtered to those the grants cover (section 12.2) |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
 
 The raw envelope endpoint of section 5.5 requires `admin` because no narrower scope in the
@@ -1694,7 +1695,8 @@ Authorization: Bearer <admin token>
     "events": ["core.player.*", "action.completed"],
     "serverIds": [],
     "template": "generic-json",
-    "createdAt": "2026-08-20T18:00:00.000Z"
+    "createdAt": "2026-08-20T18:00:00.000Z",
+    "pausedAt": null
   },
   "secret": "<signing secret>"
 }
@@ -1714,23 +1716,78 @@ Authorization: Bearer <admin token>
   of section 5, the hub cannot store a digest of it, because signing needs the secret
   itself; operators should treat read access to the hub's database as read access to
   webhook secrets.
+- `pausedAt` is the instant the webhook was paused, or `null` while it is active (below).
 - A webhook observes only what lands after it is registered. Registration is not a
   backfill request, and a hub MUST NOT replay stored history into a new webhook.
 
 | Request | Result |
 |---|---|
 | `GET /api/v1/webhooks` | `{ "webhooks": [ ... ] }`, newest first, without secrets |
+| `PATCH /api/v1/webhooks/{webhookId}` | `200` with `{ "webhook": ... }`; edits the registration in place (below) |
 | `DELETE /api/v1/webhooks/{webhookId}` | `204`; the webhook's pending deliveries are abandoned |
 | `GET /api/v1/webhooks/{webhookId}/deliveries` | The webhook's most recent deliveries, newest first (see section 11.5) |
+| `POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay` | `202`; re-arms one delivery for a further attempt (see section 11.5) |
 
 A hub SHOULD redact the query, fragment, and userinfo of a webhook's URL wherever it logs
 or audits one: target URLs routinely embed bearer credentials in exactly those parts, and
 logs outlive and outtravel webhook configuration.
 
+**Editing a registration.** `PATCH /api/v1/webhooks/{webhookId}` takes any subset of `url`,
+`events`, `serverIds`, `template`, and `paused`. An absent member leaves that field
+unchanged; a present member replaces it whole, so `"events": []` subscribes to every type
+exactly as an empty filter does at registration. A body naming no member this draft knows,
+an empty body included, is `bad_request`: a request that cannot have been meant MUST NOT be
+answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The answer is
+`200` with `{ "webhook": ... }`, the same view registration returns.
+
+- `url`, `events`, `serverIds`, and `template` are validated exactly as at registration and
+  raise exactly the same codes. An edit is not a second, laxer spelling of the same rules.
+- The coverage rule above is re-applied to the **resulting** subscription, meaning the
+  merged `events` and `serverIds` rather than only the members the request changed. An edit
+  therefore can never widen a webhook past what the editing token could have registered
+  itself, and a refusal is `forbidden`. The decision MUST be taken against the webhook as
+  it stands when the edit is applied, not against a copy read earlier: two edits landing
+  together must each be judged on what the other left behind, or the one that reads first
+  and writes second authorizes a subscription nobody checked.
+- An edit that changes `url` MUST additionally be covered for the type of every delivery
+  still pending on the webhook, the coverage of a type being that of a filter naming
+  exactly it. Those bodies were rendered under the subscription as it stood and will
+  follow the URL to wherever the editor points it; without this rule a token could narrow
+  the filter to what it may read, move the target to an address it controls, and receive
+  what it may not. A refusal is `forbidden`.
+- The secret is never rotated by an edit and never returned by one, so a receiver's
+  verification survives one. Rotating a secret is a separate act this draft does not define.
+- Deliveries already queued are affected one way but not the other. A delivery's body was
+  rendered at enqueue and is byte-stable for its whole life (section 11.3), so a `template`
+  change applies only to deliveries created after the edit. The target URL is read at
+  attempt time, so a delivery already pending goes to the **new** URL on its next attempt.
+
+**Pausing.** `paused: true` sets `pausedAt` to the current instant, and pausing an already
+paused webhook MUST NOT move it: pause is a state, not an event, and an operator who pauses
+twice has paused once. `paused: false` clears `pausedAt`.
+
+While a webhook is paused a hub MUST NOT begin any delivery attempt for it, including
+retries of deliveries that began before the pause. An attempt begins when the hub books it,
+which is where `attempts` moves and where the target URL is read, and a hub MUST make the
+pause decision and the booking one atomic step against the pause itself, so that a pause
+either precedes an attempt, and holds it, or follows it, and finds it begun; a pause that
+lands between the decision and the booking is not a state this document allows. An attempt
+already begun when the pause lands is the one thing a pause cannot recall, and it
+completes. Matching notifications still create deliveries,
+which wait in `pending` with their `nextAttemptAt` untouched; the per-webhook pending bound
+of section 11.5 still applies, so a pause long enough to fill the queue makes further
+deliveries arrive dead carrying that bound's `lastError`. On resume, everything due goes out
+on the next delivery pass.
+
+The asymmetry is deliberate. Pause stops the hub talking to the target; it does not stop the
+hub remembering what it owed, because nothing in this section may be dropped silently. An
+operator who wants the queue gone deletes the webhook, where the record above says plainly
+that its pending deliveries are abandoned.
+
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template |
-| `forbidden` | 403 | The token's grants do not cover what the filter subscribes to |
+| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template, an edit naming no member this draft knows |
+| `forbidden` | 403 | The token's grants do not cover what the filter subscribes to, at registration or after an edit |
 | `not_found` | 404 | Unknown webhook id, or a `serverIds` entry naming no server |
 
 ### 11.3 Delivery
@@ -1863,6 +1920,51 @@ while the delivery is pending. The page is bounded, but the bound is the caller'
 widen: `limit` is clamped into the hub's range (reference default 100, cap 500) rather
 than refused, the same contract as section 8.5's feed.
 
+**Replaying one delivery.** A dead letter an operator has fixed the cause of is worth
+sending, so one delivery can be re-armed by hand:
+
+```
+POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay
+
+-> 202 Accepted
+{ "delivery": { "id": "01J5QN...", "state": "pending", "attempts": 3,
+                "lastStatus": 500, "lastError": "status 500", "nextAttemptAt": "..." } }
+```
+
+- A replay sets the delivery's `state` back to `pending` and its `nextAttemptAt` to the
+  current instant, and clears `deliveredAt`. `attempts`, `lastStatus`, and `lastError` are
+  kept until the next attempt overwrites them, so what the record says about the last
+  failure survives until there is something newer to say.
+- The delivery keeps its id and its stored body, so its signature is unchanged and
+  `X-Vyshka-Attempt` goes on counting from where it stood. That is what keeps section 11.3's
+  stable id and byte-identical body true across a replay: a receiver that deduplicates on
+  `deliveryId` discards a replay exactly as it discards a retry, which is the right outcome
+  when the operator is replaying something the receiver did in fact get.
+- A replay grants one further attempt and no more standing than that. A failure re-enters
+  the retry schedule where the attempt count already stands, so a dead delivery whose replay
+  fails is dead again with the new `lastError`, and the operator may replay it again.
+- Replay is allowed in every state; a pending delivery is simply brought forward. It is not
+  subject to the pending bound above, which governs fan-out rather than one operator-driven
+  attempt.
+- A replay whose delivery has an attempt in flight at that moment MUST win: the in-flight
+  attempt's outcome, success or failure, is discarded rather than booked over the re-armed
+  row, so the further attempt the replay promised is made. Whether the receiver saw the
+  in-flight attempt is its own business; a receiver that deduplicates on `deliveryId` sees
+  one delivery either way.
+- An unknown `{webhookId}`, or a `{deliveryId}` that does not belong to that webhook, is
+  `not_found`. The route requires `webhooks:manage` like every other route of this section,
+  and the token MUST additionally be covered for the delivery's type as for a filter naming
+  exactly it (the retargeting rule of section 11.2, applied to one body): a replay sends a
+  rendered export again, and a token that may not read what it carries may not send it.
+  That refusal is `forbidden`.
+
+**Pause and the schedule.** While its webhook is paused (section 11.2) a delivery is never
+due, however far past its `nextAttemptAt` it stands, so a paused webhook's backlog cannot be
+dead-lettered by the mere passage of time: the schedule advances when an attempt is made,
+not when a clock ticks. Replaying a delivery on a paused webhook succeeds and the delivery
+waits for the resume, like everything else that webhook owes. A pause is no pardon either,
+since the pending bound keeps counting the queue it is filling.
+
 ## 12. Key/value store
 
 Per-mod persistence so mods do not need their own database. A key is addressed as
@@ -1894,12 +1996,12 @@ server in the key. Isolation between mods is the namespace, and nothing else.
 
 ### 12.2 Operations
 
-The same operations exist in both realms, as synchronous HTTP request/response, never as
-envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
-whether it won. There are four endpoints; the decrement rides `incr` as a negative delta,
+The four per-key operations exist in both realms, as synchronous HTTP request/response,
+never as envelopes: a compare-and-swap over an at-least-once queue could not tell its caller
+whether it won. The decrement rides `incr` as a negative delta,
 and the compare-and-swap rides `set` as `ifRevision`. They carry no sequence numbers and no acks; a client that retries a write
 after a network failure uses `ifRevision` when it needs to know whether the first attempt
-landed.
+landed. The two listings are Admin API only.
 
 | Operation | Plugin API | Admin API |
 |---|---|---|
@@ -1907,9 +2009,16 @@ landed.
 | set | `PUT /plugin/v1/kv/{namespace}/{key}` | `PUT /api/v1/kv/{namespace}/{key}` |
 | delete | `DELETE /plugin/v1/kv/{namespace}/{key}` | `DELETE /api/v1/kv/{namespace}/{key}` |
 | incr | `POST /plugin/v1/kv/{namespace}/{key}/incr` | `POST /api/v1/kv/{namespace}/{key}/incr` |
+| list keys | none | `GET /api/v1/kv/{namespace}` |
+| list namespaces | none | `GET /api/v1/kv` |
 
 The Plugin API side authenticates with the session token of section 5.3; the Admin API
 side with a bearer token holding `kv:rw:{namespace}` (section 10).
+
+The listings have no Plugin API spelling in this draft. A plugin already knows the keys it
+writes, its confinement (section 12.3) means enumeration would only ever hand it back its
+own manifest's namespaces, and an engine that has to build an operator's browse view has
+bigger problems. A later draft MAY add one; a plugin MUST NOT assume it exists.
 
 **get** answers `200` with the key, or `not_found` when it is absent or expired:
 
@@ -1969,6 +2078,70 @@ land exactly once: two clients adding 1 to a key at revision n leave it at n+2 w
 deltas applied, never n+1. This is the one operation whose atomicity the hub owes the
 client outright, with no `ifRevision` in the loop.
 
+**list keys** answers `200` with one page of the namespace's live keys, key ascending in
+byte order:
+
+```
+GET /api/v1/kv/{namespace}?prefix=balance.&limit=100&cursor=...
+
+-> 200 OK
+{
+  "namespace": "example-mod",
+  "keys": [
+    { "key": "balance.76561198000000000", "revision": 7,
+      "expiresAt": "2026-09-01T00:00:00Z" }
+  ],
+  "nextCursor": "..."
+}
+```
+
+| Parameter | Rules |
+|---|---|
+| `prefix` | OPTIONAL. A literal prefix of the key, not a pattern and not a grammar. A prefix drawn outside the key alphabet of section 12.1 matches nothing rather than failing. |
+| `limit` | Page size. The hub bounds it (reference default 100, cap 500) and clamps rather than refusing, as in section 8.5. |
+| `cursor` | An opaque `nextCursor` from a previous page. |
+
+Values are not included. A page of 500 keys at 16384 bytes each is not a browse, and the
+caller that opens one key reads it with **get**.
+
+`expiresAt` is present on a listed key only when that key carries a TTL. A key whose expiry
+has passed MUST NOT appear, whether or not the hub has physically deleted it yet: the
+listing follows the same "reads as absent" rule as every other operation (section 12.1).
+
+`nextCursor` is opaque per section 2.1 and follows the contract of section 8.5: it is absent
+on the last page, clients MUST NOT parse one or derive one, and a hub MUST NOT return the
+same key on two pages of one walk nor skip one that was present and live when the walk
+began. Keys are unique inside a namespace, so the key alone already orders the page totally
+and no tiebreak is needed. A cursor whose key has since been deleted or expired MUST still
+resume correctly, because a cursor names a position and not a row.
+
+A token needs `kv:rw:{namespace}` for the namespace in the path, the same grant and the same
+path-carried check as the per-key operations (section 12.3).
+
+**list namespaces** answers `200` with every namespace that holds at least one live key
+**and** that the token's grants cover, name ascending, with that live key count:
+
+```
+GET /api/v1/kv
+
+-> 200 OK
+{ "namespaces": [ { "namespace": "example-mod", "keys": 12 } ] }
+```
+
+A token holding no `kv:rw` grant at all is `forbidden`. A namespace the token's grants do
+not cover MUST be omitted rather than refused: enumeration must reveal nothing the token
+could not have found key by key, and refusing the whole call because one namespace is out
+of reach would make the endpoint useless to exactly the narrowed tokens it exists for. A
+grant covers a namespace when it names it exactly, when it is a `{prefix}.*` grant the name
+falls under, when it is unnarrowed `kv:rw`, or when the token holds `admin` (section 10.3).
+
+The answer is not paged. Namespaces are declared by mods, so an installation has as many as
+it has mods, and a client MUST NOT expect a `nextCursor` here.
+
+A namespace the token may read but that holds no live key does not appear, because the
+listing reports what the store holds, not what the token could write. A client that wants
+to write into such a namespace uses **set** on it directly; no create step exists.
+
 ### 12.3 Confinement
 
 - **Plugins** may operate only on the namespaces the server's stored manifest declares in
@@ -1986,8 +2159,8 @@ client outright, with no `ifRevision` in the loop.
 
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | Malformed namespace, key, value, `ifRevision`, `ttlSeconds`, or `delta`; value over 16384 bytes |
-| `forbidden` | 403 | Undeclared namespace (Plugin API) or missing `kv:rw` grant (Admin API) |
+| `bad_request` | 400 | Malformed namespace, key, value, `ifRevision`, `ttlSeconds`, `delta`, `limit`, or `cursor`; value over 16384 bytes |
+| `forbidden` | 403 | Undeclared namespace (Plugin API), missing `kv:rw:{namespace}` grant, or, on `GET /api/v1/kv`, no `kv:rw` grant at all (Admin API) |
 | `not_found` | 404 | get or delete on a key that is absent or expired |
 | `revision_mismatch` | 409 | `ifRevision` does not match the current revision; `details.revision` carries it |
 | `conflict` | 409 | incr on a non-integer value, an arithmetic result outside `(-2^53, 2^53)`, or a revision at the `2^53` bound |

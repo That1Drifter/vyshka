@@ -1,0 +1,17 @@
+-- Byte-order comparison of the KV name columns (issue #64, key listing).
+--
+-- Listing a namespace's keys (spec/protocol.md section 12.2) orders by `key`
+-- and walks it with a cursor, and a `prefix` filter is a half-open byte range
+-- from the prefix to its successor. Both assume byte order, the same
+-- assumption migration 0015 pinned for every column it found compared or
+-- ordered at the time; `kv.namespace` and `kv.key` were left alone there
+-- because back then they were only ever compared with a parameter for
+-- equality.
+--
+-- SQLite compares text bytewise unless told otherwise, so here there is
+-- nothing to change and this file carries no statement. The Postgres variant
+-- beside it pins the two columns to the "C" collation, because under a glibc
+-- locale collation (en_US.utf8 is a common default) punctuation and case sort
+-- differently from the bytes: a page boundary would fall in a different place
+-- than the cursor comparison expects, so a walk could skip or repeat a key,
+-- and the prefix range could exclude keys that start with the prefix.

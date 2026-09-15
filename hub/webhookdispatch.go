@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -393,8 +394,32 @@ feeding:
 // before the request would expire under a target slower than ten seconds and
 // leave a completed attempt looking like it never ran.
 func (s *Server) attemptDelivery(due store.DueDelivery) {
-	attempt := due.Delivery.Attempts + 1
 	body := []byte(due.Delivery.Body)
+
+	// The attempt begins by being booked, not by being selected into the
+	// batch: the store locks the webhook row, refuses if it is paused, refuses
+	// if the delivery was replayed or removed since the batch was read, and
+	// counts the attempt, answering with the URL and secret as of that instant.
+	// That booking is the boundary the protocol draws (spec section 11.2): a
+	// pause or a URL edit that commits before it holds, and one that commits
+	// after it finds this attempt already begun.
+	beginCtx, cancelBegin := context.WithTimeout(s.baseCtx, 10*time.Second)
+	begun, err := s.store.BeginDeliveryAttempt(beginCtx, due.Delivery.ID, due.Delivery.Generation)
+	cancelBegin()
+	switch {
+	case errors.Is(err, store.ErrWebhookPaused):
+		// Left pending and due: the resume's pass picks it up.
+		return
+	case errors.Is(err, store.ErrStaleAttempt):
+		// Replayed, finished, or deleted since the batch was read; whatever
+		// it became, it is not the attempt this batch owed.
+		return
+	case err != nil:
+		s.log.Error("delivery attempt could not be booked",
+			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID, "error", err.Error())
+		return
+	}
+	attempt := begun.Attempt
 
 	recording := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), 10*time.Second)
@@ -407,7 +432,7 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 
 	requestCtx, cancel := context.WithTimeout(s.baseCtx, s.cfg.WebhookDeliveryTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, due.URL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, begun.URL, bytes.NewReader(body))
 	if err != nil {
 		fail(nil, "request could not be built: "+err.Error())
 		return
@@ -415,16 +440,19 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Vyshka-Delivery", due.Delivery.ID)
 	request.Header.Set("X-Vyshka-Attempt", strconv.Itoa(attempt))
-	request.Header.Set("X-Vyshka-Signature", signWebhookBody(due.Secret, body))
+	request.Header.Set("X-Vyshka-Signature", signWebhookBody(begun.Secret, body))
 
 	response, err := s.webhookClient.Do(request)
 	if err != nil {
 		if s.baseCtx.Err() != nil {
-			// Shutdown aborted the attempt, not the target. As far as the
-			// schedule is concerned it never happened: the row stays pending
-			// and due, and the next boot's dispatcher picks it up with the
-			// same attempt number. Booking it would let a few restarts
-			// dead-letter a delivery whose target never failed once.
+			// Shutdown aborted the wait, not the target: the request may
+			// well have reached the receiver, which is why the booking
+			// stands and the count is not given back (an attempt that may
+			// have been seen was made). No outcome is booked and the
+			// schedule does not advance: the row stays pending and due, and
+			// the next boot's dispatcher tries it again. A restart therefore
+			// costs one slot of the retry schedule, never a dead letter on
+			// its own.
 			return
 		}
 		fail(nil, "delivery failed: "+err.Error())
@@ -438,9 +466,8 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		ctx, cancelRecord := recording()
 		defer cancelRecord()
-		if err := s.store.RecordDeliverySuccess(ctx, due.Delivery.ID, response.StatusCode); err != nil {
-			s.log.Error("delivery outcome could not be recorded",
-				"deliveryId", due.Delivery.ID, "error", err.Error())
+		if err := s.store.RecordDeliverySuccess(ctx, due.Delivery.ID, due.Delivery.Generation, response.StatusCode); err != nil {
+			s.logOutcomeNotBooked(due, err)
 			return
 		}
 		s.log.Info("webhook delivered",
@@ -459,6 +486,22 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	fail(&status, message)
 }
 
+// logOutcomeNotBooked reports an outcome the store did not book. A stale
+// attempt is the expected case: the delivery was replayed while the attempt
+// was in flight, and the replay's attempt is the one that counts (spec
+// section 11.5), so the outcome is discarded on purpose. Anything else is a
+// store failure.
+func (s *Server) logOutcomeNotBooked(due store.DueDelivery, err error) {
+	if errors.Is(err, store.ErrStaleAttempt) {
+		s.log.Info("delivery outcome discarded: the delivery was replayed or removed during the attempt",
+			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID,
+			"generation", due.Delivery.Generation)
+		return
+	}
+	s.log.Error("delivery outcome could not be recorded",
+		"deliveryId", due.Delivery.ID, "error", err.Error())
+}
+
 // recordFailure books one failed attempt, scheduling the retry the section
 // 11.5 schedule owes it or declaring the delivery dead when none remains.
 func (s *Server) recordFailure(ctx context.Context, due store.DueDelivery, attempt int, status *int, message string) {
@@ -471,9 +514,8 @@ func (s *Server) recordFailure(ctx context.Context, due store.DueDelivery, attem
 		nextAttemptAt = &next
 	}
 
-	if err := s.store.RecordDeliveryFailure(ctx, due.Delivery.ID, status, message, nextAttemptAt); err != nil {
-		s.log.Error("delivery outcome could not be recorded",
-			"deliveryId", due.Delivery.ID, "error", err.Error())
+	if err := s.store.RecordDeliveryFailure(ctx, due.Delivery.ID, due.Delivery.Generation, status, message, nextAttemptAt); err != nil {
+		s.logOutcomeNotBooked(due, err)
 		return
 	}
 	if nextAttemptAt == nil {

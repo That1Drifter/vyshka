@@ -16,9 +16,17 @@
 // the backstop.
 
 import { createMap, validateManifest, worldPoint } from './map.js';
+import {
+  ApiError, ago, api, append, attempt, badge, beginRender, clear, disclosure, el,
+  eventsHref, formatTime, go, mapHref, markNav, onRender, onSignOut, pretty, randomKey,
+  renderHeldSecrets, renderSession, serverHref, setCrumbs, setTeardown, showError, signOut,
+  stale, summarizeEventData, token, TOKEN_KEY,
+} from './lib.js';
+import {
+  actionsSection, registerServerForm, serverCredentials, viewAudit, viewKVKeys,
+  viewKVNamespaces, viewTokens, viewWebhook, viewWebhooks,
+} from './manage.js';
 
-const API = '/api/v1';
-const TOKEN_KEY = 'vyshka.adminToken';
 const SERVER_LIST_REFRESH_MS = 5000;
 const ACTION_POLL_MS = 1000;
 const TERMINAL_STATES = new Set(['completed', 'failed', 'expired']);
@@ -33,6 +41,9 @@ const MAP_REFRESH_MS = SERVER_LIST_REFRESH_MS;
 // Map tilesets are served by the panel's own handler beside the page, so
 // the path is relative to it rather than to the Admin API.
 const MAPS_PATH = 'maps/';
+// loginAttempt numbers sign-in submissions, so that only the latest one may
+// store the token it proved.
+let loginAttempt = 0;
 // The core event types of section 8.1, offered as filter suggestions. The
 // feed itself accepts whatever the hub's grammar accepts.
 const CORE_EVENT_TYPES = [
@@ -43,130 +54,12 @@ const CORE_EVENT_TYPES = [
 ];
 
 // ---------------------------------------------------------------------------
-// DOM helpers
-
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key === 'class') {
-      node.className = value;
-    } else if (key.startsWith('on') && typeof value === 'function') {
-      node.addEventListener(key.slice(2), value);
-    } else if (value === true) {
-      node.setAttribute(key, '');
-    } else {
-      node.setAttribute(key, String(value));
-    }
-  }
-  append(node, children);
-  return node;
-}
-
-function append(node, children) {
-  for (const child of children.flat(Infinity)) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-}
-
-function clear(node) {
-  while (node.firstChild) node.removeChild(node.firstChild);
-}
-
-function badge(text, kind) {
-  return el('span', { class: 'badge ' + (kind || '') }, text);
-}
-
-function pretty(value) {
-  return JSON.stringify(value, null, 2);
-}
-
-// randomKey mints an idempotency key. crypto.randomUUID exists only in
-// secure contexts, and a hub reached over plain HTTP on a LAN is not one;
-// getRandomValues is available everywhere.
-function randomKey() {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function formatTime(iso) {
-  if (!iso) return '';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return String(iso);
-  return date.toLocaleString();
-}
-
-function ago(iso) {
-  if (!iso) return 'never';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return String(iso);
-  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
-  if (seconds < 60) return seconds + ' s ago';
-  if (seconds < 3600) return Math.round(seconds / 60) + ' min ago';
-  if (seconds < 86400) return Math.round(seconds / 3600) + ' h ago';
-  return date.toLocaleString();
-}
-
-// ---------------------------------------------------------------------------
-// Admin API client
-
-class ApiError extends Error {
-  constructor(status, code, message, details) {
-    super(message);
-    this.status = status;
-    this.code = code;
-    this.details = details;
-  }
-}
-
-function token() {
-  return sessionStorage.getItem(TOKEN_KEY) || '';
-}
-
-async function api(method, path, body) {
-  const headers = { Accept: 'application/json' };
-  const bearer = token();
-  if (bearer) headers.Authorization = 'Bearer ' + bearer;
-  const init = { method, headers };
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
-  let response;
-  try {
-    response = await fetch(API + path, init);
-  } catch (err) {
-    throw new ApiError(0, 'unreachable', 'the hub could not be reached: ' + err.message);
-  }
-  const text = await response.text();
-  let parsed = null;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-  }
-  if (!response.ok) {
-    const detail = parsed && parsed.error ? parsed.error : {};
-    throw new ApiError(response.status, detail.code || 'http_' + response.status,
-      detail.message || ('the hub answered ' + response.status), detail.details);
-  }
-  return parsed;
-}
-
-// ---------------------------------------------------------------------------
 // Routing and view lifecycle
-
-let renderSeq = 0;
-let teardown = null;
 
 // The route lives in the hash as a path with an optional query, so that a
 // feed's filter survives a reload and can be handed to someone as a link:
-// #/servers/{id}/events?type=core.player.*&follow=off.
+// #/servers/{id}/events?type=core.player.*&follow=off. The href builders and
+// the render lifecycle live in lib.js, because manage.js needs both.
 function parseRoute() {
   const hash = location.hash.replace(/^#/, '');
   const mark = hash.indexOf('?');
@@ -178,104 +71,70 @@ function parseRoute() {
   // referenceKey. It is a preselection, never a filter: the list is whole.
   const player = query.get('player') || '';
   if (parts[0] === 'servers' && parts.length === 2) {
-    return { view: 'server', serverId: parts[1], player };
+    return { view: 'server', section: 'servers', serverId: parts[1], player };
   }
   if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'map') {
     // ?world= overrides the world the server reported, for a server whose
     // start event the token cannot read, or to look at another map.
-    return { view: 'map', serverId: parts[1], world: query.get('world') || '' };
+    return { view: 'map', section: 'servers', serverId: parts[1], world: query.get('world') || '' };
   }
   if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'events') {
     // Type terms travel to the hub as they are. An empty term in a link is
     // the hub's to refuse (section 8.5: a filter it could not parse is a
     // bad request, never silently a wider feed); the form never makes one.
     return {
-      view: 'events', serverId: parts[1],
+      view: 'events', section: 'servers', serverId: parts[1],
       types: query.getAll('type'),
       follow: query.get('follow') !== 'off',
     };
   }
   if (parts[0] === 'servers' && parts.length === 4 && parts[2] === 'actions') {
-    return { view: 'action', serverId: parts[1], code: parts[3], player };
+    return { view: 'action', section: 'servers', serverId: parts[1], code: parts[3], player };
   }
-  return { view: 'servers' };
-}
-
-function playerQuery(player) {
-  return player ? '?player=' + encodeURIComponent(player) : '';
-}
-
-function serverHref(serverId, player = '') {
-  return '#/servers/' + encodeURIComponent(serverId) + playerQuery(player);
-}
-
-function actionHref(serverId, code, player = '') {
-  return '#/servers/' + encodeURIComponent(serverId) + '/actions/' + encodeURIComponent(code) + playerQuery(player);
-}
-
-function mapHref(serverId, world = '') {
-  return serverHref(serverId) + '/map' + (world ? '?world=' + encodeURIComponent(world) : '');
-}
-
-function eventsHref(serverId, types = [], follow = true) {
-  const query = new URLSearchParams();
-  for (const term of types) query.append('type', term);
-  if (!follow) query.set('follow', 'off');
-  const encoded = query.toString();
-  return serverHref(serverId) + '/events' + (encoded ? '?' + encoded : '');
-}
-
-function setCrumbs(items) {
-  const crumbs = document.getElementById('crumbs');
-  clear(crumbs);
-  items.forEach((item, index) => {
-    if (index > 0) crumbs.append(el('span', { class: 'sep' }, '/'));
-    crumbs.append(item.href ? el('a', { href: item.href }, item.label) : el('span', {}, item.label));
-  });
-}
-
-function renderSession() {
-  const session = document.getElementById('session');
-  clear(session);
-  if (!token()) return;
-  session.append(
-    el('span', {}, 'signed in'),
-    el('button', { class: 'small', type: 'button', id: 'sign-out', onclick: () => signOut() }, 'Sign out'),
-  );
-}
-
-function signOut(message) {
-  sessionStorage.removeItem(TOKEN_KEY);
-  if (teardown) {
-    teardown();
-    teardown = null;
+  if (parts[0] === 'tokens' && parts.length === 1) {
+    return { view: 'tokens', section: 'tokens' };
   }
-  renderSeq++;
-  renderSession();
-  setCrumbs([]);
-  renderLogin(document.getElementById('app'), message);
-}
-
-function showError(app, err) {
-  clear(app);
-  app.append(el('div', { class: 'error', role: 'alert' },
-    el('strong', {}, err.code ? err.code + ': ' : ''), err.message || String(err)));
+  if (parts[0] === 'webhooks' && parts.length === 1) {
+    return { view: 'webhooks', section: 'webhooks' };
+  }
+  if (parts[0] === 'webhooks' && parts.length === 2) {
+    return { view: 'webhook', section: 'webhooks', webhookId: parts[1] };
+  }
+  if (parts[0] === 'audit' && parts.length === 1) {
+    // The audit filters live in the route so a shared link carries them, and
+    // they travel to the hub as they are: a since the hub cannot parse is
+    // its refusal to make, not a filter the panel quietly drops.
+    return {
+      view: 'audit', section: 'audit',
+      filters: {
+        tokenId: query.get('tokenId') || '',
+        serverId: query.get('serverId') || '',
+        since: query.get('since') || '',
+        until: query.get('until') || '',
+      },
+    };
+  }
+  if (parts[0] === 'kv' && parts.length === 1) {
+    return { view: 'kv', section: 'kv' };
+  }
+  if (parts[0] === 'kv' && parts.length === 2) {
+    return { view: 'kv-keys', section: 'kv', namespace: parts[1], prefix: query.get('prefix') || '' };
+  }
+  return { view: 'servers', section: 'servers' };
 }
 
 async function render() {
-  if (teardown) {
-    teardown();
-    teardown = null;
-  }
-  const seq = ++renderSeq;
+  const seq = beginRender();
   const app = document.getElementById('app');
   renderSession();
   if (!token()) {
     setCrumbs([]);
+    markNav('');
     renderLogin(app);
     return;
   }
   const route = parseRoute();
+  markNav(route.section);
   try {
     if (route.view === 'server') {
       await viewServer(app, route, seq);
@@ -285,18 +144,40 @@ async function render() {
       await viewEvents(app, route, seq);
     } else if (route.view === 'map') {
       await viewMap(app, route, seq);
+    } else if (route.view === 'tokens') {
+      await viewTokens(app, route, seq);
+    } else if (route.view === 'webhooks') {
+      await viewWebhooks(app, route, seq);
+    } else if (route.view === 'webhook') {
+      await viewWebhook(app, route, seq);
+    } else if (route.view === 'audit') {
+      await viewAudit(app, route, seq);
+    } else if (route.view === 'kv') {
+      await viewKVNamespaces(app, route, seq);
+    } else if (route.view === 'kv-keys') {
+      await viewKVKeys(app, route, seq);
     } else {
       await viewServers(app, seq);
     }
   } catch (err) {
-    if (seq !== renderSeq) return;
+    if (stale(seq)) return;
     if (err instanceof ApiError && err.status === 401) {
       signOut('The hub rejected this token. Sign in again with a live one.');
       return;
     }
     showError(app, err);
   }
+  // A secret-bearing answer that landed after its own view had gone is shown
+  // at the top of whatever rendered next, whichever view that is, until it is
+  // dismissed. Drawn after the view returns, because every view clears #app.
+  if (stale(seq)) return;
+  renderHeldSecrets(app);
 }
+
+// The sign-in form is app.js's, so lib.js is told to draw it once the token
+// is gone, whichever view noticed.
+onSignOut((message) => { renderLogin(document.getElementById('app'), message); });
+onRender(() => { render(); });
 
 // ---------------------------------------------------------------------------
 // Sign in
@@ -315,29 +196,41 @@ function renderLogin(app, message) {
       event.preventDefault();
       const value = input.value.trim();
       if (!value) return;
+      // One probe at a time, and only the latest submission may store: a
+      // second submit on the same form (requestSubmit ignores a disabled
+      // button) retires the first, whose late answer then stores nothing.
+      const attempt = ++loginAttempt;
       button.disabled = true;
-      sessionStorage.setItem(TOKEN_KEY, value);
+      // The candidate is proven before it is stored. While the probe is
+      // out there is no signed-in token, so a secret-bearing answer that
+      // arrives for an earlier session (its owner being this very bearer,
+      // since revoked) finds no session to show itself to. Only an answer
+      // that proves authentication stores it: a success, or a 403, which
+      // the hub gives only after the bearer authenticated and is what a
+      // token scoped away from the server list gets. A 401, a 5xx, an
+      // unreachable hub, or a connection lost mid-answer all leave nothing
+      // behind, because an answer that is not authentication is not one.
+      let accepted = false;
       try {
-        // Any authenticated answer will do, including a 403 from a token
-        // scoped away from the server list; only a 401 means the token
-        // itself is no good.
-        await api('GET', '/servers');
+        await api('GET', '/servers', undefined, value);
+        accepted = true;
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          sessionStorage.removeItem(TOKEN_KEY);
-          error.textContent = 'The hub rejected this token (' + err.code + ').';
-          error.hidden = false;
-          button.disabled = false;
-          return;
-        }
-        if (err instanceof ApiError && err.status === 0) {
-          sessionStorage.removeItem(TOKEN_KEY);
-          error.textContent = err.message;
+        accepted = err instanceof ApiError && err.status === 403;
+        if (!accepted) {
+          error.textContent = err instanceof ApiError && err.status === 401
+            ? 'The hub rejected this token (' + err.code + ').'
+            : 'The hub could not confirm this token: ' + (err.message || String(err));
           error.hidden = false;
           button.disabled = false;
           return;
         }
       }
+      // A probe that lands after its form is gone (a navigation drew a
+      // fresh one, or another candidate signed in meanwhile), or after a
+      // later submission on the same form, belongs to an attempt nobody is
+      // waiting for, and must not replace what is current.
+      if (!form.isConnected || attempt !== loginAttempt) return;
+      sessionStorage.setItem(TOKEN_KEY, value);
       render();
     },
   },
@@ -356,54 +249,69 @@ function renderLogin(app, message) {
 
 async function viewServers(app, seq) {
   setCrumbs([{ label: 'Servers' }]);
+  clear(app);
+  const tbody = el('tbody', {});
+  const table = el('table', { id: 'servers', hidden: true },
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Name'), el('th', {}, 'Game'), el('th', {}, 'Link'), el('th', {}, 'Credentials'),
+      el('th', {}, 'Plugin'), el('th', {}, 'Last seen'), el('th', {}, 'Queued'))),
+    tbody);
+  const empty = el('p', { class: 'notice', id: 'servers-empty', hidden: true },
+    'No servers yet. Register one above, or with POST /api/v1/servers (scripts/demo-enrollment.sh walks through it); it appears here once it exists, and carries a plugin once one enrolls.');
   const load = async () => {
     const data = await api('GET', '/servers');
-    if (seq !== renderSeq) return;
-    drawServers(app, data.servers || []);
+    if (stale(seq)) return;
+    drawServers(tbody, table, empty, data.servers || []);
   };
+  // Only the table is redrawn on the refresh tick. The registration form is
+  // built once and left alone, because a redraw would take a half-typed name
+  // with it, and take the one-time enrollment token of the server just
+  // registered with it too: that value exists nowhere else.
+  app.append(
+    el('h1', {}, 'Servers'),
+    registerServerForm(seq, () => {
+      load().catch(() => {
+        // The new server is on the hub whatever this refresh did, and the
+        // next tick lists it; the token above must stay on the page.
+      });
+    }),
+    empty, table,
+    el('p', { class: 'muted' }, 'The list refreshes every ' + (SERVER_LIST_REFRESH_MS / 1000) + ' s.'));
   await load();
   // A navigation during the first load has already replaced this view; a
   // timer armed now would outlive it.
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   const timer = setInterval(() => {
     load().catch((err) => {
       // A refresh that began under a token since replaced must not sign
       // out whoever signed in after it: clearing the interval does not
       // recall a request already in flight.
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) signOut('The hub rejected this token.');
     });
   }, SERVER_LIST_REFRESH_MS);
-  teardown = () => clearInterval(timer);
+  setTeardown(() => clearInterval(timer));
 }
 
-function drawServers(app, servers) {
-  clear(app);
-  app.append(el('h1', {}, 'Servers'));
-  if (servers.length === 0) {
-    app.append(el('p', { class: 'notice' },
-      'No servers yet. Create one with POST /api/v1/servers (scripts/demo-enrollment.sh walks through it), enroll a plugin, and it will appear here.'));
-    return;
+function drawServers(tbody, table, empty, servers) {
+  clear(tbody);
+  for (const server of servers) {
+    tbody.append(el('tr', {
+      class: 'row-link', 'data-server-id': server.id,
+      onclick: () => { location.hash = serverHref(server.id); },
+    },
+    el('td', {}, el('a', { href: serverHref(server.id) }, server.name)),
+    el('td', {}, server.game || el('span', { class: 'muted' }, 'any')),
+    el('td', {}, badge(server.linkState || 'unknown', server.linkState)),
+    el('td', {}, badge(server.credentialState || '', server.credentialState)),
+    el('td', {}, server.plugin ? server.plugin.name + ' ' + (server.plugin.version || '') : el('span', { class: 'muted' }, 'none')),
+    el('td', {}, ago(server.lastSeenAt)),
+    el('td', {}, server.pendingEnvelopeCount > 0
+      ? badge(String(server.pendingEnvelopeCount), 'pending')
+      : el('span', { class: 'muted' }, '0'))));
   }
-  const rows = servers.map((server) => el('tr', {
-    class: 'row-link', 'data-server-id': server.id,
-    onclick: () => { location.hash = serverHref(server.id); },
-  },
-  el('td', {}, el('a', { href: serverHref(server.id) }, server.name)),
-  el('td', {}, server.game || el('span', { class: 'muted' }, 'any')),
-  el('td', {}, badge(server.linkState || 'unknown', server.linkState)),
-  el('td', {}, badge(server.credentialState || '', server.credentialState)),
-  el('td', {}, server.plugin ? server.plugin.name + ' ' + (server.plugin.version || '') : el('span', { class: 'muted' }, 'none')),
-  el('td', {}, ago(server.lastSeenAt)),
-  el('td', {}, server.pendingEnvelopeCount > 0
-    ? badge(String(server.pendingEnvelopeCount), 'pending')
-    : el('span', { class: 'muted' }, '0'))));
-  app.append(el('table', { id: 'servers' },
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Name'), el('th', {}, 'Game'), el('th', {}, 'Link'), el('th', {}, 'Credentials'),
-      el('th', {}, 'Plugin'), el('th', {}, 'Last seen'), el('th', {}, 'Queued'))),
-    el('tbody', {}, rows)));
-  app.append(el('p', { class: 'muted' }, 'Refreshes every ' + (SERVER_LIST_REFRESH_MS / 1000) + ' s.'));
+  table.hidden = servers.length === 0;
+  empty.hidden = servers.length > 0;
 }
 
 async function loadServerAndManifest(serverId) {
@@ -435,14 +343,14 @@ function serverSummary(server) {
 
 async function viewServer(app, route, seq) {
   const { server, manifest } = await loadServerAndManifest(route.serverId);
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   // A preselected player is labelled from the latest snapshot when it is
   // there; the id alone is still a valid target when it is not (the player
   // may have left since the map was drawn).
   let target = null;
   if (route.player) {
     const players = await loadPlayers(server.id);
-    if (seq !== renderSeq) return;
+    if (stale(seq)) return;
     target = players.find((entry) => entry.id === route.player) || { id: route.player, platform: '', name: '' };
   }
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name }]);
@@ -461,40 +369,16 @@ async function viewServer(app, route, seq) {
       el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
   }
 
+  app.append(serverCredentials(server, seq, () => { render(); }));
+
   if (!manifest) {
     app.append(el('p', { class: 'notice', id: 'no-manifest' },
       'This server has not published a manifest yet. Actions appear here once its plugin connects and publishes one.'));
     return;
   }
-  const body = manifest.manifest || {};
-  const actions = Array.isArray(body.actions) ? body.actions : [];
-  app.append(el('h2', {}, 'Actions'),
-    el('p', { class: 'muted' },
-      'Manifest revision ' + manifest.revision + ', published ' + formatTime(manifest.publishedAt),
-      body.plugin && body.plugin.name ? ' by ' + body.plugin.name + ' ' + (body.plugin.version || '') : ''));
-  if (actions.length === 0) {
-    app.append(el('p', { class: 'notice' }, 'The manifest declares no actions.'));
-    return;
-  }
-  const byNamespace = new Map();
-  for (const action of actions) {
-    const namespace = action.namespace || '';
-    if (!byNamespace.has(namespace)) byNamespace.set(namespace, []);
-    byNamespace.get(namespace).push(action);
-  }
-  for (const [namespace, group] of byNamespace) {
-    if (byNamespace.size > 1 || namespace) app.append(el('h3', {}, namespace || 'no namespace'));
-    app.append(el('div', { class: 'action-list' }, group.map((action) => el('a', {
-      class: 'action-item',
-      href: actionHref(server.id, action.code, action.context === 'player' ? route.player : ''),
-      'data-action-code': action.code,
-    },
-    el('span', { class: 'name' }, action.name || action.code),
-    el('span', { class: 'code mono' }, action.code),
-    el('span', { class: 'spacer' }),
-    action.context ? badge(action.context) : null,
-    action.danger && action.danger !== 'none' ? badge(action.danger, action.danger) : null))));
-  }
+  // The action list, its namespace groups, and the pinned shortlist above
+  // them are manage.js's: a pin is a property of the item, not of the page.
+  append(app, actionsSection(server, manifest, route.player));
 }
 
 // ---------------------------------------------------------------------------
@@ -539,67 +423,6 @@ function mergeEvents(feed, incoming) {
   return added;
 }
 
-// compactValue renders one value of an event's data on a single line. A
-// player identity (section 8.2) reads as platform:id; anything else nested
-// is JSON. Every result is text.
-function compactValue(value) {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'string') return value;
-  if (typeof value !== 'object') return String(value);
-  if (!Array.isArray(value) && typeof value.platform === 'string' && typeof value.id === 'string'
-      && Object.keys(value).length === 2) {
-    return value.platform + ':' + value.id;
-  }
-  return JSON.stringify(value);
-}
-
-const EVENT_SUMMARY_MAX = 240;
-
-function summarizeEventData(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
-  const parts = Object.entries(data).map(([key, value]) => key + ': ' + compactValue(value));
-  const line = parts.join(', ');
-  return line.length > EVENT_SUMMARY_MAX ? line.slice(0, EVENT_SUMMARY_MAX - 1) + '…' : line;
-}
-
-// Event data is bounded in bytes by the hub (16 KiB), not in depth: a few
-// thousand nested objects fit in that. JSON.stringify recurses, so it can
-// overflow the stack on such a value, and indenting it multiplies its size
-// by its depth. jsonDepth walks without recursion so the feed can decide
-// how to show a value before it tries; attempt keeps any failure to the
-// one cell it belongs to.
-const EVENT_PRETTY_MAX_DEPTH = 64;
-
-function jsonDepth(value, cap) {
-  let deepest = 0;
-  const stack = [{ value, depth: 1 }];
-  while (stack.length > 0) {
-    const { value: current, depth } = stack.pop();
-    if (current === null || typeof current !== 'object') continue;
-    if (depth > deepest) deepest = depth;
-    if (deepest > cap) return deepest;
-    for (const child of Array.isArray(current) ? current : Object.values(current)) {
-      if (child !== null && typeof child === 'object') stack.push({ value: child, depth: depth + 1 });
-    }
-  }
-  return deepest;
-}
-
-function attempt(render, fallback) {
-  try {
-    return render();
-  } catch {
-    return fallback;
-  }
-}
-
-function eventPayloadText(data) {
-  if (jsonDepth(data, EVENT_PRETTY_MAX_DEPTH) > EVENT_PRETTY_MAX_DEPTH) {
-    return attempt(() => JSON.stringify(data), 'The data is nested too deeply to display.');
-  }
-  return attempt(() => pretty(data), 'The data could not be serialized.');
-}
-
 // declaredEventNames maps the custom event types a manifest declares
 // (section 6.3) to their display names; the feed labels a matching event
 // with its name beside the type. Declaration is advisory, so an undeclared
@@ -636,11 +459,7 @@ function eventRow(event, names) {
   const name = names.get(type);
   // The full payload is serialized when the disclosure is first opened,
   // not for every row on every draw.
-  const pre = el('pre', {});
-  const details = el('details', {}, el('summary', {}, summary), pre);
-  details.addEventListener('toggle', () => {
-    if (details.open && !pre.firstChild) pre.textContent = eventPayloadText(data);
-  });
+  const details = disclosure(summary, data);
   return el('tr', { 'data-event-id': event.id, 'data-event-type': type },
     el('td', { class: 'when', title: 'received ' + formatTime(event.receivedAt) }, formatTime(event.occurredAt)),
     el('td', {},
@@ -665,7 +484,7 @@ function eventRowOrFallback(event, names) {
 
 async function viewEvents(app, route, seq) {
   const { server, manifest } = await loadServerAndManifest(route.serverId);
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name, href: serverHref(server.id) }, { label: 'Events' }]);
   clear(app);
 
@@ -691,13 +510,8 @@ async function viewEvents(app, route, seq) {
 
   // The filter and the follow switch are both part of the route: applying
   // either navigates, and the view starts over from the hub's first page.
-  const go = (nextTypes, nextFollow) => {
-    const next = eventsHref(server.id, nextTypes, nextFollow);
-    if (location.hash === next) {
-      render();
-    } else {
-      location.hash = next;
-    }
+  const applyFilter = (nextTypes, nextFollow) => {
+    go(eventsHref(server.id, nextTypes, nextFollow));
   };
   const list = el('datalist', { id: 'event-types' }, eventTypeSuggestions(names).map((type) => el('option', { value: type })));
   const filterInput = el('input', {
@@ -706,13 +520,13 @@ async function viewEvents(app, route, seq) {
   });
   const followBox = el('input', { type: 'checkbox', id: 'event-follow' });
   followBox.checked = follow;
-  followBox.addEventListener('change', () => { go(types, followBox.checked); });
+  followBox.addEventListener('change', () => { applyFilter(types, followBox.checked); });
   const filterForm = el('form', {
     class: 'card feed-controls', id: 'event-filter-form',
     onsubmit: (event) => {
       event.preventDefault();
       const terms = [...new Set(filterInput.value.split(/[\s,]+/).map((term) => term.trim()).filter(Boolean))];
-      go(terms, followBox.checked);
+      applyFilter(terms, followBox.checked);
     },
   },
   el('label', { class: 'field' },
@@ -780,13 +594,13 @@ async function viewEvents(app, route, seq) {
   try {
     page = await query(null);
   } catch (err) {
-    if (seq !== renderSeq) return;
+    if (stale(seq)) return;
     if (err instanceof ApiError && err.status === 401) throw err;
     status.textContent = 'The feed could not be read.';
     showProblem(err);
     return;
   }
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   mergeEvents(feed, page.events || []);
   feed.nextCursor = page.nextCursor || null;
   feed.topHadCursor = Boolean(page.nextCursor);
@@ -804,7 +618,7 @@ async function viewEvents(app, route, seq) {
     older.disabled = true;
     try {
       const next = await query(from);
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       mergeEvents(feed, next.events || []);
       feed.nextCursor = next.nextCursor || null;
       // A gap recorded while this page was in flight is a newer discovery
@@ -814,7 +628,7 @@ async function viewEvents(app, route, seq) {
       problem.hidden = true;
       draw(false);
     } catch (err) {
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) {
         signOut('The hub rejected this token.');
         return;
@@ -835,7 +649,7 @@ async function viewEvents(app, route, seq) {
     inFlight = true;
     try {
       const latest = await query(null);
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       problem.hidden = true;
       const events = Array.isArray(latest.events) ? latest.events : [];
       // The hub can hold more below its first page than the feed has
@@ -868,7 +682,7 @@ async function viewEvents(app, route, seq) {
       }
       draw(true);
     } catch (err) {
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) {
         signOut('The hub rejected this token.');
         return;
@@ -879,7 +693,7 @@ async function viewEvents(app, route, seq) {
     }
   };
   const timer = setInterval(tick, EVENT_FEED_REFRESH_MS);
-  teardown = () => clearInterval(timer);
+  setTeardown(() => clearInterval(timer));
 }
 
 // ---------------------------------------------------------------------------
@@ -970,7 +784,7 @@ function positionText(manifest, position) {
 
 async function viewMap(app, route, seq) {
   const server = await api('GET', '/servers/' + encodeURIComponent(route.serverId));
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   // Finding the world and the installed maps is imagery, not the view: a
   // failure there (an unreadable maps directory, a hub error on the events
   // read) is noted beside the map controls, and the player list still
@@ -985,7 +799,7 @@ async function viewMap(app, route, seq) {
     reportedWorld(server.id).catch(degrade('the reported world could not be read')),
     fetchPanelJSON(MAPS_PATH).catch(degrade('the installed maps could not be listed')),
   ]);
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   const installed = index && index.body && Array.isArray(index.body.worlds)
     ? index.body.worlds.filter((world) => typeof world === 'string' && world !== '')
     : [];
@@ -999,10 +813,10 @@ async function viewMap(app, route, seq) {
   if (world) {
     try {
       const fetched = await fetchPanelJSON(MAPS_PATH + encodeURIComponent(world) + '/manifest.json');
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (fetched) dataset = { manifest: validateManifest(fetched.body), baseURL: fetched.url };
     } catch (err) {
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) throw err;
       datasetProblem = err;
     }
@@ -1071,10 +885,10 @@ async function viewMap(app, route, seq) {
   // Registered before the first snapshot read, so a navigation during it
   // still disposes the widget; the timers join once they exist.
   let timers = [];
-  teardown = () => {
+  setTeardown(() => {
     for (const timer of timers) clearInterval(timer);
     if (map) map.destroy();
-  };
+  });
 
   const draw = () => {
     clear(tbody);
@@ -1142,7 +956,7 @@ async function viewMap(app, route, seq) {
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 404)) throw err;
     }
-    if (seq !== renderSeq) return;
+    if (stale(seq)) return;
     state.response = response;
     state.players = snapshotPlayers(response);
     state.loaded = true;
@@ -1153,12 +967,12 @@ async function viewMap(app, route, seq) {
   try {
     await load();
   } catch (err) {
-    if (seq !== renderSeq) return;
+    if (stale(seq)) return;
     if (err instanceof ApiError && err.status === 401) throw err;
     status.textContent = 'The snapshot could not be read.';
     showProblem(err);
   }
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
 
   let inFlight = false;
   const tick = async () => {
@@ -1167,7 +981,7 @@ async function viewMap(app, route, seq) {
     try {
       await load();
     } catch (err) {
-      if (seq !== renderSeq) return;
+      if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) {
         signOut('The hub rejected this token.');
         return;
@@ -1782,7 +1596,7 @@ async function loadPlayers(serverId) {
 
 async function viewAction(app, route, seq) {
   const { server, manifest } = await loadServerAndManifest(route.serverId);
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name, href: serverHref(server.id) }, { label: route.code }]);
   const body = manifest ? manifest.manifest || {} : {};
   const action = (Array.isArray(body.actions) ? body.actions : []).find((entry) => entry && entry.code === route.code);
@@ -1796,7 +1610,7 @@ async function viewAction(app, route, seq) {
   }
   const needsPlayers = action.context === 'player' || JSON.stringify(action.params || {}).includes('"player"');
   const players = needsPlayers ? await loadPlayers(server.id) : [];
-  if (seq !== renderSeq) return;
+  if (stale(seq)) return;
 
   const contexts = Array.isArray(body.contexts) ? body.contexts : [];
   const target = targetField(action, contexts, players);
@@ -1829,7 +1643,7 @@ async function viewAction(app, route, seq) {
   let idempotencyKey = randomKey();
   let keyedRequest = null;
   let stopWatching = null;
-  teardown = () => { if (stopWatching) stopWatching(); };
+  setTeardown(() => { if (stopWatching) stopWatching(); });
 
   // novalidate: the browser's own constraint check has no notion of which
   // optional objects are included, so a stray value inside an excluded one
@@ -1862,7 +1676,7 @@ async function viewAction(app, route, seq) {
       submit.disabled = true;
       try {
         const accepted = await api('POST', '/servers/' + encodeURIComponent(server.id) + '/actions', request);
-        if (seq !== renderSeq) return;
+        if (stale(seq)) return;
         // Accepted, so this key is spent: the next dispatch, even of the
         // same values, is a new action and must not replay this one.
         idempotencyKey = randomKey();
@@ -1871,7 +1685,7 @@ async function viewAction(app, route, seq) {
         stopWatching = watchAction(result, accepted.actionId, action, request, () => { submit.disabled = false; });
       } catch (err) {
         submit.disabled = false;
-        if (seq !== renderSeq) return;
+        if (stale(seq)) return;
         if (err instanceof ApiError && err.status === 401) {
           signOut('The hub rejected this token.');
           return;

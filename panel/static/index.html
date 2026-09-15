@@ -10,9 +10,18 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/">Vyshka</a>
-    <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
-    <div class="session" id="session"></div>
+    <div class="topbar-row">
+      <a class="brand" href="#/">Vyshka</a>
+      <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+      <div class="session" id="session"></div>
+    </div>
+    <nav class="mainnav" id="nav" aria-label="Sections" hidden>
+      <a href="#/" data-nav="servers">Servers</a>
+      <a href="#/tokens" data-nav="tokens">Tokens</a>
+      <a href="#/webhooks" data-nav="webhooks">Webhooks</a>
+      <a href="#/audit" data-nav="audit">Audit</a>
+      <a href="#/kv" data-nav="kv">Key/value</a>
+    </nav>
   </header>
   <main id="app" aria-live="polite">
     <noscript>

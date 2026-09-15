@@ -2,32 +2,20 @@ package panel_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/input"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
-
-	"github.com/That1Drifter/vyshka/hub"
-	"github.com/That1Drifter/vyshka/panel"
 )
 
 // The end-to-end test of issue #13: a real hub with the embedded panel, a
@@ -43,12 +31,9 @@ import (
 // says, a later snapshot replaces the markers whole, and a click on one
 // preselects the player in the action list and its form.
 //
-// It needs a Chromium-family browser. CI has one and sets VYSHKA_E2E=required
-// so a missing browser fails the job instead of skipping the test; anywhere
-// else the test skips itself when it finds none. VYSHKA_E2E_BROWSER names the
-// executable explicitly.
-
-const e2eAdminToken = "vya_E2ETOKENE2ETOKENE2ETOKENE2"
+// The hub, the browser, the fake plugin, and the step helpers are shared with
+// the management test and live in e2e_harness_test.go, along with the
+// VYSHKA_E2E contract for a machine with no browser.
 
 // e2eManifest exercises one field of each kind the form builder renders:
 // an integer with an exclusive bound (shifted onto the input), a real number
@@ -191,25 +176,14 @@ func writeE2ETileset(t *testing.T, dir string) {
 }
 
 func TestPanelEndToEnd(t *testing.T) {
-	browser := findBrowser(t)
-
 	mapsDir := t.TempDir()
 	writeE2ETileset(t, mapsDir)
-	server, err := hub.New(context.Background(), hub.Config{
-		DatabaseURL: filepath.Join(t.TempDir(), "e2e.db"),
-		AdminToken:  e2eAdminToken,
-		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Panel:       panel.NewHandler(panel.Config{MapsDir: mapsDir}),
-	})
-	if err != nil {
-		t.Fatalf("boot hub: %v", err)
-	}
-	t.Cleanup(func() { server.Close() })
-	web := httptest.NewServer(server.Handler())
-	t.Cleanup(web.Close)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	t.Cleanup(cancel)
+	// The hub, the browser, the console capture, and the step helpers are
+	// e2e_harness_test.go's; the steps below are this test's.
+	h := newE2EHarness(t, mapsDir)
+	web, ctx := h.web, h.Ctx
+	run, setValue, waitJS := h.run, h.setValue, h.waitJS
+	text, attribute, evalString := h.text, h.attribute, h.evalString
 
 	// A server record and a plugin attached to it, before the browser looks.
 	created := createServer(t, web.URL, "E2E server")
@@ -242,97 +216,6 @@ func TestPanelEndToEnd(t *testing.T) {
 	go plugin.run(ctx)
 	if err := plugin.awaitAcked(ctx); err != nil {
 		t.Fatalf("plugin never got its manifest acked: %v", err)
-	}
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, append(
-		chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(browser))...)
-	t.Cleanup(cancelAlloc)
-	page, cancelPage := chromedp.NewContext(allocCtx)
-	t.Cleanup(cancelPage)
-	// The browser's lifetime is tied to the context of the first Run, so it
-	// is started here on the tab context rather than under a step's deadline.
-	if err := chromedp.Run(page); err != nil {
-		t.Fatalf("start %s: %v", browser, err)
-	}
-
-	// Anything the page logs or throws is kept for the failure report, which
-	// otherwise says only that a selector never appeared.
-	var consoleMu sync.Mutex
-	var console []string
-	chromedp.ListenTarget(page, func(event any) {
-		switch e := event.(type) {
-		case *cdpruntime.EventExceptionThrown:
-			consoleMu.Lock()
-			console = append(console, "exception: "+e.ExceptionDetails.Error())
-			consoleMu.Unlock()
-		case *cdpruntime.EventConsoleAPICalled:
-			var parts []string
-			for _, arg := range e.Args {
-				parts = append(parts, string(arg.Value))
-			}
-			consoleMu.Lock()
-			console = append(console, string(e.Type)+": "+strings.Join(parts, " "))
-			consoleMu.Unlock()
-		}
-	})
-	fail := func(format string, args ...any) {
-		t.Helper()
-		var bodyText string
-		snapshot, cancelSnapshot := context.WithTimeout(page, 5*time.Second)
-		_ = chromedp.Run(snapshot, chromedp.Evaluate(`document.body.innerText`, &bodyText))
-		cancelSnapshot()
-		consoleMu.Lock()
-		logged := strings.Join(console, "\n")
-		consoleMu.Unlock()
-		t.Fatalf(format+"\n--- page text ---\n%s\n--- browser console ---\n%s", append(args, bodyText, logged)...)
-	}
-	// Every step gets its own deadline, well inside the test's, so a step
-	// that hangs still leaves time to read the page for the report.
-	run := func(what string, actions ...chromedp.Action) {
-		t.Helper()
-		step, cancelStep := context.WithTimeout(page, 30*time.Second)
-		defer cancelStep()
-		if err := chromedp.Run(step, actions...); err != nil {
-			fail("%s: %v", what, err)
-		}
-	}
-	// setValue replaces an input's live value through the DOM property.
-	// chromedp.Clear writes the value attribute, which a field the test has
-	// already typed into ignores, and SetValue refuses an empty string.
-	setValue := func(selector, value string) chromedp.Action {
-		return chromedp.Evaluate(`(function(){const i=document.querySelector(`+strconv.Quote(selector)+`);i.value=`+
-			strconv.Quote(value)+`;i.dispatchEvent(new Event("input",{bubbles:true}));return true})()`, nil)
-	}
-	// waitJS polls a predicate in the page until it is truthy.
-	waitJS := func(what, predicate string) {
-		t.Helper()
-		var ok bool
-		if err := chromedp.Run(page, chromedp.Poll(predicate, &ok,
-			chromedp.WithPollingTimeout(30*time.Second), chromedp.WithPollingInterval(100*time.Millisecond))); err != nil {
-			fail("%s: %v", what, err)
-		}
-	}
-	text := func(selector string) string {
-		t.Helper()
-		var value string
-		run("read "+selector, chromedp.Text(selector, &value, chromedp.ByQuery))
-		return value
-	}
-	attribute := func(selector, name string) string {
-		t.Helper()
-		var value string
-		var found bool
-		run("attribute "+selector, chromedp.AttributeValue(selector, name, &value, &found, chromedp.ByQuery))
-		if !found {
-			t.Fatalf("%s has no %s attribute", selector, name)
-		}
-		return value
-	}
-	evalString := func(expression string) string {
-		t.Helper()
-		var value string
-		run("evaluate "+expression, chromedp.Evaluate(expression, &value))
-		return value
 	}
 
 	// 1. / lands on the panel, which asks for a token.
@@ -943,287 +826,4 @@ func abs(value int) int {
 		return -value
 	}
 	return value
-}
-
-// findBrowser locates a Chromium-family executable or decides between skip
-// and fail, per the VYSHKA_E2E contract in the file comment.
-func findBrowser(t *testing.T) string {
-	t.Helper()
-	if path := os.Getenv("VYSHKA_E2E_BROWSER"); path != "" {
-		return path
-	}
-	var candidates []string
-	if runtime.GOOS == "windows" {
-		for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LocalAppData")} {
-			if root == "" {
-				continue
-			}
-			candidates = append(candidates,
-				filepath.Join(root, "Google", "Chrome", "Application", "chrome.exe"),
-				filepath.Join(root, "Chromium", "Application", "chrome.exe"),
-				filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"))
-		}
-		for _, candidate := range candidates {
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate
-			}
-		}
-	} else {
-		candidates = []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome",
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"}
-		for _, candidate := range candidates {
-			if path, err := exec.LookPath(candidate); err == nil {
-				return path
-			}
-			if strings.HasPrefix(candidate, "/") {
-				if _, err := os.Stat(candidate); err == nil {
-					return candidate
-				}
-			}
-		}
-	}
-	if os.Getenv("VYSHKA_E2E") == "required" {
-		t.Fatalf("VYSHKA_E2E=required but no browser was found (tried %s); set VYSHKA_E2E_BROWSER", strings.Join(candidates, ", "))
-	}
-	t.Skipf("no Chromium-family browser found (tried %s); set VYSHKA_E2E_BROWSER to run the panel end-to-end test", strings.Join(candidates, ", "))
-	return ""
-}
-
-// ---------------------------------------------------------------------------
-// The Admin API and Plugin API halves, over HTTP like any other client.
-
-type createdServer struct {
-	Server struct {
-		ID string `json:"id"`
-	} `json:"server"`
-	Enrollment struct {
-		Token string `json:"token"`
-	} `json:"enrollment"`
-}
-
-func postJSON(client *http.Client, url, bearer string, body any) (int, []byte, error) {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return 0, nil, err
-	}
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(encoded))
-	if err != nil {
-		return 0, nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if bearer != "" {
-		request.Header.Set("Authorization", "Bearer "+bearer)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	return response.StatusCode, answer, err
-}
-
-func createServer(t *testing.T, hubURL, name string) createdServer {
-	t.Helper()
-	status, body, err := postJSON(http.DefaultClient, hubURL+"/api/v1/servers", e2eAdminToken,
-		map[string]any{"name": name, "game": "e2e"})
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("create server: status %d err %v body %s", status, err, body)
-	}
-	var created createdServer
-	if err := json.Unmarshal(body, &created); err != nil {
-		t.Fatalf("decode created server: %v", err)
-	}
-	return created
-}
-
-type wireEnvelope struct {
-	V    int             `json:"v"`
-	ID   string          `json:"id"`
-	Type string          `json:"type"`
-	Seq  int64           `json:"seq"`
-	TS   string          `json:"ts"`
-	Body json.RawMessage `json:"body"`
-}
-
-type dispatchBody struct {
-	ActionID     string          `json:"actionId"`
-	Code         string          `json:"code"`
-	Context      string          `json:"context"`
-	ReferenceKey string          `json:"referenceKey"`
-	Params       json.RawMessage `json:"params"`
-}
-
-// fakePlugin is the smallest plugin that can serve this test: it enrolls,
-// keeps one session, long-polls, and answers every action.dispatch with an
-// action.ack and an action.result computed from the params. Its outbound
-// buffer is acked cumulatively like the protocol says; it never needs to
-// survive a session change, so it does no renumbering.
-type fakePlugin struct {
-	t      *testing.T
-	hubURL string
-	client *http.Client
-
-	serverID, serverSecret, sessionToken string
-
-	mu        sync.Mutex
-	inAck     int64
-	outSeq    int64
-	buffer    []wireEnvelope
-	ids       int64
-	received  []dispatchBody
-	allAcked  chan struct{}
-	ackedOnce sync.Once
-}
-
-func newFakePlugin(t *testing.T, hubURL, enrollmentToken string) *fakePlugin {
-	t.Helper()
-	p := &fakePlugin{t: t, hubURL: hubURL, client: &http.Client{Timeout: 15 * time.Second}, allAcked: make(chan struct{})}
-	status, body, err := postJSON(p.client, hubURL+"/plugin/v1/enroll", "", map[string]any{
-		"enrollmentToken": enrollmentToken, "game": "e2e",
-		"plugin": map[string]any{"name": "e2e-plugin", "version": "0.1.0"}, "transports": []string{"poll"},
-	})
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("enroll: status %d err %v body %s", status, err, body)
-	}
-	var enrolled struct {
-		ServerID     string `json:"serverId"`
-		ServerSecret string `json:"serverSecret"`
-	}
-	if err := json.Unmarshal(body, &enrolled); err != nil {
-		t.Fatalf("decode enrollment: %v", err)
-	}
-	p.serverID, p.serverSecret = enrolled.ServerID, enrolled.ServerSecret
-
-	status, body, err = postJSON(p.client, hubURL+"/plugin/v1/session", "", map[string]any{
-		"serverId": p.serverID, "serverSecret": p.serverSecret, "protocolVersion": 1,
-		"pollTimeoutSeconds": 5,
-		"plugin":             map[string]any{"name": "e2e-plugin", "version": "0.1.0"}, "transports": []string{"poll"},
-	})
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("session: status %d err %v body %s", status, err, body)
-	}
-	var session struct {
-		SessionToken string `json:"sessionToken"`
-	}
-	if err := json.Unmarshal(body, &session); err != nil {
-		t.Fatalf("decode session: %v", err)
-	}
-	p.sessionToken = session.SessionToken
-	return p
-}
-
-func (p *fakePlugin) queue(envelopeType string, body any) {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		p.t.Fatalf("encode %s: %v", envelopeType, err)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.outSeq++
-	p.ids++
-	p.buffer = append(p.buffer, wireEnvelope{
-		V: 1, ID: "e2e-" + strconv.FormatInt(p.ids, 10), Type: envelopeType, Seq: p.outSeq,
-		TS: time.Now().UTC().Format(time.RFC3339), Body: encoded,
-	})
-}
-
-func (p *fakePlugin) run(ctx context.Context) {
-	for ctx.Err() == nil {
-		p.mu.Lock()
-		request := map[string]any{"ack": p.inAck, "envelopes": append([]wireEnvelope(nil), p.buffer...)}
-		p.mu.Unlock()
-		status, body, err := postJSON(p.client, p.hubURL+"/plugin/v1/poll", p.sessionToken, request)
-		if err != nil || status != http.StatusOK {
-			if ctx.Err() != nil {
-				return
-			}
-			p.t.Logf("fake plugin poll: status %d err %v body %s", status, err, body)
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		var answer struct {
-			Envelopes []wireEnvelope `json:"envelopes"`
-			Ack       int64          `json:"ack"`
-		}
-		if err := json.Unmarshal(body, &answer); err != nil {
-			p.t.Logf("fake plugin poll: decode: %v", err)
-			continue
-		}
-		p.mu.Lock()
-		kept := p.buffer[:0]
-		for _, e := range p.buffer {
-			if e.Seq > answer.Ack {
-				kept = append(kept, e)
-			}
-		}
-		p.buffer = kept
-		if len(p.buffer) == 0 && p.outSeq > 0 {
-			p.ackedOnce.Do(func() { close(p.allAcked) })
-		}
-		for _, e := range answer.Envelopes {
-			if e.Seq > p.inAck {
-				p.inAck = e.Seq
-			}
-			if e.Type != "action.dispatch" {
-				continue
-			}
-			var dispatch dispatchBody
-			if err := json.Unmarshal(e.Body, &dispatch); err != nil {
-				continue
-			}
-			p.received = append(p.received, dispatch)
-			p.mu.Unlock()
-			p.queue("action.ack", map[string]any{"actionId": dispatch.ActionID})
-			var params struct {
-				Amount float64 `json:"amount"`
-			}
-			_ = json.Unmarshal(dispatch.Params, &params)
-			p.queue("action.result", map[string]any{
-				"actionId": dispatch.ActionID, "ok": true,
-				"result": map[string]any{"healedTo": params.Amount, "player": dispatch.ReferenceKey}, "durationMs": 7,
-			})
-			p.mu.Lock()
-		}
-		p.mu.Unlock()
-	}
-}
-
-func (p *fakePlugin) awaitAcked(ctx context.Context) error {
-	select {
-	case <-p.allAcked:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// awaitDrained waits until the hub has acked everything queued so far, which
-// is when everything queued so far is stored.
-func (p *fakePlugin) awaitDrained(ctx context.Context) error {
-	for ctx.Err() == nil {
-		p.mu.Lock()
-		pending := len(p.buffer)
-		p.mu.Unlock()
-		if pending == 0 {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return ctx.Err()
-}
-
-func (p *fakePlugin) dispatches() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.received)
-}
-
-func (p *fakePlugin) lastDispatch() dispatchBody {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.received) == 0 {
-		p.t.Fatal("the plugin received no dispatch")
-	}
-	return p.received[len(p.received)-1]
 }
