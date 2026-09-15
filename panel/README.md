@@ -39,7 +39,7 @@ Tracked in issue #13 (panel v1), #47 (the event feed), and #46 (the live map).
   requires.
 - **Targets**: a `player` context action gets a required player field fed by the same
   snapshot; `vehicle` and `object` get an id field; custom contexts get an optional
-  reference field (enumeration arrives with custom contexts, milestone M5).
+  reference field (enumeration arrives with the first custom context, issue #73).
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
   Dispatch button does anything.
 - **Dispatch and live result**: one `POST /api/v1/servers/{id}/actions` with an idempotency

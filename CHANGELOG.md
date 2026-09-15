@@ -12,6 +12,21 @@ point if needed.
 
 ### Added
 
+- 2026-09-14: `CONTEXT.md`, a glossary of the roadmap and process terms (shipped,
+  committed, proposed, parked, tabled, dropped; slice, spike, tripwire; operator,
+  installation). Wire terms stay in `spec/protocol.md` and are not repeated there. The
+  operator is defined as one person or small team running one hub with a handful of game
+  servers, usually on other boxes, and a few admins of unequal trust; a hosting outfit is
+  out of scope until 1.0.
+- 2026-09-14: issues #64 to #87 for every item the roadmap review committed: the panel
+  management views, the outbox crash spike, position and world actions, vehicles in two
+  slices, vitals, the first release, damage telemetry, admin flags, the mod surface with a
+  self-contained sample mod, the item catalog as the first custom context, inventory, the
+  spawning extension, presets, the world snapshot and weather action, the hub-only features
+  (player profile, per-webhook redaction, audit entries as webhook material), two spec
+  discussions (installation-wide ban list, server-scoped token dimension), and the
+  operations slices (`/metrics`, backup with retention tooling, config file, `--auto-tls`,
+  rate limits, measured capacity).
 - 2026-09-14: `ROADMAP.md` gains the proposed items from a survey of established in-game
   admin menus for DayZ. Under Horizon 1.3: vitals and persistent admin flags, inventory
   actions and an on-request inventory snapshot, spawning extras, loadouts and teleport
@@ -1147,6 +1162,26 @@ point if needed.
 
 ### Changed
 
+- 2026-09-14: `ROADMAP.md` rewritten after the roadmap review: no proposed items remain.
+  Every one became committed (an issue), parked (a named trigger, collected in a table), or
+  dropped (listed under "Not on the roadmap" with its reason). The ordering rule is now
+  "DayZ first, to the first tagged release" in place of the undefined "until an operator
+  could run it unattended"; the first five slices gate the release. M5 was dissolved:
+  custom contexts moved to Horizon 1 with the item catalog as the first customer (#73),
+  `--auto-tls` became an operations slice (#85), and the Arma Reforger plugin was tabled
+  (issue #15 closed) with nothing else depending on it. Protocol 1.0 now gates only on a
+  third-party plugin written from the spec alone. The position cadence row corrects the
+  stale 50 s figure to the poll cycle (25 s measured), since the plugin captures on each
+  poll. Dropped: KV soft delete, `actions:batch`, the `talking` flag, the inbound Discord
+  bridge, delete-all-unclaimed as a plugin action, admin night vision.
+- 2026-09-14: `spec/protocol.md` draft 0.22 freezes the player identity shape in section
+  8.2 (`{ platform, id }`) on DayZ evidence rather than waiting for a second game. The set
+  of `platform` values is an open registry with `steam` as its only entry; a new game adds
+  its identifier additively, and a hub accepts any platform string within the section 8.3
+  length bounds (which is what the reference hub already enforced). The design notes'
+  pre-M1 question 2 is resolved and the milestone table replaces M5 with a 1.0 row.
+  `README.md`, `panel/README.md`, and `plugins/README.md` lose their M5 and on-hold
+  references.
 - 2026-09-12: `README.md` status section split from one paragraph into five, grouped by
   direction of flow (control plane, hub to plugin, plugin to hub, operator surface). The
   conformance-check count is no longer stated in prose, so it cannot go stale. No facts

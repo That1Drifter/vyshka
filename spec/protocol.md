@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.21 (2026-09-14)
+**Status:** draft 0.22 (2026-09-14)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1089,9 +1089,11 @@ platform-specific id:
 { "platform": "steam", "id": "76561198000000000" }
 ```
 
-> **Open question (pre-1.0):** the platform registry (e.g. the identifier scheme for
-> Bohemia accounts on Arma Reforger) will be confirmed against a second game before this
-> shape freezes.
+> **Frozen (draft 0.22, 2026-09-14):** the `{ platform, id }` shape is final. The set of
+> `platform` values is an open registry: `steam` is the only registered value today, and a
+> plugin for another game adds its platform identifier as an additive change to this
+> section, never by altering the shape. A hub MUST accept any `platform` string within the
+> section 8.3 length bounds, since it cannot know which games will be enrolled.
 
 ### 8.3 State snapshots
 

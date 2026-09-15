@@ -156,7 +156,7 @@ order, and the proposed items that have not been decided. The milestones in brie
 | M2 | DayZ plugin |
 | M3 | Telemetry, state snapshots, webhooks, KV store |
 | M4 | Scoped tokens, audit log, panel v1 |
-| M5 | Custom contexts, Arma Reforger plugin, `--auto-tls` |
+| 1.0 | Protocol freeze, after a third-party plugin has been written from the spec alone |
 
 ## Contributing
 
