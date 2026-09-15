@@ -235,6 +235,16 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A body carrying nothing this draft recognises is a request the caller
+	// cannot have meant; answering 200 to it would report success for an edit
+	// that never happened. It is refused before the webhook is read, so a
+	// malformed edit reads the same whatever id it names.
+	if len(updatedWebhookFields(request)) == 0 {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"an edit names at least one of url, events, serverIds, template, paused")
+		return
+	}
+
 	webhookID := r.PathValue("webhookId")
 	existing, err := s.store.WebhookByID(r.Context(), webhookID)
 	switch {
@@ -247,14 +257,6 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	update := store.WebhookUpdate{Paused: request.Paused}
-	if len(updatedWebhookFields(request)) == 0 {
-		// A body carrying nothing this draft recognises is a request the
-		// caller cannot have meant; answering 200 to it would report success
-		// for an edit that never happened.
-		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"an edit names at least one of url, events, serverIds, template, paused")
-		return
-	}
 
 	var parsedURL *url.URL
 	if request.URL != nil {
