@@ -129,10 +129,20 @@ func (s *Store) WebhookByID(ctx context.Context, webhookID string) (Webhook, err
 // ErrNotFound (spec section 11.2). The secret is never touched here: an edit
 // does not rotate it, so a receiver's verification keeps working across one.
 //
+// authorize, when non-nil, is the caller's coverage decision, and it runs
+// inside the transaction against the row as locked there: the webhook as it
+// stands at that instant and, when the edit changes the URL, the distinct
+// types of its pending deliveries. A decision taken on a snapshot read before
+// the transaction could be overtaken by a concurrent edit and authorize a
+// subscription the token could never have registered; a decision taken on the
+// locked row cannot. An error from authorize aborts the edit and is returned
+// as it is, so the caller can tell its own refusal from a store failure.
+//
 // Pausing is idempotent in SQL rather than in the caller: paused_at is set
 // with COALESCE, so pausing an already paused webhook leaves the instant it
 // was first paused alone even when two edits race.
-func (s *Store) UpdateWebhook(ctx context.Context, webhookID string, update WebhookUpdate) (Webhook, error) {
+func (s *Store) UpdateWebhook(ctx context.Context, webhookID string, update WebhookUpdate,
+	authorize func(existing Webhook, pendingTypes []string) error) (Webhook, error) {
 	if update.IsEmpty() {
 		return s.WebhookByID(ctx, webhookID)
 	}
@@ -178,6 +188,30 @@ func (s *Store) UpdateWebhook(ctx context.Context, webhookID string, update Webh
 	}
 	defer tx.Rollback()
 
+	// The row is locked before the decision is taken, so nothing can rewrite
+	// it between the coverage check and the write. On SQLite the store's one
+	// connection serializes the whole transaction and the lock clause is
+	// empty; on Postgres it is FOR UPDATE.
+	existing, err := scanWebhook(tx.QueryRowContext(ctx,
+		`SELECT `+webhookColumns+` FROM webhooks WHERE id = ?`+tx.forUpdate(), webhookID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Webhook{}, ErrNotFound
+		}
+		return Webhook{}, err
+	}
+	if authorize != nil {
+		var pendingTypes []string
+		if update.URL != nil {
+			if pendingTypes, err = pendingDeliveryTypes(ctx, tx, webhookID); err != nil {
+				return Webhook{}, err
+			}
+		}
+		if err := authorize(existing, pendingTypes); err != nil {
+			return Webhook{}, err
+		}
+	}
+
 	result, err := tx.ExecContext(ctx,
 		`UPDATE webhooks SET `+strings.Join(assignments, ", ")+` WHERE id = ?`,
 		append(arguments, webhookID)...)
@@ -206,6 +240,43 @@ func (s *Store) UpdateWebhook(ctx context.Context, webhookID string, update Webh
 		return Webhook{}, fmt.Errorf("commit webhook update: %w", err)
 	}
 	return webhook, nil
+}
+
+// querier is what the pending-type read needs from either a transaction or
+// the pool.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// PendingDeliveryTypes returns the distinct notification types of a webhook's
+// pending deliveries, in name order. An edit that changes the target URL is
+// authorized against these (spec section 11.2): the bodies were rendered
+// under the subscription as it stood, and they will follow the URL.
+func (s *Store) PendingDeliveryTypes(ctx context.Context, webhookID string) ([]string, error) {
+	return pendingDeliveryTypes(ctx, s.db, webhookID)
+}
+
+func pendingDeliveryTypes(ctx context.Context, q querier, webhookID string) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT DISTINCT type FROM webhook_deliveries
+		  WHERE webhook_id = ? AND state = ?
+		  ORDER BY type`, webhookID, DeliveryPending)
+	if err != nil {
+		return nil, fmt.Errorf("read pending delivery types: %w", err)
+	}
+	defer rows.Close()
+	types := []string{}
+	for rows.Next() {
+		var one string
+		if err := rows.Scan(&one); err != nil {
+			return nil, fmt.Errorf("scan pending delivery type: %w", err)
+		}
+		types = append(types, one)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read pending delivery types: %w", err)
+	}
+	return types, nil
 }
 
 // DeleteWebhook removes a webhook; its deliveries go with it (ON DELETE
@@ -278,7 +349,16 @@ type WebhookDelivery struct {
 	LastError     string
 	CreatedAt     time.Time
 	DeliveredAt   *time.Time
+	// Generation counts the replays this delivery has had. An attempt books
+	// its outcome against the generation it read, so an outcome arriving
+	// after a replay is discarded instead of consuming the replay's attempt.
+	Generation int
 }
+
+// ErrStaleAttempt is returned when a delivery outcome cannot be booked because
+// the delivery was replayed, or is gone, since the attempt was read: the row
+// no longer carries the generation the attempt was made under.
+var ErrStaleAttempt = errors.New("delivery attempt is stale")
 
 // NotifyEvents fans unnotified stored events out to deliveries in one
 // transaction: read up to limit flagged rows, let build turn them into
@@ -553,7 +633,7 @@ func (s *Store) DueWebhookDeliveries(ctx context.Context, now time.Time, limit i
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.webhook_id, d.type, d.server_id, d.body, d.state, d.attempts,
 		        d.next_attempt_at, d.last_status, d.last_error, d.created_at, d.delivered_at,
-		        w.url, w.secret
+		        d.generation, w.url, w.secret
 		   FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
 		  WHERE d.state = ? AND d.next_attempt_at <= ? AND w.paused_at IS NULL
 		  ORDER BY d.next_attempt_at, d.id
@@ -576,7 +656,7 @@ func (s *Store) DueWebhookDeliveries(ctx context.Context, now time.Time, limit i
 		if err := rows.Scan(&one.Delivery.ID, &one.Delivery.WebhookID, &one.Delivery.Type,
 			&one.Delivery.ServerID, &body, &one.Delivery.State, &one.Delivery.Attempts,
 			&nextAttemptAt, &lastStatus, &lastError, &createdAt, &deliveredAt,
-			&one.URL, &one.Secret); err != nil {
+			&one.Delivery.Generation, &one.URL, &one.Secret); err != nil {
 			return nil, fmt.Errorf("scan due delivery: %w", err)
 		}
 		one.Delivery.Body = json.RawMessage(body)
@@ -599,56 +679,74 @@ func (s *Store) DueWebhookDeliveries(ctx context.Context, now time.Time, limit i
 	return due, nil
 }
 
-// RecordDeliverySuccess finishes a delivery after a 2xx answer.
-func (s *Store) RecordDeliverySuccess(ctx context.Context, deliveryID string, status int) error {
+// RecordDeliverySuccess finishes a delivery after a 2xx answer. generation is
+// the one the attempt was read under; a row that has been replayed since
+// carries a later one, and the outcome is then ErrStaleAttempt rather than
+// booked, because the replay's attempt is the one that now counts (spec
+// section 11.5).
+func (s *Store) RecordDeliverySuccess(ctx context.Context, deliveryID string, generation, status int) error {
 	now := formatTime(time.Now().UTC())
-	if _, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE webhook_deliveries
 		    SET state = ?, attempts = attempts + 1, last_status = ?, last_error = NULL,
 		        delivered_at = ?, finished_at = ?
-		  WHERE id = ? AND state = ?`,
-		DeliveryDelivered, status, now, now, deliveryID, DeliveryPending,
-	); err != nil {
+		  WHERE id = ? AND state = ? AND generation = ?`,
+		DeliveryDelivered, status, now, now, deliveryID, DeliveryPending, generation)
+	if err != nil {
 		return fmt.Errorf("record delivery success: %w", err)
 	}
-	return nil
+	return bookedOrStale(result, "record delivery success")
 }
 
 // RecordDeliveryFailure books one failed attempt. A non-nil nextAttemptAt
 // schedules the retry; nil means the schedule is exhausted and the delivery is
 // dead (spec section 11.5). status is nil when the failure never produced an
-// HTTP response at all.
-func (s *Store) RecordDeliveryFailure(ctx context.Context, deliveryID string, status *int, message string, nextAttemptAt *time.Time) error {
+// HTTP response at all. generation is as for RecordDeliverySuccess.
+func (s *Store) RecordDeliveryFailure(ctx context.Context, deliveryID string, generation int, status *int, message string, nextAttemptAt *time.Time) error {
 	statusValue := any(nil)
 	if status != nil {
 		statusValue = *status
 	}
 
 	if nextAttemptAt != nil {
-		if _, err := s.db.ExecContext(ctx,
+		result, err := s.db.ExecContext(ctx,
 			`UPDATE webhook_deliveries
 			    SET attempts = attempts + 1, last_status = ?, last_error = ?, next_attempt_at = ?
-			  WHERE id = ? AND state = ?`,
-			statusValue, message, formatTime(*nextAttemptAt), deliveryID, DeliveryPending,
-		); err != nil {
+			  WHERE id = ? AND state = ? AND generation = ?`,
+			statusValue, message, formatTime(*nextAttemptAt), deliveryID, DeliveryPending, generation)
+		if err != nil {
 			return fmt.Errorf("record delivery failure: %w", err)
 		}
-		return nil
+		return bookedOrStale(result, "record delivery failure")
 	}
 
-	if _, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE webhook_deliveries
 		    SET state = ?, attempts = attempts + 1, last_status = ?, last_error = ?, finished_at = ?
-		  WHERE id = ? AND state = ?`,
-		DeliveryDead, statusValue, message, formatTime(time.Now().UTC()), deliveryID, DeliveryPending,
-	); err != nil {
+		  WHERE id = ? AND state = ? AND generation = ?`,
+		DeliveryDead, statusValue, message, formatTime(time.Now().UTC()), deliveryID, DeliveryPending, generation)
+	if err != nil {
 		return fmt.Errorf("record delivery dead: %w", err)
+	}
+	return bookedOrStale(result, "record delivery dead")
+}
+
+// bookedOrStale turns an outcome update that matched no row into
+// ErrStaleAttempt: the delivery was replayed, finished by another path, or
+// deleted with its webhook since the attempt was read.
+func bookedOrStale(result sql.Result, what string) error {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if affected == 0 {
+		return ErrStaleAttempt
 	}
 	return nil
 }
 
 const webhookDeliveryColumns = `id, webhook_id, type, server_id, body, state, attempts,
-	        next_attempt_at, last_status, last_error, created_at, delivered_at`
+	        next_attempt_at, last_status, last_error, created_at, delivered_at, generation`
 
 func scanWebhookDelivery(row rowScanner) (WebhookDelivery, error) {
 	var (
@@ -661,7 +759,8 @@ func scanWebhookDelivery(row rowScanner) (WebhookDelivery, error) {
 	)
 	if err := row.Scan(&delivery.ID, &delivery.WebhookID, &delivery.Type,
 		&delivery.ServerID, &body, &delivery.State, &delivery.Attempts,
-		&nextAttemptAt, &lastStatus, &lastError, &createdAt, &deliveredAt); err != nil {
+		&nextAttemptAt, &lastStatus, &lastError, &createdAt, &deliveredAt,
+		&delivery.Generation); err != nil {
 		return WebhookDelivery{}, err
 	}
 	delivery.Body = json.RawMessage(body)
@@ -708,6 +807,21 @@ func (s *Store) WebhookDeliveries(ctx context.Context, webhookID string, limit i
 	return deliveries, nil
 }
 
+// WebhookDelivery reads one delivery of one webhook, or ErrNotFound when the
+// delivery does not exist or belongs to another webhook.
+func (s *Store) WebhookDelivery(ctx context.Context, webhookID, deliveryID string) (WebhookDelivery, error) {
+	delivery, err := scanWebhookDelivery(s.db.QueryRowContext(ctx,
+		`SELECT `+webhookDeliveryColumns+` FROM webhook_deliveries WHERE id = ? AND webhook_id = ?`,
+		deliveryID, webhookID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return WebhookDelivery{}, ErrNotFound
+		}
+		return WebhookDelivery{}, fmt.Errorf("read webhook delivery: %w", err)
+	}
+	return delivery, nil
+}
+
 // ReplayWebhookDelivery re-arms one delivery for a further attempt (spec
 // section 11.5): pending again, due now, its terminal timestamps cleared. The
 // id, the stored body, and the attempt count survive, so the receiver sees the
@@ -726,9 +840,14 @@ func (s *Store) ReplayWebhookDelivery(ctx context.Context, webhookID, deliveryID
 	}
 	defer tx.Rollback()
 
+	// The generation moves with every replay, so an attempt that was already
+	// in flight books nothing against the re-armed row (see
+	// RecordDeliverySuccess), and the further attempt the replay promised is
+	// the one that gets made.
 	result, err := tx.ExecContext(ctx,
 		`UPDATE webhook_deliveries
-		    SET state = ?, next_attempt_at = ?, finished_at = NULL, delivered_at = NULL
+		    SET state = ?, next_attempt_at = ?, finished_at = NULL, delivered_at = NULL,
+		        generation = generation + 1
 		  WHERE id = ? AND webhook_id = ?`,
 		DeliveryPending, formatTime(time.Now().UTC()), deliveryID, webhookID)
 	if err != nil {
@@ -766,11 +885,18 @@ func (s *Store) PruneWebhookDeliveries(ctx context.Context, cutoff time.Time, li
 	if limit <= 0 {
 		limit = defaultPruneBatch
 	}
+	// The conditions are repeated outside the subquery on purpose. On
+	// Postgres the subquery's rows are chosen from the statement's snapshot,
+	// and a row a concurrent replay is re-arming is only reached once that
+	// replay commits; the outer conditions are then re-evaluated against the
+	// row as committed, so a delivery that stopped being finished in between
+	// is kept. Membership in the id list alone would delete it.
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM webhook_deliveries
 		  WHERE id IN (SELECT id FROM webhook_deliveries
-		                WHERE state <> ? AND finished_at IS NOT NULL AND finished_at <= ? LIMIT ?)`,
-		DeliveryPending, formatTime(cutoff), limit)
+		                WHERE state <> ? AND finished_at IS NOT NULL AND finished_at <= ? LIMIT ?)
+		    AND state <> ? AND finished_at IS NOT NULL AND finished_at <= ?`,
+		DeliveryPending, formatTime(cutoff), limit, DeliveryPending, formatTime(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("prune webhook deliveries: %w", err)
 	}

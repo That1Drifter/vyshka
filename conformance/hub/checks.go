@@ -3310,6 +3310,12 @@ var checks = []Check{
 		Run:     checkWebhookReplay,
 	},
 	{
+		ID:      "webhooks.retargetCoverage",
+		Title:   "Moving a webhook's URL or replaying a delivery is covered for what is pending",
+		Section: "11.2, 11.5",
+		Run:     checkWebhookRetargetCoverage,
+	},
+	{
 		ID:      "webhooks.signedDelivery",
 		Title:   "A matching event arrives as a signed generic-json delivery",
 		Section: "11.3",

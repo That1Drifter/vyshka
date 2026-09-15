@@ -1745,7 +1745,16 @@ answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The 
 - The coverage rule above is re-applied to the **resulting** subscription, meaning the
   merged `events` and `serverIds` rather than only the members the request changed. An edit
   therefore can never widen a webhook past what the editing token could have registered
-  itself, and a refusal is `forbidden`.
+  itself, and a refusal is `forbidden`. The decision MUST be taken against the webhook as
+  it stands when the edit is applied, not against a copy read earlier: two edits landing
+  together must each be judged on what the other left behind, or the one that reads first
+  and writes second authorizes a subscription nobody checked.
+- An edit that changes `url` MUST additionally be covered for the type of every delivery
+  still pending on the webhook, the coverage of a type being that of a filter naming
+  exactly it. Those bodies were rendered under the subscription as it stood and will
+  follow the URL to wherever the editor points it; without this rule a token could narrow
+  the filter to what it may read, move the target to an address it controls, and receive
+  what it may not. A refusal is `forbidden`.
 - The secret is never rotated by an edit and never returned by one, so a receiver's
   verification survives one. Rotating a secret is a separate act this draft does not define.
 - Deliveries already queued are affected one way but not the other. A delivery's body was
@@ -1757,8 +1766,11 @@ answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The 
 paused webhook MUST NOT move it: pause is a state, not an event, and an operator who pauses
 twice has paused once. `paused: false` clears `pausedAt`.
 
-While a webhook is paused a hub MUST NOT attempt any delivery for it, including retries of
-deliveries that began before the pause. Matching notifications still create deliveries,
+While a webhook is paused a hub MUST NOT begin any delivery attempt for it, including
+retries of deliveries that began before the pause; a hub MUST decide that at the moment an
+attempt starts, not when it planned the attempt, so a pause that lands between the two
+holds. An attempt already on the wire when the pause lands is the one thing a pause cannot
+recall, and it completes. Matching notifications still create deliveries,
 which wait in `pending` with their `nextAttemptAt` untouched; the per-webhook pending bound
 of section 11.5 still applies, so a pause long enough to fill the queue makes further
 deliveries arrive dead carrying that bound's `lastError`. On resume, everything due goes out
@@ -1931,8 +1943,17 @@ POST /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay
 - Replay is allowed in every state; a pending delivery is simply brought forward. It is not
   subject to the pending bound above, which governs fan-out rather than one operator-driven
   attempt.
+- A replay whose delivery has an attempt in flight at that moment MUST win: the in-flight
+  attempt's outcome, success or failure, is discarded rather than booked over the re-armed
+  row, so the further attempt the replay promised is made. Whether the receiver saw the
+  in-flight attempt is its own business; a receiver that deduplicates on `deliveryId` sees
+  one delivery either way.
 - An unknown `{webhookId}`, or a `{deliveryId}` that does not belong to that webhook, is
-  `not_found`. The route requires `webhooks:manage` like every other route of this section.
+  `not_found`. The route requires `webhooks:manage` like every other route of this section,
+  and the token MUST additionally be covered for the delivery's type as for a filter naming
+  exactly it (the retargeting rule of section 11.2, applied to one body): a replay sends a
+  rendered export again, and a token that may not read what it carries may not send it.
+  That refusal is `forbidden`.
 
 **Pause and the schedule.** While its webhook is paused (section 11.2) a delivery is never
 due, however far past its `nextAttemptAt` it stands, so a paused webhook's backlog cannot be

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,7 @@ func TestDeliveryOutcomeBookkeeping(t *testing.T) {
 	// First failure schedules the retry.
 	status := 500
 	next := time.Now().UTC().Add(time.Hour)
-	if err := st.RecordDeliveryFailure(ctx, deliveryID, &status, "status 500", &next); err != nil {
+	if err := st.RecordDeliveryFailure(ctx, deliveryID, 0, &status, "status 500", &next); err != nil {
 		t.Fatalf("record failure: %v", err)
 	}
 	listed, err := st.WebhookDeliveries(ctx, "wh-1", 10)
@@ -159,7 +160,7 @@ func TestDeliveryOutcomeBookkeeping(t *testing.T) {
 	}
 
 	// Exhausted schedule means dead, and dead is terminal.
-	if err := st.RecordDeliveryFailure(ctx, deliveryID, nil, "connection refused", nil); err != nil {
+	if err := st.RecordDeliveryFailure(ctx, deliveryID, 0, nil, "connection refused", nil); err != nil {
 		t.Fatalf("record dead: %v", err)
 	}
 	listed, _ = st.WebhookDeliveries(ctx, "wh-1", 10)
@@ -169,8 +170,10 @@ func TestDeliveryOutcomeBookkeeping(t *testing.T) {
 	if listed[0].LastStatus != nil {
 		t.Errorf("a transport failure recorded status %d", *listed[0].LastStatus)
 	}
-	if err := st.RecordDeliverySuccess(ctx, deliveryID, 200); err != nil {
-		t.Fatalf("record success on dead: %v", err)
+	// An outcome for a delivery that is no longer pending is stale, and books
+	// nothing: a dead delivery is not revived by a late success.
+	if err := st.RecordDeliverySuccess(ctx, deliveryID, 0, 200); !errors.Is(err, store.ErrStaleAttempt) {
+		t.Fatalf("record success on dead: err = %v, want ErrStaleAttempt", err)
 	}
 	listed, _ = st.WebhookDeliveries(ctx, "wh-1", 10)
 	if listed[0].State != store.DeliveryDead {
@@ -322,7 +325,7 @@ func TestPruneWebhookDeliveriesSparesPending(t *testing.T) {
 	if err != nil || len(due) != 2 {
 		t.Fatalf("due = %d (%v), want 2", len(due), err)
 	}
-	if err := st.RecordDeliverySuccess(ctx, due[0].Delivery.ID, 204); err != nil {
+	if err := st.RecordDeliverySuccess(ctx, due[0].Delivery.ID, 0, 204); err != nil {
 		t.Fatalf("record success: %v", err)
 	}
 
@@ -351,7 +354,7 @@ func TestUpdateWebhookReplacesNamedFieldsOnly(t *testing.T) {
 	st := migrated(t)
 	newWebhook(t, st, "wh-1", []string{"core.player.*"}, []string{"srv-1"})
 
-	edited, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Events: &[]string{}})
+	edited, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Events: &[]string{}}, nil)
 	if err != nil {
 		t.Fatalf("update webhook: %v", err)
 	}
@@ -368,7 +371,7 @@ func TestUpdateWebhookReplacesNamedFieldsOnly(t *testing.T) {
 		t.Errorf("an edit that never mentioned paused set pausedAt to %v", edited.PausedAt)
 	}
 
-	paused, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)})
+	paused, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)}, nil)
 	if err != nil || paused.PausedAt == nil {
 		t.Fatalf("pause: pausedAt = %v, err = %v", paused.PausedAt, err)
 	}
@@ -376,7 +379,7 @@ func TestUpdateWebhookReplacesNamedFieldsOnly(t *testing.T) {
 	// when the same edit changes something else.
 	again, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{
 		Paused: boolPtr(true), URL: stringPtr("http://127.0.0.1:2/hook"),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("pause again: %v", err)
 	}
@@ -387,12 +390,12 @@ func TestUpdateWebhookReplacesNamedFieldsOnly(t *testing.T) {
 		t.Errorf("url = %q, want the edited value", again.URL)
 	}
 
-	resumed, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)})
+	resumed, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)}, nil)
 	if err != nil || resumed.PausedAt != nil {
 		t.Fatalf("resume: pausedAt = %v, err = %v", resumed.PausedAt, err)
 	}
 
-	if _, err := st.UpdateWebhook(ctx, "wh-none", store.WebhookUpdate{Paused: boolPtr(true)}); err != store.ErrNotFound {
+	if _, err := st.UpdateWebhook(ctx, "wh-none", store.WebhookUpdate{Paused: boolPtr(true)}, nil); err != store.ErrNotFound {
 		t.Errorf("update of an unknown webhook = %v, want ErrNotFound", err)
 	}
 }
@@ -406,7 +409,7 @@ func TestPausedWebhookHoldsItsDeliveries(t *testing.T) {
 	session := startSession(t, st, serverID, "hash-hooks-pause")
 	newWebhook(t, st, "wh-1", nil, nil)
 
-	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)}); err != nil {
+	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(true)}, nil); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 	ingest(t, st, session.ID, event("core.player.chat", time.Now(), `{}`))
@@ -425,7 +428,7 @@ func TestPausedWebhookHoldsItsDeliveries(t *testing.T) {
 		t.Fatalf("%d deliveries are due on a paused webhook, want 0", len(due))
 	}
 
-	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)}); err != nil {
+	if _, err := st.UpdateWebhook(ctx, "wh-1", store.WebhookUpdate{Paused: boolPtr(false)}, nil); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	due, err = st.DueWebhookDeliveries(ctx, time.Now().UTC().Add(time.Second), 10)
@@ -453,7 +456,7 @@ func TestReplayWebhookDeliveryReArms(t *testing.T) {
 	body := string(due[0].Delivery.Body)
 
 	status := 500
-	if err := st.RecordDeliveryFailure(ctx, deliveryID, &status, "status 500", nil); err != nil {
+	if err := st.RecordDeliveryFailure(ctx, deliveryID, 0, &status, "status 500", nil); err != nil {
 		t.Fatalf("record dead: %v", err)
 	}
 	if listed, _ := st.WebhookDeliveries(ctx, "wh-1", 10); listed[0].State != store.DeliveryDead {
@@ -483,8 +486,10 @@ func TestReplayWebhookDeliveryReArms(t *testing.T) {
 		t.Error("a replayed delivery is not due now")
 	}
 
-	// A delivered delivery replays too, and the terminal timestamp goes with it.
-	if err := st.RecordDeliverySuccess(ctx, deliveryID, 204); err != nil {
+	// A delivered delivery replays too, and the terminal timestamp goes with
+	// it. The success is booked under the replay's generation, as the attempt
+	// the replay caused would book it.
+	if err := st.RecordDeliverySuccess(ctx, deliveryID, replayed.Generation, 204); err != nil {
 		t.Fatalf("record success: %v", err)
 	}
 	replayed, err = st.ReplayWebhookDelivery(ctx, "wh-1", deliveryID)

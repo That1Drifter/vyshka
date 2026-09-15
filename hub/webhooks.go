@@ -266,23 +266,53 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		update.URL, parsedURL = &target, parsed
 	}
-
-	// The merged subscription, not only the members that changed: a webhook
-	// that already matched everything must not survive an edit by a token
-	// that could never have registered it.
-	mergedEvents := existing.Events
 	if request.Events != nil {
 		events, ok := validateWebhookEvents(w, *request.Events)
 		if !ok {
 			return
 		}
-		mergedEvents, update.Events = events, &events
+		update.Events = &events
 	}
-	mergedServerIDs := existing.ServerIDs
-	if request.ServerIDs != nil {
-		mergedServerIDs = *request.ServerIDs
+
+	// The coverage decision, taken over the webhook as it stands rather than
+	// over the members that changed: the merged subscription is what the
+	// token must have been able to register, and, when the URL moves, so is
+	// every delivery still pending, because those bodies were rendered under
+	// the old subscription and will follow the URL to wherever the editor
+	// points it. The decision is a closure because it is taken twice: once
+	// here on a snapshot, so that a refusal precedes the server lookups the
+	// enforcement order of section 10.2 puts after it, and once more inside
+	// the store's transaction on the locked row, where a concurrent edit can
+	// no longer have changed what was authorized.
+	caller := principalFrom(r.Context())
+	authorize := func(current store.Webhook, pendingTypes []string) error {
+		mergedEvents := current.Events
+		if update.Events != nil {
+			mergedEvents = *update.Events
+		}
+		mergedServerIDs := current.ServerIDs
+		if request.ServerIDs != nil {
+			mergedServerIDs = *request.ServerIDs
+		}
+		if refused := subscriptionCoverage(caller, mergedEvents, len(mergedServerIDs) > 0); refused != nil {
+			return refused
+		}
+		for _, notificationType := range pendingTypes {
+			if refused := notificationCoverage(caller, notificationType); refused != nil {
+				return refused
+			}
+		}
+		return nil
 	}
-	if !s.requireSubscriptionCoverage(w, r, mergedEvents, len(mergedServerIDs) > 0) {
+	var pendingTypes []string
+	if update.URL != nil {
+		if pendingTypes, err = s.store.PendingDeliveryTypes(r.Context(), webhookID); err != nil {
+			s.writeInternalError(w, r, err)
+			return
+		}
+	}
+	if err := authorize(existing, pendingTypes); err != nil {
+		writeRefusal(w, err)
 		return
 	}
 
@@ -301,8 +331,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		update.Template = &template
 	}
 
-	webhook, err := s.store.UpdateWebhook(r.Context(), webhookID, update)
+	webhook, err := s.store.UpdateWebhook(r.Context(), webhookID, update, authorize)
+	var refused *refusal
 	switch {
+	case errors.As(err, &refused):
+		// The row changed under the snapshot and the token does not cover
+		// what it became: the edit lost the race and is refused as it would
+		// have been had it arrived second.
+		writeRefusal(w, err)
+		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "no such webhook")
 		return
@@ -330,6 +367,18 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		s.nudgeWebhooks()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"webhook": newWebhookView(webhook)})
+}
+
+// writeRefusal answers a coverage decision taken as an error. Anything that
+// is not a refusal is a programming error on the way here, and is answered as
+// forbidden rather than leaked as an internal failure.
+func writeRefusal(w http.ResponseWriter, err error) {
+	var refused *refusal
+	if errors.As(err, &refused) {
+		writeError(w, refused.status, refused.code, refused.message)
+		return
+	}
+	writeError(w, http.StatusForbidden, codeForbidden, err.Error())
 }
 
 // updatedWebhookFields names the members one edit carried, for the audit
@@ -361,12 +410,33 @@ func updatedWebhookFields(request updateWebhookRequest) []string {
 // new delivery of an old notification.
 func (s *Server) handleReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) {
 	webhookID, deliveryID := r.PathValue("webhookId"), r.PathValue("deliveryId")
-	delivery, err := s.store.ReplayWebhookDelivery(r.Context(), webhookID, deliveryID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
+	notFound := func() {
 		// One code for an unknown webhook and for a delivery belonging to
 		// another one: neither is a delivery this webhook can replay.
 		writeError(w, http.StatusNotFound, codeNotFound, "no such delivery on this webhook")
+	}
+	stored, err := s.store.WebhookDelivery(r.Context(), webhookID, deliveryID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		notFound()
+		return
+	case err != nil:
+		s.writeInternalError(w, r, err)
+		return
+	}
+	// A replay sends a rendered body again, so the token must cover its
+	// type as it would have to cover a filter of that type: a delivery is an
+	// export of what it carries, whatever the webhook subscribes to now. The
+	// type never changes, so the check needs no lock.
+	if refused := notificationCoverage(principalFrom(r.Context()), stored.Type); refused != nil {
+		writeRefusal(w, refused)
+		return
+	}
+
+	delivery, err := s.store.ReplayWebhookDelivery(r.Context(), webhookID, deliveryID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		notFound()
 		return
 	case err != nil:
 		s.writeInternalError(w, r, err)
@@ -500,12 +570,36 @@ func subscribesTelemetry(pattern string) bool {
 	return !strings.HasPrefix(pattern, "action.") && !strings.HasPrefix(pattern, "server.")
 }
 
+// refusal is a coverage decision the handler answers with, carried as an
+// error so it can be taken inside a store transaction and told apart from a
+// store failure on the way out.
+type refusal struct {
+	status  int
+	code    string
+	message string
+}
+
+func (r *refusal) Error() string { return r.code + ": " + r.message }
+
+func forbidden(message string) *refusal {
+	return &refusal{status: http.StatusForbidden, code: codeForbidden, message: message}
+}
+
 // requireSubscriptionCoverage enforces the section 11.2 registration rule: the
 // caller's grants must cover everything the filter subscribes to. It answers
 // the client itself and returns false when they do not.
 func (s *Server) requireSubscriptionCoverage(w http.ResponseWriter, r *http.Request, events []string, namesServers bool) bool {
-	caller := principalFrom(r.Context())
+	if refused := subscriptionCoverage(principalFrom(r.Context()), events, namesServers); refused != nil {
+		writeError(w, refused.status, refused.code, refused.message)
+		return false
+	}
+	return true
+}
 
+// subscriptionCoverage decides the section 11.2 rule for one subscription
+// without touching the response, so the same decision can be taken again
+// inside the edit transaction.
+func subscriptionCoverage(caller *principal, events []string, namesServers bool) *refusal {
 	subscribed := events
 	if len(subscribed) == 0 {
 		subscribed = []string{"*"}
@@ -523,23 +617,42 @@ func (s *Server) requireSubscriptionCoverage(w http.ResponseWriter, r *http.Requ
 		}
 		if subscribesTelemetry(pattern) {
 			if !caller.covers(resourceEvents, verbRead, pattern) {
-				writeError(w, http.StatusForbidden, codeForbidden,
-					"subscribing to "+pattern+" requires a scope covering events:read:"+pattern+"; a webhook is a standing export of what it matches")
-				return false
+				return forbidden("subscribing to " + pattern + " requires a scope covering events:read:" + pattern +
+					"; a webhook is a standing export of what it matches")
 			}
 		}
 	}
 	if needsActions && !caller.covers(resourceActions, verbRead, "*") {
-		writeError(w, http.StatusForbidden, codeForbidden,
-			"subscribing to action.completed requires actions:read; the notification carries any action's record")
-		return false
+		return forbidden("subscribing to action.completed requires actions:read; the notification carries any action's record")
 	}
 	if needsServers && !caller.allowsAny(resourceServers, verbRead) {
-		writeError(w, http.StatusForbidden, codeForbidden,
-			"subscribing to the link notifications, or naming serverIds, requires servers:read")
-		return false
+		return forbidden("subscribing to the link notifications, or naming serverIds, requires servers:read")
 	}
-	return true
+	return nil
+}
+
+// notificationCoverage decides whether the caller's grants cover one stored
+// notification type: the subscription rule applied to a filter of exactly that
+// type. It gates what an edit that retargets a webhook may carry along (the
+// pending deliveries) and what a replay may send again, because a delivery
+// already rendered is an export of that type wherever the URL now points.
+func notificationCoverage(caller *principal, notificationType string) *refusal {
+	switch {
+	case notificationType == notifyActionCompleted:
+		if !caller.covers(resourceActions, verbRead, "*") {
+			return forbidden("a pending action.completed delivery requires actions:read to be redirected or replayed")
+		}
+	case notificationType == notifyServerLinkLost || notificationType == notifyServerLinkRestore:
+		if !caller.allowsAny(resourceServers, verbRead) {
+			return forbidden("a pending " + notificationType + " delivery requires servers:read to be redirected or replayed")
+		}
+	default:
+		if !caller.covers(resourceEvents, verbRead, notificationType) {
+			return forbidden("a delivery of " + notificationType + " requires a scope covering events:read:" +
+				notificationType + " to be redirected or replayed")
+		}
+	}
+	return nil
 }
 
 // webhookMatches decides whether one notification concerns one webhook: the

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -405,9 +406,31 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 		s.recordFailure(ctx, due, attempt, status, message)
 	}
 
+	// The webhook is read again at the moment of the attempt rather than
+	// trusted from the batch: a pause or a URL change that landed after the
+	// batch was selected, and before this worker reached the row, must hold
+	// (spec section 11.2) or be followed (an edited URL applies to the next
+	// attempt). What is already on the wire when a pause lands is the one
+	// thing a pause cannot recall.
+	lookupCtx, cancelLookup := context.WithTimeout(s.baseCtx, 10*time.Second)
+	webhook, err := s.store.WebhookByID(lookupCtx, due.Delivery.WebhookID)
+	cancelLookup()
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// Deleted since the batch was read; its deliveries went with it.
+		return
+	case err != nil:
+		s.log.Error("webhook could not be re-read before an attempt",
+			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID, "error", err.Error())
+		return
+	case webhook.PausedAt != nil:
+		// Left pending and due: the resume's pass picks it up.
+		return
+	}
+
 	requestCtx, cancel := context.WithTimeout(s.baseCtx, s.cfg.WebhookDeliveryTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, due.URL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, webhook.URL, bytes.NewReader(body))
 	if err != nil {
 		fail(nil, "request could not be built: "+err.Error())
 		return
@@ -415,7 +438,7 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Vyshka-Delivery", due.Delivery.ID)
 	request.Header.Set("X-Vyshka-Attempt", strconv.Itoa(attempt))
-	request.Header.Set("X-Vyshka-Signature", signWebhookBody(due.Secret, body))
+	request.Header.Set("X-Vyshka-Signature", signWebhookBody(webhook.Secret, body))
 
 	response, err := s.webhookClient.Do(request)
 	if err != nil {
@@ -438,9 +461,8 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		ctx, cancelRecord := recording()
 		defer cancelRecord()
-		if err := s.store.RecordDeliverySuccess(ctx, due.Delivery.ID, response.StatusCode); err != nil {
-			s.log.Error("delivery outcome could not be recorded",
-				"deliveryId", due.Delivery.ID, "error", err.Error())
+		if err := s.store.RecordDeliverySuccess(ctx, due.Delivery.ID, due.Delivery.Generation, response.StatusCode); err != nil {
+			s.logOutcomeNotBooked(due, err)
 			return
 		}
 		s.log.Info("webhook delivered",
@@ -459,6 +481,22 @@ func (s *Server) attemptDelivery(due store.DueDelivery) {
 	fail(&status, message)
 }
 
+// logOutcomeNotBooked reports an outcome the store did not book. A stale
+// attempt is the expected case: the delivery was replayed while the attempt
+// was in flight, and the replay's attempt is the one that counts (spec
+// section 11.5), so the outcome is discarded on purpose. Anything else is a
+// store failure.
+func (s *Server) logOutcomeNotBooked(due store.DueDelivery, err error) {
+	if errors.Is(err, store.ErrStaleAttempt) {
+		s.log.Info("delivery outcome discarded: the delivery was replayed or removed during the attempt",
+			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID,
+			"generation", due.Delivery.Generation)
+		return
+	}
+	s.log.Error("delivery outcome could not be recorded",
+		"deliveryId", due.Delivery.ID, "error", err.Error())
+}
+
 // recordFailure books one failed attempt, scheduling the retry the section
 // 11.5 schedule owes it or declaring the delivery dead when none remains.
 func (s *Server) recordFailure(ctx context.Context, due store.DueDelivery, attempt int, status *int, message string) {
@@ -471,9 +509,8 @@ func (s *Server) recordFailure(ctx context.Context, due store.DueDelivery, attem
 		nextAttemptAt = &next
 	}
 
-	if err := s.store.RecordDeliveryFailure(ctx, due.Delivery.ID, status, message, nextAttemptAt); err != nil {
-		s.log.Error("delivery outcome could not be recorded",
-			"deliveryId", due.Delivery.ID, "error", err.Error())
+	if err := s.store.RecordDeliveryFailure(ctx, due.Delivery.ID, due.Delivery.Generation, status, message, nextAttemptAt); err != nil {
+		s.logOutcomeNotBooked(due, err)
 		return
 	}
 	if nextAttemptAt == nil {
