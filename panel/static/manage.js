@@ -16,9 +16,9 @@
 
 import {
   ApiError, actionHref, api, append, attempt, auditHref, badge, clear, confirmation, disclosure,
-  el, forbidden, formatTime, go, isForbidden, kvHref, kvNamespaceHref, linesOf, pretty,
-  problemBox, secretOnce, setCrumbs, setTeardown, signOut, stale, statusKind,
-  summarizeEventData, webhookHref, webhooksHref,
+  el, eventPayloadText, forbidden, formatTime, go, holdSecret, isForbidden, kvHref,
+  kvNamespaceHref, linesOf, problemBox, secretOnce, setCrumbs, setTeardown, signOut, stale,
+  statusKind, summarizeEventData, webhookHref, webhooksHref,
 } from './lib.js';
 
 // The deliveries table refreshes on the same cadence as the event feed and
@@ -99,11 +99,15 @@ async function loadServerNames() {
 //
 // Both forms hand back a one-time secret the hub will not show again, so both
 // draw it through secretOnce and leave it on the page until the operator
-// navigates away.
+// navigates away. An answer that arrives after the page has already gone is
+// held instead (lib.js), because the server exists on the hub whatever the
+// browser was doing when the answer landed.
 
-// registerServerForm is the "Register a server" card on the server list.
-// onCreated is called after a successful POST so the list can refresh.
-export function registerServerForm(onCreated) {
+// registerServerForm is the "Register a server" card on the server list. It
+// takes the render sequence its page began with, so a late answer or a late
+// refusal lands on that page or on nothing at all. onCreated is called after
+// a successful POST so the list can refresh.
+export function registerServerForm(seq, onCreated) {
   const name = textInput('server-name', { required: true, placeholder: 'Chernarus #1' });
   const game = textInput('server-game', { placeholder: 'dayz' });
   const ttl = numberInput('server-ttl', { min: '1', placeholder: 'hub default' });
@@ -125,19 +129,32 @@ export function registerServerForm(onCreated) {
       submit.disabled = true;
       try {
         const created = await api('POST', '/servers', request);
-        clear(secretSlot);
-        secretSlot.append(secretOnce({
+        const shown = {
+          kind: 'enrollment',
           id: 'enrollment-token',
           label: 'Enrollment token for ' + created.server.name,
           secret: created.enrollment.token,
           expiresAt: created.enrollment.expiresAt,
           note: 'Shown once. Give it to the plugin: it enrolls with it, and the hub will not show it again. A fresh one can be minted on the server page.',
-        }));
+        };
+        if (stale(seq)) {
+          // The page these nodes belong to has gone, and appending to it
+          // would show nobody anything. The server is registered and this
+          // token is the only copy, so it goes to the held tray instead.
+          holdSecret(shown);
+          return;
+        }
+        clear(secretSlot);
+        secretSlot.append(secretOnce(shown));
         name.value = '';
         game.value = '';
         ttl.value = '';
         if (onCreated) onCreated(created.server);
       } catch (err) {
+        // A refusal of a request this page made must not sign out the
+        // session that replaced it: a 401 answering a token already
+        // discarded says nothing about the one signed in now.
+        if (stale(seq)) return;
         if (err instanceof ApiError && err.status === 401) {
           signOut('The hub rejected this token.');
           return;
@@ -161,7 +178,7 @@ export function registerServerForm(onCreated) {
 
 // serverCredentials is the credential card on a server page: a fresh
 // enrollment token, and revocation of the secret the plugin holds.
-export function serverCredentials(server, reload) {
+export function serverCredentials(server, seq, reload) {
   const ttl = numberInput('enrollment-ttl', { min: '1', placeholder: 'hub default' });
   const problem = problemBox('credentials-error');
   const secretSlot = el('div', { id: 'enrollment-token-slot' });
@@ -173,18 +190,25 @@ export function serverCredentials(server, reload) {
       try {
         const body = ttl.value.trim() === '' ? {} : { ttlSeconds: Number(ttl.value) };
         const minted = await api('POST', '/servers/' + encodeURIComponent(server.id) + '/enrollment-token', body);
-        clear(secretSlot);
-        secretSlot.append(secretOnce({
+        const shown = {
+          kind: 'enrollment',
           id: 'enrollment-token',
           label: 'Enrollment token for ' + server.name,
           secret: minted.token,
           expiresAt: minted.expiresAt,
           note: 'Shown once, and any unused earlier token for this server has stopped working (protocol section 5.1).',
-        }));
+        };
+        if (stale(seq)) {
+          holdSecret(shown);
+          return;
+        }
+        clear(secretSlot);
+        secretSlot.append(secretOnce(shown));
         // The page is deliberately not reloaded here: a redraw would take
         // this token with it, and it exists nowhere else. Nothing on the
         // record changes until a plugin enrolls with it anyway.
       } catch (err) {
+        if (stale(seq)) return;
         if (err instanceof ApiError && err.status === 401) {
           signOut('The hub rejected this token.');
           return;
@@ -208,9 +232,14 @@ export function serverCredentials(server, reload) {
       revoke.disabled = true;
       try {
         await api('DELETE', '/servers/' + encodeURIComponent(server.id) + '/credentials');
+        // A reload started from a page already replaced would draw over
+        // whatever the operator navigated to; the revocation stands either
+        // way, and the next read of the record shows it.
+        if (stale(seq)) return;
         confirm.box.checked = false;
         if (reload) reload();
       } catch (err) {
+        if (stale(seq)) return;
         if (err instanceof ApiError && err.status === 401) {
           signOut('The hub rejected this token.');
           return;
@@ -413,12 +442,30 @@ function tokenState(record) {
   return 'live';
 }
 
-// manifestNamespaces reads every stored manifest and collects what a role
-// bundle needs to narrow itself: the action code prefixes the hub could
-// dispatch, and the KV namespaces the plugins declared (section 6.6).
+// dispatchPrefix is the scope prefix one manifest action narrows to, so that
+// actions:dispatch:{prefix}.* covers that action and no more than it.
 //
-// The prefix is taken from the action's code, not from its display
-// `namespace`, because a scope pattern is matched against the code.
+// A scope pattern is matched against the code, and section 6.1 gives an
+// action a `namespace` member for display and token scoping, so that member
+// is the prefix whenever the code actually sits under it. Without it, the
+// prefix is the code with its last segment removed, not the first segment:
+// a code family.child.heal narrowed to family.* would hand out every action
+// of every sibling namespace under family. A code with no dot narrows
+// nothing, and contributes nothing rather than a prefix matching everything.
+function dispatchPrefix(action) {
+  const code = typeof action.code === 'string' ? action.code : '';
+  if (code === '') return '';
+  if (typeof action.namespace === 'string' && action.namespace !== ''
+      && code.startsWith(action.namespace + '.')) {
+    return action.namespace;
+  }
+  const dot = code.lastIndexOf('.');
+  return dot > 0 ? code.slice(0, dot) : '';
+}
+
+// manifestNamespaces reads every stored manifest and collects what a role
+// bundle needs to narrow itself: the action prefixes the hub could dispatch,
+// and the KV namespaces the plugins declared (section 6.6).
 async function manifestNamespaces() {
   const data = await api('GET', '/servers');
   const servers = Array.isArray(data.servers) ? data.servers : [];
@@ -436,8 +483,8 @@ async function manifestNamespaces() {
     const body = manifest.manifest || {};
     for (const action of Array.isArray(body.actions) ? body.actions : []) {
       if (!action || typeof action.code !== 'string') continue;
-      const dot = action.code.indexOf('.');
-      if (dot > 0) actions.add(action.code.slice(0, dot));
+      const prefix = dispatchPrefix(action);
+      if (prefix !== '') actions.add(prefix);
     }
     for (const namespace of Array.isArray(body.kvNamespaces) ? body.kvNamespaces : []) {
       if (typeof namespace === 'string' && namespace !== '') kv.add(namespace);
@@ -572,6 +619,12 @@ export async function viewTokens(app, route, seq) {
   const submit = el('button', { type: 'submit', class: 'primary', id: 'mint-token-submit' }, 'Mint token');
 
   let namespaces = null;
+  // scopesEdited says whether the operator has typed in the scope list since
+  // the bundle last changed. Enumerating the manifests takes as many calls as
+  // there are servers, and an operator who gives up on a slow expansion,
+  // picks custom, and types a list must not have it overwritten when that
+  // enumeration finally lands.
+  let scopesEdited = false;
   const applyBundle = async () => {
     const chosen = bundle.value;
     if (chosen === '') {
@@ -580,8 +633,13 @@ export async function viewTokens(app, route, seq) {
     }
     if (chosen !== 'owner' && namespaces === null) {
       bundleNote.textContent = 'Reading the stored manifests to narrow the dispatch and key/value scopes…';
-      namespaces = await manifestNamespaces();
+      const read = await manifestNamespaces();
       if (stale(seq)) return;
+      // The read is kept whatever became of the choice that started it: it
+      // is the hub's answer, not this expansion's, and the next bundle
+      // change spends it without asking again.
+      namespaces = read;
+      if (bundle.value !== chosen || scopesEdited) return;
     }
     const expanded = bundleScopes(chosen, namespaces || { actions: [], kv: [] });
     scopes.value = expanded.join('\n');
@@ -595,9 +653,17 @@ export async function viewTokens(app, route, seq) {
           : '') +
         '. Edit the list before minting; what is sent is what is shown.';
   };
-  bundle.addEventListener('change', guarded(applyBundle));
+  bundle.addEventListener('change', guarded(async () => {
+    // Choosing a bundle is the operator asking for its list, so whatever
+    // they had typed before is theirs to lose from here.
+    scopesEdited = false;
+    await applyBundle();
+  }));
   expiry.addEventListener('change', () => { customExpiry.hidden = expiry.value !== 'custom'; });
   scopes.addEventListener('input', () => {
+    // Only a human typing raises this: applyBundle assigns to value, which
+    // fires no input event.
+    scopesEdited = true;
     warning.hidden = !linesOf(scopes).includes('actions:dispatch');
   });
 
@@ -626,16 +692,23 @@ export async function viewTokens(app, route, seq) {
       submit.disabled = true;
       try {
         const minted = await api('POST', '/tokens', request);
-        if (stale(seq)) return;
-        clear(secretSlot);
-        secretSlot.append(secretOnce({
+        const shown = {
+          kind: 'token',
           id: 'token-secret',
           label: 'Secret for ' + (minted.token.name || 'the new token'),
           secret: minted.secret,
           expiresAt: minted.token.expiresAt,
           note: 'Shown once. The hub stores a digest, so no later call can retrieve it (protocol section 10.4). Scopes: ' +
             (minted.token.scopes || []).join(', ') + '.',
-        }));
+        };
+        if (stale(seq)) {
+          // The token is minted and live. Dropping this answer with the
+          // page would leave a credential nobody can use and nobody saw.
+          holdSecret(shown);
+          return;
+        }
+        clear(secretSlot);
+        secretSlot.append(secretOnce(shown));
         name.value = '';
         await reload();
       } finally {
@@ -762,14 +835,21 @@ export async function viewWebhooks(app, route, seq) {
           serverIds: picker.read(),
           template: template.value,
         });
-        if (stale(seq)) return;
-        clear(secretSlot);
-        secretSlot.append(secretOnce({
+        const shown = {
+          kind: 'webhook',
           id: 'webhook-secret',
           label: 'Signing secret for ' + created.webhook.url,
           secret: created.secret,
           note: 'Shown once. The hub must keep the secret itself to sign with it, so read access to its database is read access to this value (protocol section 11.2).',
-        }));
+        };
+        if (stale(seq)) {
+          // The webhook is registered and already matching. Without this
+          // value nothing can verify a delivery's signature.
+          holdSecret(shown);
+          return;
+        }
+        clear(secretSlot);
+        secretSlot.append(secretOnce(shown));
         url.value = '';
         events.value = '';
         const latest = await api('GET', '/webhooks');
@@ -1056,13 +1136,17 @@ export async function viewWebhook(app, route, seq) {
 // Every authenticated Admin API mutation, refusals included (protocol section
 // 10.5). The filters live in the route, so a shared link carries them.
 
+// toLocalInput puts an instant from the route into a datetime-local field.
+// The field's seconds are shown (step 1 below), so a boundary the operator
+// can see is a boundary they can edit; milliseconds have nowhere to go, which
+// is why an untouched field is never re-encoded (boundaryFor below).
 function toLocalInput(iso) {
   if (!iso) return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
   const pad = (value) => String(value).padStart(2, '0');
   return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
-    'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+    'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
 }
 
 function fromLocalInput(value) {
@@ -1070,6 +1154,22 @@ function fromLocalInput(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return date.toISOString();
+}
+
+// boundaryFor decides what one timestamp filter sends when Apply is clicked.
+// A field the operator did not touch goes back into the route exactly as it
+// arrived: the field cannot hold milliseconds, and a route naming
+// 12:00:30.500Z re-encoded from an untouched field would quietly become
+// 12:00:30.000Z and move the boundary the operator was looking at. Only a
+// field they changed is read back out of the control. The comparison is
+// against what the control actually held after being populated, because the
+// browser normalises the value it is given.
+//
+// A route value the browser could not parse populates nothing, so it survives
+// Apply unchanged and the hub keeps refusing it where the refusal is visible;
+// Clear is what drops it.
+function boundaryFor(input, populated, original) {
+  return input.value === populated ? (original || '') : fromLocalInput(input.value);
 }
 
 export async function viewAudit(app, route, seq) {
@@ -1113,10 +1213,14 @@ export async function viewAudit(app, route, seq) {
     el('option', { value: '' }, 'every server'),
     servers.servers.map((server) => el('option', { value: server.id }, server.name)));
   serverSelect.value = filters.serverId || '';
-  const since = el('input', { type: 'datetime-local', id: 'audit-since', name: 'since' });
+  const since = el('input', { type: 'datetime-local', id: 'audit-since', name: 'since', step: '1' });
   since.value = toLocalInput(filters.since);
-  const until = el('input', { type: 'datetime-local', id: 'audit-until', name: 'until' });
+  // What the control kept, not what it was given: an untouched field is one
+  // whose value still reads back as this.
+  const sincePopulated = since.value;
+  const until = el('input', { type: 'datetime-local', id: 'audit-until', name: 'until', step: '1' });
   until.value = toLocalInput(filters.until);
+  const untilPopulated = until.value;
   const apply = el('button', { type: 'submit', class: 'small primary', id: 'audit-apply' }, 'Apply');
   const reset = el('button', {
     type: 'button', class: 'small', id: 'audit-clear',
@@ -1129,16 +1233,16 @@ export async function viewAudit(app, route, seq) {
       go(auditHref({
         tokenId: tokenInput.value.trim(),
         serverId: serverSelect.value,
-        since: fromLocalInput(since.value),
-        until: fromLocalInput(until.value),
+        since: boundaryFor(since, sincePopulated, filters.since),
+        until: boundaryFor(until, untilPopulated, filters.until),
       }));
     },
   },
   el('div', { class: 'filter-grid' },
     fieldRow('audit-token', 'Token id', el('span', {}, tokenInput, tokenList), 'exact id; the list suggests the tokens this hub holds'),
     fieldRow('audit-server', 'Server', serverSelect, 'records the hub attributed to one server'),
-    fieldRow('audit-since', 'Since', since, 'inclusive, sent as UTC'),
-    fieldRow('audit-until', 'Until', until, 'exclusive, sent as UTC')),
+    fieldRow('audit-since', 'Since', since, 'inclusive, sent as UTC; a boundary left untouched is sent back exactly as the link carried it'),
+    fieldRow('audit-until', 'Until', until, 'exclusive, sent as UTC; a boundary left untouched is sent back exactly as the link carried it')),
   el('div', { class: 'actions-row' }, apply, reset));
 
   const status = el('p', { class: 'muted', id: 'audit-status' }, 'Loading…');
@@ -1355,8 +1459,14 @@ export async function viewKVKeys(app, route, seq) {
           el('dt', {}, 'Revision'), el('dd', { id: 'kv-value-revision' }, String(record.revision)),
           el('dt', {}, 'Expires'), el('dd', { id: 'kv-value-expires' },
             record.expiresAt ? formatTime(record.expiresAt) : 'never'),
+          // A stored value is bounded in bytes by the hub, not in depth
+          // (section 12.2), and indenting a deeply nested one multiplies its
+          // size by its depth: 16 KiB nested 4000 deep is tens of millions
+          // of characters of whitespace. The same bounded helper the event
+          // feed uses goes compact past 64 levels, and attempt keeps a value
+          // that cannot be serialized to this one line.
           el('dt', {}, 'Value'), el('dd', {}, el('pre', { id: 'kv-value-json' },
-            attempt(() => pretty(record.value), 'The value could not be serialized.'))))));
+            attempt(() => eventPayloadText(record.value), 'The value could not be serialized.'))))));
     } catch (err) {
       if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) {

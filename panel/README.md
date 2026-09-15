@@ -30,6 +30,15 @@ management views).
   same way and deliberately without a page reload, because a reload would take it with it;
   and **Revoke credentials** over `DELETE /servers/{id}/credentials` behind an explicit
   confirmation tick, after which the record is re-read.
+- **Secrets held for a page that has gone**: an enrollment token, a token secret, and a
+  webhook signing secret each exist in one answer and nowhere else, and that answer can land
+  after the operator has already navigated. Rather than discard it with the page that asked
+  for it, the panel holds it in module memory and shows it through the same one-time widget
+  at the top of whatever renders next, in `#held-secrets`, one `div[data-held-secret]` each
+  with a `button[data-dismiss-secret]`. It stays until dismissed or until sign-out. Nothing
+  about it is written to `sessionStorage`, `localStorage`, or the route: a secret that
+  outlives the tab is a secret written down. The credential is live on the hub either way,
+  so the alternative is a credential nobody saw.
 - **Pinned quick actions**: every action item on the server page carries a pin toggle
   (`aria-pressed`), and pinned ones are repeated in a **Pinned** section above the namespace
   groups. Pins live in this browser's `localStorage` under `vyshka.pins.{serverId}` as an
@@ -129,8 +138,13 @@ management views).
   (a server with no manifest narrows nothing), falling back to an unnarrowed
   `actions:dispatch` with section 10.1's warning when no manifest declares one. **Event
   host** is the moderator set plus `kv:rw:{namespace}` for every namespace the manifests
-  declare in `kvNamespaces`. The prefix is taken from each action's `code`, not from its
-  display `namespace`, because a scope pattern is matched against the code.
+  declare in `kvNamespaces`. The prefix of an action is its manifest `namespace` member when
+  the action's `code` sits under that member (protocol section 6.1 gives the member for
+  display and token scoping), and otherwise the code with its last dot-separated segment
+  removed; a code with no dot narrows nothing and contributes no line. Taking the first
+  segment instead would widen `family.child.heal` to `family.*`, which covers every sibling
+  namespace under `family`. A scope pattern is matched against the code, so what the bundle
+  writes is always a prefix of the codes it means.
 - **Webhooks** at `#/webhooks`, over `GET /webhooks` (protocol section 11): url, events as
   badges ("every type" when the filter is empty), servers resolved to names through
   `GET /servers` when the token may read it and ids otherwise ("every server" when empty),
@@ -150,13 +164,20 @@ management views).
   summariser the event feed uses. The filters (token id with a datalist, server, since,
   until as datetime-local converted to UTC) live in the route, so a reload keeps them and
   the URL can be shared; a since the hub cannot parse is shown as the hub's refusal beside
-  the form rather than dropped. "Load older" walks the hub's cursor. Needs `admin`.
+  the form rather than dropped. The time fields show and take seconds (`step="1"`), and a
+  boundary the operator did not touch goes back into the route exactly as the link carried
+  it: the control has no room for milliseconds, so re-encoding an untouched field would
+  quietly move a `12:00:30.500Z` boundary to `12:00:30.000Z`. Only a field that was changed
+  is read back out of the control; Clear drops the filters whole. "Load older" walks the
+  hub's cursor. Needs `admin`.
 - **Key/value** at `#/kv` and `#/kv/{namespace}` (protocol section 12), read-only in this
   slice: the namespaces the token's grants cover that hold at least one live key, with their
   key counts, plus a free-text input for a namespace that holds none yet; then that
   namespace's keys, key ascending, with a `prefix` filter in the route and "Load more"
   behind the cursor. Opening a key fetches its value with the ordinary get and shows the
-  value, revision, and expiry. Editing arrives with presets, issue #76.
+  value, revision, and expiry. The value goes through the same bounded renderer the event
+  feed uses, compact rather than indented past 64 levels, because the hub bounds a stored
+  value in bytes and not in depth. Editing arrives with presets, issue #76.
 
 ## Map tilesets
 
@@ -237,7 +258,7 @@ panel/
   panel.go         // http.Handler over the embedded files and the maps directory, plus the security headers
   static/
     index.html     // the shell: header, breadcrumbs, the section nav, one <main>
-    lib.js         // the shared parts: DOM building, the Admin API client, the render lifecycle, the hash routes, the one-time secret and JSON widgets
+    lib.js         // the shared parts: DOM building, the Admin API client, the render lifecycle, the hash routes, the one-time secret and JSON widgets, the held-secret tray
     app.js         // routing, sign-in, the server and action views, the form builder, dispatch and result, the event feed, the map view
     manage.js      // the management views: server registration and credentials, tokens, webhooks and deliveries, audit, key/value, pinned actions
     map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame

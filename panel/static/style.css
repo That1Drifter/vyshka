@@ -470,6 +470,10 @@ tr.dim td { opacity: 0.6; }
 }
 .copy-state { display: block; font-size: 0.88em; }
 
+/* The tray of secrets whose own page had gone before the hub answered. */
+#held-secrets { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
+#held-secrets .held-secret { display: grid; gap: 0.3rem; }
+
 .checklist { display: grid; gap: 0.2rem; max-height: 14rem; overflow: auto; }
 .checklist .check { display: flex; gap: 0.4rem; align-items: baseline; }
 
