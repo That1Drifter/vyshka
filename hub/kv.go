@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 // KV limits (spec section 12.1).
 const (
 	maxKVKeyLength  = 128
+	defaultKVPage   = 100
+	maxKVPage       = 500
 	maxKVValueBytes = 16384
 	minKVTTLSeconds = 1
 	maxKVTTLSeconds = 10 * 365 * 24 * 60 * 60 // ten years; a longer TTL is a no-expiry key wearing a costume
@@ -292,4 +295,152 @@ func kvIncr(s *Server, w http.ResponseWriter, r *http.Request, namespace, key st
 	auditDetail(r, "revision", entry.Revision)
 	auditDetail(r, "delta", delta)
 	writeJSON(w, http.StatusOK, newKVEntryView(entry))
+}
+
+// kvKeyView is one row of a key listing (spec section 12.2). It carries no
+// value: a page of keys is a browse, and the panel fetches a value with the
+// existing get when a key is opened.
+type kvKeyView struct {
+	Key       string     `json:"key"`
+	Revision  int64      `json:"revision"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+}
+
+type kvListResponse struct {
+	Namespace string      `json:"namespace"`
+	Keys      []kvKeyView `json:"keys"`
+	// NextCursor is absent on the last page, which is how a client knows to
+	// stop without fetching an empty one.
+	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// handleListKVKeys answers one page of a namespace's live keys, key ascending
+// (spec section 12.2). It sits behind the same path-scoped kv:rw:{namespace}
+// gate as the per-key operations, so a namespace the token may not read is
+// refused at the headers; requireScope repeats the check as the belt, exactly
+// as adminKV does, in case a route is ever rewired without the gate.
+func (s *Server) handleListKVKeys(w http.ResponseWriter, r *http.Request) {
+	namespace := r.PathValue("namespace")
+	if !validKVName(namespace, maxNamespaceLength) {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"namespace must be dot-separated segments of letters, digits, _, and -, at most 64 characters")
+		return
+	}
+	if !s.requireScope(w, r, resourceKV, verbRW, namespace) {
+		return
+	}
+
+	parameters := r.URL.Query()
+	limit, ok := parseLimitParam(w, parameters.Get("limit"), defaultKVPage, maxKVPage)
+	if !ok {
+		return
+	}
+	after, ok := parseKVCursor(w, parameters.Get("cursor"))
+	if !ok {
+		return
+	}
+
+	// One row past the page, so the presence of a next page is known without a
+	// second query and without ever handing out a cursor to nothing.
+	found, err := s.store.KVList(r.Context(), store.KVListQuery{
+		Namespace: namespace,
+		Prefix:    parameters.Get("prefix"),
+		Limit:     limit + 1,
+		After:     after,
+	})
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
+
+	response := kvListResponse{
+		Namespace: namespace,
+		Keys:      make([]kvKeyView, 0, min(len(found), limit)),
+	}
+	if len(found) > limit {
+		response.NextCursor = encodeKVCursor(found[limit-1].Key)
+		found = found[:limit]
+	}
+	for _, entry := range found {
+		response.Keys = append(response.Keys, kvKeyView{
+			Key:       entry.Key,
+			Revision:  entry.Revision,
+			ExpiresAt: entry.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+type kvNamespaceView struct {
+	Namespace string `json:"namespace"`
+	Keys      int64  `json:"keys"`
+}
+
+type kvNamespacesResponse struct {
+	Namespaces []kvNamespaceView `json:"namespaces"`
+}
+
+// handleListKVNamespaces answers the namespaces that hold at least one live key
+// and that the caller's grants cover (spec section 12.2). The route gate has
+// already refused a token holding no kv:rw grant at all; what remains is the
+// filter, because enumeration must reveal nothing the token could not have
+// found key by key.
+func (s *Server) handleListKVNamespaces(w http.ResponseWriter, r *http.Request) {
+	caller := principalFrom(r.Context())
+
+	counts, err := s.store.KVNamespaces(r.Context())
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
+
+	response := kvNamespacesResponse{Namespaces: make([]kvNamespaceView, 0, len(counts))}
+	for _, one := range counts {
+		// covers rather than allows: the question a listing asks is whether
+		// the grant spans the whole namespace being named, which for a
+		// concrete name is the same answer, and stays the right question if a
+		// pattern ever reaches this call.
+		if !caller.covers(resourceKV, verbRW, one.Namespace) {
+			continue
+		}
+		response.Namespaces = append(response.Namespaces, kvNamespaceView{
+			Namespace: one.Namespace,
+			Keys:      one.Keys,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// encodeKVCursor renders a position in a key listing. The cursor is the last
+// key of the page, which is a total order on its own because a namespace holds
+// each key once, and it names a position rather than a row: a key deleted or
+// expired between two pages still resumes the walk correctly.
+func encodeKVCursor(key string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(key))
+}
+
+// parseKVCursor reads an opaque cursor back. It is refused rather than ignored
+// when it is not one this hub could have issued: an ignored cursor would answer
+// with the first page again, which a walking client would read as a loop of
+// real results.
+func parseKVCursor(w http.ResponseWriter, value string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	refuse := func() (string, bool) {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"cursor is not one this hub issued")
+		return "", false
+	}
+
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return refuse()
+	}
+	// Every cursor this hub issues decodes to a key, so one that does not is
+	// forged or truncated.
+	if !validKVName(string(decoded), maxKVKeyLength) {
+		return refuse()
+	}
+	return string(decoded), true
 }

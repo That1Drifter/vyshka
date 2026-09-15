@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -322,5 +324,205 @@ func TestKVPrune(t *testing.T) {
 	}
 	if _, err := st.KVGet(ctx, "example-mod", "kept"); err != nil {
 		t.Errorf("prune removed a key with no TTL: %v", err)
+	}
+}
+
+// walkKVList pages a namespace to exhaustion the way a client does, and
+// reports the keys in the order they arrived.
+func walkKVList(t *testing.T, st *store.Store, namespace, prefix string, pageSize int) []string {
+	t.Helper()
+	ctx := context.Background()
+
+	var (
+		walked []string
+		after  string
+	)
+	for pages := 0; ; pages++ {
+		if pages > 100 {
+			t.Fatalf("the walk did not terminate after %d pages", pages)
+		}
+		page, err := st.KVList(ctx, store.KVListQuery{
+			Namespace: namespace, Prefix: prefix, Limit: pageSize, After: after,
+		})
+		if err != nil {
+			t.Fatalf("list page %d: %v", pages, err)
+		}
+		for _, entry := range page {
+			walked = append(walked, entry.Key)
+		}
+		if len(page) < pageSize {
+			return walked
+		}
+		after = page[len(page)-1].Key
+	}
+}
+
+func TestKVListPagesWithoutGapOrDuplicate(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+
+	// More keys than a page holds, and enough pages that a boundary is
+	// crossed several times rather than once.
+	const total = 23
+	const pageSize = 5
+	want := map[string]bool{}
+	for i := range total {
+		key := fmt.Sprintf("player.%03d", i)
+		want[key] = true
+		if _, err := st.KVSet(ctx, "example-mod", key, []byte(`1`), nil, nil); err != nil {
+			t.Fatalf("set %s: %v", key, err)
+		}
+	}
+
+	walked := walkKVList(t, st, "example-mod", "", pageSize)
+	if len(walked) != total {
+		t.Errorf("the walk returned %d keys, want %d", len(walked), total)
+	}
+	seen := map[string]bool{}
+	for _, key := range walked {
+		if seen[key] {
+			t.Errorf("key %q came back on two pages", key)
+		}
+		seen[key] = true
+		if !want[key] {
+			t.Errorf("the walk returned %q, which was never written", key)
+		}
+	}
+	for key := range want {
+		if !seen[key] {
+			t.Errorf("the walk skipped %q", key)
+		}
+	}
+	if !slices.IsSorted(walked) {
+		t.Errorf("the walk is not key ascending: %v", walked)
+	}
+}
+
+func TestKVListOrdersInByteOrder(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+
+	// Punctuation and case are exactly where a locale collation disagrees with
+	// the bytes, which is what migration 0017 pins on Postgres.
+	written := []string{"Zulu", "alpha", "alpha.beta", "alpha-beta", "a_b"}
+	for _, key := range written {
+		if _, err := st.KVSet(ctx, "order-mod", key, []byte(`1`), nil, nil); err != nil {
+			t.Fatalf("set %s: %v", key, err)
+		}
+	}
+
+	listed, err := st.KVList(ctx, store.KVListQuery{Namespace: "order-mod", Limit: 50})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := make([]string, 0, len(listed))
+	for _, entry := range listed {
+		got = append(got, entry.Key)
+	}
+	want := slices.Clone(written)
+	slices.Sort(want) // Go sorts strings bytewise, which is the order claimed.
+	if !slices.Equal(got, want) {
+		t.Errorf("listed %v, want byte order %v", got, want)
+	}
+}
+
+func TestKVListSkipsExpiredKeys(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+
+	short := 10 * time.Millisecond
+	if _, err := st.KVSet(ctx, "ttl-mod", "doomed", []byte(`1`), nil, &short); err != nil {
+		t.Fatalf("set doomed: %v", err)
+	}
+	if _, err := st.KVSet(ctx, "ttl-mod", "kept", []byte(`1`), nil, nil); err != nil {
+		t.Fatalf("set kept: %v", err)
+	}
+
+	// Before expiry both are live, and the expiring one reports its expiry.
+	listed, err := st.KVList(ctx, store.KVListQuery{Namespace: "ttl-mod", Limit: 50})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %d keys before expiry, want 2", len(listed))
+	}
+	if listed[0].Key != "doomed" || listed[0].ExpiresAt == nil {
+		t.Errorf("listed[0] = %+v, want doomed carrying an expiry", listed[0])
+	}
+	if listed[1].ExpiresAt != nil {
+		t.Errorf("a key with no TTL reported expiry %v", listed[1].ExpiresAt)
+	}
+
+	// The row is still physically present; only the expiry makes it absent.
+	time.Sleep(short + 30*time.Millisecond)
+	listed, err = st.KVList(ctx, store.KVListQuery{Namespace: "ttl-mod", Limit: 50})
+	if err != nil {
+		t.Fatalf("list after expiry: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Key != "kept" {
+		t.Errorf("after expiry the listing is %+v, want only kept", listed)
+	}
+}
+
+func TestKVListPrefixIsALiteralRange(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+
+	for _, key := range []string{
+		"balance.1", "balance.2", "balances", "balanc", "bank.1", "zz",
+	} {
+		if _, err := st.KVSet(ctx, "prefix-mod", key, []byte(`1`), nil, nil); err != nil {
+			t.Fatalf("set %s: %v", key, err)
+		}
+	}
+
+	if got := walkKVList(t, st, "prefix-mod", "balance.", 2); !slices.Equal(got, []string{"balance.1", "balance.2"}) {
+		t.Errorf("prefix balance. matched %v, want the two balance.N keys", got)
+	}
+	// "balance" without the dot is still a literal prefix, so it takes
+	// "balances" too; "balanc" takes all three.
+	if got := walkKVList(t, st, "prefix-mod", "balances", 5); !slices.Equal(got, []string{"balances"}) {
+		t.Errorf("prefix balances matched %v, want exactly balances", got)
+	}
+	// A prefix outside the key alphabet matches nothing rather than failing.
+	for _, prefix := range []string{"/", "balance./", "zzz", string([]byte{0xFF})} {
+		if got := walkKVList(t, st, "prefix-mod", prefix, 5); len(got) != 0 {
+			t.Errorf("prefix %q matched %v, want nothing", prefix, got)
+		}
+	}
+}
+
+func TestKVNamespacesCountsLiveKeys(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+
+	short := 10 * time.Millisecond
+	writes := []struct {
+		namespace, key string
+		ttl            *time.Duration
+	}{
+		{"mod-b", "one", nil},
+		{"mod-b", "two", nil},
+		{"mod-a", "only", nil},
+		{"mod-c", "doomed", &short},
+	}
+	for _, write := range writes {
+		if _, err := st.KVSet(ctx, write.namespace, write.key, []byte(`1`), nil, write.ttl); err != nil {
+			t.Fatalf("set %s/%s: %v", write.namespace, write.key, err)
+		}
+	}
+
+	time.Sleep(short + 30*time.Millisecond)
+
+	counts, err := st.KVNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("namespaces: %v", err)
+	}
+	want := []store.KVNamespaceCount{
+		{Namespace: "mod-a", Keys: 1},
+		{Namespace: "mod-b", Keys: 2},
+	}
+	if !slices.Equal(counts, want) {
+		t.Errorf("namespaces = %+v, want %+v (name ascending, expired keys excluded)", counts, want)
 	}
 }

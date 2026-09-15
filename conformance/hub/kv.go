@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -444,6 +447,330 @@ func checkKVConfinement(ctx context.Context, env Env) error {
 	}
 	return env.refused(ctx, http.MethodGet, kvPath("/api/v1", declared, "key"),
 		unrelated.Secret, nil, "a token with no kv scope read the store")
+}
+
+// kvKeyRow is one row of a key listing (spec section 12.2). Value is declared
+// so that a hub echoing one can be caught: a listing is a browse, not a bulk
+// read.
+type kvKeyRow struct {
+	Key       string          `json:"key"`
+	Revision  int64           `json:"revision"`
+	ExpiresAt string          `json:"expiresAt"`
+	Value     json.RawMessage `json:"value"`
+}
+
+type kvKeyPage struct {
+	Namespace  string     `json:"namespace"`
+	Keys       []kvKeyRow `json:"keys"`
+	NextCursor string     `json:"nextCursor"`
+}
+
+type kvNamespaceListing struct {
+	Namespaces []struct {
+		Namespace string `json:"namespace"`
+		Keys      int64  `json:"keys"`
+	} `json:"namespaces"`
+}
+
+// kvListPath builds one page request for a namespace's keys.
+func kvListPath(namespace string, parameters url.Values) string {
+	path := "/api/v1/kv/" + namespace
+	if encoded := parameters.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return path
+}
+
+// walkKVKeys pages a namespace to exhaustion the way a client does and returns
+// the keys in the order they arrived.
+func (e Env) walkKVKeys(ctx context.Context, bearer, namespace, prefix string, limit int) ([]string, error) {
+	var (
+		walked []string
+		cursor string
+	)
+	for pages := 0; ; pages++ {
+		if pages > 50 {
+			return nil, fmt.Errorf("the key listing walk did not terminate after %d pages", pages)
+		}
+		parameters := url.Values{"limit": {strconv.Itoa(limit)}}
+		if prefix != "" {
+			parameters.Set("prefix", prefix)
+		}
+		if cursor != "" {
+			parameters.Set("cursor", cursor)
+		}
+		path := kvListPath(namespace, parameters)
+
+		var page kvKeyPage
+		if err := e.expect(ctx, http.MethodGet, path, bearer, nil, http.StatusOK, &page); err != nil {
+			return nil, err
+		}
+		if page.Namespace != namespace {
+			return nil, fmt.Errorf("%s echoed namespace %q, want %q", path, page.Namespace, namespace)
+		}
+		if len(page.Keys) > limit {
+			return nil, fmt.Errorf("%s answered %d keys past the limit of %d", path, len(page.Keys), limit)
+		}
+		for _, row := range page.Keys {
+			if len(row.Value) != 0 {
+				return nil, fmt.Errorf("%s carried a value for key %q; a listing does not include values",
+					path, row.Key)
+			}
+			walked = append(walked, row.Key)
+		}
+		if page.NextCursor == "" {
+			return walked, nil
+		}
+		if page.NextCursor == cursor {
+			return nil, fmt.Errorf("%s answered the cursor it was given, which loops forever", path)
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func checkKVListPaging(ctx context.Context, env Env) error {
+	namespace := uniqueKVNamespace()
+
+	// More keys than one page holds, so the walk crosses a page boundary
+	// several times rather than once.
+	const total = 13
+	const pageSize = 5
+	written := map[string]bool{}
+	for i := range total {
+		key := fmt.Sprintf("player.%03d", i)
+		written[key] = true
+		if err := env.expect(ctx, http.MethodPut, kvPath("/api/v1", namespace, key),
+			env.AdminToken, map[string]any{"value": i}, http.StatusOK, nil); err != nil {
+			return err
+		}
+	}
+
+	walked, err := env.walkKVKeys(ctx, env.AdminToken, namespace, "", pageSize)
+	if err != nil {
+		return err
+	}
+	if !sort.StringsAreSorted(walked) {
+		return fmt.Errorf("the walk is not key ascending: %v", walked)
+	}
+	seen := map[string]int{}
+	for _, key := range walked {
+		seen[key]++
+		if seen[key] > 1 {
+			return fmt.Errorf("key %q came back on two pages of one walk", key)
+		}
+		if !written[key] {
+			return fmt.Errorf("the walk returned %q, which was never written", key)
+		}
+	}
+	for key := range written {
+		if seen[key] == 0 {
+			return fmt.Errorf("the walk skipped %q, which was live for the whole walk", key)
+		}
+	}
+
+	// An over-large limit is clamped, not refused; a limit that is not a page
+	// size at all, and a cursor this hub could not have issued, are refused
+	// rather than ignored.
+	var clamped kvKeyPage
+	if err := env.expect(ctx, http.MethodGet,
+		kvListPath(namespace, url.Values{"limit": {"100000"}}), env.AdminToken,
+		nil, http.StatusOK, &clamped); err != nil {
+		return fmt.Errorf("an over-large limit was refused instead of clamped: %w", err)
+	}
+	if len(clamped.Keys) != total {
+		return fmt.Errorf("a clamped limit answered %d keys, want all %d", len(clamped.Keys), total)
+	}
+	if clamped.NextCursor != "" {
+		return fmt.Errorf("the last page carried nextCursor %q; it must be absent", clamped.NextCursor)
+	}
+	for _, bad := range []struct{ parameter, value string }{
+		{"limit", "0"},
+		{"limit", "not-a-number"},
+		{"cursor", "!not base64!"},
+		{"cursor", base64.RawURLEncoding.EncodeToString([]byte("bad..key"))},
+	} {
+		path := kvListPath(namespace, url.Values{bad.parameter: {bad.value}})
+		if err := env.expectError(ctx, http.MethodGet, path, env.AdminToken, nil,
+			http.StatusBadRequest, "bad_request"); err != nil {
+			return fmt.Errorf("%s=%q was not refused: %w", bad.parameter, bad.value, err)
+		}
+	}
+	return nil
+}
+
+func checkKVListPrefixAndExpiry(ctx context.Context, env Env) error {
+	namespace := uniqueKVNamespace()
+
+	for _, key := range []string{"balance.1", "balance.2", "balances", "bank.1"} {
+		if err := env.expect(ctx, http.MethodPut, kvPath("/api/v1", namespace, key),
+			env.AdminToken, map[string]any{"value": 1}, http.StatusOK, nil); err != nil {
+			return err
+		}
+	}
+
+	// prefix is a literal prefix of the key, not a pattern: "balance." takes
+	// the two dotted keys, "balance" takes "balances" as well, and a prefix
+	// outside the key alphabet matches nothing rather than failing.
+	for _, one := range []struct {
+		prefix string
+		want   []string
+	}{
+		{"balance.", []string{"balance.1", "balance.2"}},
+		{"balance", []string{"balance.1", "balance.2", "balances"}},
+		{"bank", []string{"bank.1"}},
+		{"no-such-prefix", nil},
+		{"balance/", nil},
+	} {
+		got, err := env.walkKVKeys(ctx, env.AdminToken, namespace, one.prefix, 2)
+		if err != nil {
+			return err
+		}
+		if len(got) != len(one.want) {
+			return fmt.Errorf("prefix %q listed %v, want %v", one.prefix, got, one.want)
+		}
+		for i := range got {
+			if got[i] != one.want[i] {
+				return fmt.Errorf("prefix %q listed %v, want %v", one.prefix, got, one.want)
+			}
+		}
+	}
+
+	// A key past its expiry must not appear, whether or not the hub has
+	// physically deleted it yet (spec section 12.1).
+	expiring := uniqueKVNamespace()
+	if err := env.expect(ctx, http.MethodPut, kvPath("/api/v1", expiring, "kept"),
+		env.AdminToken, map[string]any{"value": 1}, http.StatusOK, nil); err != nil {
+		return err
+	}
+	var written kvEntry
+	if err := env.expect(ctx, http.MethodPut, kvPath("/api/v1", expiring, "doomed"),
+		env.AdminToken, map[string]any{"value": 1, "ttlSeconds": 1}, http.StatusOK, &written); err != nil {
+		return err
+	}
+	if written.ExpiresAt == "" {
+		return fmt.Errorf("a set with ttlSeconds answered no expiresAt")
+	}
+
+	var page kvKeyPage
+	if err := env.expect(ctx, http.MethodGet, kvListPath(expiring, nil), env.AdminToken,
+		nil, http.StatusOK, &page); err != nil {
+		return err
+	}
+	if len(page.Keys) != 2 {
+		return fmt.Errorf("before expiry the listing carries %d keys, want 2", len(page.Keys))
+	}
+	for _, row := range page.Keys {
+		if row.Key == "doomed" && row.ExpiresAt == "" {
+			return fmt.Errorf("a listed key with a TTL carried no expiresAt")
+		}
+		if row.Key == "kept" && row.ExpiresAt != "" {
+			return fmt.Errorf("a listed key with no TTL carried expiresAt %q", row.ExpiresAt)
+		}
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := env.expect(ctx, http.MethodGet, kvListPath(expiring, nil), env.AdminToken,
+			nil, http.StatusOK, &page); err != nil {
+			return err
+		}
+		if len(page.Keys) == 1 && page.Keys[0].Key == "kept" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the listing still carries %d keys well past a one-second TTL", len(page.Keys))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func checkKVNamespaceListing(ctx context.Context, env Env) error {
+	granted := uniqueKVNamespace()
+	withheld := uniqueKVNamespace()
+
+	for _, one := range []struct{ namespace, key string }{
+		{granted, "one"},
+		{granted, "two"},
+		{withheld, "one"},
+	} {
+		if err := env.expect(ctx, http.MethodPut, kvPath("/api/v1", one.namespace, one.key),
+			env.AdminToken, map[string]any{"value": 1}, http.StatusOK, nil); err != nil {
+			return err
+		}
+	}
+
+	listing := func(bearer string) (map[string]int64, error) {
+		var page kvNamespaceListing
+		if err := env.expect(ctx, http.MethodGet, "/api/v1/kv", bearer, nil,
+			http.StatusOK, &page); err != nil {
+			return nil, err
+		}
+		counts := map[string]int64{}
+		names := make([]string, 0, len(page.Namespaces))
+		for _, one := range page.Namespaces {
+			counts[one.Namespace] = one.Keys
+			names = append(names, one.Namespace)
+		}
+		if !sort.StringsAreSorted(names) {
+			return nil, fmt.Errorf("the namespace listing is not name ascending: %v", names)
+		}
+		return counts, nil
+	}
+
+	// The suite's own credential sees both namespaces with their live counts.
+	all, err := listing(env.AdminToken)
+	if err != nil {
+		return err
+	}
+	if all[granted] != 2 {
+		return fmt.Errorf("namespace %s listed %d live keys, want 2", granted, all[granted])
+	}
+	if all[withheld] != 1 {
+		return fmt.Errorf("namespace %s listed %d live keys, want 1", withheld, all[withheld])
+	}
+
+	// A token narrowed to one namespace sees that one and not the other:
+	// enumeration reveals nothing a key-by-key read could not have found.
+	narrow, err := env.mintToken(ctx, "conformance: kv listing narrow", "kv:rw:"+granted)
+	if err != nil {
+		return err
+	}
+	scoped, err := listing(narrow.Secret)
+	if err != nil {
+		return err
+	}
+	if scoped[granted] != 2 {
+		return fmt.Errorf("a kv:rw:%s token does not see its own namespace in the listing", granted)
+	}
+	if _, leaked := scoped[withheld]; leaked {
+		return fmt.Errorf("a kv:rw:%s token saw namespace %s, which it may not read", granted, withheld)
+	}
+
+	// The same token may list that namespace's keys and no other's.
+	if err := env.expect(ctx, http.MethodGet, kvListPath(granted, nil), narrow.Secret,
+		nil, http.StatusOK, nil); err != nil {
+		return fmt.Errorf("the granted namespace's key listing was refused: %w", err)
+	}
+	if err := env.refused(ctx, http.MethodGet, kvListPath(withheld, nil), narrow.Secret, nil,
+		"a kv:rw grant on one namespace listed another's keys"); err != nil {
+		return err
+	}
+
+	// A token with no kv grant at all is refused both listings outright.
+	unrelated, err := env.mintToken(ctx, "conformance: kv listing unrelated", "servers:read")
+	if err != nil {
+		return err
+	}
+	if err := env.refused(ctx, http.MethodGet, "/api/v1/kv", unrelated.Secret, nil,
+		"a token with no kv grant enumerated the store's namespaces"); err != nil {
+		return err
+	}
+	return env.refused(ctx, http.MethodGet, kvListPath(granted, nil), unrelated.Secret, nil,
+		"a token with no kv grant listed a namespace's keys")
 }
 
 func checkKVValidation(ctx context.Context, env Env) error {
