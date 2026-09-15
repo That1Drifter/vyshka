@@ -3292,6 +3292,24 @@ var checks = []Check{
 		Run:     checkWebhookScope,
 	},
 	{
+		ID:      "webhooks.edit",
+		Title:   "An edit validates like a registration and cannot widen the subscription",
+		Section: "11.2",
+		Run:     checkWebhookEdit,
+	},
+	{
+		ID:      "webhooks.pause",
+		Title:   "A paused webhook queues what it matched and is never delivered to",
+		Section: "11.2",
+		Run:     checkWebhookPause,
+	},
+	{
+		ID:      "webhooks.replay",
+		Title:   "A replayed delivery goes out again with the same id, bytes, and signature",
+		Section: "11.5",
+		Run:     checkWebhookReplay,
+	},
+	{
 		ID:      "webhooks.signedDelivery",
 		Title:   "A matching event arrives as a signed generic-json delivery",
 		Section: "11.3",
