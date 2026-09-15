@@ -19,3 +19,6 @@ vyshka-spec.md
 /deploy/admin-token
 /deploy/data/
 /deploy/maps/
+
+# Browser-automation logs the playwright MCP server writes beside the tree
+/.playwright-mcp/
