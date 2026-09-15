@@ -242,8 +242,10 @@ panel/
     manage.js      // the management views: server registration and credentials, tokens, webhooks and deliveries, audit, key/value, pinned actions
     map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame
     style.css      // one stylesheet, light and dark
-  panel_test.go    // the handler: headers, what it serves, what it refuses, the maps surface
-  e2e_test.go      // headless Chrome against a real hub, a fake plugin, and a generated tileset
+  panel_test.go      // the handler: headers, what it serves, what it refuses, the maps surface
+  e2e_harness_test.go // the shared browser scaffolding: the hub, the tab, the console capture, the step helpers, the fake plugin
+  e2e_test.go        // headless Chrome over sign-in, the action form, dispatch, the event feed, and the live map
+  e2e_manage_test.go // headless Chrome over the management views: servers, credentials, pins, tokens, webhooks, audit, key/value
 ```
 
 No build step: the files are served as written, as ES modules the browser resolves against
@@ -278,6 +280,26 @@ colour of its quadrant (which is what tells a flipped or swapped axis from a rig
 a second snapshot replacing the markers whole, a marker click landing on the action list
 with the player preselected and the heal form filled in, and a world with no tileset
 listing the players under a notice.
+
+A second browser test covers the management views on the same scaffolding: the nav and its
+`aria-current`, a server registered through the form whose one-time enrollment token survives a
+refresh tick and then enrolls a plugin, a "Revoke credentials" that does nothing without its
+tick and refuses the plugin's next poll with one, a pin that survives a reload and a stale
+pinned code listed dimmed against the manifest revision that dropped it, the role bundles
+expanded from the hub's stored manifests (moderator, event host, owner) and a minted token
+whose secret is shown once, signed in with and refused from the tokens view as one notice
+naming `admin`, then revoked in two clicks and refused at the sign-in form. Then a webhook
+aimed at a receiver that answers 500 until told otherwise: a failed delivery with its retry
+booked, a pause that holds every delivery while the receiver counts nothing and the hub keeps
+owing them, a resume that lets them flow, an edit that moves the target URL, a replay that
+re-arms a delivered delivery and reaches the receiver again with the same delivery id at one
+attempt higher, the dead-letter filter, and a delete behind its tick. Finally the audit log
+(every one of those mutations, newest first, narrowed to one server, and a window in the future
+that is empty rather than an error) and the key/value views (a namespace listed with its live
+key count, one whose only key has expired absent, a prefix filter in the route, and one value
+opened with its revision). Every guard gets its negative control in the same run: the
+unconfirmed revoke, the unconfirmed delete, the cancelled token revoke, and the resume that
+makes the paused silence mean something.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.
