@@ -868,6 +868,14 @@ point if needed.
 
 ### Fixed
 
+- 2026-09-15: delivery retention locks its batch's webhook rows before deleting
+  deliveries, in the same parent order as fan-out. This prevents a Postgres
+  deadlock with webhook deletion's cascade (issue #89). The batch stays bounded
+  and eligibility is rechecked after locking so concurrent replays are preserved.
+  A deterministic Postgres regression reproduces the old deadlock with 100
+  finished deliveries. Postgres tests also cover parent lock order and replay
+  overlap; both backends grade cutoff eligibility and batch limits, including
+  oversized requests capped to stay within SQL parameter limits.
 - 2026-09-14: `ROADMAP.md` and the design notes listed the live-player map demo on staging
   as remaining M4 work. It completed 2026-09-12 with issue #46, which closed on its
   evidence: the world picked from `core.server.start`, a real player's marker registered
