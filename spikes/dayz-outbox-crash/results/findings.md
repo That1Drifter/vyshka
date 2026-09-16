@@ -53,7 +53,8 @@ Each trial is one boot of the server carrying the mod and the load generator:
 4. The runner sees the load start when the generator's `started` line appears in the
    script log, which it reads every 200 ms, draws a random delay, and kills the process
    when it elapses. Times in the tables are therefore measured from that observation, not
-   from the engine's own clock, and carry up to 200 ms of observation latency. After the
+   from the engine's own clock, and carry the observation latency: a nominal 200 ms polling
+   interval plus scheduling and file-read delays. After the
    kill it reads three things: the last confirmed and announced `n` in the script log and
    the marker (how far the generator got), every record left in `Vyshka/outbox/` (what the
    outbox had written, and whether each file parses), and what the hub already held of this

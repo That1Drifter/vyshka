@@ -115,6 +115,13 @@ type trial struct {
 	Note           string  `json:"note,omitempty"`
 }
 
+// announcedUpper is the upper end of the emitted interval: the higher of the
+// two announced values, since the marker is written a moment before the log
+// line and a kill between them leaves it one tick ahead.
+func (t trial) announcedUpper() int {
+	return max(t.AnnouncedLog, t.EmittedMarker)
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "runner:", err)
@@ -317,7 +324,7 @@ func run() error {
 			// The upper bound takes the higher of the two announced values
 			// (log and marker); they agree unless one of them was cut short.
 			pending.LostMin = max(pending.EmittedLog-pending.HubAfterDistinct, 0)
-			pending.LostMax = max(max(pending.AnnouncedLog, pending.EmittedMarker)-pending.HubAfterDistinct, 0)
+			pending.LostMax = max(pending.announcedUpper()-pending.HubAfterDistinct, 0)
 			perSecond := float64(pending.PerTick) * 1000 / float64(pending.TickMs)
 			pending.LostSecondsMax = float64(pending.LostMax) / perSecond
 			if err := appendJSON(trialsFile, pending); err != nil {
@@ -404,7 +411,7 @@ func run() error {
 			t.Note = "the marker file was one tick ahead of the log's last intent line"
 		}
 		fmt.Printf("runner: trial %d killed run %d after %d ms (planned %d): emitted %d..%d, marker %d, disk %d..%d in %d file(s) (%d torn), hub already %d\n",
-			i, run, t.KillAfterMs, t.KillPlannedMs, t.EmittedLog, t.AnnouncedLog, t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskFiles, t.DiskTorn, t.HubBeforeKill)
+			i, run, t.KillAfterMs, t.KillPlannedMs, t.EmittedLog, t.announcedUpper(), t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskFiles, t.DiskTorn, t.HubBeforeKill)
 		pending = &t
 	}
 
@@ -885,7 +892,7 @@ func printSummary(results []trial) {
 	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|---|---|")
 	for _, t := range results {
 		fmt.Fprintf(w, "| %d | %.1f s (%.1f) | %d..%d | %d..%d (%d) | %d | %d | %d | %d | %d | %d | %d..%d | %.1f |\n",
-			t.Trial, float64(t.KillAfterMs)/1000, float64(t.KillPlannedMs)/1000, t.EmittedLog, t.AnnouncedLog, t.DiskFirst, t.DiskLast, t.DiskCount, t.DiskFiles, t.DiskTorn,
+			t.Trial, float64(t.KillAfterMs)/1000, float64(t.KillPlannedMs)/1000, t.EmittedLog, t.announcedUpper(), t.DiskFirst, t.DiskLast, t.DiskCount, t.DiskFiles, t.DiskTorn,
 			t.HubBeforeKill, t.HubAfterDistinct, t.HubDuplicates, len(t.HubAfterGaps), t.LostMin, t.LostMax, t.LostSecondsMax)
 	}
 }
