@@ -268,8 +268,12 @@ func run() error {
 			return err
 		}
 		// The generator waits for this file, so the load never starts before
-		// the previous boot's outbox has been delivered and acked.
-		_ = os.Remove(goPath)
+		// the previous boot's outbox has been delivered and acked. A file
+		// that cannot be removed would start the load at once and void the
+		// schedule, so that is fatal.
+		if err := os.Remove(goPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing the go file: %w", err)
+		}
 
 		fmt.Printf("runner: boot %d of %d\n", i, o.trials+1)
 		bootAt := time.Now()
@@ -287,7 +291,9 @@ func run() error {
 		if pending != nil {
 			// The killed run's outbox rides this boot. Wait for the hub to
 			// hold everything the disk held and for the acks to have cleared
-			// the run's records from disk, or give up after the drain wait.
+			// the run's records from disk. A record that cannot be read does
+			// not count as cleared, and a wait that runs out is fatal: the
+			// next trial's load would otherwise overlap a recovery.
 			for {
 				ns, err := hubEvents(hubURL, serverID, pending.Run)
 				if err != nil {
@@ -296,9 +302,9 @@ func run() error {
 				count, distinct, maxN, gaps := analyze(ns)
 				pending.HubAfterCount, pending.HubAfterDistinct, pending.HubAfterMax, pending.HubAfterGaps = count, distinct, maxN, gaps
 				pending.HubDuplicates = count - distinct
-				_, _, _, left := inspectOutbox(filepath.Join(pluginDir, "outbox"), pending.Run)
+				_, torn, _, left := inspectOutbox(filepath.Join(pluginDir, "outbox"), pending.Run)
 				pending.DiskLeftAfter = len(left)
-				if distinct >= pending.ExpectedDistinct && maxN >= pending.DiskLast && len(left) == 0 {
+				if distinct >= pending.ExpectedDistinct && maxN >= pending.DiskLast && len(left) == 0 && torn == 0 {
 					break
 				}
 				if time.Since(connectedAt) > o.drainWait {
@@ -308,8 +314,10 @@ func run() error {
 				time.Sleep(2 * time.Second)
 			}
 			pending.DrainSeconds = time.Since(connectedAt).Seconds()
+			// The upper bound takes the higher of the two announced values
+			// (log and marker); they agree unless one of them was cut short.
 			pending.LostMin = max(pending.EmittedLog-pending.HubAfterDistinct, 0)
-			pending.LostMax = max(pending.AnnouncedLog-pending.HubAfterDistinct, 0)
+			pending.LostMax = max(max(pending.AnnouncedLog, pending.EmittedMarker)-pending.HubAfterDistinct, 0)
 			perSecond := float64(pending.PerTick) * 1000 / float64(pending.TickMs)
 			pending.LostSecondsMax = float64(pending.LostMax) / perSecond
 			if err := appendJSON(trialsFile, pending); err != nil {
@@ -317,6 +325,11 @@ func run() error {
 			}
 			results = append(results, *pending)
 			printTrial(*pending)
+			if pending.DrainTimedOut {
+				_ = srv.kill()
+				return fmt.Errorf("trial %d: the killed run was not delivered and acked within %s (hub %d of %d expected, %d record(s) left on disk); the record is written and the series stops here",
+					pending.Trial, o.drainWait, pending.HubAfterDistinct, pending.ExpectedDistinct, pending.DiskLeftAfter)
+			}
 			pending = nil
 		}
 
@@ -346,9 +359,21 @@ func run() error {
 			Trial: i, Run: run, PerTick: o.perTick, TickMs: o.tickMs, PollTimeout: o.pollTimeout,
 			KillPlannedMs: delay.Milliseconds(), KillAfterMs: killAt.Sub(startedAt).Milliseconds(),
 		}
-		t.AnnouncedLog = lastLogged(logPath, run, intentRe)
-		t.EmittedLog = lastLogged(logPath, run, emittedRe)
-		t.EmittedMarker = readMarker(filepath.Join(spikeDir, "emitted.txt"), run)
+		// The three post-mortem observations must all be readable and
+		// consistent, or the loss interval would be built on a zero that
+		// looks like a count.
+		if t.AnnouncedLog, err = lastLogged(logPath, run, intentRe); err != nil {
+			return fmt.Errorf("trial %d: %w", i, err)
+		}
+		if t.EmittedLog, err = lastLogged(logPath, run, emittedRe); err != nil {
+			return fmt.Errorf("trial %d: %w", i, err)
+		}
+		if t.EmittedMarker, err = readMarker(filepath.Join(spikeDir, "emitted.txt"), run); err != nil {
+			return fmt.Errorf("trial %d: %w", i, err)
+		}
+		if t.EmittedLog > t.AnnouncedLog || t.AnnouncedLog-t.EmittedLog > o.perTick {
+			return fmt.Errorf("trial %d: the log's confirmed count %d and announced count %d are not within one tick of each other", i, t.EmittedLog, t.AnnouncedLog)
+		}
 		var onDisk map[int]bool
 		t.DiskFiles, t.DiskTorn, t.DiskBytes, onDisk = inspectOutbox(filepath.Join(pluginDir, "outbox"), run)
 		t.DiskFirst, t.DiskLast = bounds(onDisk)
@@ -370,7 +395,13 @@ func run() error {
 		}
 		t.ExpectedDistinct = len(expected)
 		if t.EmittedMarker != t.AnnouncedLog {
-			t.Note = "the marker file and the log's last intent line disagree"
+			// Both are written before the tick's Emit calls, the marker
+			// first; a kill between the two leaves the marker one tick
+			// ahead. Anything else is an observation problem.
+			if t.EmittedMarker-t.AnnouncedLog != o.perTick {
+				return fmt.Errorf("trial %d: the marker %d and the log's announced count %d are not the same tick or one tick apart", i, t.EmittedMarker, t.AnnouncedLog)
+			}
+			t.Note = "the marker file was one tick ahead of the log's last intent line"
 		}
 		fmt.Printf("runner: trial %d killed run %d after %d ms (planned %d): emitted %d..%d, marker %d, disk %d..%d in %d file(s) (%d torn), hub already %d\n",
 			i, run, t.KillAfterMs, t.KillPlannedMs, t.EmittedLog, t.AnnouncedLog, t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskFiles, t.DiskTorn, t.HubBeforeKill)
@@ -486,41 +517,52 @@ func waitLog(profile string, bootAt time.Time, srv *server, limit time.Duration,
 
 // lastLogged reads the script log after the kill and returns the highest n
 // in the run's lines matching re: what reached the log file's bytes on disk
-// by the time the process died.
-func lastLogged(logPath string, run int64, re *regexp.Regexp) int {
+// by the time the process died. A log that cannot be read, or that has no
+// such line for the run, is an error rather than a zero, because a zero
+// here would read as "nothing emitted" and hide a loss.
+func lastLogged(logPath string, run int64, re *regexp.Regexp) (int, error) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("reading the script log: %w", err)
 	}
-	last := 0
+	last, found := 0, false
 	for _, m := range re.FindAllSubmatch(data, -1) {
 		r, _ := strconv.ParseInt(string(m[1]), 10, 64)
 		if r != run {
 			continue
 		}
+		found = true
 		n, _ := strconv.Atoi(string(m[3]))
 		if n > last {
 			last = n
 		}
 	}
-	return last
+	if !found {
+		return 0, fmt.Errorf("no line matching %s for run %d in %s", re, run, logPath)
+	}
+	return last, nil
 }
 
-func readMarker(path string, run int64) int {
+// readMarker returns the announced n in the marker file, which must name
+// the run; anything else is an observation failure, not a zero.
+func readMarker(path string, run int64) (int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("reading the marker: %w", err)
 	}
 	fields := strings.Fields(string(data))
 	if len(fields) != 2 {
-		return 0
+		return 0, fmt.Errorf("the marker %s holds %q, not a run and a count", path, string(data))
 	}
 	r, _ := strconv.ParseInt(fields[0], 10, 64)
 	if r != run {
-		return 0
+		return 0, fmt.Errorf("the marker %s names run %d, not %d", path, r, run)
 	}
-	n, _ := strconv.Atoi(fields[1])
-	return n
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, fmt.Errorf("the marker %s holds count %q: %w", path, fields[1], err)
+	}
+	return n, nil
 }
 
 // inspectOutbox reads every record in the outbox directory and reports how

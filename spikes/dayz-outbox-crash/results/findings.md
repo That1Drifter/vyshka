@@ -2,8 +2,8 @@
 
 Resolves issue #65.
 
-**Short answer:** a process kill loses nothing the outbox had written. Across twenty kills
-under event load, every record on disk was intact and was delivered by the next boot, no
+**Short answer:** in twenty kills under event load, no record the outbox had finished
+writing was lost: every record on disk was intact and was delivered by the next boot, no
 event was stored twice, and the only loss was the event buffer's unflushed tail: between
 0.1 s and 2.1 s of events, which is the 2 s flush interval plus the 200 ms plugin tick that
 notices a flush is due. The number demanded no code change. What a power loss or an OS
@@ -23,8 +23,10 @@ plugin's documentation now says exactly that.
 | Kill | `TerminateProcess` from the runner (`os.Process.Kill`), no notice to the engine |
 | Date | 2026-09-16 |
 
-Loopback removes network latency; the hub's own processing time is the only delay between a
-poll and its ack. The kill is the closest reproducible stand-in for an engine crash: an
+Loopback removes network latency; what remains between a poll and its ack is the hub's own
+processing and the hold the hub keeps on purpose when it has nothing to deliver (which is
+what the drain column measures). The kill is the closest reproducible stand-in for an
+engine crash: an
 access violation ends the process the same way from the file system's point of view, with
 every handle closed by the OS and nothing flushed that the process still held. A power loss
 is a different event (the OS page cache is lost too) and is discussed at the end.
@@ -46,10 +48,14 @@ Each trial is one boot of the server carrying the mod and the load generator:
    through the same `OpenFile`/`FPrint`/`CloseFile` sequence the outbox uses); after them it
    confirms the range. A kill inside a tick therefore leaves an interval, not a wrong
    count: the true number of emitted events lies between the last confirmed `n` and the
-   last announced `n`, at most one tick apart.
-4. After a random delay drawn before the load started, the runner kills the process and
-   reads three things: the last confirmed and announced `n` in the script log and the
-   marker (how far the generator got), every record left in `Vyshka/outbox/` (what the
+   last announced `n`, at most one tick apart, provided the three observations are readable
+   and consistent; the runner stops the series rather than record a zero when they are not.
+4. The runner sees the load start when the generator's `started` line appears in the
+   script log, which it reads every 200 ms, draws a random delay, and kills the process
+   when it elapses. Times in the tables are therefore measured from that observation, not
+   from the engine's own clock, and carry up to 200 ms of observation latency. After the
+   kill it reads three things: the last confirmed and announced `n` in the script log and
+   the marker (how far the generator got), every record left in `Vyshka/outbox/` (what the
    outbox had written, and whether each file parses), and what the hub already held of this
    run (batches delivered but not yet acked are on disk and at the hub both).
 5. The next boot loads the outbox, starts a session, and re-sends it. Once the hub holds
@@ -65,16 +71,17 @@ described in `../README.md`; the raw records are in `a-50eps/`, `b-200eps/`, and
 
 ## Results
 
-"Kill after" is the actual delay from the load starting, with the planned delay in
-parentheses. "Emitted" is the last confirmed and the last announced `n` in the script log;
+"Kill after" is the actual delay from the runner seeing the load start, with the planned
+delay in parentheses; agreement between the two says the schedule was kept, not that the
+engine's clock was read. "Emitted" is the last confirmed and the last announced `n` in the script log;
 the marker file carried the announced value in every trial. "On disk" is the range and
 count of the run's events in the outbox after the kill, "files" how many outbox records
 there were (the start event and the manifest count too), "torn" how many failed to parse.
 "Hub before" is what the hub already held of the run at the kill, "hub after" the distinct
 count once the next boot had delivered the outbox. "Lost" is emitted minus hub after, as the
 interval the two emitted counts give, and "lost s" is its upper end in seconds of load.
-"Drain" is the time from the next boot's link connecting to the run being delivered and
-acked, so it includes the poll cycles the recovery took.
+"Drain" is the time from the runner seeing the next boot's link connect to the run being
+delivered and acked, so it includes the poll cycles the recovery took.
 
 ### Series A: 50 events/s, `pollTimeout` 5
 
@@ -113,9 +120,10 @@ acked, so it includes the poll cycles the recovery took.
 
 At the default `pollTimeout` the outbox holds more between acks (a 25 s hold is 25 s of
 batches, delivered or not), so the disk range is wider: a kill inside the first hold (trial
-1) leaves the whole run on disk and nothing at the hub, and the recovery takes one poll
-cycle to hand the run over and one more to ack it (26 s and 50 s in the drain column). The
-outcome is the same.
+1) leaves the whole run on disk and nothing at the hub. A run that fits one poll is applied
+as that poll arrives and acked by the response that ends its hold, one cycle (26 s in the
+drain column); a run that needs two polls is applied across two and acked at the end of the
+second (50 s). The outcome is the same.
 
 ## What the numbers say
 
@@ -127,10 +135,10 @@ outcome is the same.
    landing inside that one call would leave an empty or partial file, and the events of
    that batch would be gone: `FlushEvents` has already taken them out of the buffer, and
    `VyshkaOutbox.LoadRecord` discards and counts the unreadable record on the next boot.
-   That path exists, and no kill in this run landed in it; how wide the window is was not
-   timed (the call is one synchronous script call, so it is short, but "short" is the
-   claim, not a number). The plugin documentation therefore says what was measured and
-   names that path, rather than promising that a crash can only ever lose the buffer.
+   That path exists, and no kill in this run landed in it; how long the call takes, and so
+   how wide the window is, was not timed. The plugin documentation therefore says what was
+   measured and names that path, rather than promising that a crash can only ever lose the
+   buffer.
 2. **The loss was the event buffer's tail, and its size follows the flush rule plus one
    tick.** The buffer flushes on the plugin's 200 ms tick once 2 s have passed since its
    oldest event or 200 events are pending (`VyshkaEventBuffer`). The largest loss at 50/s,
@@ -164,10 +172,13 @@ outcome is the same.
    and the hub held each poll for the full `pollTimeout` even though the plugin had more
    queued behind the budget, because the hub answers early only when it has something to
    deliver. So a backlog of `E` queued events, whatever runs they belong to, takes about
-   `E / 1000` poll cycles to hand over and one more to ack, subject to how the batches
-   pack: at `pollTimeout` 25 that is 40 events/s sustained. The drain column in series B
-   and C is that arithmetic on the killed run's own events plus the boot's start event and
-   manifest. Core telemetry on a real server is orders of magnitude below 40 events/s, so
+   `E / 1000` poll cycles, subject to how the batches pack: each poll's batch is applied
+   as the poll arrives and acked by the response that ends its hold, so the last batch is
+   applied at the start of the last cycle and acked at its end. At `pollTimeout` 25 that
+   is 40 events/s sustained. The drain column in series B and C is that arithmetic on the
+   killed run's own events plus the boot's start event and manifest (two polls at
+   `pollTimeout` 5 for 2000 events in B2, 10 s; one at 25 for 870 events in C1, 26 s).
+   Core telemetry on a real server is orders of magnitude below 40 events/s, so
    this is a throughput bound to know about, not a durability hole, and it is out of this
    spike's scope; a poll request that says "I have more" and is answered at once would
    lift it, which is a protocol change and has its own issue (#91).
@@ -176,9 +187,9 @@ outcome is the same.
 
 - **Power loss and OS crash.** Both lose the page cache. NTFS on Windows writes dirty pages
   back within seconds, but script exposes no fsync (`ensystem.c` declares none) so the
-  plugin cannot shorten that window. The honest statement is that a process kill loses
-  nothing written, and a power loss can lose the last few seconds of outbox records plus
-  the same event-buffer tail. An operator who needs less runs the game server on a machine
+  plugin cannot shorten that window. The honest statement is that a process kill did not
+  lose a finished record in these trials and can lose the one being written, and a power
+  loss can lose the last few seconds of outbox records plus the same event-buffer tail. An operator who needs less runs the game server on a machine
   with a battery and a journaling file system, which is the same advice the game's own
   persistence gets.
 - **A kill during the outbox write itself.** The `OpenFile` to `CloseFile` span is one

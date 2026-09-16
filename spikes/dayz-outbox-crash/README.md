@@ -12,7 +12,7 @@ Findings: [`results/findings.md`](results/findings.md).
 
 | Path | What it is |
 |---|---|
-| `harness/VyshkaOutboxLoad.c` | Enforce Script load generator, appended to a mission `init.c`: once the plugin's link is connected it emits numbered `spike.load` events through the plugin's own `Emit`, and records how far it got in the script log and in a marker file written the way the outbox is. |
+| `harness/VyshkaOutboxLoad.c` | Enforce Script load generator, appended to a mission `init.c`: once the plugin's link is connected and the runner has written a go file, it emits numbered `spike.load` events through the plugin's own `Emit`. Before each tick's `Emit` calls it announces the range in the script log and in a marker file written the way the outbox is, and after them it confirms the range in the log, so a kill inside a tick bounds the emitted count to one tick. |
 | `runner/main.go` | Go orchestration: builds and starts a hub on loopback with a fresh SQLite database, registers a server, derives the spike mission, boots the DayZ server, kills it with `TerminateProcess` at a random moment, inspects the outbox directory, boots again, and counts at the hub. |
 | `results/` | The write-up, and one directory per series (`a-50eps`, `b-200eps`, `c-poll25`) holding `trials.jsonl`, one line per kill. The profile directory, the hub database, and the hub log are written next to it and ignored by git. |
 
@@ -40,8 +40,9 @@ client is needed.
 
 For each killed boot the runner records:
 
-- **emitted**: the highest event number in the script log and in the marker file, two
-  independent views of how far the generator got before the process died;
+- **emitted**: the last confirmed and the last announced event number in the script log,
+  and the announced number in the marker file; the true count lies between confirmed and
+  announced, at most one tick apart;
 - **on disk**: the outbox records left in `Vyshka/outbox/`, how many parse, how many are
   torn, and the range of event numbers they hold;
 - **at the hub before the kill**: what the hub had already stored of that boot's run;
