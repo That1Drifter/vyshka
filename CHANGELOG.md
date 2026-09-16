@@ -12,6 +12,26 @@ point if needed.
 
 ### Added
 
+- 2026-09-16: `spikes/dayz-outbox-crash` (issue #65): the DayZ plugin's outbox measured
+  across a process kill. A load generator appended to a mission `init.c` emits numbered
+  events through the plugin's own `Emit`, announcing each tick before its `Emit` calls and
+  confirming it after so a kill inside a tick bounds the count to an interval; a Go runner
+  starts a hub on loopback, boots the server, waits for the previous run to be delivered
+  and acked before it lets the load start, kills the server with `TerminateProcess` at a
+  random moment scheduled from the load start, reads the outbox left on disk, boots again,
+  and counts at the hub. Twenty kills at 50 and 200 events/s and at `pollTimeout` 5 and
+  25: every record on disk was intact and delivered, nothing was stored twice (a batch
+  delivered but unacked at the kill is re-sent and deduplicated), and the loss was the
+  event buffer's unflushed tail alone, 0.1 s to 2.1 s of events (the 2 s flush plus the
+  200 ms tick that notices it). The script log and a marker file written the way the
+  outbox is agreed with each other in every trial. No code change was demanded; the
+  plugin README's "Events" and "Durability" paragraphs and the outbox's header now state
+  the measured window, name the kill inside the outbox's own write as a path the trials
+  did not hit, and name the power-loss case as unmeasured. The runs also showed
+  that a backlog drains at the per-poll event budget per poll cycle, because the hub holds
+  a poll to the full timeout even when the plugin has more queued behind the budget;
+  recorded in the findings as a throughput bound, not a durability hole, and filed as
+  issue #91.
 - 2026-09-15: `panel/e2e_manage_test.go`, the headless-browser test of the management views
   (issue #64): server registration and the one-time enrollment token across a refresh tick,
   credential revocation refusing the plugin's next poll, pins over a reload including a code

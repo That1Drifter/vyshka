@@ -137,8 +137,15 @@ The plugin publishes events (protocol section 8.1) and `state.players` snapshots
 takes as its `referenceKey`.
 
 **Events.** Buffered and flushed as one `event.batch` every 2 s or at 200 events, then
-persisted, acked, and renumbered like every other envelope. Up to 2 s of events can be lost
-to a crash before the flush. A poll carries at most 1000 events across its batches, the
+persisted, acked, and renumbered like every other envelope. A crash loses the unflushed
+tail of that buffer: up to 2 s or 200 events, plus the 200 ms tick that notices a flush is
+due, for a script thread that keeps ticking (a stalled server holds its pending events for
+the length of the stall). Measured by killing the server under load
+(`spikes/dayz-outbox-crash`), that tail was the only loss: every batch that had reached
+the outbox was delivered after the restart, none was torn, and the loss ran from
+0.1 s to 2.1 s of events. A kill that lands inside the outbox's own
+write of a batch would lose that batch too; it did not happen in those trials and the
+restart discards the unreadable record. A poll carries at most 1000 events across its batches, the
 reference hub's per-poll budget, so a backlog flushed after an outage is never refused
 over it. A batch or snapshot the hub does refuse (`event.reject`, `state.reject`) is gone;
 the plugin logs the hub's reasons as `ERROR` lines and carries on.
@@ -309,7 +316,16 @@ The `rejected/` directory is never read by the plugin. Delete its files once you
 at them.
 - **Durability.** The outbox is one file per unacked envelope under the profile directory,
   written before the envelope is first sent and deleted when the hub's ack covers it. The
-  engine exposes no fsync, so a game-server crash can lose what the OS had not flushed.
+  engine exposes no fsync. Against a process kill (a crash, a `taskkill`, a watchdog) the
+  file is in the OS page cache once `CloseFile` returns, and the spike under
+  `spikes/dayz-outbox-crash` found every record intact and delivered after the restart in
+  twenty kills, with the loss confined to the event buffer's unflushed tail (see
+  "Events" above). A kill inside the write itself would leave an unreadable record, which
+  the next boot discards and counts, and the batch in it is gone. A batch delivered but
+  not yet acked when the server dies is on disk and at the hub both; the restart re-sends
+  it and the hub drops it as a duplicate, so nothing is stored twice. What a power loss or
+  an OS crash takes from the page cache is not measured and cannot be shortened from
+  script.
   Sequence numbers are assigned at send time, never stored, which is what makes renumbering
   across a session change (spec section 9.1) automatic. Executed action ids are persisted to
   `executed.log` (append-only, JSON-encoded so an opaque id cannot split a record) and reloaded
