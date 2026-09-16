@@ -89,6 +89,10 @@ func (s *Store) CreateWebhook(ctx context.Context, webhook Webhook) (Webhook, er
 
 const webhookColumns = `id, url, secret, template, events, server_ids, created_at, paused_at`
 
+// Every transaction locking multiple webhooks uses this order, including
+// fan-out and delivery retention. Both columns are immutable.
+const webhookLockOrder = ` ORDER BY created_at DESC, id DESC`
+
 // Webhooks returns every registered webhook, newest first. The dispatcher
 // reads this on every pass, so the whole table is the working set; a hub with
 // enough webhooks for that to matter has outgrown this store.
@@ -481,7 +485,7 @@ func serverNamesTx(ctx context.Context, tx *Tx) (map[string]string, error) {
 // package is taken webhook first, delivery second, so the order cannot cycle.
 func webhooksTx(ctx context.Context, tx *Tx) ([]Webhook, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT `+webhookColumns+` FROM webhooks ORDER BY created_at DESC, id DESC`+tx.forUpdate())
+		`SELECT `+webhookColumns+` FROM webhooks`+webhookLockOrder+tx.forUpdate())
 	if err != nil {
 		return nil, fmt.Errorf("read webhooks in transaction: %w", err)
 	}
@@ -991,24 +995,84 @@ func (s *Store) PruneWebhookDeliveries(ctx context.Context, cutoff time.Time, li
 	if limit <= 0 {
 		limit = defaultPruneBatch
 	}
-	// The conditions are repeated outside the subquery on purpose. On
-	// Postgres the subquery's rows are chosen from the statement's snapshot,
-	// and a row a concurrent replay is re-arming is only reached once that
-	// replay commits; the outer conditions are then re-evaluated against the
-	// row as committed, so a delivery that stopped being finished in between
-	// is kept. Membership in the id list alone would delete it.
-	result, err := s.db.ExecContext(ctx,
+	// The DELETE binds each candidate id plus two eligibility parameters.
+	// Stay within SQLite's 32766-variable limit (Postgres allows 65535).
+	limit = min(limit, 32764)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin prune webhook deliveries: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Choose a bounded batch without locking deliveries: DeleteWebhook's
+	// cascade, replay, and fan-out all take the webhook lock first. Taking a
+	// delivery lock before its parent could deadlock with those operations.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id FROM webhook_deliveries
+		  WHERE state <> ? AND finished_at IS NOT NULL AND finished_at <= ?
+		  ORDER BY finished_at, id LIMIT ?`, DeliveryPending, formatTime(cutoff), limit)
+	if err != nil {
+		return 0, fmt.Errorf("read delivery prune batch: %w", err)
+	}
+	ids := make([]any, 0)
+	for rows.Next() {
+		var deliveryID string
+		if err := rows.Scan(&deliveryID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan delivery prune batch: %w", err)
+		}
+		ids = append(ids, deliveryID)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("read delivery prune batch: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, tx.Commit()
+	}
+
+	// Lock only this batch's parents, in the same order as webhooksTx, and
+	// consume every row before deleting any delivery. Keep the original batch:
+	// selecting fresh candidates afterwards could touch an unlocked parent.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err = tx.QueryContext(ctx,
+		`SELECT id FROM webhooks WHERE id IN
+		 (SELECT webhook_id FROM webhook_deliveries WHERE id IN (`+placeholders+`))`+
+			webhookLockOrder+tx.forUpdate(), ids...)
+	if err != nil {
+		return 0, fmt.Errorf("lock delivery prune webhooks: %w", err)
+	}
+	for rows.Next() {
+		var webhookID string
+		if err := rows.Scan(&webhookID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan delivery prune webhook: %w", err)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("lock delivery prune webhooks: %w", err)
+	}
+
+	// Recheck eligibility after acquiring the parents: a replay may have
+	// re-armed a candidate while we waited. A concurrent cascade may also have
+	// removed a parent and its candidates, in which case they delete nothing.
+	result, err := tx.ExecContext(ctx,
 		`DELETE FROM webhook_deliveries
-		  WHERE id IN (SELECT id FROM webhook_deliveries
-		                WHERE state <> ? AND finished_at IS NOT NULL AND finished_at <= ? LIMIT ?)
+		  WHERE id IN (`+placeholders+`)
 		    AND state <> ? AND finished_at IS NOT NULL AND finished_at <= ?`,
-		DeliveryPending, formatTime(cutoff), limit, DeliveryPending, formatTime(cutoff))
+		append(ids, DeliveryPending, formatTime(cutoff))...)
 	if err != nil {
 		return 0, fmt.Errorf("prune webhook deliveries: %w", err)
 	}
 	pruned, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("prune webhook deliveries: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit prune webhook deliveries: %w", err)
 	}
 	return int(pruned), nil
 }
