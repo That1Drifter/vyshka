@@ -10,13 +10,15 @@
 // the fields renumbering must keep.
 //
 // Durability is what the engine gives: FPrint then CloseFile, with no fsync
-// exposed to script. Measured across a process kill under load
+// exposed to script. Measured across process kills under load
 // (spikes/dayz-outbox-crash): every record that reached CloseFile was intact
 // on the next boot and delivered, none was torn, and the only loss was the
 // event buffer's unflushed tail (VyshkaEventBuffer: up to 2 s or 200 events,
-// plus the tick that notices the flush is due). What a power loss or an OS
-// crash takes from the page cache is not measured and cannot be shortened
-// from script; the loss window is documented rather than hidden.
+// plus the tick that notices the flush is due). A kill inside WriteAll
+// itself would leave an unreadable record, which Load discards and counts,
+// and the batch in it is lost. What a power loss or an OS crash takes from
+// the page cache is not measured and cannot be shortened from script; the
+// loss window is documented rather than hidden.
 
 class VyshkaOutboxEntry
 {

@@ -5,14 +5,17 @@
 // load generator (../harness/VyshkaOutboxLoad.c), and then loops: boot the
 // DayZ server with the Vyshka mod, wait for the link and the load, kill the
 // process at a random moment, read the outbox left on disk, and count on the
-// next boot what the hub received of the killed run. The last boot delivers
-// the last run and is stopped without load.
+// next boot what the hub received of the killed run. The load of a boot starts
+// only once the previous run has been delivered and acked (the runner writes a
+// go file the generator waits for), so the kill schedule owes nothing to the
+// recovery. The last boot delivers the last run and is stopped without load.
 //
 // Run from the repository root:
 //
 //	go run ./spikes/dayz-outbox-crash/runner -trials 8 -per-tick 5 -tick-ms 100
 //
-// Every trial is appended to results/trials.jsonl and summarized on stdout.
+// Every trial is appended to trials.jsonl under -results and summarized on
+// stdout.
 package main
 
 import (
@@ -70,11 +73,16 @@ type trial struct {
 	TickMs      int   `json:"tickMs"`
 	PollTimeout int   `json:"pollTimeoutSeconds"`
 
-	// The kill: how long after the load started, and what each source said
-	// the generator had emitted when the process died.
+	// The kill: how long after the load started it was planned and when it
+	// landed, and what each source said the generator had emitted when the
+	// process died. The true count lies between EmittedLog (the last tick
+	// confirmed after its Emit calls) and AnnouncedLog (the last tick
+	// announced before them); the marker carries the announced value.
+	KillPlannedMs int64 `json:"killPlannedMs"`
 	KillAfterMs   int64 `json:"killAfterMs"`
-	EmittedLog    int   `json:"emittedLog"`    // last n in the script log
-	EmittedMarker int   `json:"emittedMarker"` // last n in the marker file
+	EmittedLog    int   `json:"emittedLog"`    // last confirmed n in the script log
+	AnnouncedLog  int   `json:"announcedLog"`  // last announced n in the script log
+	EmittedMarker int   `json:"emittedMarker"` // last announced n in the marker file
 
 	// The outbox on disk right after the kill.
 	DiskFiles int   `json:"diskFiles"`
@@ -95,13 +103,16 @@ type trial struct {
 	HubAfterMax      int     `json:"hubAfterMaxN"`
 	HubAfterGaps     []int   `json:"hubAfterGapsBelowMax"`
 	HubDuplicates    int     `json:"hubDuplicates"`
-	DrainSeconds     float64 `json:"drainSeconds"`
+	DiskLeftAfter    int     `json:"diskLeftAfter"` // the run's events still on disk when the wait ended (0 once acked)
+	DrainSeconds     float64 `json:"drainSeconds"`  // from the link connecting to delivered and acked
 	DrainTimedOut    bool    `json:"drainTimedOut"`
 
-	// Derived: events the hub never got, and the seconds of load they span.
-	LostEvents  int     `json:"lostEvents"`
-	LostSeconds float64 `json:"lostSeconds"`
-	Note        string  `json:"note,omitempty"`
+	// Derived: events the hub never got, as an interval (see EmittedLog and
+	// AnnouncedLog), and the seconds of load the upper bound spans.
+	LostMin        int     `json:"lostMin"`
+	LostMax        int     `json:"lostMax"`
+	LostSecondsMax float64 `json:"lostSecondsMax"`
+	Note           string  `json:"note,omitempty"`
 }
 
 func main() {
@@ -246,6 +257,7 @@ func run() error {
 
 	var results []trial
 	var pending *trial // the killed run the next boot has to deliver
+	goPath := filepath.Join(spikeDir, "go")
 	for i := 1; i <= o.trials+1; i++ {
 		last := i == o.trials+1
 		load := map[string]any{"tickMs": o.tickMs, "perTick": o.perTick}
@@ -255,6 +267,9 @@ func run() error {
 		if err := writeJSON(filepath.Join(spikeDir, "load.json"), load); err != nil {
 			return err
 		}
+		// The generator waits for this file, so the load never starts before
+		// the previous boot's outbox has been delivered and acked.
+		_ = os.Remove(goPath)
 
 		fmt.Printf("runner: boot %d of %d\n", i, o.trials+1)
 		bootAt := time.Now()
@@ -262,17 +277,17 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		logPath, run, startedAt, err := waitLoadStarted(profile, bootAt, srv, o.bootWait)
+		logPath, run, connectedAt, err := waitLog(profile, bootAt, srv, o.bootWait, connectedRe, "")
 		if err != nil {
 			_ = srv.kill()
 			return fmt.Errorf("boot %d: %w", i, err)
 		}
-		fmt.Printf("runner: boot %d run %d, link connected and load started after %s\n", i, run, startedAt.Sub(bootAt).Round(time.Second))
+		fmt.Printf("runner: boot %d run %d, link connected after %s\n", i, run, connectedAt.Sub(bootAt).Round(time.Second))
 
 		if pending != nil {
 			// The killed run's outbox rides this boot. Wait for the hub to
-			// hold everything the disk held, or give up after the drain wait.
-			drainStart := time.Now()
+			// hold everything the disk held and for the acks to have cleared
+			// the run's records from disk, or give up after the drain wait.
 			for {
 				ns, err := hubEvents(hubURL, serverID, pending.Run)
 				if err != nil {
@@ -281,22 +296,22 @@ func run() error {
 				count, distinct, maxN, gaps := analyze(ns)
 				pending.HubAfterCount, pending.HubAfterDistinct, pending.HubAfterMax, pending.HubAfterGaps = count, distinct, maxN, gaps
 				pending.HubDuplicates = count - distinct
-				if distinct >= pending.ExpectedDistinct && maxN >= pending.DiskLast {
+				_, _, _, left := inspectOutbox(filepath.Join(pluginDir, "outbox"), pending.Run)
+				pending.DiskLeftAfter = len(left)
+				if distinct >= pending.ExpectedDistinct && maxN >= pending.DiskLast && len(left) == 0 {
 					break
 				}
-				if time.Since(drainStart) > o.drainWait {
+				if time.Since(connectedAt) > o.drainWait {
 					pending.DrainTimedOut = true
 					break
 				}
 				time.Sleep(2 * time.Second)
 			}
-			pending.DrainSeconds = time.Since(drainStart).Seconds()
-			pending.LostEvents = pending.EmittedLog - pending.HubAfterDistinct
-			if pending.LostEvents < 0 {
-				pending.LostEvents = 0
-			}
+			pending.DrainSeconds = time.Since(connectedAt).Seconds()
+			pending.LostMin = max(pending.EmittedLog-pending.HubAfterDistinct, 0)
+			pending.LostMax = max(pending.AnnouncedLog-pending.HubAfterDistinct, 0)
 			perSecond := float64(pending.PerTick) * 1000 / float64(pending.TickMs)
-			pending.LostSeconds = float64(pending.LostEvents) / perSecond
+			pending.LostSecondsMax = float64(pending.LostMax) / perSecond
 			if err := appendJSON(trialsFile, pending); err != nil {
 				return err
 			}
@@ -311,6 +326,16 @@ func run() error {
 			break
 		}
 
+		// The kill is scheduled from the moment the load starts, which is
+		// after the recovery above, so the schedule owes nothing to it.
+		if err := os.WriteFile(goPath, []byte("go\n"), 0o644); err != nil {
+			return err
+		}
+		_, _, startedAt, err := waitLog(profile, bootAt, srv, o.bootWait, startedRe, logPath)
+		if err != nil {
+			_ = srv.kill()
+			return fmt.Errorf("boot %d: %w", i, err)
+		}
 		delay := o.killMin + time.Duration(rng.Int63n(int64(o.killMax-o.killMin)+1))
 		time.Sleep(time.Until(startedAt.Add(delay)))
 		killAt := time.Now()
@@ -319,9 +344,10 @@ func run() error {
 		}
 		t := trial{
 			Trial: i, Run: run, PerTick: o.perTick, TickMs: o.tickMs, PollTimeout: o.pollTimeout,
-			KillAfterMs: killAt.Sub(startedAt).Milliseconds(),
+			KillPlannedMs: delay.Milliseconds(), KillAfterMs: killAt.Sub(startedAt).Milliseconds(),
 		}
-		t.EmittedLog = lastEmitted(logPath, run)
+		t.AnnouncedLog = lastLogged(logPath, run, intentRe)
+		t.EmittedLog = lastLogged(logPath, run, emittedRe)
 		t.EmittedMarker = readMarker(filepath.Join(spikeDir, "emitted.txt"), run)
 		var onDisk map[int]bool
 		t.DiskFiles, t.DiskTorn, t.DiskBytes, onDisk = inspectOutbox(filepath.Join(pluginDir, "outbox"), run)
@@ -343,11 +369,11 @@ func run() error {
 			expected[n] = true
 		}
 		t.ExpectedDistinct = len(expected)
-		if t.EmittedLog < t.EmittedMarker {
-			t.Note = "the marker file was ahead of the script log"
+		if t.EmittedMarker != t.AnnouncedLog {
+			t.Note = "the marker file and the log's last intent line disagree"
 		}
-		fmt.Printf("runner: trial %d killed run %d after %d ms: log %d, marker %d, disk %d..%d in %d file(s) (%d torn), hub already %d\n",
-			i, run, t.KillAfterMs, t.EmittedLog, t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskFiles, t.DiskTorn, t.HubBeforeKill)
+		fmt.Printf("runner: trial %d killed run %d after %d ms (planned %d): emitted %d..%d, marker %d, disk %d..%d in %d file(s) (%d torn), hub already %d\n",
+			i, run, t.KillAfterMs, t.KillPlannedMs, t.EmittedLog, t.AnnouncedLog, t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskFiles, t.DiskTorn, t.HubBeforeKill)
 		pending = &t
 	}
 
@@ -411,21 +437,22 @@ func (s *server) kill() error {
 var seenLogs = map[string]bool{}
 
 var (
-	startedRe = regexp.MustCompile(`VYSHKA_LOAD\tstarted\trun=(\d+)`)
-	emittedRe = regexp.MustCompile(`VYSHKA_LOAD\temitted\trun=(\d+)\tfirst=(\d+)\tlast=(\d+)`)
+	connectedRe = regexp.MustCompile(`VYSHKA_LOAD\tconnected\trun=(\d+)`)
+	startedRe   = regexp.MustCompile(`VYSHKA_LOAD\tstarted\trun=(\d+)`)
+	intentRe    = regexp.MustCompile(`VYSHKA_LOAD\tintent\trun=(\d+)\tfirst=(\d+)\tlast=(\d+)`)
+	emittedRe   = regexp.MustCompile(`VYSHKA_LOAD\temitted\trun=(\d+)\tfirst=(\d+)\tlast=(\d+)`)
 )
 
-// waitLoadStarted follows the boot's script log until the generator reports
-// the link connected and the load running (the same tick), and returns the
-// log path, the run id, and when that was seen.
-func waitLoadStarted(profile string, bootAt time.Time, srv *server, limit time.Duration) (string, int64, time.Time, error) {
+// waitLog follows the boot's script log until a line matches re, and returns
+// the log path, the run id the line carries, and when it was seen. With an
+// empty logPath it first finds the log this boot created.
+func waitLog(profile string, bootAt time.Time, srv *server, limit time.Duration, re *regexp.Regexp, logPath string) (string, int64, time.Time, error) {
 	deadline := time.Now().Add(limit)
-	var logPath string
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-srv.exited:
 			return "", 0, time.Time{}, fmt.Errorf("the server exited on its own: %v", err)
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 		}
 		if logPath == "" {
 			// Only a log created by this boot: the previous boot's log was
@@ -440,6 +467,7 @@ func waitLoadStarted(profile string, bootAt time.Time, srv *server, limit time.D
 			if logPath == "" {
 				continue
 			}
+			seenLogs[logPath] = true
 		}
 		data, err := os.ReadFile(logPath)
 		if err != nil {
@@ -448,25 +476,24 @@ func waitLoadStarted(profile string, bootAt time.Time, srv *server, limit time.D
 		if bytes.Contains(data, []byte("Can't compile")) || bytes.Contains(data, []byte("SCRIPT       (E):")) {
 			return "", 0, time.Time{}, fmt.Errorf("script error in %s", logPath)
 		}
-		if m := startedRe.FindSubmatch(data); m != nil {
+		if m := re.FindSubmatch(data); m != nil {
 			run, _ := strconv.ParseInt(string(m[1]), 10, 64)
-			seenLogs[logPath] = true
 			return logPath, run, time.Now(), nil
 		}
 	}
-	return "", 0, time.Time{}, fmt.Errorf("no connected link with load within %s", limit)
+	return "", 0, time.Time{}, fmt.Errorf("no line matching %s within %s", re, limit)
 }
 
-// lastEmitted reads the script log after the kill and returns the highest
-// n the generator logged for the run: what reached the log file's bytes on
-// disk by the time the process died.
-func lastEmitted(logPath string, run int64) int {
+// lastLogged reads the script log after the kill and returns the highest n
+// in the run's lines matching re: what reached the log file's bytes on disk
+// by the time the process died.
+func lastLogged(logPath string, run int64, re *regexp.Regexp) int {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		return 0
 	}
 	last := 0
-	for _, m := range emittedRe.FindAllSubmatch(data, -1) {
+	for _, m := range re.FindAllSubmatch(data, -1) {
 		r, _ := strconv.ParseInt(string(m[1]), 10, 64)
 		if r != run {
 			continue
@@ -798,8 +825,8 @@ func appendJSON(w io.Writer, value any) error {
 }
 
 func printTrial(t trial) {
-	fmt.Printf("runner: trial %d delivered: hub %d distinct of %d rows, max n %d, gaps %v, lost %d event(s) = %.2f s of load, drain %.0f s%s\n",
-		t.Trial, t.HubAfterDistinct, t.HubAfterCount, t.HubAfterMax, t.HubAfterGaps, t.LostEvents, t.LostSeconds, t.DrainSeconds, timedOut(t))
+	fmt.Printf("runner: trial %d delivered: hub %d distinct of %d rows, max n %d, gaps %v, lost %d to %d event(s) = up to %.2f s of load, drained and acked %.0f s after connecting%s\n",
+		t.Trial, t.HubAfterDistinct, t.HubAfterCount, t.HubAfterMax, t.HubAfterGaps, t.LostMin, t.LostMax, t.LostSecondsMax, t.DrainSeconds, timedOut(t))
 }
 
 func timedOut(t trial) string {
@@ -812,11 +839,11 @@ func timedOut(t trial) string {
 func printSummary(results []trial) {
 	w := bufio.NewWriter(os.Stdout)
 	defer w.Flush()
-	fmt.Fprintln(w, "\n| trial | kill after | emitted (log) | marker | on disk | torn | hub before | hub after | dup | gaps | lost | lost s |")
+	fmt.Fprintln(w, "\n| trial | kill after (planned) | emitted | on disk | files | torn | hub before | hub after | dup | gaps | lost | lost s |")
 	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|---|---|")
 	for _, t := range results {
-		fmt.Fprintf(w, "| %d | %.1f s | %d | %d | %d..%d (%d) | %d | %d | %d | %d | %d | %d | %.2f |\n",
-			t.Trial, float64(t.KillAfterMs)/1000, t.EmittedLog, t.EmittedMarker, t.DiskFirst, t.DiskLast, t.DiskCount, t.DiskTorn,
-			t.HubBeforeKill, t.HubAfterDistinct, t.HubDuplicates, len(t.HubAfterGaps), t.LostEvents, t.LostSeconds)
+		fmt.Fprintf(w, "| %d | %.1f s (%.1f) | %d..%d | %d..%d (%d) | %d | %d | %d | %d | %d | %d | %d..%d | %.1f |\n",
+			t.Trial, float64(t.KillAfterMs)/1000, float64(t.KillPlannedMs)/1000, t.EmittedLog, t.AnnouncedLog, t.DiskFirst, t.DiskLast, t.DiskCount, t.DiskFiles, t.DiskTorn,
+			t.HubBeforeKill, t.HubAfterDistinct, t.HubDuplicates, len(t.HubAfterGaps), t.LostMin, t.LostMax, t.LostSecondsMax)
 	}
 }
