@@ -60,9 +60,13 @@ release.
    actions per server. Closed M4: an operator with zero API knowledge can run everything
    from the panel. The webhook edit, pause, and replay endpoints and the two key/value
    listings arrived with it as protocol draft 0.23.
-2. **Outbox across a server crash** (#65, spike): the file-backed outbox has an
-   undocumented fsync window. Kill the server mid-batch, count what the hub received, fix
-   what the number demands. The release cannot claim crash safety without it.
+2. **Outbox across a server crash** (#65, spike), landed 2026-09-16: the server was killed
+   under event load twenty times across three load and poll settings; every outbox record
+   on disk was intact and delivered after the restart, nothing was stored twice, and the
+   loss was the event buffer's unflushed tail alone, 0.1 s to 2.2 s of events. The number
+   demanded no code change; the loss window is now stated with its measurement in the
+   plugin README and `spikes/dayz-outbox-crash`. A power loss is not measured and cannot be
+   closed from script.
 3. **Position and world actions** (#66): teleport to coordinates, to a player, and to
    previous (one saved position per identity as the undo); spawn one item near a player;
    set time. Teleport and spawn were out of scope for the tracer bullet and never
