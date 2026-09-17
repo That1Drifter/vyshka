@@ -278,8 +278,9 @@ vehicle and every modded one built on them is in it, one that extends the engine
 `exploded`) and the fluids arrive with the vehicles 2 slice; `vyshka.deletedestroyed` with
 `dryRun` says today which are wrecks.
 
-The two types take turns at the first try on each poll, so a batch the hub has made the
-plugin shrink to one envelope cannot leave one type always behind the other.
+When a poll has room for only one snapshot (the hub has made the plugin shrink its batch to
+one envelope), the type that went last time waits for the other, so neither is left behind
+for the rest of the session; with room for both, both go on every poll.
 
 No capture is made while the previous snapshot of that type is still unacked, or while the outbox holds
 more than one poll can carry. A snapshot says what *is*, so a stale one waiting behind an
