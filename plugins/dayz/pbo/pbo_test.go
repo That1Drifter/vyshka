@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -97,7 +98,7 @@ func TestPackWalksSortedWithBackslashes(t *testing.T) {
 	mustWrite("scripts/3_Game/a.c", "a")
 
 	var buf bytes.Buffer
-	if err := Pack(&buf, dir, "Vyshka"); err != nil {
+	if err := Pack(&buf, dir, "Vyshka", Options{}); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := Read(bytes.NewReader(buf.Bytes()))
@@ -112,5 +113,67 @@ func TestPackWalksSortedWithBackslashes(t *testing.T) {
 		if archive.Files[i].Name != name {
 			t.Errorf("file %d name = %q, want %q", i, archive.Files[i].Name, name)
 		}
+	}
+}
+
+// The archive must depend on the tree's bytes and the options alone: the
+// same tree packed from a checkout with CRLF line endings, from one with
+// different file modification times, or on another day, is the same bytes.
+func TestPackIsReproducible(t *testing.T) {
+	write := func(dir, rel, content string) {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lf, crlf := t.TempDir(), t.TempDir()
+	write(lf, "config.cpp", "class A\n{\n};\n")
+	write(lf, "scripts/3_Game/a.c", "void a()\n{\n}\n")
+	write(crlf, "config.cpp", "class A\r\n{\r\n};\r\n")
+	write(crlf, "scripts/3_Game/a.c", "void a()\r\n{\r\n}\r\n")
+	// Different modification times on the second tree, so a packer that
+	// still read them would show up.
+	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, rel := range []string{"config.cpp", "scripts/3_Game/a.c"} {
+		if err := os.Chtimes(filepath.Join(crlf, filepath.FromSlash(rel)), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	opts := Options{ModTime: 1758067200, NormalizeLineEndings: true}
+	var a, b bytes.Buffer
+	if err := Pack(&a, lf, "Vyshka", opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := Pack(&b, crlf, "Vyshka", opts); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a.Bytes(), b.Bytes()) {
+		t.Fatalf("the LF and CRLF trees packed to different archives (%d and %d bytes)", a.Len(), b.Len())
+	}
+	archive, err := Read(bytes.NewReader(a.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range archive.Files {
+		if f.ModTime != opts.ModTime {
+			t.Errorf("%s: modTime = %d, want %d", f.Name, f.ModTime, opts.ModTime)
+		}
+		if bytes.Contains(f.Data, []byte("\r")) {
+			t.Errorf("%s: carriage return survived normalization", f.Name)
+		}
+	}
+
+	// Without normalization the two trees are different bytes and must pack
+	// differently: the option does the work, not the packer by accident.
+	var c bytes.Buffer
+	if err := Pack(&c, crlf, "Vyshka", Options{ModTime: opts.ModTime}); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a.Bytes(), c.Bytes()) {
+		t.Fatal("CRLF tree packed without normalization equals the LF archive")
 	}
 }

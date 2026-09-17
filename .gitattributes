@@ -7,3 +7,10 @@ LICENSE text
 # too, not just in the repository.
 *.go text eol=lf
 *.sql text eol=lf
+
+# The DayZ mod is packed into a PBO whose bytes must not depend on the
+# checkout; keep its sources LF in the working tree as well.
+plugins/dayz/mod/** text eol=lf
+
+# Shell scripts run under bash on Linux and in Git Bash; CRLF breaks both.
+*.sh text eol=lf

@@ -9,7 +9,7 @@ Arma Reforger is the explicit second target, and nothing in the protocol is DayZ
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.21), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.23), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
@@ -68,6 +68,38 @@ which keeps first run to a single command; set the flag to keep it stable across
 That generated credential is first-run behavior only: once the hub holds a scoped token of
 its own it stops minting one, because a fresh superuser token on every boot would mean
 revocation never survived a restart. Logs are structured JSON on stdout.
+
+## Install
+
+Releases are on the [releases page](https://github.com/That1Drifter/vyshka/releases). The
+hub, the DayZ plugin, and the protocol document are versioned independently, each on its
+own tag (`RELEASING.md`). A hub release carries:
+
+- `vyshka-hub_<version>_<os>_<arch>.tar.gz` for Linux and macOS (amd64 and arm64) and
+  `vyshka-hub_<version>_windows_amd64.zip`: the static binary, LICENSE, this README, and on
+  Linux the systemd unit with its environment example. `SHA256SUMS` covers all of them, and
+  the binaries rebuild byte-for-byte from the tagged commit with the same Go toolchain.
+- The container image `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and
+  linux/arm64: the same binary on a distroless base, running as a non-root user.
+
+```
+# The binary, anywhere
+tar -xzf vyshka-hub_0.1.0_linux_amd64.tar.gz && cd vyshka-hub_0.1.0_linux_amd64
+VYSHKA_ADMIN_TOKEN=vya_local_dev_token ./vyshka-hub serve
+
+# The container
+docker run --rm -p 127.0.0.1:8080:8080 -v vyshka-data:/data \
+  -e VYSHKA_ADMIN_TOKEN=vya_local_dev_token ghcr.io/that1drifter/vyshka-hub:0.1.0
+
+# From source
+go install github.com/That1Drifter/vyshka/hub/cmd/vyshka-hub@latest
+```
+
+[`deploy/README.md`](deploy/README.md) has the two reference layouts, the container with
+compose and the binary under systemd, both behind a TLS-terminating proxy. The hub listens
+on loopback by default; put TLS in front before enrolling a server from another box. The
+DayZ plugin ships as its own release, the `@Vyshka` server-mod folder as a zip, installed
+per [`plugins/dayz/README.md`](plugins/dayz/README.md).
 
 ### Database
 

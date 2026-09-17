@@ -15,6 +15,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -34,10 +37,60 @@ const (
 	prefix   = "Vyshka"
 	modDir   = "@Vyshka"
 	pboName  = "Vyshka.pbo"
-	modCpp   = "name = \"Vyshka\";\nauthor = \"Vyshka contributors\";\noverview = \"Vyshka hub integration plugin (server side).\";\n"
 	gitIgn   = "*\n"
 	usageTxt = "usage: vyshka-dayz build|harness [flags]\n"
+	// versionFile is where the plugin states its own version, relative to
+	// the mod source directory. mod.cpp and the release tag both take it
+	// from there, so the manifest, the launcher, and the tag cannot drift.
+	versionFile = "scripts/3_Game/Vyshka/VyshkaPlugin.c"
 )
+
+// versionPattern matches the PLUGIN_VERSION constant in versionFile.
+var versionPattern = regexp.MustCompile(`static const string PLUGIN_VERSION = "([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)";`)
+
+// modVersion reads the plugin version out of the mod source.
+func modVersion(src string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(versionFile)))
+	if err != nil {
+		return "", err
+	}
+	m := versionPattern.FindSubmatch(data)
+	if m == nil {
+		return "", fmt.Errorf("no PLUGIN_VERSION constant in %s", versionFile)
+	}
+	return string(m[1]), nil
+}
+
+// modCpp is the launcher-facing description of the mod folder. It is not
+// part of the PBO; the Workshop and the release archive carry it beside it.
+func modCpp(version string) string {
+	return "name = \"Vyshka\";\n" +
+		"author = \"Vyshka contributors\";\n" +
+		"version = \"" + version + "\";\n" +
+		"overview = \"Vyshka hub integration plugin (server side). Enrolls a DayZ dedicated server with a Vyshka hub: actions, telemetry, and live state for the panel.\";\n" +
+		"action = \"https://github.com/That1Drifter/vyshka\";\n"
+}
+
+// buildTime is the timestamp every PBO entry carries. SOURCE_DATE_EPOCH
+// wins when set (the reproducible-builds convention); otherwise it is the
+// commit time of the last commit that touched the mod source, which every
+// clone agrees on; a tree outside git falls back to zero and says so.
+func buildTime(src string) (uint32, string) {
+	if raw := os.Getenv("SOURCE_DATE_EPOCH"); raw != "" {
+		if n, err := strconv.ParseUint(raw, 10, 32); err == nil {
+			return uint32(n), "SOURCE_DATE_EPOCH"
+		}
+		fmt.Fprintf(os.Stderr, "vyshka-dayz: ignoring unparsable SOURCE_DATE_EPOCH %q\n", raw)
+	}
+	cmd := exec.Command("git", "log", "-1", "--format=%ct", "--", ".")
+	cmd.Dir = src
+	if out, err := cmd.Output(); err == nil {
+		if n, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 32); err == nil {
+			return uint32(n), "the last commit touching the mod source"
+		}
+	}
+	return 0, "no git history and no SOURCE_DATE_EPOCH; timestamps are zero"
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -76,30 +129,36 @@ func runBuild(args []string) error {
 	if _, err := os.Stat(filepath.Join(*src, "config.cpp")); err != nil {
 		return fmt.Errorf("no config.cpp under %s: %w", *src, err)
 	}
+	version, err := modVersion(*src)
+	if err != nil {
+		return err
+	}
+	modTime, timeSource := buildTime(*src)
 	addons := filepath.Join(*out, modDir, "addons")
 	if err := os.MkdirAll(addons, 0o755); err != nil {
 		return err
 	}
+	// The archive is a function of the source tree's bytes: fixed
+	// timestamps, LF line endings whatever the checkout's, sorted paths. A
+	// build of the same commit anywhere produces the same file, so the
+	// digest printed below is what a downloaded PBO can be checked against.
+	var archive bytes.Buffer
+	if err := pbo.Pack(&archive, *src, prefix, pbo.Options{ModTime: modTime, NormalizeLineEndings: true}); err != nil {
+		return err
+	}
 	target := filepath.Join(addons, pboName)
-	file, err := os.Create(target)
-	if err != nil {
+	if err := os.WriteFile(target, archive.Bytes(), 0o644); err != nil {
 		return err
 	}
-	if err := pbo.Pack(file, *src, prefix); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(*out, modDir, "mod.cpp"), []byte(modCpp), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*out, modDir, "mod.cpp"), []byte(modCpp(version)), 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(*out, ".gitignore"), []byte(gitIgn), 0o644); err != nil {
 		return err
 	}
-	info, _ := os.Stat(target)
-	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes)\n", target, info.Size())
+	digest := sha256.Sum256(archive.Bytes())
+	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes, plugin %s, timestamps %d from %s)\n", target, archive.Len(), version, modTime, timeSource)
+	fmt.Printf("%x  %s\n", digest, pboName)
 	return nil
 }
 
