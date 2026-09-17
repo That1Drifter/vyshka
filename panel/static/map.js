@@ -574,7 +574,10 @@ export function createMap(container, options = {}) {
     // and the caller decides what to say about it. kind, when given, is a
     // word the stylesheet may draw differently (a vehicle beside a player),
     // carried as a class and a data attribute. Nodes are keyed and reused
-    // so a marker under the pointer survives a refresh.
+    // so a marker under the pointer survives a refresh, and every node is
+    // placed before this returns: a marker left at the stage's corner
+    // until the next frame is one a click computed against that corner
+    // misses once the frame moves it (#102).
     setMarkers(markers) {
       const manifest = state.manifest;
       if (!manifest) return;
@@ -622,6 +625,7 @@ export function createMap(container, options = {}) {
       }
       for (const stale of existing.values()) stale.node.remove();
       state.markers = next;
+      placeMarkers();
       schedule();
     },
     // setHighlight emphasizes one marker (or none with null).

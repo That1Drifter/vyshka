@@ -215,8 +215,11 @@ func TestKVTTL(t *testing.T) {
 	ctx := context.Background()
 	st := migrated(t)
 
-	ttl := 50 * time.Millisecond
-	entry, err := st.KVSet(ctx, "example-mod", "ephemeral", []byte(`1`), nil, &ttl)
+	// The TTL a key is read under before its expiry is one no scheduling
+	// gap between two store calls can cross: a loaded machine has put
+	// tens of milliseconds between a set and the next call (#101).
+	long := time.Hour
+	entry, err := st.KVSet(ctx, "example-mod", "ephemeral", []byte(`1`), nil, &long)
 	if err != nil {
 		t.Fatalf("set with TTL: %v", err)
 	}
@@ -228,6 +231,13 @@ func TestKVTTL(t *testing.T) {
 		t.Fatalf("get before expiry: %v", err)
 	}
 
+	// The same row is then given a TTL short enough to wait out: a set
+	// replaces the expiry (TestKVIncrPreservesTTLAndSetReplacesIt), so it
+	// is this row, not a fresh one, that expires.
+	ttl := 50 * time.Millisecond
+	if _, err := st.KVSet(ctx, "example-mod", "ephemeral", []byte(`1`), nil, &ttl); err != nil {
+		t.Fatalf("shorten the TTL: %v", err)
+	}
 	time.Sleep(ttl + 30*time.Millisecond)
 
 	// Expired reads as absent everywhere before any prune runs.
@@ -430,8 +440,11 @@ func TestKVListSkipsExpiredKeys(t *testing.T) {
 	ctx := context.Background()
 	st := migrated(t)
 
-	short := 10 * time.Millisecond
-	if _, err := st.KVSet(ctx, "ttl-mod", "doomed", []byte(`1`), nil, &short); err != nil {
+	// Before expiry the doomed key lives under a TTL no scheduling gap can
+	// cross; the 10 ms it once had expired between the set and the list on
+	// a loaded runner (#101).
+	long := time.Hour
+	if _, err := st.KVSet(ctx, "ttl-mod", "doomed", []byte(`1`), nil, &long); err != nil {
 		t.Fatalf("set doomed: %v", err)
 	}
 	if _, err := st.KVSet(ctx, "ttl-mod", "kept", []byte(`1`), nil, nil); err != nil {
@@ -453,7 +466,13 @@ func TestKVListSkipsExpiredKeys(t *testing.T) {
 		t.Errorf("a key with no TTL reported expiry %v", listed[1].ExpiresAt)
 	}
 
-	// The row is still physically present; only the expiry makes it absent.
+	// The same row is re-set with a TTL short enough to wait out (a set
+	// replaces the expiry). It stays physically present; only the expiry
+	// makes it absent.
+	short := 10 * time.Millisecond
+	if _, err := st.KVSet(ctx, "ttl-mod", "doomed", []byte(`1`), nil, &short); err != nil {
+		t.Fatalf("shorten doomed's TTL: %v", err)
+	}
 	time.Sleep(short + 30*time.Millisecond)
 	listed, err = st.KVList(ctx, store.KVListQuery{Namespace: "ttl-mod", Limit: 50})
 	if err != nil {

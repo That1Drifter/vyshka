@@ -36,6 +36,18 @@ arrived, since those entries were written for one stream.
   pass (its Go suite still runs against Postgres), and the wall clock drops from about
   fifteen minutes to about six.
 
+#### Fixed
+
+- 2026-09-17: a live-map marker is placed the moment the widget creates it rather than by
+  the next animation frame (issue #102). Until then a new marker sat at the stage's top
+  left corner for one frame, and a click measured against that corner landed on the map
+  instead of the marker once the frame moved it, which the browser test lost the car
+  step to on one CI run in six. The test now opens the map with the page's animation
+  frames held back and requires the marker to be in place when it first appears.
+- 2026-09-17: the store's key expiry tests read a key before its expiry under a one hour
+  TTL and only then shorten it to the wait, instead of racing a 10 ms TTL against the gap
+  between two store calls (issue #101), which a loaded runner lost twice.
+
 ### [0.1.0] - 2026-09-17
 
 The first release: everything under "Before the first release" that concerns the hub, the
