@@ -3,8 +3,8 @@
 //
 // vyshka.vitals sets one stat of one player to one value: health, blood,
 // shock, energy, water, stamina, or the heat buffer. vyshka.heal (the tracer
-// bullet) stays as the "everything to full" shortcut; this is the
-// generalization the roadmap promised. Beside it, four actions an admin
+// bullet) stays as the shortcut for health, shock, blood, and bleeding
+// together; this is the generalization the roadmap promised. Beside it, four actions an admin
 // reaches for after a bugged fall or a long swim: stop bleeding, dry,
 // broken legs on or off, bloody hands on or off. Each is a player-context
 // action taking the player's plain Steam64 id as its referenceKey (spec
@@ -329,18 +329,32 @@ class VyshkaStopBleedingAction : VyshkaAction
 		if (!player)
 			return VyshkaActionOutcome.Failure(error);
 
+		// The engine's removal of a source with no bandage in hand is its
+		// "self-closing" path, which rolls a wound infection (40% per
+		// source on 1.29) and adds the wound agent on a hit. An admin's
+		// stop is a perfect bandage, not a wound left to close by itself,
+		// so the wound agent is put back to what it was before the
+		// removal, and an infection the player already carried is kept.
 		int sources = 0;
+		int woundAgentBefore = player.GetSingleAgentCount(eAgents.WOUND_AGENT);
 		BleedingSourcesManagerServer bleeding = player.GetBleedingManagerServer();
 		if (bleeding)
 		{
 			sources = bleeding.GetBleedingSourcesCount();
 			bleeding.RemoveAllSources();
 		}
-		VyshkaLog.Info("stopped bleeding of " + VyshkaVitals.Describe(player) + " (" + sources.ToString() + " sources)");
+		bool infectionPrevented = false;
+		if (player.m_AgentPool && player.GetSingleAgentCount(eAgents.WOUND_AGENT) > woundAgentBefore)
+		{
+			player.m_AgentPool.SetAgentCount(eAgents.WOUND_AGENT, woundAgentBefore);
+			infectionPrevented = true;
+		}
+		VyshkaLog.Info("stopped bleeding of " + VyshkaVitals.Describe(player) + " (" + sources.ToString() + " sources, infection prevented " + infectionPrevented.ToString() + ")");
 
 		VyshkaJsonValue result = VyshkaVitals.Result(player);
 		result.Set("sourcesRemoved", VyshkaJsonValue.NewInt(sources));
 		result.Set("bleeding", VyshkaJsonValue.NewBool(player.IsBleeding()));
+		result.Set("infectionPrevented", VyshkaJsonValue.NewBool(infectionPrevented));
 		return VyshkaActionOutcome.Success(result);
 	}
 }
@@ -457,12 +471,21 @@ class VyshkaBrokenLegsAction : VyshkaAction
 			// are back at full health: the zones are restored first, so
 			// its next tick agrees, and it is turned off now rather than
 			// on that tick (which also removes a splint and the notifier).
-			// A state left without the modifier (a character loaded with
-			// it off) is cleared directly.
+			// A request the engine queued for a hit that ruined a leg
+			// zone in the last few seconds, not yet honored by the tick,
+			// is withdrawn too: left in place, the tick would activate the
+			// modifier and ruin the mended legs again, and the engine's
+			// deactivate returns at once for a modifier that is not yet
+			// active, so it cannot withdraw the request. A state left
+			// without the modifier (a character loaded with it off) is
+			// cleared directly.
 			for (i = 0; i < zones.Count(); i++)
 				player.SetHealth(zones.Get(i), VyshkaVitals.HEALTH_TYPE, player.GetMaxHealth(zones.Get(i), VyshkaVitals.HEALTH_TYPE));
-			if (modifiers.IsModifierActive(eModifiers.MDF_BROKEN_LEGS))
+			ModifierBase mended = modifiers.GetModifier(eModifiers.MDF_BROKEN_LEGS);
+			if (mended && mended.IsActive())
 				modifiers.DeactivateModifier(eModifiers.MDF_BROKEN_LEGS);
+			else if (mended && mended.m_ShouldBeActive)
+				mended.m_ShouldBeActive = false;
 			if (player.GetBrokenLegs() != eBrokenLegs.NO_BROKEN_LEGS)
 				player.SetBrokenLegs(eBrokenLegs.NO_BROKEN_LEGS);
 		}

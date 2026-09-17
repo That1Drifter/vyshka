@@ -88,7 +88,7 @@ from the latest `state.vehicles` snapshot. The manifest (revision 5) declares:
 |---|---|---|---|---|
 | `vyshka.heal` | player | none | `restoreBlood` (default true) | `health`, `blood`, `shock`, `name` after the heal |
 | `vyshka.vitals` | player | warning | `stat` (required: `health`, `blood`, `shock`, `energy`, `water`, `stamina`, `heatBuffer`), `value` (required, a number within the stat's range) | `name`, `stat`, `before`, `after` (read back from the engine), `min`, `max` (the range this character's engine holds for the stat); a value outside the range fails the action and names the range |
-| `vyshka.stopbleeding` | player | none | none | `name`, `sourcesRemoved`, `bleeding` (read back) |
+| `vyshka.stopbleeding` | player | none | none | `name`, `sourcesRemoved`, `bleeding` (read back), `infectionPrevented` (the engine's self-closing infection roll hit and was undone) |
 | `vyshka.dry` | player | none | none | `name`, `wasWet` (the player's wet flag before), `items` (in the inventory tree), `dried` (how many were wet) |
 | `vyshka.brokenlegs` | player | warning | `broken` (required) | `name`, `before` and `after` (`none`, `broken`, `splint`), `legHealth` (the four leg zones after) |
 | `vyshka.bloodyhands` | player | none | `bloody` (required) | `name`, `before`, `after` |
@@ -202,9 +202,11 @@ someone still seated in it is left alone and listed under `skipped` with the rea
 first on a server whose wrecks may be someone's base furniture. Intact vehicles are only
 counted. The action is `destructive`: a deleted wreck's cargo goes with it.
 
-**Vitals** sets one stat of one player to one value; `vyshka.heal` stays as the
-everything-to-full shortcut. `health`, `blood`, and `shock` go through the damage system on
-the character's global zone, the same values the heal writes and `state.players` reports;
+**Vitals** sets one stat of one player to one value; `vyshka.heal` stays as the shortcut
+for health, shock, blood, and bleeding together (it does not touch energy, water, stamina,
+or the heat buffer). `health`, `blood`, and `shock` go through the damage system on the
+character's global zone, the values the heal writes (`state.players` reports health and
+blood, not shock);
 `energy` and `water` are the character's own stats (the client learns of them through the
 engine's hunger and thirst notifiers, as it does for a meal); `stamina` goes through the
 stamina handler, which synchronizes it at once and brings a value above the player's
@@ -219,7 +221,11 @@ DayZ 1.29 the ranges read back as health 0 to 100, blood 0 to 5000, shock 0 to 1
 0 to 5000, water 0 to 5000, stamina 0 to 100, heat buffer -30 to 30.
 
 **Stop bleeding** removes every bleeding source through the server-side bleeding manager,
-the same call the heal makes, and reports how many there were. **Dry** sets every item in
+the same call the heal makes, and reports how many there were. The engine treats a source
+removed with no bandage as a wound that closed by itself and rolls a wound infection on
+each (40% on 1.29); an admin's stop is a perfect bandage, so the action puts the wound
+agent back to what it was before the removal and reports `infectionPrevented` when a roll
+had hit (an infection the player already carried is kept). **Dry** sets every item in
 the player's inventory tree (clothing, hands, cargo, and attachments alike) to its minimum
 wetness and clears the player's own wet flag at once rather than waiting for the engine's
 environment tick to notice the dry clothes. **Broken legs** with `broken: true` activates

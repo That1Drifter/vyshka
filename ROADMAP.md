@@ -83,8 +83,8 @@ release.
    shock, energy, water, stamina, heat buffer) and a value the engine's own range for that
    character bounds, plus stop bleeding, dry, and the broken-legs and bloody-hands toggles,
    the legs through the engine's own broken-legs modifier. The generalization of
-   `vyshka.heal`, which stays as the everything-to-full shortcut. Each was verified live
-   on DayZ 1.29 with a retail client.
+   `vyshka.heal`, which stays as the shortcut for health, shock, blood, and bleeding
+   together. Each was verified live on DayZ 1.29 with a retail client.
 6. **First release** (#69): hub 0.1.0 as static binaries for Linux, Windows, and macOS and
    a published container image; a systemd unit under `deploy/`; the DayZ plugin on the
    Steam Workshop with the `.pbo` build reproducible from the repo; per-artifact SemVer in
