@@ -274,21 +274,24 @@ class VyshkaPlayers
 	// more, only its body. The hit that killed is, with fatal set, and it is
 	// kept on the character so the death that follows can name the zone and
 	// the ammunition.
-	static void OnHit(PlayerBase player, TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo)
+	//
+	// reportedDead is whether the character's fatal hit or death had been
+	// reported before this hit hook began. The engine reports the hit that
+	// killed after applying it, so the character is already dead here, and
+	// it evaluates the death (EEKilled) after this hook, inside the same
+	// damage call (measured on DayZ 1.29); one path evaluates it inside the
+	// engine's own part of the hook instead (a non-lethal round whose shock
+	// is converted to health damage there). Either way, a hit on a character
+	// already reported dead when the hook began is a hit on the corpse, and
+	// otherwise the hit that killed it.
+	static void OnHit(PlayerBase player, bool reportedDead, TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo)
 	{
 		if (!player)
 			return;
 		bool fatal = false;
 		if (!player.IsAlive())
 		{
-			// The engine reports the hit that killed after applying it, so
-			// the character is already dead here, and it evaluates the death
-			// (EEKilled) after this hook, inside the same damage call
-			// (measured on DayZ 1.29). So a hit on a character whose death
-			// has already been reported is a hit on the corpse, and the
-			// first hit on a character not yet reported dead is the one
-			// that killed it.
-			if (player.m_VyshkaDead)
+			if (reportedDead)
 				return;
 			fatal = true;
 			player.m_VyshkaDead = true;
@@ -608,9 +611,13 @@ modded class PlayerBase
 
 	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
 	{
+		// Read before the engine's own part of the hook: a death it
+		// evaluates in there (a non-lethal round's shock converted to health
+		// damage) belongs to this hit, not to the corpse.
+		bool reportedDead = m_VyshkaDead;
 		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
 		if (GetGame().IsServer())
-			VyshkaPlayers.OnHit(this, damageResult, damageType, source, component, dmgZone, ammo);
+			VyshkaPlayers.OnHit(this, reportedDead, damageResult, damageType, source, component, dmgZone, ammo);
 	}
 
 	// The engine starts a character's vehicle command as it takes a seat
