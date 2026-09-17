@@ -426,4 +426,12 @@ modded class PlayerBase
 		if (GetGame().IsServer())
 			VyshkaVehicles.OnExit(this);
 	}
+
+	// A seat switch keeps the command; the plugin's record follows the seat.
+	override void OnVehicleSwitchSeat(int seatIndex)
+	{
+		super.OnVehicleSwitchSeat(seatIndex);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnSwitchSeat(this, seatIndex);
+	}
 }

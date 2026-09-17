@@ -70,7 +70,8 @@ class VyshkaPlugin
 	ref VyshkaEventBuffer m_Events;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
-	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type, in publish order
+	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
+	int m_NextSnapshotChannel;                                 // the channel that gets the first try at the next poll
 	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
 	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
 
@@ -303,13 +304,21 @@ class VyshkaPlugin
 	// later. The configured interval is a floor on the spacing between
 	// captures, and the poll cycle sets the cadence when it is longer
 	// (issue #55). The types share the interval and are paced separately,
-	// because the hub acks and keeps them separately (section 8.3).
+	// because the hub acks and keeps them separately (section 8.3). The
+	// type that captured last goes last next time: a batch shrunk to one
+	// envelope (a bad_request refusal) would otherwise give the first type
+	// the only slot on every poll and starve the rest.
 	void PublishSnapshots()
 	{
 		if (!m_SnapshotsOn)
 			return;
-		for (int i = 0; i < m_SnapshotChannels.Count(); i++)
-			PublishSnapshot(m_SnapshotChannels.Get(i));
+		int count = m_SnapshotChannels.Count();
+		for (int i = 0; i < count; i++)
+		{
+			int at = (m_NextSnapshotChannel + i) % count;
+			if (PublishSnapshot(m_SnapshotChannels.Get(at)))
+				m_NextSnapshotChannel = (at + 1) % count;
+		}
 	}
 
 	// PublishSnapshot captures one type. No capture is made while the
@@ -321,29 +330,32 @@ class VyshkaPlugin
 	// regardless). On a healthy link the previous snapshot's ack arrived
 	// with the response that ended the last poll, so a held capture means
 	// an outage, or a backlog of anything (a burst of action results
-	// counts), and a run of them long enough to matter is logged.
-	void PublishSnapshot(VyshkaSnapshotChannel channel)
+	// counts), and a run of them long enough to matter is logged. Returns
+	// whether a snapshot was appended.
+	bool PublishSnapshot(VyshkaSnapshotChannel channel)
 	{
 		if (m_Outbox.HasUnacked(channel.m_Type) || !m_Outbox.RoomInBatch())
 		{
 			channel.m_Held++;
 			if (channel.m_Held == SNAPSHOTS_HELD_LOG_AFTER || channel.m_Held % SNAPSHOTS_HELD_LOG_EVERY == 0)
 				VyshkaLog.Info(channel.m_Type + " snapshot held back: the previous one is still unacked or the outbox has a backlog (" + channel.m_Held.ToString() + " poll(s) without one)");
-			return;
+			return false;
 		}
 		channel.m_Held = 0;
 		int now = VyshkaClock.MonotonicMs();
 		if (channel.m_LastMs != 0 && now - channel.m_LastMs < m_Config.m_SnapshotIntervalSeconds * 1000)
-			return;
+			return false;
 		string body = "";
 		if (channel.m_Type == SNAPSHOT_PLAYERS)
 			body = m_Snapshots.CapturePlayers();
 		else if (channel.m_Type == SNAPSHOT_VEHICLES)
 			body = m_Snapshots.CaptureVehicles();
 		if (body == "")
-			return;
-		if (m_Outbox.Append(channel.m_Type, body))
-			channel.m_LastMs = now;
+			return false;
+		if (!m_Outbox.Append(channel.m_Type, body))
+			return false;
+		channel.m_LastMs = now;
+		return true;
 	}
 
 	// Advance issues whichever request the link needs next. The name matters:

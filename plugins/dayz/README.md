@@ -95,7 +95,7 @@ from the latest `state.vehicles` snapshot. The manifest (revision 4) declares:
 | `vyshka.spawn` | player | warning | `className` (required) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
-| `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`), `intact` (how many were left alone), `dryRun` |
+| `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`, at most 200 entries each so the result stays inside the hub's 64 KiB cap), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
 
 Kick, message, teleport, spawn, and the ban's own kick need the player online and fail with
 `player <id> is not online` otherwise. Unstuck fails with `no vehicle <id> exists on this
@@ -229,9 +229,9 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
 | `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
-| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or repaired | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`) |
+| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens) | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`) |
 | `vyshka.vehicle.enter` | A player's vehicle command starts: the character takes a seat (a custom type: the core set has no enter) | `player`, `name`, `vehicle`, `type`, `kind`, `position`, `seat` (the crew index), `driver` |
-| `vyshka.vehicle.exit` | The vehicle command finishes, or a seated player disconnects | the same, plus `cause` (`left` or `disconnect`) |
+| `vyshka.vehicle.exit` | The vehicle command finishes (the character got out, or the command gave way to another, a death in the seat included), or a seated player disconnects; a seat switch inside the vehicle is not an exit, and the `seat` and `driver` reported are those of the seat actually left | the same, plus `cause` (`left` or `disconnect`) |
 
 A moderation event's `actionId` is the hub's id for the dispatch that caused it, so a feed
 entry can be joined to the action record and the audit log. `core.vehicle.spawn` is not
@@ -277,6 +277,9 @@ vehicle and every modded one built on them is in it, one that extends the engine
 `Boat`, or `Helicopter` directly is not. The damage state (`intact`, `destroyed`,
 `exploded`) and the fluids arrive with the vehicles 2 slice; `vyshka.deletedestroyed` with
 `dryRun` says today which are wrecks.
+
+The two types take turns at the first try on each poll, so a batch the hub has made the
+plugin shrink to one envelope cannot leave one type always behind the other.
 
 No capture is made while the previous snapshot of that type is still unacked, or while the outbox holds
 more than one poll can carry. A snapshot says what *is*, so a stale one waiting behind an

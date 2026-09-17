@@ -27,6 +27,7 @@ class VyshkaSeat
 	string m_Type;
 	string m_Kind;
 	int m_Seat;
+	bool m_Driver;
 }
 
 class VyshkaVehicles
@@ -45,9 +46,11 @@ class VyshkaVehicles
 	// The vehicles whose destruction has been reported. The engine's kill
 	// hook fires again on every later hit on a destroyed vehicle (measured
 	// on DayZ 1.29: a destroyed boat's decay tick fired it every 10 s), and
-	// one destruction is one event. A vehicle repaired back to life leaves
-	// this list at the next capture, so a second destruction is reported.
+	// one destruction is one event. A vehicle brought back from ruined
+	// leaves this list as its health level changes (OnRepaired), and at the
+	// next capture as a fallback, so a second destruction is reported.
 	static ref array<Transport> s_Destroyed;
+	static const int REPORT_LIMIT = 200;   // entries listed per delete-destroyed result list (the hub's result cap is 64 KiB)
 	// The vehicle each seated identity is in, by plain Steam64 id.
 	static ref map<string, ref VyshkaSeat> s_Seated;
 
@@ -99,6 +102,26 @@ class VyshkaVehicles
 		int reported = Destroyed().Find(vehicle);
 		if (reported >= 0)
 			Destroyed().Remove(reported);
+	}
+
+	// OnRepaired runs when a vehicle's global health level leaves ruined:
+	// its next destruction is a new one to report.
+	static void OnRepaired(Transport vehicle)
+	{
+		if (!vehicle)
+			return;
+		int reported = Destroyed().Find(vehicle);
+		if (reported >= 0)
+			Destroyed().Remove(reported);
+	}
+
+	// IsDriverSeat says whether a crew index is the driver's, by the seat
+	// animation the vehicle declares for it.
+	static bool IsDriverSeat(Transport vehicle, int seat)
+	{
+		if (seat < 0 || seat >= vehicle.CrewSize())
+			return false;
+		return vehicle.GetSeatAnimationType(seat) == DayZPlayerConstants.VEHICLESEAT_DRIVER;
 	}
 
 	// Id renders the engine's network id as one string, high bits first,
@@ -267,6 +290,7 @@ class VyshkaVehicles
 		record.m_Type = vehicle.GetType();
 		record.m_Kind = Kind(vehicle);
 		record.m_Seat = seat;
+		record.m_Driver = vehicle.CrewDriver() == player;
 		Seated().Set(plainId, record);
 
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
@@ -274,13 +298,33 @@ class VyshkaVehicles
 		data.Set("name", VyshkaJsonValue.NewString(identity.GetName()));
 		Label(vehicle, data);
 		data.Set("seat", VyshkaJsonValue.NewInt(seat));
-		data.Set("driver", VyshkaJsonValue.NewBool(vehicle.CrewDriver() == player));
+		data.Set("driver", VyshkaJsonValue.NewBool(record.m_Driver));
 		VyshkaPlugin.Emit("vyshka.vehicle.enter", data);
 	}
 
+	// OnSwitchSeat runs when a seated player moves to another seat of the
+	// same vehicle: the command carries on, so the record follows the seat
+	// and the exit that ends it names the seat actually left.
+	static void OnSwitchSeat(PlayerBase player, int seat)
+	{
+		if (!player)
+			return;
+		PlayerIdentity identity = player.GetIdentity();
+		if (!identity || identity.GetPlainId() == "")
+			return;
+		VyshkaSeat record;
+		if (!Seated().Find(identity.GetPlainId(), record))
+			return;
+		record.m_Seat = seat;
+		record.m_Driver = false;
+		if (record.m_Vehicle)
+			record.m_Driver = IsDriverSeat(record.m_Vehicle, seat);
+	}
+
 	// OnExit runs when the player's vehicle command finishes: the character
-	// is out, or dead and pulled out. The record made on entry names the
-	// vehicle, since the command may already be gone.
+	// is out, or the command gave way to another (a death in the seat ends
+	// it too). The record made on entry names the vehicle, since the
+	// command may already be gone.
 	static void OnExit(PlayerBase player)
 	{
 		if (!player)
@@ -321,6 +365,7 @@ class VyshkaVehicles
 			data.Set("kind", VyshkaJsonValue.NewString(record.m_Kind));
 		}
 		data.Set("seat", VyshkaJsonValue.NewInt(record.m_Seat));
+		data.Set("driver", VyshkaJsonValue.NewBool(record.m_Driver));
 		data.Set("cause", VyshkaJsonValue.NewString(cause));
 		VyshkaPlugin.Emit("vyshka.vehicle.exit", data);
 	}
@@ -414,6 +459,15 @@ modded class CarScript
 			VyshkaVehicles.OnDestroyed(this, killer);
 		super.EEKilled(killer);
 	}
+
+	// The global zone (an empty zone name) leaving ruined is a repair: the
+	// next destruction is a new one.
+	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
+	{
+		super.EEHealthLevelChanged(oldLevel, newLevel, zone);
+		if (GetGame().IsServer() && zone == "" && oldLevel == GameConstants.STATE_RUINED && newLevel != GameConstants.STATE_RUINED)
+			VyshkaVehicles.OnRepaired(this);
+	}
 }
 
 modded class BoatScript
@@ -438,6 +492,15 @@ modded class BoatScript
 			VyshkaVehicles.OnDestroyed(this, killer);
 		super.EEKilled(killer);
 	}
+
+	// The global zone (an empty zone name) leaving ruined is a repair: the
+	// next destruction is a new one.
+	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
+	{
+		super.EEHealthLevelChanged(oldLevel, newLevel, zone);
+		if (GetGame().IsServer() && zone == "" && oldLevel == GameConstants.STATE_RUINED && newLevel != GameConstants.STATE_RUINED)
+			VyshkaVehicles.OnRepaired(this);
+	}
 }
 
 modded class HelicopterScript
@@ -461,6 +524,15 @@ modded class HelicopterScript
 		if (GetGame().IsServer())
 			VyshkaVehicles.OnDestroyed(this, killer);
 		super.EEKilled(killer);
+	}
+
+	// The global zone (an empty zone name) leaving ruined is a repair: the
+	// next destruction is a new one.
+	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
+	{
+		super.EEHealthLevelChanged(oldLevel, newLevel, zone);
+		if (GetGame().IsServer() && zone == "" && oldLevel == GameConstants.STATE_RUINED && newLevel != GameConstants.STATE_RUINED)
+			VyshkaVehicles.OnRepaired(this);
 	}
 }
 
@@ -596,10 +668,16 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 		if (params && params.IsObject())
 			dryRun = params.GetBool("dryRun", false);
 
+		// The lists are bounded so the result stays inside the hub's cap
+		// (section 7: a result over 64 KiB is dropped whole); the counts
+		// are always complete, and truncated says when the lists are not.
 		array<Transport> live = VyshkaVehicles.Live();
 		VyshkaJsonValue deleted = VyshkaJsonValue.NewArray();
 		VyshkaJsonValue skipped = VyshkaJsonValue.NewArray();
+		int deletedCount = 0;
+		int skippedCount = 0;
 		int intact = 0;
+		int limit = VyshkaVehicles.REPORT_LIMIT;
 		for (int i = 0; i < live.Count(); i++)
 		{
 			Transport vehicle = live.Get(i);
@@ -612,11 +690,17 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 			VyshkaVehicles.Label(vehicle, entry);
 			if (vehicle.IsAnyCrewPresent())
 			{
-				entry.Set("reason", VyshkaJsonValue.NewString("someone is still in it"));
-				skipped.Add(entry);
+				skippedCount++;
+				if (skipped.Count() < limit)
+				{
+					entry.Set("reason", VyshkaJsonValue.NewString("someone is still in it"));
+					skipped.Add(entry);
+				}
 				continue;
 			}
-			deleted.Add(entry);
+			deletedCount++;
+			if (deleted.Count() < limit)
+				deleted.Add(entry);
 			if (!dryRun)
 			{
 				VyshkaLog.Info("deleting destroyed " + vehicle.GetType() + " (" + VyshkaVehicles.Id(vehicle) + ") at " + vehicle.GetPosition().ToString());
@@ -628,7 +712,10 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 		result.Set("dryRun", VyshkaJsonValue.NewBool(dryRun));
 		result.Set("deleted", deleted);
 		result.Set("skipped", skipped);
+		result.Set("deletedCount", VyshkaJsonValue.NewInt(deletedCount));
+		result.Set("skippedCount", VyshkaJsonValue.NewInt(skippedCount));
 		result.Set("intact", VyshkaJsonValue.NewInt(intact));
+		result.Set("truncated", VyshkaJsonValue.NewBool(deletedCount > limit || skippedCount > limit));
 		return VyshkaActionOutcome.Success(result);
 	}
 }

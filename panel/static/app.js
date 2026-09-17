@@ -1011,6 +1011,7 @@ async function viewMap(app, route, seq) {
       const vehicles = state.vehicles.length;
       const unplottedVehicles = vehicles - Number(status.dataset.vehiclesPlotted || 0);
       parts.push(vehicles + ' vehicle' + (vehicles === 1 ? '' : 's') + ', captured ' + ago(state.vehicleResponse.capturedAt) +
+        ', received ' + ago(state.vehicleResponse.receivedAt) +
         (manifest && unplottedVehicles > 0 ? '; ' + unplottedVehicles + ' without a position the map can plot' : ''));
     } else {
       parts.push('no vehicle snapshot yet');
@@ -1035,9 +1036,17 @@ async function viewMap(app, route, seq) {
       throw err;
     }
   };
+  // Both reads settle before either failure is raised, and a rejected
+  // token wins: a players read failing first for another reason must not
+  // hide the vehicles read's 401 from the sign-out path.
   const load = async () => {
-    const [response, vehicleResponse] = await Promise.all([readSnapshot('players'), readSnapshot('vehicles')]);
+    const settled = await Promise.allSettled([readSnapshot('players'), readSnapshot('vehicles')]);
     if (stale(seq)) return;
+    const failures = settled.filter((entry) => entry.status === 'rejected').map((entry) => entry.reason);
+    const rejectedToken = failures.find((err) => err instanceof ApiError && err.status === 401);
+    if (rejectedToken) throw rejectedToken;
+    if (failures.length > 0) throw failures[0];
+    const [response, vehicleResponse] = settled.map((entry) => entry.value);
     state.response = response;
     state.players = snapshotPlayers(response);
     state.vehicleResponse = vehicleResponse;
