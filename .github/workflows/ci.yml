@@ -1,5 +1,18 @@
 name: CI
 
+# Three jobs in parallel, because the hub conformance suite holds real
+# long-polls and waits out real TTLs (about five minutes a pass) and nothing
+# it grades depends on the Go suite or on the other database:
+#
+#   test                        gofmt, vet, go test (SQLite and Postgres), spec documents
+#   conformance-sqlite          the hub suite against the built binary on SQLite,
+#                               and the plugin suite against the reference driver
+#   conformance-postgres        the hub suite against a hub on Postgres; pushes to
+#                               main only, so a pull request waits for one pass
+#                               and main is still graded on both databases before
+#                               anything is tagged (the Go suite covers the store
+#                               on Postgres for every pull request)
+
 on:
   push:
     branches: [main]
@@ -10,15 +23,14 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build, test, conform
+  test:
+    name: Test
     runs-on: ubuntu-latest
     services:
-      # The Postgres backend is graded against a real server, twice: the Go
-      # suite creates a throwaway database per test through this maintenance
-      # connection, and the conformance suite runs against a hub booted on
-      # the service's own database. The credential is not a secret: the
-      # server exists for one job and listens on the runner's loopback.
+      # The Postgres backend is graded against a real server: the Go suite
+      # creates a throwaway database per test through this maintenance
+      # connection. The credential is not a secret: the server exists for
+      # one job and listens on the runner's loopback.
       postgres:
         image: postgres:16
         env:
@@ -32,8 +44,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
-    env:
-      CI_POSTGRES_URL: postgres://vyshka:vyshka_ci_password_not_a_secret@localhost:5432/vyshka
     steps:
       - uses: actions/checkout@v4
 
@@ -70,51 +80,8 @@ jobs:
         env:
           VYSHKA_E2E: required
           VYSHKA_TEST_BACKEND: postgres
-          VYSHKA_TEST_POSTGRES_URL: ${{ env.CI_POSTGRES_URL }}
+          VYSHKA_TEST_POSTGRES_URL: postgres://vyshka:vyshka_ci_password_not_a_secret@localhost:5432/vyshka
         run: go test ./hub/...
-
-      - name: Build
-        run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
-
-      - name: Run conformance suite against a live hub on SQLite
-        env:
-          # Not a secret: this hub exists for the length of one job and listens
-          # on loopback. The suite needs a known admin token to grade the
-          # Admin API realm at all.
-          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
-        run: |
-          ./bin/vyshka-hub serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/ci.db" &
-          hub_pid=$!
-          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
-          go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
-
-      - name: Run conformance suite against a live hub on Postgres
-        # The same suite, the same checks, against a hub whose system of
-        # record is the Postgres service. A fresh database: the Go suite
-        # created and dropped its own and never touched this one.
-        env:
-          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
-        run: |
-          ./bin/vyshka-hub serve -addr 127.0.0.1:8081 -db "$CI_POSTGRES_URL" &
-          hub_pid=$!
-          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
-          go run ./conformance/hub -url http://127.0.0.1:8081 -wait 30s
-
-      - name: Run the plugin conformance suite against the reference driver
-        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver
-
-      - name: Run the plugin conformance suite as an older hub against an opaque-error driver
-        # The mock ignores the inline-errors opt-in and the driver discards the
-        # status and body of every non-2xx, which is what an engine like DayZ's
-        # leaves a plugin with. This grades the fallback path of spec Appendix A.
-        run: go run ./conformance/plugin -legacy-errors -- go run ./conformance/plugin/driver -opaque
-
-      - name: Run the plugin conformance suite against a driver that reads ordinary errors without opting in
-        # The third kind of plugin: one whose HTTP client can read a 4xx body,
-        # so it never asks for inline errors and still follows the recovery
-        # table. The stages must grade what the plugin did, not how the
-        # refusal travelled.
-        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver -inline=false
 
       - name: Validate the spec documents
         run: |
@@ -151,3 +118,88 @@ jobs:
                       target = target[part]
               print(f"{path}: ok, {len(set(refs))} refs resolved")
           PY
+
+  conformance-sqlite:
+    name: Conformance on SQLite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
+
+      - name: Run the hub conformance suite against a live hub on SQLite
+        env:
+          # Not a secret: this hub exists for the length of one job and listens
+          # on loopback. The suite needs a known admin token to grade the
+          # Admin API realm at all.
+          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
+        run: |
+          ./bin/vyshka-hub serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/ci.db" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+
+      - name: Run the plugin conformance suite against the reference driver
+        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver
+
+      - name: Run the plugin conformance suite as an older hub against an opaque-error driver
+        # The mock ignores the inline-errors opt-in and the driver discards the
+        # status and body of every non-2xx, which is what an engine like DayZ's
+        # leaves a plugin with. This grades the fallback path of spec Appendix A.
+        run: go run ./conformance/plugin -legacy-errors -- go run ./conformance/plugin/driver -opaque
+
+      - name: Run the plugin conformance suite against a driver that reads ordinary errors without opting in
+        # The third kind of plugin: one whose HTTP client can read a 4xx body,
+        # so it never asks for inline errors and still follows the recovery
+        # table. The stages must grade what the plugin did, not how the
+        # refusal travelled.
+        run: go run ./conformance/plugin -- go run ./conformance/plugin/driver -inline=false
+
+  conformance-postgres:
+    name: Conformance on Postgres
+    # Pushes only, which the trigger limits to main: the pass takes as long
+    # as the SQLite one and grades the same checks against the other system
+    # of record, so main carries it and a pull request does not wait for it.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vyshka
+          POSTGRES_PASSWORD: vyshka_ci_password_not_a_secret
+          POSTGRES_DB: vyshka
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vyshka"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
+
+      - name: Run the hub conformance suite against a live hub on Postgres
+        # The same suite, the same checks, against a hub whose system of
+        # record is the Postgres service, on a fresh database.
+        env:
+          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
+        run: |
+          ./bin/vyshka-hub serve -addr 127.0.0.1:8081 -db "postgres://vyshka:vyshka_ci_password_not_a_secret@localhost:5432/vyshka" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          go run ./conformance/hub -url http://127.0.0.1:8081 -wait 30s

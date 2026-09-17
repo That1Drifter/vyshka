@@ -123,7 +123,7 @@ locale does not matter: the hub pins the columns it orders to byte-order collati
 database created with `en_US.utf8` behaves like one created with `C`. Startup logs and
 `/healthz` name the driver and, for Postgres, the URL with its password and query
 parameters removed; the raw URL is never logged. The behavior is the same on both
-engines, and CI runs the full test and conformance suites against each. One hub per
+engines; CI runs the Go suite against each on every pull request and the hub conformance suite against each on every push to `main`. One hub per
 database on either engine: the retention sweeps and the webhook dispatcher assume they are
 the only pass of their kind.
 
