@@ -181,6 +181,21 @@ class VyshkaVitals
 		return zones;
 	}
 
+	// WoundAgent reads the player's wound-agent count as the pool stores
+	// it, a float that grows by fractions per tick. The engine's own
+	// accessor returns an int, and restoring a count through that would
+	// cut an existing infection down to its whole part (or to nothing,
+	// below one).
+	static float WoundAgent(PlayerBase player)
+	{
+		if (!player.m_AgentPool || !player.m_AgentPool.m_VirusPool)
+			return 0;
+		float count;
+		if (player.m_AgentPool.m_VirusPool.Find(eAgents.WOUND_AGENT, count))
+			return count;
+		return 0;
+	}
+
 	// Text renders a stat value for a message: whole when it is one, two
 	// decimals otherwise.
 	static string Text(float value)
@@ -336,7 +351,7 @@ class VyshkaStopBleedingAction : VyshkaAction
 		// so the wound agent is put back to what it was before the
 		// removal, and an infection the player already carried is kept.
 		int sources = 0;
-		int woundAgentBefore = player.GetSingleAgentCount(eAgents.WOUND_AGENT);
+		float woundAgentBefore = VyshkaVitals.WoundAgent(player);
 		BleedingSourcesManagerServer bleeding = player.GetBleedingManagerServer();
 		if (bleeding)
 		{
@@ -344,7 +359,7 @@ class VyshkaStopBleedingAction : VyshkaAction
 			bleeding.RemoveAllSources();
 		}
 		bool infectionPrevented = false;
-		if (player.m_AgentPool && player.GetSingleAgentCount(eAgents.WOUND_AGENT) > woundAgentBefore)
+		if (player.m_AgentPool && VyshkaVitals.WoundAgent(player) > woundAgentBefore)
 		{
 			player.m_AgentPool.SetAgentCount(eAgents.WOUND_AGENT, woundAgentBefore);
 			infectionPrevented = true;
