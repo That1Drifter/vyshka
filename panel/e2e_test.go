@@ -843,8 +843,26 @@ func TestPanelEndToEnd(t *testing.T) {
 	// 9c'. The same for a vehicle: its marker lands on the action list with
 	// the vehicle preselected, the vehicle action's form opens with the id
 	// filled in, and the vehicles snapshot feeds its suggestions.
+	//
+	// The map is opened with the page's animation frames held back, and
+	// the marker must already be at its position when it is first visible.
+	// A marker placed only by the next frame sat at the stage's corner
+	// while a click measured it and had moved by the time the click landed,
+	// which one CI run in six lost the step to (#102). The frames are
+	// released, in order, before the click.
+	run("hold the page's animation frames", chromedp.Evaluate(
+		`(function(){const held=[];const real=window.requestAnimationFrame;`+
+			`window.requestAnimationFrame=(cb)=>held.push(cb);`+
+			`window.__e2eReleaseFrames=()=>{window.requestAnimationFrame=real;const run=held.splice(0);for(const cb of run)cb(performance.now());return run.length};`+
+			`return true})()`, nil))
 	run("back to the map for the car", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map"), nil),
 		chromedp.WaitVisible(vehicleMarker("0-4242"), chromedp.ByQuery))
+	if got := evalString(`document.querySelector(` + strconv.Quote(vehicleMarker("0-4242")) + `).style.transform`); got == "" {
+		t.Fatalf("the car's marker was visible before the widget placed it")
+	}
+	if got := evalString(`String(window.__e2eReleaseFrames())`); got == "0" {
+		t.Fatalf("no animation frame was held back, so the placement check proved nothing")
+	}
 	run("click the car's marker", chromedp.Click(vehicleMarker("0-4242"), chromedp.ByQuery),
 		chromedp.WaitVisible("#target-vehicle", chromedp.ByQuery))
 	if got := evalString(`location.hash`); got != "#/servers/"+created.Server.ID+"?vehicle=0-4242" {
