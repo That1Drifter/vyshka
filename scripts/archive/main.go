@@ -150,8 +150,13 @@ func writeTarGz(w io.Writer, top string, members []member, when time.Time) error
 			return nil
 		}
 		dirs[name] = true
+		// PAX, not USTAR: a long prerelease name makes the top-level
+		// directory longer than USTAR's name field can hold, and without
+		// an inner slash Go cannot split it. PAX carries the name in an
+		// extended record whose content is deterministic, and a name that
+		// fits needs no record at all.
 		return tw.WriteHeader(&tar.Header{
-			Typeflag: tar.TypeDir, Name: name + "/", Mode: modeDir, ModTime: when, Format: tar.FormatUSTAR,
+			Typeflag: tar.TypeDir, Name: name + "/", Mode: modeDir, ModTime: when, Format: tar.FormatPAX,
 		})
 	}
 	if err := writeDir(top); err != nil {
@@ -172,7 +177,7 @@ func writeTarGz(w io.Writer, top string, members []member, when time.Time) error
 			mode = modeExec
 		}
 		if err := tw.WriteHeader(&tar.Header{
-			Typeflag: tar.TypeReg, Name: m.name, Mode: mode, Size: m.size, ModTime: when, Format: tar.FormatUSTAR,
+			Typeflag: tar.TypeReg, Name: m.name, Mode: mode, Size: m.size, ModTime: when, Format: tar.FormatPAX,
 		}); err != nil {
 			return err
 		}

@@ -65,6 +65,18 @@ func TestModVersionReadsThePluginConstant(t *testing.T) {
 	if _, err := modVersion(src); err == nil {
 		t.Error("a declaration inside a block comment was accepted")
 	}
+	// Comment delimiters inside string literals are text: the scanner must
+	// not take a "/*" in one string and a "*/" in another for a comment
+	// around the declaration, nor a "//" in a URL for a line comment, and
+	// an escaped quote does not end a string early.
+	write("class VyshkaPlugin\n{\n\tstatic const string OPEN_MARKER = \"/*\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n\tstatic const string CLOSE_MARKER = \"*/\";\n}\n")
+	if got, err := modVersion(src); err != nil || got != "0.7.0" {
+		t.Errorf("modVersion between strings holding comment delimiters = %q, %v; want 0.7.0", got, err)
+	}
+	write("class VyshkaPlugin\n{\n\tstatic const string HUB = \"http://hub.example\"; static const string PLUGIN_VERSION = \"0.6.0\";\n\tstatic const string QUOTE = \"a\\\"/*\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
+	if got, err := modVersion(src); err != nil || got != "0.7.0" {
+		t.Errorf("modVersion past a URL and an escaped quote = %q, %v; want 0.7.0", got, err)
+	}
 	// Prerelease identifiers follow SemVer 2.0.0: a numeric one has no
 	// leading zero, and an empty one is not an identifier.
 	for _, bad := range []string{"1.2.3-01", "1.2.3-rc.01", "1.2.3-", "1.2.3-rc..1", "01.2.3"} {

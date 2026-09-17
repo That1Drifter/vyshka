@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +145,61 @@ func checkZip(t *testing.T, data []byte, when time.Time) {
 		if f.Mode() != want {
 			t.Errorf("%s: mode %o, want %o", f.Name, f.Mode(), want)
 		}
+	}
+}
+
+// A prerelease name can push the top-level directory past what a USTAR
+// header holds (100 bytes, no inner slash to split on); the archive must
+// still be written, read back, and stay reproducible.
+func TestLongTopLevelNames(t *testing.T) {
+	when := time.Unix(1758067200, 0).UTC()
+	long := "vyshka-hub_0.1.0-" + strings.Repeat("a", 75) + "_linux_amd64"
+	if len(long)+1 <= 100 {
+		t.Fatalf("test name is %d bytes, not long enough to matter", len(long)+1)
+	}
+	dir := filepath.Join(t.TempDir(), long)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vyshka-hub"), []byte("ELF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	members, top, err := collect(dir, map[string]bool{"vyshka-hub": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a, b bytes.Buffer
+	if err := writeTarGz(&a, top, members, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTarGz(&b, top, members, when); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a.Bytes(), b.Bytes()) {
+		t.Error("two writes of the long-named archive differ")
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(a.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	var names []string
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, h.Name)
+	}
+	if len(names) != 2 || names[0] != long+"/" || names[1] != long+"/vyshka-hub" {
+		t.Errorf("members %v", names)
+	}
+	var z bytes.Buffer
+	if err := writeZip(&z, members, when); err != nil {
+		t.Fatal(err)
 	}
 }
 

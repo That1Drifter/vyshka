@@ -52,10 +52,52 @@ const (
 // the release workflow); change all three together.
 var versionPattern = regexp.MustCompile(`(?m)^[ \t]*static const string PLUGIN_VERSION = "((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?)";[ \t]*\r?$`)
 
-// commentPattern removes block and line comments, which is what the engine's
-// parser does before it sees a declaration, so a version mentioned in a
-// comment above, beside, or around the real one is never the answer.
-var commentPattern = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
+// stripComments removes block and line comments the way the engine's parser
+// skips them, so a version mentioned in a comment above, beside, or around
+// the real declaration is never the answer. String literals are copied
+// through untouched (a "/*" inside quotes is text, not a comment), and every
+// newline survives so the whole-line match still sees lines.
+func stripComments(src []byte) []byte {
+	out := make([]byte, 0, len(src))
+	for i := 0; i < len(src); {
+		c := src[i]
+		switch {
+		case c == '"':
+			out = append(out, c)
+			i++
+			for i < len(src) && src[i] != '"' && src[i] != '\n' {
+				if src[i] == '\\' && i+1 < len(src) {
+					out = append(out, src[i], src[i+1])
+					i += 2
+					continue
+				}
+				out = append(out, src[i])
+				i++
+			}
+			if i < len(src) && src[i] == '"' {
+				out = append(out, '"')
+				i++
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			i += 2
+			for i < len(src) && !(src[i] == '*' && i+1 < len(src) && src[i+1] == '/') {
+				if src[i] == '\n' {
+					out = append(out, '\n')
+				}
+				i++
+			}
+			i = min(i+2, len(src))
+		default:
+			out = append(out, c)
+			i++
+		}
+	}
+	return out
+}
 
 // modVersion reads the plugin version out of the mod source. Exactly one
 // declaration must exist: the manifest, mod.cpp, and the release tag all
@@ -65,7 +107,7 @@ func modVersion(src string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data = commentPattern.ReplaceAll(data, nil)
+	data = stripComments(data)
 	matches := versionPattern.FindAllSubmatch(data, -1)
 	switch len(matches) {
 	case 0:
