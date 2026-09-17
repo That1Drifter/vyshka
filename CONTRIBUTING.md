@@ -49,8 +49,10 @@ technical quality.
   implementation that carries it); typo and wording fixes do not need entries. A slice that
   changes the DayZ mod bumps `PLUGIN_VERSION`. Tags and releases are described in
   `RELEASING.md`.
-- Plugin and hub changes must keep their conformance suites green; CI runs both suites on
-  every pull request that targets `main`.
+- Plugin and hub changes must keep their conformance suites green. On every pull request
+  that targets `main`, CI runs the Go suite on both databases, the hub conformance suite
+  against a hub on SQLite, and the plugin conformance suite against the reference driver;
+  a push to `main` also runs the hub suite against a hub on Postgres.
 
 ## License
 

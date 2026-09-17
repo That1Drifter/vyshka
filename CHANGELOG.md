@@ -17,6 +17,17 @@ arrived, since those entries were written for one stream.
 
 ### [Unreleased]
 
+#### Changed
+
+- 2026-09-17: CI runs as three parallel jobs instead of one sequence: the Go suite on both
+  databases with the spec validation, the hub conformance suite on SQLite with the three
+  plugin-suite runs, and the hub conformance suite on Postgres. The last runs on pushes to
+  `main` only, so a pull request waits for one five-minute conformance pass rather than
+  two in series, and `main` is still graded on both databases before anything is tagged.
+  `main` is graded exactly as before; a pull request loses only the Postgres conformance
+  pass (its Go suite still runs against Postgres), and the wall clock drops from about
+  fifteen minutes to about six.
+
 ### [0.1.0] - 2026-09-17
 
 The first release: everything under "Before the first release" that concerns the hub, the
