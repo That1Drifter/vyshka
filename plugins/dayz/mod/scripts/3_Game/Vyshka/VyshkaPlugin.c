@@ -326,6 +326,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		// Results held back for room go first: they were owed before any
 		// event, and the events' flush leaves their slots alone.
 		AppendHeldResults();
+		QueueManifest();
 		ExpirePending();
 		if (m_Events.Due())
 			FlushEvents();
@@ -396,10 +397,29 @@ class VyshkaPlugin : VyshkaResponseSink
 			string body = m_Events.TakeBatch();
 			// The slots held for pending results (HandleDispatch) are not
 			// the events' to take: a batch that would eat into them is
-			// dropped as one the outbox could not hold.
-			if (!m_Outbox.HasRoom(1 + ReservedResults()) || !m_Outbox.Append("event.batch", body, count))
+			// dropped, and counted, as one the outbox could not hold.
+			VyshkaOutboxEntry stored = null;
+			if (!m_Outbox.HasRoom(1 + ReservedResults()))
+				m_Outbox.Refuse("event.batch");
+			else
+				stored = m_Outbox.Append("event.batch", body, count);
+			if (!stored)
 				VyshkaLog.Warn("dropped " + count.ToString() + " event(s) the outbox could not hold");
 		}
+	}
+
+	// QueueManifest appends the manifest.publish once per boot, at the first
+	// session start with room for it, or on a later tick when the outbox was
+	// full then (a boot that restored a full outbox). It leaves the slots
+	// held for owed results alone like everything else that is not one.
+	void QueueManifest()
+	{
+		if (m_ManifestQueued || m_SessionToken == "")
+			return;
+		if (!m_Outbox.HasRoom(1 + ReservedResults()))
+			return;
+		if (m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
+			m_ManifestQueued = true;
 	}
 
 	// ReservedResults is how many outbox slots are spoken for by results not
@@ -808,8 +828,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_PolledThisSession = false;
 		m_Outbox.Renumber();
 
-		if (!m_ManifestQueued && m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
-			m_ManifestQueued = true;
+		QueueManifest();
 
 		VyshkaLog.Info("session started; pollTimeout " + m_PollTimeoutSeconds.ToString() + " s, " + m_Outbox.Count().ToString() + " envelope(s) to send");
 		SetLinkState("connected");

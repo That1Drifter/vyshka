@@ -450,6 +450,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 	int m_DeadlineMs;              // the dispatch's own deadline less a margin: every store call ends by then
 	int m_Phase;
 	int m_Attempts;
+	bool m_WroteOnce;              // a set has been sent at least once; the store may hold it whatever happened after
 
 	void VyshkaFlagsChange(string actionId, string id, string name, array<string> named, VyshkaFlagSet requested)
 	{
@@ -531,6 +532,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 			next.m_UpdatedAt = VyshkaClock.NowRfc3339();
 			next.m_ActionId = m_ActionId;
 			m_Phase = PHASE_WRITE;
+			m_WroteOnce = true;
 			// The revision read guards the write: "0" for a key that did not
 			// exist means "only if it still does not".
 			store.Set(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), next.ToJson(), result.m_RevisionText, this, m_DeadlineMs);
@@ -584,13 +586,15 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 		VyshkaPlugin.Complete(m_ActionId, VyshkaActionOutcome.Success(result));
 	}
 
-	// Fail answers the dispatch with the error and asks the store for the
-	// identity's record again: a write abandoned for time may still have
-	// landed, and the game follows the store either way.
+	// Fail answers the dispatch with the error and, when a write was ever
+	// sent, asks the store for the identity's record again: a write
+	// abandoned for time may still have landed (a retry of it answering
+	// revision_mismatch is one sign), and the game follows the store either
+	// way, whatever phase the change was in when it gave up.
 	void Fail(string error)
 	{
 		VyshkaPlugin.Complete(m_ActionId, VyshkaActionOutcome.Failure(error));
-		if (m_Phase == PHASE_WRITE)
+		if (m_WroteOnce)
 			VyshkaFlags.Lookup(m_Id);
 	}
 }
