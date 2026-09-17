@@ -73,9 +73,12 @@ release.
    never rescheduled until then. Each was verified live on DayZ 1.29 with a retail client;
    the engine was found to leave a character wherever an explicit `y` puts it, so the
    plugin lifts a position below the terrain up to it.
-4. **Vehicles 1** (#67): `state.vehicles` snapshots with enter, exit, and destroy events;
-   delete all destroyed; unstuck. Wreck cleanup is the routine chore on a long-running
-   server and unstuck is the most-requested action in every admin tool.
+4. **Vehicles 1** (#67), landed 2026-09-16: `state.vehicles` snapshots (the plugin's own
+   vehicle list, since the engine keeps none script can read) with enter, exit, and
+   destroy events; delete all destroyed, with a dry run; unstuck. The panel's map plots the
+   vehicles beside the players and hands a vehicle to the vehicle-context actions. Wreck
+   cleanup is the routine chore on a long-running server and unstuck is the most-requested
+   action in every admin tool.
 5. **Vitals** (#68): one action with a `stat` parameter (health, blood, shock, energy,
    water, stamina, heat buffer), plus stop bleeding, dry, and the legs and hands toggles.
    The generalization of `vyshka.heal`.

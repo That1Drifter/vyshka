@@ -68,10 +68,13 @@ function parseRoute() {
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   // A player chosen on the map travels to the action list and on into an
   // action form as ?player=, the platform id that is a player target's
-  // referenceKey. It is a preselection, never a filter: the list is whole.
+  // referenceKey; a vehicle travels the same way as ?vehicle=, the id the
+  // vehicles snapshot gave it. Both are preselections, never filters: the
+  // list is whole.
   const player = query.get('player') || '';
+  const vehicle = query.get('vehicle') || '';
   if (parts[0] === 'servers' && parts.length === 2) {
-    return { view: 'server', section: 'servers', serverId: parts[1], player };
+    return { view: 'server', section: 'servers', serverId: parts[1], player, vehicle };
   }
   if (parts[0] === 'servers' && parts.length === 3 && parts[2] === 'map') {
     // ?world= overrides the world the server reported, for a server whose
@@ -89,7 +92,7 @@ function parseRoute() {
     };
   }
   if (parts[0] === 'servers' && parts.length === 4 && parts[2] === 'actions') {
-    return { view: 'action', section: 'servers', serverId: parts[1], code: parts[3], player };
+    return { view: 'action', section: 'servers', serverId: parts[1], code: parts[3], player, vehicle };
   }
   if (parts[0] === 'tokens' && parts.length === 1) {
     return { view: 'tokens', section: 'tokens' };
@@ -367,6 +370,18 @@ async function viewServer(app, route, seq) {
       el('span', { class: 'mono' }, (target.platform ? target.platform + ':' : '') + target.id),
       '. Player actions below open with this target filled in. ',
       el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
+  } else if (route.vehicle) {
+    // The vehicle is labelled from the latest snapshot when it is still
+    // there; the id alone is a valid target when it is not.
+    const vehicles = await loadVehicles(server.id);
+    if (stale(seq)) return;
+    const found = vehicles.find((entry) => entry.id === route.vehicle);
+    app.append(el('div', { class: 'notice target', id: 'target-vehicle' },
+      el('strong', {}, 'Target vehicle: '),
+      found ? vehicleLabel(found) + ' ' : '',
+      el('span', { class: 'mono' }, route.vehicle),
+      '. Vehicle actions below open with this target filled in. ',
+      el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
   }
 
   app.append(serverCredentials(server, seq, () => { render(); }));
@@ -378,7 +393,7 @@ async function viewServer(app, route, seq) {
   }
   // The action list, its namespace groups, and the pinned shortlist above
   // them are manage.js's: a pin is a property of the item, not of the page.
-  append(app, actionsSection(server, manifest, route.player));
+  append(app, actionsSection(server, manifest, route.player, route.vehicle));
 }
 
 // ---------------------------------------------------------------------------
@@ -849,6 +864,13 @@ async function viewMap(app, route, seq) {
     el('thead', {}, el('tr', {}, el('th', {}, 'Player'), el('th', {}, 'Identity'), el('th', {}, 'Position'), el('th', {}, 'Data'), el('th', {}, ''))),
     tbody);
   const empty = el('p', { class: 'notice', id: 'players-empty', hidden: true }, 'Nobody is online in the latest snapshot.');
+  // The vehicles of the latest state.vehicles snapshot, the same way: a
+  // second whole list from a second read, plotted beside the players.
+  const vehicleBody = el('tbody', {});
+  const vehicleTable = el('table', { id: 'vehicles', hidden: true },
+    el('thead', {}, el('tr', {}, el('th', {}, 'Vehicle'), el('th', {}, 'Id'), el('th', {}, 'Position'), el('th', {}, 'Data'), el('th', {}, ''))),
+    vehicleBody);
+  const vehiclesEmpty = el('p', { class: 'notice', id: 'vehicles-empty', hidden: true }, 'No vehicles in the latest snapshot.');
 
   let notice = null;
   if (datasetProblem) {
@@ -866,9 +888,11 @@ async function viewMap(app, route, seq) {
   append(app, [
     el('h1', {}, server.name, ' ', badge(server.linkState || 'unknown', server.linkState),
       el('span', { class: 'muted title-tail' }, ' live map')),
-    controls, problem, status, notice, mapContainer, empty, table]);
+    controls, problem, status, notice, mapContainer,
+    el('h2', {}, 'Players'), empty, table,
+    el('h2', {}, 'Vehicles'), vehiclesEmpty, vehicleTable]);
 
-  const state = { response: null, players: [], loaded: false };
+  const state = { response: null, players: [], vehicleResponse: null, vehicles: [], loaded: false };
 
   // The widget is created once the container is laid out, so its first
   // measurement is the real one.
@@ -877,7 +901,12 @@ async function viewMap(app, route, seq) {
     map = createMap(mapContainer, {
       onSelect: (key) => {
         const player = state.players.find((entry) => entry.key === key);
-        if (player) location.hash = serverHref(server.id, player.id);
+        if (player) {
+          location.hash = serverHref(server.id, player.id);
+          return;
+        }
+        const vehicle = state.vehicles.find((entry) => entry.key === key);
+        if (vehicle) location.hash = serverHref(server.id, '', vehicle.id);
       },
     });
     map.setDataset(manifest, dataset.baseURL);
@@ -918,28 +947,75 @@ async function viewMap(app, route, seq) {
       }
       tbody.append(row);
     }
+    clear(vehicleBody);
+    let vehiclesPlotted = 0;
+    for (const vehicle of state.vehicles) {
+      const point = manifest ? worldPoint(manifest, vehicle.position) : null;
+      if (point) vehiclesPlotted++;
+      const row = el('tr', { 'data-vehicle-id': vehicle.id },
+        el('td', {}, vehicleLabel(vehicle), vehicle.kind ? [' ', badge(vehicle.kind)] : null),
+        el('td', { class: 'mono' }, vehicle.id),
+        el('td', { class: 'position' }, Array.isArray(vehicle.position)
+          ? positionText(manifest, vehicle.position)
+          : el('span', { class: 'muted' }, 'no position')),
+        el('td', { class: 'data' }, Object.keys(vehicle.data).length > 0
+          ? attempt(() => summarizeEventData(vehicle.data), 'The data is nested too deeply to summarize.')
+          : el('span', { class: 'muted' }, 'none')),
+        el('td', { class: 'row-actions' },
+          point ? el('button', {
+            type: 'button', class: 'small', 'data-show': vehicle.key,
+            onclick: () => { map.setHighlight(vehicle.key); map.focus(vehicle.key); },
+          }, 'Show') : null,
+          ' ',
+          el('a', { class: 'button small', href: serverHref(server.id, '', vehicle.id), 'data-target-vehicle': vehicle.id }, 'Actions')));
+      if (map) {
+        row.addEventListener('mouseenter', () => map.setHighlight(vehicle.key));
+        row.addEventListener('mouseleave', () => map.setHighlight(null));
+      }
+      vehicleBody.append(row);
+    }
     if (map) {
       map.setMarkers(state.players.map((player) => ({
         key: player.key, label: player.name || player.id, position: player.position,
-      })));
+      })).concat(state.vehicles.map((vehicle) => ({
+        key: vehicle.key, label: vehicleLabel(vehicle), position: vehicle.position, kind: 'vehicle',
+      }))));
     }
     table.hidden = state.players.length === 0;
     empty.hidden = !state.loaded || state.players.length > 0;
+    vehicleTable.hidden = state.vehicles.length === 0;
+    vehiclesEmpty.hidden = !state.loaded || state.vehicles.length > 0;
     status.dataset.plotted = String(plotted);
     status.dataset.players = String(state.players.length);
+    status.dataset.vehiclesPlotted = String(vehiclesPlotted);
+    status.dataset.vehicles = String(state.vehicles.length);
     updateStatus();
   };
   const updateStatus = () => {
     if (!state.loaded) return;
-    if (!state.response) {
-      status.textContent = 'No player snapshot yet. The plugin publishes state.players snapshots (protocol section 8.3); until the hub accepts one there is nothing to show.';
+    if (!state.response && !state.vehicleResponse) {
+      status.textContent = 'No snapshot yet. The plugin publishes state.players and state.vehicles snapshots (protocol section 8.3); until the hub accepts one there is nothing to show.';
       return;
     }
-    const count = state.players.length;
-    const unplotted = count - Number(status.dataset.plotted || 0);
-    status.textContent = count + ' player' + (count === 1 ? '' : 's') + ' in the latest snapshot, captured ' +
-      ago(state.response.capturedAt) + ', received ' + ago(state.response.receivedAt) +
-      (manifest && unplotted > 0 ? '; ' + unplotted + ' without a position the map can plot' : '') +
+    const parts = [];
+    if (state.response) {
+      const count = state.players.length;
+      const unplotted = count - Number(status.dataset.plotted || 0);
+      parts.push(count + ' player' + (count === 1 ? '' : 's') + ' in the latest snapshot, captured ' +
+        ago(state.response.capturedAt) + ', received ' + ago(state.response.receivedAt) +
+        (manifest && unplotted > 0 ? '; ' + unplotted + ' without a position the map can plot' : ''));
+    } else {
+      parts.push('no player snapshot yet');
+    }
+    if (state.vehicleResponse) {
+      const vehicles = state.vehicles.length;
+      const unplottedVehicles = vehicles - Number(status.dataset.vehiclesPlotted || 0);
+      parts.push(vehicles + ' vehicle' + (vehicles === 1 ? '' : 's') + ', captured ' + ago(state.vehicleResponse.capturedAt) +
+        (manifest && unplottedVehicles > 0 ? '; ' + unplottedVehicles + ' without a position the map can plot' : ''));
+    } else {
+      parts.push('no vehicle snapshot yet');
+    }
+    status.textContent = parts.join('; ') +
       (manifest ? '' : '; listed without a map') +
       '. Re-read every ' + (MAP_REFRESH_MS / 1000) + ' s.';
   };
@@ -949,16 +1025,23 @@ async function viewMap(app, route, seq) {
     problem.hidden = false;
   };
 
-  const load = async () => {
-    let response = null;
+  // A snapshot type the hub has never accepted answers 404 (section 8.3),
+  // which is "nothing yet", not a failure, for either type independently.
+  const readSnapshot = async (stateType) => {
     try {
-      response = await api('GET', '/servers/' + encodeURIComponent(server.id) + '/state/players');
+      return await api('GET', '/servers/' + encodeURIComponent(server.id) + '/state/' + stateType);
     } catch (err) {
-      if (!(err instanceof ApiError && err.status === 404)) throw err;
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
     }
+  };
+  const load = async () => {
+    const [response, vehicleResponse] = await Promise.all([readSnapshot('players'), readSnapshot('vehicles')]);
     if (stale(seq)) return;
     state.response = response;
     state.players = snapshotPlayers(response);
+    state.vehicleResponse = vehicleResponse;
+    state.vehicles = snapshotVehicles(vehicleResponse);
     state.loaded = true;
     problem.hidden = true;
     draw();
@@ -1229,6 +1312,15 @@ function playerDatalist(players) {
   return list;
 }
 
+function vehicleDatalist(vehicles) {
+  if (!vehicles || vehicles.length === 0) return null;
+  const list = el('datalist', { id: nextId('vehicles') });
+  for (const entry of vehicles) {
+    list.append(el('option', { value: entry.id }, vehicleLabel(entry) + (entry.kind ? ' (' + entry.kind + ')' : '')));
+  }
+  return list;
+}
+
 function stringField(schema, opts) {
   const widget = widgetOf(schema);
   // Hints shape the input, never its validation (section 6.1: a hint does
@@ -1247,6 +1339,13 @@ function stringField(schema, opts) {
     if (datalist) attrs.list = datalist.id;
     attrs.placeholder = 'platform player id';
     hint = 'player identity (the platform id, e.g. the Steam64 id on DayZ)' + (datalist ? '; online players are suggested' : '');
+  } else if (opts.vehicles) {
+    // The vehicle target of a vehicle-context action: the id the vehicles
+    // snapshot gave it, with the snapshot's vehicles as suggestions.
+    datalist = vehicleDatalist(opts.vehicles);
+    if (datalist) attrs.list = datalist.id;
+    attrs.placeholder = 'vehicle id';
+    hint = 'vehicle id from the latest state.vehicles snapshot' + (datalist ? '; the vehicles in it are suggested' : '');
   } else if (widget === 'webhook') {
     attrs.inputmode = 'url';
     attrs.placeholder = 'https://';
@@ -1565,7 +1664,7 @@ function showFaults(faults, fieldsByPath) {
 // ---------------------------------------------------------------------------
 // Action form and dispatch
 
-function targetField(action, contexts, players) {
+function targetField(action, contexts, players, vehicles) {
   const context = action.context || '';
   if (context === '' || context === 'world') return null;
   const builtin = { player: 'Player', vehicle: 'Vehicle id', object: 'Object id' };
@@ -1578,7 +1677,7 @@ function targetField(action, contexts, players) {
   }
   return stringField(
     context === 'player' ? { type: 'string', 'x-vyshka-widget': 'player' } : { type: 'string' },
-    { name: 'referenceKey', path: 'referenceKey', label, required, players });
+    { name: 'referenceKey', path: 'referenceKey', label, required, players, vehicles: context === 'vehicle' ? vehicles : null });
 }
 
 async function loadPlayers(serverId) {
@@ -1592,6 +1691,46 @@ async function loadPlayers(serverId) {
     if (err instanceof ApiError && (err.status === 404 || err.status === 403)) return [];
     throw err;
   }
+}
+
+// loadVehicles reads the latest state.vehicles snapshot into what a vehicle
+// target field and the map need: the id (the referenceKey of a
+// vehicle-context action), the advisory kind, the position, and the extras.
+async function loadVehicles(serverId) {
+  try {
+    const snapshot = await api('GET', '/servers/' + encodeURIComponent(serverId) + '/state/vehicles');
+    return snapshotVehicles(snapshot);
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 403)) return [];
+    throw err;
+  }
+}
+
+function snapshotVehicles(response) {
+  const entries = response && response.snapshot && Array.isArray(response.snapshot.vehicles) ? response.snapshot.vehicles : [];
+  const vehicles = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.id !== 'string' || entry.id === '') continue;
+    vehicles.push({
+      // Keyed apart from the players: a player key is a JSON array, so a
+      // prefix no array starts with keeps the two marker sets distinct.
+      key: 'vehicle:' + entry.id,
+      id: entry.id,
+      kind: typeof entry.kind === 'string' ? entry.kind : '',
+      position: entry.position,
+      data: entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {},
+    });
+  }
+  return vehicles;
+}
+
+// vehicleLabel is how a vehicle is named to an operator: the plugin's
+// display name or class when the snapshot carries one, the kind otherwise.
+function vehicleLabel(vehicle) {
+  const data = vehicle.data || {};
+  if (typeof data.displayName === 'string' && data.displayName !== '') return data.displayName;
+  if (typeof data.type === 'string' && data.type !== '') return data.type;
+  return vehicle.kind || 'vehicle';
 }
 
 async function viewAction(app, route, seq) {
@@ -1611,9 +1750,11 @@ async function viewAction(app, route, seq) {
   const needsPlayers = action.context === 'player' || JSON.stringify(action.params || {}).includes('"player"');
   const players = needsPlayers ? await loadPlayers(server.id) : [];
   if (stale(seq)) return;
+  const vehicles = action.context === 'vehicle' ? await loadVehicles(server.id) : [];
+  if (stale(seq)) return;
 
   const contexts = Array.isArray(body.contexts) ? body.contexts : [];
-  const target = targetField(action, contexts, players);
+  const target = targetField(action, contexts, players, vehicles);
   const params = buildParamsForm(action.params, players);
   if (target) params.fieldsByPath.set('referenceKey', target);
   // A player picked on the map arrives in the route and lands in the
@@ -1624,6 +1765,10 @@ async function viewAction(app, route, seq) {
   if (target && route.player && action.context === 'player' && !target.set(route.player)) {
     target.set('');
     unrepresentable = 'The preselected player id contains characters this field cannot hold; use the API to target it.';
+  }
+  if (target && route.vehicle && action.context === 'vehicle' && !target.set(route.vehicle)) {
+    target.set('');
+    unrepresentable = 'The preselected vehicle id contains characters this field cannot hold; use the API to target it.';
   }
 
   const danger = action.danger || 'none';

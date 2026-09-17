@@ -12,12 +12,28 @@
 // long-poll link needs: the poll is held open by the hub, and the plugin's
 // own traffic rides in the next poll.
 
+// VyshkaSnapshotChannel is the plugin's record of one state.* type: when it
+// last captured a snapshot of that type and how many polls in a row went
+// out without one. Each type is paced and held back on its own, because the
+// hub acks and keeps them separately (spec section 8.3).
+class VyshkaSnapshotChannel
+{
+	string m_Type;      // state.players, state.vehicles
+	int m_LastMs;       // monotonic time of the last capture; 0 before the first
+	int m_Held;         // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
+
+	void VyshkaSnapshotChannel(string t)
+	{
+		m_Type = t;
+	}
+}
+
 class VyshkaPlugin
 {
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.5.0";
+	static const string PLUGIN_VERSION = "0.6.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -39,6 +55,9 @@ class VyshkaPlugin
 	// predates the option ignores it, and the opaque handling below remains.
 	static const string INLINE_ERRORS = "?errors=inline";
 
+	static const string SNAPSHOT_PLAYERS = "state.players";
+	static const string SNAPSHOT_VEHICLES = "state.vehicles";
+
 	static const int REQUEST_ENROLL = 1;
 	static const int REQUEST_SESSION = 2;
 	static const int REQUEST_POLL = 3;
@@ -51,8 +70,7 @@ class VyshkaPlugin
 	ref VyshkaEventBuffer m_Events;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
-	int m_LastSnapshotMs;      // monotonic time of the last capture; 0 before the first
-	int m_SnapshotsHeld;       // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
+	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type, in publish order
 	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
 	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
 
@@ -117,6 +135,9 @@ class VyshkaPlugin
 		m_LinkState = "buffering";
 		m_PollTimeoutSeconds = 25;
 		m_Events = new VyshkaEventBuffer();
+		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
+		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
+		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
 	}
 
 	void Boot(VyshkaActionRegistry actions, VyshkaSnapshotSource snapshots)
@@ -159,7 +180,7 @@ class VyshkaPlugin
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
 		string snapshotNote = "snapshots off";
 		if (m_SnapshotsOn)
-			snapshotNote = "state.players with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
+			snapshotNote = "state.players and state.vehicles with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
 		string fpsNote = "fps samples off";
 		if (m_Config.m_FpsIntervalSeconds > 0)
 			fpsNote = "core.server.fps every " + m_Config.m_FpsIntervalSeconds.ToString() + " s";
@@ -204,7 +225,7 @@ class VyshkaPlugin
 			return;
 		// Events go into the outbox whether or not a request is in flight;
 		// whatever is queued rides the next poll. Snapshots are captured by
-		// the poll itself (PublishSnapshot), so they never wait for one.
+		// the poll itself (PublishSnapshots), so they never wait for one.
 		SampleFps();
 		if (m_Events.Due())
 			FlushEvents();
@@ -275,42 +296,54 @@ class VyshkaPlugin
 		}
 	}
 
-	// PublishSnapshot captures one state.players envelope as the poll that
-	// will carry it is being built, so the sample is as fresh as the link
-	// allows: a snapshot captured on a timer would sit in the outbox until
-	// the poll already in flight returned, up to a full pollTimeout later.
-	// The configured interval is a floor on the spacing between captures,
-	// and the poll cycle sets the cadence when it is longer (issue #55).
-	//
-	// No capture is made while the previous snapshot is still unacked, or
-	// while the outbox holds more than this poll can carry, so that a
-	// snapshot appended now could not ride it: the map wants the latest
-	// state, an appended envelope is immutable (section 9.3), and a queue of
-	// stale snapshots behind an outage serves no one (section 8.3 keeps the
-	// latest per type regardless). On a healthy link the previous snapshot's
-	// ack arrived with the response that ended the last poll, so a held
-	// capture means an outage, or a backlog of anything (a burst of action
-	// results counts), and a run of them long enough to matter is logged.
-	void PublishSnapshot()
+	// PublishSnapshots captures one envelope per state.* type as the poll
+	// that will carry them is being built, so each sample is as fresh as the
+	// link allows: a snapshot captured on a timer would sit in the outbox
+	// until the poll already in flight returned, up to a full pollTimeout
+	// later. The configured interval is a floor on the spacing between
+	// captures, and the poll cycle sets the cadence when it is longer
+	// (issue #55). The types share the interval and are paced separately,
+	// because the hub acks and keeps them separately (section 8.3).
+	void PublishSnapshots()
 	{
 		if (!m_SnapshotsOn)
 			return;
-		if (m_Outbox.HasUnacked("state.players") || !m_Outbox.RoomInBatch())
+		for (int i = 0; i < m_SnapshotChannels.Count(); i++)
+			PublishSnapshot(m_SnapshotChannels.Get(i));
+	}
+
+	// PublishSnapshot captures one type. No capture is made while the
+	// previous snapshot of that type is still unacked, or while the outbox
+	// holds more than this poll can carry, so that a snapshot appended now
+	// could not ride it: the map wants the latest state, an appended
+	// envelope is immutable (section 9.3), and a queue of stale snapshots
+	// behind an outage serves no one (section 8.3 keeps the latest per type
+	// regardless). On a healthy link the previous snapshot's ack arrived
+	// with the response that ended the last poll, so a held capture means
+	// an outage, or a backlog of anything (a burst of action results
+	// counts), and a run of them long enough to matter is logged.
+	void PublishSnapshot(VyshkaSnapshotChannel channel)
+	{
+		if (m_Outbox.HasUnacked(channel.m_Type) || !m_Outbox.RoomInBatch())
 		{
-			m_SnapshotsHeld++;
-			if (m_SnapshotsHeld == SNAPSHOTS_HELD_LOG_AFTER || m_SnapshotsHeld % SNAPSHOTS_HELD_LOG_EVERY == 0)
-				VyshkaLog.Info("state.players snapshot held back: the previous one is still unacked or the outbox has a backlog (" + m_SnapshotsHeld.ToString() + " poll(s) without one)");
+			channel.m_Held++;
+			if (channel.m_Held == SNAPSHOTS_HELD_LOG_AFTER || channel.m_Held % SNAPSHOTS_HELD_LOG_EVERY == 0)
+				VyshkaLog.Info(channel.m_Type + " snapshot held back: the previous one is still unacked or the outbox has a backlog (" + channel.m_Held.ToString() + " poll(s) without one)");
 			return;
 		}
-		m_SnapshotsHeld = 0;
+		channel.m_Held = 0;
 		int now = VyshkaClock.MonotonicMs();
-		if (m_LastSnapshotMs != 0 && now - m_LastSnapshotMs < m_Config.m_SnapshotIntervalSeconds * 1000)
+		if (channel.m_LastMs != 0 && now - channel.m_LastMs < m_Config.m_SnapshotIntervalSeconds * 1000)
 			return;
-		string body = m_Snapshots.CapturePlayers();
+		string body = "";
+		if (channel.m_Type == SNAPSHOT_PLAYERS)
+			body = m_Snapshots.CapturePlayers();
+		else if (channel.m_Type == SNAPSHOT_VEHICLES)
+			body = m_Snapshots.CaptureVehicles();
 		if (body == "")
 			return;
-		if (m_Outbox.Append("state.players", body))
-			m_LastSnapshotMs = now;
+		if (m_Outbox.Append(channel.m_Type, body))
+			channel.m_LastMs = now;
 	}
 
 	// Advance issues whichever request the link needs next. The name matters:
@@ -437,9 +470,9 @@ class VyshkaPlugin
 
 	void Poll()
 	{
-		// The snapshot is captured here, not on the tick, so it rides this
+		// The snapshots are captured here, not on the tick, so they ride this
 		// very request rather than waiting behind a held poll.
-		PublishSnapshot();
+		PublishSnapshots();
 		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson() + "}";
 		// The hub answers within pollTimeout; the engine's read timeout is
 		// pollTimeout + 5 s; the watchdog sits behind both.

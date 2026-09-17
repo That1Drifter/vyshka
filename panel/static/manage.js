@@ -305,10 +305,12 @@ function writePins(serverId, codes) {
 
 // actionAnchor is the action item itself, the same link the action list has
 // always drawn.
-function actionAnchor(server, action, player, pinnedCopy) {
+function actionAnchor(server, action, player, vehicle, pinnedCopy) {
   return el('a', {
     class: 'action-item',
-    href: actionHref(server.id, action.code, action.context === 'player' ? player : ''),
+    href: actionHref(server.id, action.code,
+      action.context === 'player' ? player : '',
+      action.context === 'vehicle' ? vehicle : ''),
     'data-action-code': action.code,
     'data-pinned': pinnedCopy ? 'true' : null,
   },
@@ -321,7 +323,7 @@ function actionAnchor(server, action, player, pinnedCopy) {
 
 // actionsSection draws the manifest's actions, grouped by namespace, with the
 // pinned shortlist above them and a pin toggle on every item.
-export function actionsSection(server, manifest, player) {
+export function actionsSection(server, manifest, player, vehicle = '') {
   const body = manifest.manifest || {};
   const actions = Array.isArray(body.actions) ? body.actions : [];
   const byCode = new Map();
@@ -366,7 +368,7 @@ export function actionsSection(server, manifest, player) {
     if (!listButtons.has(action.code)) listButtons.set(action.code, []);
     listButtons.get(action.code).push(button);
     return el('div', { class: 'action-row', 'data-action-row': action.code },
-      actionAnchor(server, action, player, false), button);
+      actionAnchor(server, action, player, vehicle, false), button);
   };
 
   const draw = () => {
@@ -382,7 +384,7 @@ export function actionsSection(server, manifest, player) {
       const action = byCode.get(code);
       if (action) {
         pinnedList.append(el('div', { class: 'action-row', 'data-pinned-row': code },
-          actionAnchor(server, action, player, true), button));
+          actionAnchor(server, action, player, vehicle, true), button));
         continue;
       }
       // A pin the manifest no longer declares stays visible rather than

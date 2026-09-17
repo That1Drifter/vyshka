@@ -78,8 +78,10 @@ management views).
   a text input with a hint. Unknown hints fall back to the field's type, as the protocol
   requires.
 - **Targets**: a `player` context action gets a required player field fed by the same
-  snapshot; `vehicle` and `object` get an id field; custom contexts get an optional
-  reference field (enumeration arrives with the first custom context, issue #73).
+  snapshot; `vehicle` gets a required id field fed by the latest `state.vehicles`
+  snapshot (each vehicle's id with its display name or class and its kind as the
+  suggestion); `object` gets an id field; custom contexts get an optional reference field
+  (enumeration arrives with the first custom context, issue #73).
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
   Dispatch button does anything.
 - **Dispatch and live result**: one `POST /api/v1/servers/{id}/actions` with an idempotency
@@ -116,18 +118,24 @@ management views).
   again on every new event. What this cannot see is a late event landing below the first
   page of a hub already past the boundary; a reload picks it up.
 - **Live map** per server, at `#/servers/{id}/map`, over
-  `GET /api/v1/servers/{id}/state/players` (protocol section 8.3) re-read every five
-  seconds. The latest snapshot's players are listed with identity, position, and extras,
-  and plotted on a basemap when the hub has a tileset installed for the server's world
-  (below). The world is the one the plugin reported in its latest `core.server.start`
+  `GET /api/v1/servers/{id}/state/players` and `.../state/vehicles` (protocol section 8.3)
+  re-read every five seconds. The latest snapshots' players and vehicles are listed with
+  identity or id, position, and extras, and plotted on a basemap when the hub has a
+  tileset installed for the server's world (below): players as round dots, vehicles as
+  squares in a colour of their own, labelled by the plugin's display name or class. The
+  world is the one the plugin reported in its latest `core.server.start`
   event; `?world=` in the route overrides it, for a token without `events:read` or to look
-  at another map. A snapshot is whole, so every refresh replaces every marker: a player
-  absent from the latest snapshot is gone from the map. The snapshot's `capturedAt` and
+  at another map. A snapshot is whole, so every refresh replaces every marker of its type:
+  a player absent from the latest players snapshot is gone from the map, and the vehicles
+  stay where their own latest snapshot put them. Each type answers 404 on its own until
+  the hub has accepted one of it, which the page reads as "nothing yet" for that type. The
+  snapshots' `capturedAt` and
   `receivedAt` ages are always on the page, because the five-second re-read says nothing
   about how often the plugin publishes (the DayZ plugin captures one per poll cycle on a
   held long-poll, so about every 25 s with `pollTimeout` 25 and a 10 s snapshot interval).
   Clicking a marker, or a row's Actions link, opens the server's action
-  list with that player preselected (`?player=`): player-context actions open with the
+  list with that player preselected (`?player=`), or that vehicle (`?vehicle=`), and a
+  vehicle-context action then opens with the id filled in: player-context actions open with the
   target field filled in, editable. Positions are read in the game's own frame as the
   manifest says (for DayZ `[x, y, z]` with `y` the elevation, so the map plots `x` east and
   `z` north); a position the manifest cannot read, or a player without one, is listed and
@@ -315,8 +323,11 @@ with one lacking a position and one in the flat two-number form, three markers p
 within 1.5 px of where the world frame puts them with the canvas pixel under each the
 colour of its quadrant (which is what tells a flipped or swapped axis from a right one),
 a second snapshot replacing the markers whole, a marker click landing on the action list
-with the player preselected and the heal form filled in, and a world with no tileset
-listing the players under a notice.
+with the player preselected and the heal form filled in, a vehicles snapshot listed and
+plotted apart from the players (one car placed, one boat without a position), left where it
+was by the players' replacement, its marker landing on the action list with the vehicle
+preselected and the vehicle action's form filled in and fed its suggestions, and a world
+with no tileset listing the players and the vehicles under a notice.
 
 A second browser test covers the management views on the same scaffolding: the nav and its
 `aria-current`, a server registered through the form whose one-time enrollment token survives a

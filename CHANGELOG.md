@@ -12,6 +12,27 @@ point if needed.
 
 ### Added
 
+- 2026-09-16: DayZ vehicles 1 (issue #67, plugin 0.6.0, manifest revision 4). The plugin
+  keeps its own list of vehicles (hooks on `CarScript`, `BoatScript`, and
+  `HelicopterScript`; their engine parent cannot be modded from script) and publishes
+  `state.vehicles` snapshots beside `state.players`, each type paced and held back on its
+  own: `id` is the engine's network id, `kind` is `car`, `boat`, `helicopter`, or
+  `vehicle`, and `data` carries the class, display name, seat count, and crew with seat
+  index and driver flag. Three events: `core.vehicle.destroy` (the vehicle's kill hook,
+  reported once per destruction because the hook fires again on every later hit on the
+  wreck, with the crew and the killer read the way a player death reads it), and the custom
+  `vyshka.vehicle.enter` and `vyshka.vehicle.exit` (the player's vehicle command starting
+  and finishing, and a seated player's disconnect as an exit with its cause). Two actions
+  join the nine: `vyshka.unstuck` (vehicle context: lift by 0 to 10 m above where it
+  stands or above the terrain or sea, level with the heading kept, stop, wake the physics
+  body, synchronize; whoever is in it moves with it) and `vyshka.deletedestroyed` (world,
+  destructive: every destroyed vehicle through the engine's safe delete, a wreck with
+  someone seated skipped and reported, `dryRun` listing without deleting). `core.vehicle.spawn`
+  is deliberately not emitted, because the hive initializes every persisted vehicle at boot
+  through the same hook. New file: `VyshkaVehicles.c`. The panel's live map reads the
+  vehicles snapshot beside the players (squares beside dots, their own table, each type's
+  404 read as nothing yet), a vehicle marker or row preselects the vehicle for the action
+  list (`?vehicle=`), and a vehicle-context action's target field is fed by the snapshot.
 - 2026-09-16: DayZ position and world actions (issue #66, plugin 0.5.0, manifest
   revision 3). Three actions join the six: `vyshka.teleport` (to `[x, y, z]` or `[x, z]`
   placed on the terrain, beside another player, or back to the position the last teleport

@@ -9,10 +9,10 @@
 //
 // Snapshots say what is rather than what happened, so they are not
 // buffered at all: the plugin asks a game-side source for the current
-// state.players body as it builds the poll that will carry it, no more
-// often than the configured interval, and only when the previous snapshot
-// has been acked (see VyshkaPlugin.PublishSnapshot and
-// VyshkaOutbox.HasUnacked).
+// state.players and state.vehicles bodies as it builds the poll that will
+// carry them, no more often than the configured interval, and only when
+// the previous snapshot of that type has been acked (see
+// VyshkaPlugin.PublishSnapshots and VyshkaOutbox.HasUnacked).
 
 class VyshkaEventBuffer
 {
@@ -97,6 +97,13 @@ class VyshkaSnapshotSource
 	// CapturePlayers returns a serialized state.players body, or "" when no
 	// snapshot can be taken right now.
 	string CapturePlayers()
+	{
+		return "";
+	}
+
+	// CaptureVehicles returns a serialized state.vehicles body, or "" when
+	// no snapshot can be taken right now.
+	string CaptureVehicles()
 	{
 		return "";
 	}

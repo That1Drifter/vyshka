@@ -42,8 +42,11 @@ class VyshkaBoot
 		registry.Register(new VyshkaTeleportAction());
 		registry.Register(new VyshkaSpawnAction());
 		registry.Register(new VyshkaSetTimeAction());
+		registry.Register(new VyshkaUnstuckAction());
+		registry.Register(new VyshkaDeleteDestroyedAction());
 		VyshkaPlayers.Reset();
 		VyshkaWorld.Reset();
+		VyshkaVehicles.Reset();
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
 		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());
