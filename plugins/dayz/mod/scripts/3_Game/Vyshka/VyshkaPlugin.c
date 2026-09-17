@@ -36,6 +36,7 @@ class VyshkaPendingDispatch
 	string m_ActionId;
 	string m_Code;
 	int m_StartedMs;
+	int m_DeadlineMs;   // monotonic; the dispatch's TTL or PENDING_MAX_MS, whichever ends first
 }
 
 class VyshkaPlugin : VyshkaResponseSink
@@ -100,6 +101,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
 
 	string m_Executing;        // the actionId whose Execute is on the stack, "" otherwise
+	int m_ExecutingDeadlineMs; // that dispatch's deadline, for the action to bound its own work by
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -174,6 +176,30 @@ class VyshkaPlugin : VyshkaResponseSink
 		s_Instance.FinishPending(actionId, outcome);
 	}
 
+	// IsPending says whether a dispatch is still waiting for its outcome:
+	// the one whose Execute is running counts, since it may go pending. An
+	// action with work left after a failed or expired dispatch checks this
+	// before doing anything on the dispatch's behalf.
+	static bool IsPending(string actionId)
+	{
+		if (!s_Instance || actionId == "")
+			return false;
+		if (actionId == s_Instance.m_Executing)
+			return true;
+		return s_Instance.m_PendingDispatches.Contains(actionId);
+	}
+
+	// CurrentDeadlineMs is the monotonic deadline of the dispatch whose
+	// Execute is on the stack: its TTL, or the pending hold, whichever ends
+	// first. An action that will complete later bounds its own work by it.
+	// Outside Execute it is the hold counted from now.
+	static int CurrentDeadlineMs()
+	{
+		if (s_Instance && s_Instance.m_Executing != "")
+			return s_Instance.m_ExecutingDeadlineMs;
+		return VyshkaClock.MonotonicMs() + PENDING_MAX_MS;
+	}
+
 	void VyshkaPlugin()
 	{
 		m_RenewMarginSeconds = RENEW_MARGIN_SECONDS;
@@ -221,7 +247,6 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Transport = new VyshkaTransport();
 		if (!m_Transport.Init(m_Config.m_HubUrl + "/plugin/v1/", this))
 			return;
-		m_Transport.SetReadTimeout(m_Config.m_PollTimeoutSeconds + 5);
 
 		// The store client has a transport of its own so a key/value call
 		// never waits behind a held poll (VyshkaStore).
@@ -230,6 +255,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Store = new VyshkaStore();
 		if (!m_Store.Init(m_Config.m_HubUrl, namespaces))
 			return;
+		ApplyReadTimeout(m_Config.m_PollTimeoutSeconds);
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
@@ -502,6 +528,18 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_NextAttemptMs = 0;
 	}
 
+	// ApplyReadTimeout sets the engine's process-wide read timeout for a
+	// pollTimeout (the hold plus 5 s of slack) and keeps the store client's
+	// watchdog above it plus the engine's 10 s connection timeout: a request
+	// the watchdog abandoned while the engine still ran it would share the
+	// context with the next one (VyshkaStore).
+	void ApplyReadTimeout(int pollTimeoutSeconds)
+	{
+		m_Transport.SetReadTimeout(pollTimeoutSeconds + 5);
+		if (m_Store)
+			m_Store.SetBudgetMs((pollTimeoutSeconds + 5 + 10 + 5) * 1000);
+	}
+
 	void SetLinkState(string state)
 	{
 		if (m_LinkState == state)
@@ -713,7 +751,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_PollTimeoutSeconds = root.GetInt("pollTimeoutSeconds", 25);
 		if (m_PollTimeoutSeconds < 1)
 			m_PollTimeoutSeconds = 25;
-		m_Transport.SetReadTimeout(m_PollTimeoutSeconds + 5);
+		ApplyReadTimeout(m_PollTimeoutSeconds);
 		int expires;
 		if (VyshkaClock.ParseRfc3339(root.GetString("expiresAt", ""), expires))
 			m_SessionExpiresEpoch = expires;
@@ -820,7 +858,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (pollTimeout >= 1 && pollTimeout != m_PollTimeoutSeconds)
 		{
 			m_PollTimeoutSeconds = pollTimeout;
-			m_Transport.SetReadTimeout(m_PollTimeoutSeconds + 5);
+			ApplyReadTimeout(m_PollTimeoutSeconds);
 		}
 		int expires;
 		if (VyshkaClock.ParseRfc3339(root.GetString("sessionExpiresAt", ""), expires))
@@ -865,7 +903,10 @@ class VyshkaPlugin : VyshkaResponseSink
 				// outcome it could never report (section 9.4). The hub ack was
 				// already applied above, so a poll that frees space unblocks
 				// this on the same tick.
-				if (!m_Outbox.HasRoom(2))
+				// A pending dispatch has its result still to append, so
+				// its slot is held here against everything dispatched
+				// after it.
+				if (!m_Outbox.HasRoom(2 + m_PendingDispatches.Count()))
 				{
 					VyshkaLog.Warn("outbox full; deferring hub envelope seq " + seq.ToString() + " until it drains");
 					break;
@@ -1096,7 +1137,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		string context = body.GetString("context", "");
 		string referenceKey = body.GetString("referenceKey", "");
 
-		int deadline;
+		int deadline = 0;
 		// The engine clock is whole-second, and the parser floors expiresAt to
 		// its second, so the true deadline lies anywhere in [deadline,
 		// deadline+1). Discarding once the current second reaches that second
@@ -1113,7 +1154,18 @@ class VyshkaPlugin : VyshkaResponseSink
 		}
 
 		int started = VyshkaClock.MonotonicMs();
+		// The deadline an action that completes later works under: the
+		// dispatch's own TTL when it is shorter than the pending hold, so
+		// nothing lands after the hub has expired the action.
+		int deadlineMs = started + PENDING_MAX_MS;
+		if (deadline > 0)
+		{
+			int ttlSeconds = deadline - VyshkaClock.EpochSeconds();
+			if (ttlSeconds < PENDING_MAX_MS / 1000)
+				deadlineMs = started + ttlSeconds * 1000;
+		}
 		m_Executing = actionId;
+		m_ExecutingDeadlineMs = deadlineMs;
 		VyshkaActionOutcome outcome = m_Actions.Execute(actionId, code, context, referenceKey, body.Get("params"));
 		m_Executing = "";
 		if (!outcome)
@@ -1134,6 +1186,7 @@ class VyshkaPlugin : VyshkaResponseSink
 			pending.m_ActionId = actionId;
 			pending.m_Code = code;
 			pending.m_StartedMs = started;
+			pending.m_DeadlineMs = deadlineMs;
 			m_PendingDispatches.Set(actionId, pending);
 			VyshkaLog.Info("action " + code + " (" + actionId + ") is pending");
 			return;
@@ -1158,7 +1211,11 @@ class VyshkaPlugin : VyshkaResponseSink
 		else
 			result.Set("error", VyshkaJsonValue.NewString(outcome.m_Error));
 		result.Set("durationMs", VyshkaJsonValue.NewInt(durationMs));
-		m_Outbox.Append("action.result", result.Serialize());
+		// Room for this result was checked at dispatch, and held for a
+		// pending one (HandleDispatch), so a refusal here is a plugin
+		// defect worth a line: the hub would expire the action.
+		if (!m_Outbox.Append("action.result", result.Serialize()))
+			VyshkaLog.Error("the outbox could not hold the result of action " + actionId + " (" + code + "); the hub will expire it");
 
 		if (outcome.m_Ok)
 			VyshkaLog.Info("action " + code + " (" + actionId + ") completed in " + durationMs.ToString() + " ms");
@@ -1192,9 +1249,10 @@ class VyshkaPlugin : VyshkaResponseSink
 		AppendResult(actionId, pending.m_Code, pending.m_StartedMs, outcome);
 	}
 
-	// ExpirePending fails every dispatch that has been pending longer than
-	// PENDING_MAX_MS: a store client that gives up answers its callback, so
-	// this is the guard against a callback that never comes at all.
+	// ExpirePending fails every dispatch pending past its deadline (its TTL
+	// or PENDING_MAX_MS): a store client that gives up answers its callback
+	// ahead of this, so this is the guard against a callback that never
+	// comes at all.
 	void ExpirePending()
 	{
 		if (m_PendingDispatches.Count() == 0)
@@ -1203,11 +1261,11 @@ class VyshkaPlugin : VyshkaResponseSink
 		array<string> expired = new array<string>;
 		for (int i = 0; i < m_PendingDispatches.Count(); i++)
 		{
-			if (now - m_PendingDispatches.GetElement(i).m_StartedMs > PENDING_MAX_MS)
+			if (now > m_PendingDispatches.GetElement(i).m_DeadlineMs)
 				expired.Insert(m_PendingDispatches.GetKey(i));
 		}
 		for (int j = 0; j < expired.Count(); j++)
-			FinishPending(expired.Get(j), VyshkaActionOutcome.Failure("the action did not finish within " + (PENDING_MAX_MS / 1000).ToString() + " s"));
+			FinishPending(expired.Get(j), VyshkaActionOutcome.Failure("the action did not finish within its deadline"));
 	}
 
 	// FailPending answers every pending dispatch with one failure.

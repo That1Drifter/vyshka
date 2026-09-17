@@ -13,7 +13,8 @@ class VyshkaHubError
 	string m_Message;
 	int m_Index;   // details.index of an envelope_invalid refusal; -1 when absent
 	int m_Seq;     // details.seq of the same, 0 when absent
-	int m_Revision;     // details.revision of a revision_mismatch refusal (section 12.2); 0 when absent
+	int m_Revision;     // details.revision of a revision_mismatch refusal (section 12.2); 0 when absent, saturated past int range
+	string m_RevisionText;   // the same revision as the hub wrote it, exact whatever its size; "0" when absent
 	bool m_Malformed;   // the error member was present but unusable: no object, or no code
 
 	// FromBody returns the refusal a response body carries, or null when the
@@ -46,6 +47,7 @@ class VyshkaHubError
 		refusal.m_Index = -1;
 		refusal.m_Seq = 0;
 		refusal.m_Revision = 0;
+		refusal.m_RevisionText = "";
 		VyshkaJsonValue details = failure.Get("details");
 		if (details && details.IsObject())
 		{
@@ -53,8 +55,15 @@ class VyshkaHubError
 			if (index && index.IsNumber() && index.m_IsInteger)
 				refusal.m_Index = index.m_Int;
 			refusal.m_Seq = details.GetInt("seq", 0);
-			refusal.m_Revision = details.GetInt("revision", 0);
+			VyshkaJsonValue revision = details.Get("revision");
+			if (revision && revision.IsNumber() && revision.m_IsInteger)
+			{
+				refusal.m_Revision = revision.m_Int;
+				refusal.m_RevisionText = revision.m_Text;
+			}
 		}
+		if (refusal.m_RevisionText == "")
+			refusal.m_RevisionText = "0";
 		return refusal;
 	}
 

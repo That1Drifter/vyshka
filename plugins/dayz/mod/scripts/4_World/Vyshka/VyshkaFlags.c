@@ -205,6 +205,7 @@ class VyshkaFlags
 	static const string KEY_PREFIX = "flags.";
 	static const int LOOKUP_RETRY_MS = 30000;
 	static const int CHANGE_ATTEMPTS = 3;
+	static const int DEADLINE_MARGIN_MS = 5000;
 
 	// What this process last learned about each identity's flags, from the
 	// store or from its own writes: applied at once when the identity's
@@ -439,7 +440,6 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 {
 	static const int PHASE_READ = 1;
 	static const int PHASE_WRITE = 2;
-	static const int PHASE_DELETE = 3;
 
 	string m_ActionId;
 	string m_Id;
@@ -447,6 +447,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 	ref array<string> m_Named;     // the flags the dispatch named
 	ref VyshkaFlagSet m_Requested; // their requested values
 	ref VyshkaFlagSet m_Target;    // the merged set being written
+	int m_DeadlineMs;              // the dispatch's own deadline less a margin: every store call ends by then
 	int m_Phase;
 	int m_Attempts;
 
@@ -458,6 +459,11 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 		m_Named = named;
 		m_Requested = requested;
 		m_Attempts = 0;
+		// The store gets less than the dispatch has, so a store call that
+		// runs out of time fails this change while the plugin still holds
+		// the dispatch, and the failure is what the hub hears; nothing can
+		// land after the plugin has reported the action failed for time.
+		m_DeadlineMs = VyshkaPlugin.CurrentDeadlineMs() - VyshkaFlags.DEADLINE_MARGIN_MS;
 	}
 
 	void Start()
@@ -469,7 +475,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 			return;
 		}
 		m_Phase = PHASE_READ;
-		store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this);
+		store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
 	}
 
 	override void OnStore(VyshkaStoreResult result)
@@ -497,30 +503,37 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 			if (m_Name == "")
 				m_Name = record.m_Name;
 
-			if (!m_Target.Any())
+			// A key that never existed and a change that sets nothing: there
+			// is nothing to write, and nothing to apply beyond the empty set.
+			if (!m_Target.Any() && !result.m_Found)
 			{
-				// Nothing remains set: the key goes rather than lingering
-				// as an all-false record, so the store lists who has a
-				// flag. A key that never existed has nothing to delete.
-				if (!result.m_Found)
-				{
-					Finish(0, false);
-					return;
-				}
-				m_Phase = PHASE_DELETE;
-				store.Delete(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this);
+				Finish("0");
 				return;
 			}
+			// A change that clears the last flag writes the record back with
+			// an empty set rather than deleting the key: the store's delete
+			// is unconditional (section 12.2), so a delete could erase a
+			// flag another writer set between this read and now, while a
+			// guarded write of the marker cannot. The empty record stays
+			// until an operator removes it.
 
+			if (!VyshkaPlugin.IsPending(m_ActionId))
+			{
+				// The dispatch was failed while the read was out (its
+				// deadline passed, or the plugin stopped): nothing is
+				// written on its behalf now.
+				VyshkaLog.Warn("flags change " + m_ActionId + " for " + m_Id + " is no longer pending; the store is left as read");
+				return;
+			}
 			VyshkaFlagsRecord next = new VyshkaFlagsRecord();
 			next.m_Flags = m_Target;
 			next.m_Name = m_Name;
 			next.m_UpdatedAt = VyshkaClock.NowRfc3339();
 			next.m_ActionId = m_ActionId;
 			m_Phase = PHASE_WRITE;
-			// The revision read guards the write: 0 for a key that did not
+			// The revision read guards the write: "0" for a key that did not
 			// exist means "only if it still does not".
-			store.Set(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), next.ToJson(), result.m_Revision, this);
+			store.Set(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), next.ToJson(), result.m_RevisionText, this, m_DeadlineMs);
 			return;
 		}
 		if (m_Phase == PHASE_WRITE)
@@ -534,19 +547,20 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 					return;
 				}
 				m_Phase = PHASE_READ;
-				store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this);
+				store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
 				return;
 			}
-			Finish(result.m_Revision, true);
+			Finish(result.m_RevisionText);
 			return;
 		}
-		Finish(0, false);
+		Fail("the flags change reached a phase it does not know");
 	}
 
 	// Finish applies the stored set to the character, if one is online, and
-	// completes the dispatch. stored is false when the key was deleted (no
-	// flag remains) or never existed.
-	void Finish(int revision, bool stored)
+	// completes the dispatch. The set is applied whether or not the dispatch
+	// is still pending: the store holds it now, and the game follows the
+	// store; a dispatch already failed for time only loses the report.
+	void Finish(string revision)
 	{
 		VyshkaFlags.Remember(m_Id, m_Target);
 		PlayerBase player = VyshkaHealAction.FindPlayer(m_Id);
@@ -563,8 +577,10 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 		for (int i = 0; i < m_Named.Count(); i++)
 			changed.Add(VyshkaJsonValue.NewString(m_Named.Get(i)));
 		result.Set("changed", changed);
-		result.Set("stored", VyshkaJsonValue.NewBool(stored));
-		result.Set("revision", VyshkaJsonValue.NewInt(revision));
+		VyshkaJsonValue revisionNumber = VyshkaJson.Parse(revision);
+		if (!revisionNumber || !revisionNumber.IsNumber())
+			revisionNumber = VyshkaJsonValue.NewInt(0);
+		result.Set("revision", revisionNumber);
 		VyshkaPlugin.Complete(m_ActionId, VyshkaActionOutcome.Success(result));
 	}
 

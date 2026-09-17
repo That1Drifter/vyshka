@@ -107,7 +107,7 @@ key/value namespace for the admin flags) declares:
 | `vyshka.dry` | player | none | none | `name`, `wasWet` (the player's wet flag before), `items` (in the inventory tree), `dried` (how many were wet) |
 | `vyshka.brokenlegs` | player | warning | `broken` (required) | `name`, `before` and `after` (`none`, `broken`, `splint`), `legHealth` (the four leg zones after) |
 | `vyshka.bloodyhands` | player | none | `bloody` (required) | `name`, `before`, `after` |
-| `vyshka.flags` | player | warning | any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, `ignoredByAi` (booleans; an absent one is left as it is; at least one is required) | `player`, `name` (when known), `online`, `flags` (all five after the change), `changed` (the ones named), `stored` (false when no flag remains and the record was removed), `revision` (of the store key); the player need not be online |
+| `vyshka.flags` | player | warning | any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, `ignoredByAi` (booleans; an absent one is left as it is; at least one is required) | `player`, `name` (when known), `online`, `flags` (all five after the change), `changed` (the ones named), `revision` (of the store key; 0 when nothing was ever stored); the player need not be online |
 | `vyshka.kick` | player | warning | `reason` | `name`, `reason`; the player is disconnected through the engine's own disconnect call and `core.player.kick` is emitted |
 | `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`; the identity goes on the ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id |
 | `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
@@ -267,8 +267,13 @@ too). The store is the truth and the game follows it: the action reads the ident
 record, merges the flags it names, writes the record back guarded by the revision it read
 (a bot writing the same key in between makes it start over, three times at most), and only
 then applies the set to the character if one is online and answers; a write the store
-refuses fails the action and changes nothing in the game. When no flag remains the key is
-deleted, so the store's `vyshka` namespace lists exactly who has a flag. A character is
+refuses fails the action and changes nothing in the game. Clearing the last flag writes the
+record back with an empty set rather than deleting the key: the store's delete is
+unconditional (protocol section 12.2), so a delete could erase a flag another writer set in
+between, while the guarded write cannot; an operator who wants the key gone deletes it in
+the panel. Every store call the action makes is bounded by the action's own TTL (and by 90
+s at most), so a store that does not answer in time fails the action while the hub still
+listens, and nothing lands after the hub has expired it. A character is
 given its identity's flags as it attaches (first join, respawn, or reconnect): what this
 server process last knew at once, then the store's answer, which may have changed while the
 player was away; a lookup the store does not answer is retried every 30 s while the player
@@ -291,7 +296,9 @@ refills the magazine after every shot from the weapon's fire event on the server
 the engine's own debug option does at five rounds, and an internal magazine with cartridges
 of the type just fired (verified through the weapon's fire event from the test rig: a
 magazine at 28 read 27 after the round was taken and 30 after the event, and 28 after it
-unflagged; a client-fired shot and an internal magazine were not exercised live);
+unflagged; a client-fired shot and an internal magazine were not exercised live). A weapon
+with neither, a single-shot break-action such as the IZH-18, is not refilled: its one
+round is the chamber itself, whose state the plugin leaves to the engine;
 `ignoredByAi` answers the engine's AI-targeting question with no, which is what the
 engine's diagnostic builds do for an untargetable character, so infected and animals do not
 take the player as a target (verified live: the engine's answer for a spawned infected read

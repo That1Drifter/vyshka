@@ -97,9 +97,10 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   The set lives in the hub's key/value store as `vyshka/flags.<Steam64>` (the manifest now
   declares the `vyshka` namespace), read and written through the Plugin API's new POST
   spellings on a transport of its own so a store call never waits behind a held poll,
-  written under the revision read so a concurrent writer makes the action start over, and
-  deleted when no flag remains; the game follows the store, so a write the store refuses
-  changes nothing. A character is given its identity's flags as it attaches, from what the
+  written under the revision read so a concurrent writer makes the action start over
+  (clearing the last flag writes an empty record rather than deleting the key, since the
+  store's delete is unconditional), and bounded by the dispatch's TTL; the game follows the
+  store, so a write the store refuses changes nothing. A character is given its identity's flags as it attaches, from what the
   process last knew and then from the store, so the flags survive a respawn, a reconnect,
   and a restart and follow the identity across the installation's servers. `state.players`
   carries the set flags as `data.flags`. God is the engine's `SetAllowDamage(false)`,
@@ -108,8 +109,9 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   handler and the character, and unlimited ammo refills the magazine after every shot from
   the weapon's fire event. Actions can now complete later than they execute
   (`VyshkaActionOutcome.Pending` and `VyshkaPlugin.Complete`): the dispatch is acked at
-  once, the next poll is held back up to 3 s so the result rides it, and a completion that
-  never comes is failed after 90 s or at shutdown. Invisibility and no-collision stay
+  once, its result's outbox slot is held, the next poll is held back up to 3 s so the
+  result rides it, and a completion that never comes is failed at the dispatch's deadline
+  (its TTL, 90 s at most) or at shutdown. Invisibility and no-collision stay
   parked; `spikes/dayz-admin-flags` records what the engine let a server do about them.
 - 2026-09-17: damage telemetry (issue #70, plugin 0.8.0). `core.player.damage` is emitted
   from the character's hit hook, one event per hit the engine reports after applying it:

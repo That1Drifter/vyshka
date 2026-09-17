@@ -11,26 +11,32 @@
 //
 // Requests are queued and sent one at a time on a transport of the client's
 // own, so a store call does not wait behind the held poll of the link. Each
-// request is retried on a transport failure or a hub-side error until its
-// own deadline, waits for a fresh session when the hub refuses the session
-// token, and otherwise reports what the hub said. The callback runs on the
-// script thread like everything else, once, with a result that says which
-// of the four things happened: the key was read (found or absent), written,
-// refused with a revision mismatch, or the operation failed.
+// request carries a deadline: it is retried on a transport failure or a
+// hub-side error while the deadline allows a full attempt, waits for a fresh
+// session when the hub refuses the session token, and otherwise reports what
+// the hub said. The callback runs on the script thread like everything else,
+// once, with a result that says which of the four things happened: the key
+// was read (found or absent), written, refused with a revision mismatch, or
+// the operation failed.
+//
+// Revisions travel as the text the hub wrote: they may exceed the engine's
+// 32-bit int (section 12.1 allows 2^53), and a compare-and-swap with a
+// saturated revision would lose every time.
 
 class VyshkaStoreResult
 {
 	bool m_Ok;                   // the operation did what was asked (an absent key on get or delete is still ok)
 	bool m_Found;                // get: the key exists; set: always true
-	bool m_Mismatch;             // set: ifRevision did not match; m_Revision is the current revision (0: no key)
+	bool m_Mismatch;             // set: ifRevision did not match; m_RevisionText is the current revision ("0": no key)
 	ref VyshkaJsonValue m_Value; // get: the stored value, or null when absent
-	int m_Revision;              // get and set: the key's revision (0 when absent)
+	string m_RevisionText;       // get and set: the key's revision as the hub wrote it; "0" when absent
 	string m_Error;              // when !m_Ok
 
 	static VyshkaStoreResult Failure(string error)
 	{
 		VyshkaStoreResult result = new VyshkaStoreResult();
 		result.m_Ok = false;
+		result.m_RevisionText = "0";
 		result.m_Error = error;
 		return result;
 	}
@@ -52,7 +58,7 @@ class VyshkaStoreRequest
 	string m_Key;
 	string m_Body;               // set: the JSON body; "" otherwise
 	ref VyshkaStoreCallback m_Callback;
-	int m_QueuedMs;              // monotonic time of the enqueue; the deadline counts from here
+	int m_DeadlineMs;            // monotonic time by which the caller needs an answer
 	int m_NotBeforeMs;           // a retry waits until then
 	int m_Attempts;
 	string m_RefusedToken;       // the session token the hub called invalid; the request waits for another
@@ -64,16 +70,22 @@ class VyshkaStore : VyshkaResponseSink
 	static const int OP_SET = 2;
 	static const int OP_DELETE = 3;
 
-	static const int REQUEST_BUDGET_MS = 15000;   // the watchdog, per attempt
-	static const int DEADLINE_MS = 60000;         // per request, across attempts
+	// The watchdog per attempt. The engine's own read timeout is process-wide
+	// and the link raises it to pollTimeout + 5 s, so the plugin sets this
+	// above that (SetBudgetMs) and the watchdog fires only when the engine
+	// never calls back at all: a request the watchdog abandons while the
+	// engine still runs it would share the context with the next one.
+	static const int DEFAULT_BUDGET_MS = 45000;
+	static const int DEFAULT_DEADLINE_MS = 60000;   // per request, when the caller names none
 	static const int RETRY_MIN_MS = 1000;
 	static const int RETRY_MAX_MS = 10000;
-	static const int QUEUE_CAPACITY = 64;         // requests waiting; more is a plugin bug, not a burst
+	static const int QUEUE_CAPACITY = 64;           // requests waiting; more is a plugin bug, not a burst
 
 	ref VyshkaTransport m_Transport;
 	ref array<ref VyshkaStoreRequest> m_Queue;
 	ref VyshkaStoreRequest m_Current;
 	ref array<string> m_Namespaces;   // what the manifest declares; anything else is refused here
+	int m_BudgetMs;
 	int m_Completed;
 	int m_Failed;
 
@@ -85,34 +97,58 @@ class VyshkaStore : VyshkaResponseSink
 		m_Namespaces = new array<string>;
 		for (int i = 0; i < namespaces.Count(); i++)
 			m_Namespaces.Insert(namespaces.Get(i));
+		m_BudgetMs = DEFAULT_BUDGET_MS;
 		m_Transport = new VyshkaTransport();
 		return m_Transport.Init(hubUrl + "/plugin/v1/kv/", this);
 	}
 
-	// Get reads one key. The result's m_Found says whether it exists;
-	// m_Value and m_Revision are set when it does.
-	void Get(string namespace, string key, VyshkaStoreCallback callback)
+	// SetBudgetMs sets the per-attempt watchdog; the link keeps it above the
+	// engine's read timeout plus its connection timeout.
+	void SetBudgetMs(int ms)
 	{
-		Enqueue(OP_GET, namespace, key, "", callback);
+		if (ms < 5000)
+			ms = 5000;
+		m_BudgetMs = ms;
 	}
 
-	// Set writes one key. ifRevision below 0 is an unconditional write; 0
-	// means only if the key does not exist; n >= 1 only if its revision is
-	// exactly n (section 12.2). A mismatch comes back as m_Mismatch with the
-	// current revision, not as a failure.
-	void Set(string namespace, string key, VyshkaJsonValue value, int ifRevision, VyshkaStoreCallback callback)
+	// Get reads one key. The result's m_Found says whether it exists;
+	// m_Value and m_RevisionText are set when it does. deadlineMs is the
+	// monotonic time by which the caller needs an answer; 0 means the
+	// default.
+	void Get(string namespace, string key, VyshkaStoreCallback callback, int deadlineMs = 0)
+	{
+		Enqueue(OP_GET, namespace, key, "", callback, deadlineMs);
+	}
+
+	// Set writes one key. ifRevision is the revision text to guard the write
+	// with: "" is an unconditional write; "0" means only if the key does not
+	// exist; any other revision means only if the current one is exactly it
+	// (section 12.2). A mismatch comes back as m_Mismatch with the current
+	// revision, not as a failure.
+	void Set(string namespace, string key, VyshkaJsonValue value, string ifRevision, VyshkaStoreCallback callback, int deadlineMs = 0)
 	{
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("value", value);
-		if (ifRevision >= 0)
-			body.Set("ifRevision", VyshkaJsonValue.NewInt(ifRevision));
-		Enqueue(OP_SET, namespace, key, body.Serialize(), callback);
+		if (ifRevision != "")
+		{
+			VyshkaJsonValue revision = VyshkaJson.Parse(ifRevision);
+			if (revision && revision.IsNumber())
+				body.Set("ifRevision", revision);
+			else
+			{
+				Finish(callback, VyshkaStoreResult.Failure("the revision " + ifRevision + " is not a number"));
+				return;
+			}
+		}
+		Enqueue(OP_SET, namespace, key, body.Serialize(), callback, deadlineMs);
 	}
 
-	// Delete removes one key; a key already gone is success.
-	void Delete(string namespace, string key, VyshkaStoreCallback callback)
+	// Delete removes one key; a key already gone is success. The store's
+	// delete is unconditional (section 12.2): a caller that must not erase a
+	// concurrent write keeps a marker value under a guarded set instead.
+	void Delete(string namespace, string key, VyshkaStoreCallback callback, int deadlineMs = 0)
 	{
-		Enqueue(OP_DELETE, namespace, key, "", callback);
+		Enqueue(OP_DELETE, namespace, key, "", callback, deadlineMs);
 	}
 
 	int Pending()
@@ -123,7 +159,7 @@ class VyshkaStore : VyshkaResponseSink
 		return count;
 	}
 
-	void Enqueue(int op, string namespace, string key, string body, VyshkaStoreCallback callback)
+	void Enqueue(int op, string namespace, string key, string body, VyshkaStoreCallback callback, int deadlineMs)
 	{
 		if (!callback)
 			return;
@@ -150,7 +186,9 @@ class VyshkaStore : VyshkaResponseSink
 		request.m_Key = key;
 		request.m_Body = body;
 		request.m_Callback = callback;
-		request.m_QueuedMs = VyshkaClock.MonotonicMs();
+		if (deadlineMs <= 0)
+			deadlineMs = VyshkaClock.MonotonicMs() + DEFAULT_DEADLINE_MS;
+		request.m_DeadlineMs = deadlineMs;
 		request.m_NotBeforeMs = 0;
 		request.m_Attempts = 0;
 		request.m_RefusedToken = "";
@@ -190,26 +228,23 @@ class VyshkaStore : VyshkaResponseSink
 		return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 	}
 
-	// Tick runs from the plugin's tick: the watchdog, then the next request
-	// when the transport is idle, the link has a session, and the request is
-	// not waiting out a retry delay or a refused token.
+	// Tick runs from the plugin's tick: the watchdog, the deadline sweep
+	// (which runs whether or not anything can be sent, so a request queued
+	// through a session outage still ends), then the next request when the
+	// transport is idle, the link has a session, and the request is not
+	// waiting out a retry delay or a refused token.
 	void Tick(string sessionToken)
 	{
 		m_Transport.CheckWatchdog();
+		int now = VyshkaClock.MonotonicMs();
+		Sweep(now);
 		if (m_Transport.IsInFlight() || m_Current)
 			return;
 		if (sessionToken == "")
 			return;
-		int now = VyshkaClock.MonotonicMs();
 		for (int i = 0; i < m_Queue.Count(); i++)
 		{
 			VyshkaStoreRequest request = m_Queue.Get(i);
-			if (now - request.m_QueuedMs > DEADLINE_MS)
-			{
-				m_Queue.RemoveOrdered(i);
-				Fail(request, "the store did not answer within " + (DEADLINE_MS / 1000).ToString() + " s");
-				return;
-			}
 			if (request.m_NotBeforeMs != 0 && now < request.m_NotBeforeMs)
 				continue;
 			if (request.m_RefusedToken != "" && request.m_RefusedToken == sessionToken)
@@ -217,6 +252,29 @@ class VyshkaStore : VyshkaResponseSink
 			m_Queue.RemoveOrdered(i);
 			Send(request, sessionToken);
 			return;
+		}
+	}
+
+	// Sweep fails every queued request that cannot be answered in time: one
+	// past its deadline, or one with less time left than an attempt may take
+	// (the watchdog budget), so that no request is sent that could land
+	// after its caller has given up on it.
+	void Sweep(int now)
+	{
+		int i = 0;
+		while (i < m_Queue.Count())
+		{
+			VyshkaStoreRequest request = m_Queue.Get(i);
+			if (request.m_DeadlineMs - now < m_BudgetMs)
+			{
+				m_Queue.RemoveOrdered(i);
+				if (request.m_Attempts == 0)
+					Fail(request, "the store did not get a chance to answer in the time the caller had");
+				else
+					Fail(request, "the store did not answer in the time the caller had, after " + request.m_Attempts.ToString() + " attempt(s)");
+				continue;
+			}
+			i++;
 		}
 	}
 
@@ -231,7 +289,7 @@ class VyshkaStore : VyshkaResponseSink
 		request.m_Attempts++;
 		request.m_RefusedToken = sessionToken;   // cleared on any answer but session_invalid
 		m_Current = request;
-		if (!m_Transport.Post(request.m_Op, path, sessionToken, request.m_Body, REQUEST_BUDGET_MS))
+		if (!m_Transport.Post(request.m_Op, path, sessionToken, request.m_Body, m_BudgetMs))
 		{
 			m_Current = null;
 			Retry(request, "the transport refused to send");
@@ -265,6 +323,7 @@ class VyshkaStore : VyshkaResponseSink
 				VyshkaStoreResult gone = new VyshkaStoreResult();
 				gone.m_Ok = true;
 				gone.m_Found = false;
+				gone.m_RevisionText = "0";
 				Done(request, gone);
 				return;
 			}
@@ -287,7 +346,10 @@ class VyshkaStore : VyshkaResponseSink
 		VyshkaStoreResult result = new VyshkaStoreResult();
 		result.m_Ok = true;
 		result.m_Found = true;
-		result.m_Revision = root.GetInt("revision", 0);
+		result.m_RevisionText = "0";
+		VyshkaJsonValue revision = root.Get("revision");
+		if (revision && revision.IsNumber())
+			result.m_RevisionText = revision.m_Text;
 		if (request.m_Op == OP_GET)
 			result.m_Value = root.Get("value");
 		Done(request, result);
@@ -310,7 +372,7 @@ class VyshkaStore : VyshkaResponseSink
 			VyshkaStoreResult absent = new VyshkaStoreResult();
 			absent.m_Ok = true;
 			absent.m_Found = false;
-			absent.m_Revision = 0;
+			absent.m_RevisionText = "0";
 			Done(request, absent);
 			return;
 		}
@@ -320,14 +382,15 @@ class VyshkaStore : VyshkaResponseSink
 			mismatch.m_Ok = true;
 			mismatch.m_Found = true;
 			mismatch.m_Mismatch = true;
-			mismatch.m_Revision = refusal.m_Revision;
+			mismatch.m_RevisionText = refusal.m_RevisionText;
 			Done(request, mismatch);
 			return;
 		}
 		if (code == "session_invalid" || (code != "forbidden" && refusal.IsUnauthorized()))
 		{
 			// The link will start a new session on its own poll; the
-			// request waits for a token other than the one refused.
+			// request waits for a token other than the one refused, and
+			// the deadline sweep ends it if none comes in time.
 			VyshkaLog.Info("store request " + request.m_Namespace + "/" + request.m_Key + " refused, " + refusal.Describe() + "; waiting for a new session");
 			request.m_NotBeforeMs = 0;
 			m_Queue.InsertAt(request, 0);
@@ -344,22 +407,22 @@ class VyshkaStore : VyshkaResponseSink
 		Fail(request, "the hub refused the request, " + refusal.Describe());
 	}
 
-	// Retry requeues a request after a backoff, or fails it once its
-	// deadline has passed.
+	// Retry requeues a request after a backoff; the sweep fails it once the
+	// time left cannot hold another attempt.
 	void Retry(VyshkaStoreRequest request, string why)
 	{
 		request.m_RefusedToken = "";
 		int now = VyshkaClock.MonotonicMs();
-		if (now - request.m_QueuedMs > DEADLINE_MS)
-		{
-			Fail(request, why + "; gave up after " + request.m_Attempts.ToString() + " attempt(s)");
-			return;
-		}
 		int delay = RETRY_MIN_MS;
 		for (int i = 1; i < request.m_Attempts && delay < RETRY_MAX_MS; i++)
 			delay = delay * 2;
 		if (delay > RETRY_MAX_MS)
 			delay = RETRY_MAX_MS;
+		if (request.m_DeadlineMs - (now + delay) < m_BudgetMs)
+		{
+			Fail(request, why + "; no time left for another attempt after " + request.m_Attempts.ToString());
+			return;
+		}
 		request.m_NotBeforeMs = now + delay;
 		VyshkaLog.Warn("store request " + request.m_Namespace + "/" + request.m_Key + " failed: " + why + "; retrying in " + delay.ToString() + " ms");
 		m_Queue.InsertAt(request, 0);
