@@ -145,10 +145,15 @@ where it is stranded rather than moved. The engine's own teleport lifts to sea l
 the terrain lift is the plugin's, and its cost is that an interior below the heightmap
 cannot be a teleport destination. `toPlayer` puts the player 1.5 m beside the other player,
 at that player's elevation rather than the terrain's, so a player standing on a floor is
-not placed under it. Every teleport records where the player stood as that identity's
-previous position, one per identity, and `previous` goes back there: the undo of a
-teleport, and a second `previous` undoes the undo. The record is in memory only; a restart
-forgets it, and `previous` then fails until something has teleported the player again.
+not placed under it, and a target standing somewhere the plugin would refuse to send a
+player (off the map after the step aside is refused too) fails the action rather than
+copying the bad position. Every teleport records where what moved stood (the vehicle's
+position when a vehicle was moved, the character's otherwise, so the record and the move
+are in one frame and repeated undos swap between two places instead of drifting by a seat
+offset) as that identity's previous position, one per identity, and `previous` goes back
+there: the undo of a teleport, and a second `previous` undoes the undo. The record is in
+memory only; a restart forgets it, and `previous` then fails until something has teleported
+the player again.
 The schema subset of protocol section 6.1 cannot say "exactly one of", so a dispatch naming
 no destination, or more than one, is refused by the plugin.
 

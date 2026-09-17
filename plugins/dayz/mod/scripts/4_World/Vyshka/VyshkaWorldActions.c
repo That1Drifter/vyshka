@@ -120,12 +120,19 @@ class VyshkaWorld
 		return player;
 	}
 
-	// Move teleports the player to the destination, recording where it
-	// stood as the identity's previous position.
-	static void Move(PlayerBase player, string plainId, vector destination)
+	// Move teleports the player to the destination, recording where what
+	// moved stood as the identity's previous position. The record is the
+	// root's position, not the seated character's: the two differ by the
+	// seat's offset from the vehicle, and a previous position saved in one
+	// frame and applied in the other would drift by that offset on every
+	// undo instead of swapping between two fixed places.
+	static vector Move(PlayerBase player, string plainId, vector destination)
 	{
-		Previous().Set(plainId, player.GetPosition());
-		TeleportRoot(player).SetPosition(destination);
+		Object root = TeleportRoot(player);
+		vector from = root.GetPosition();
+		Previous().Set(plainId, from);
+		root.SetPosition(destination);
+		return from;
 	}
 
 	static const string CLASS_NAME_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
@@ -276,7 +283,14 @@ class VyshkaTeleportAction : VyshkaAction
 			// a floor under that floor.
 			destination = target.GetPosition() + target.GetDirectionAside() * VyshkaWorld.ARRIVE_ASIDE;
 			if (!VyshkaWorld.CheckPosition(destination, error))
+			{
+				// The step aside crossed the map edge: arrive on the target
+				// itself, under the same check, so a target somewhere the
+				// plugin would refuse to send a player is refused too.
 				destination = target.GetPosition();
+				if (!VyshkaWorld.CheckPosition(destination, error))
+					return VyshkaActionOutcome.Failure("player " + toPlayer + " is somewhere a player cannot be sent: " + error);
+			}
 		}
 		else
 		{
@@ -285,9 +299,8 @@ class VyshkaTeleportAction : VyshkaAction
 				return VyshkaActionOutcome.Failure("player " + plainId + " has no previous position: nothing has teleported them since the server started");
 		}
 
-		vector from = player.GetPosition();
 		Object root = VyshkaWorld.TeleportRoot(player);
-		VyshkaWorld.Move(player, plainId, destination);
+		vector from = VyshkaWorld.Move(player, plainId, destination);
 		VyshkaLog.Info("teleported " + player.GetIdentity().GetName() + " (" + plainId + ") " + mode + " from " + from.ToString() + " to " + destination.ToString());
 
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
