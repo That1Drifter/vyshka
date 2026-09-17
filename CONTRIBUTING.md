@@ -50,7 +50,7 @@ technical quality.
   changes the DayZ mod bumps `PLUGIN_VERSION`. Tags and releases are described in
   `RELEASING.md`.
 - Plugin and hub changes must keep their conformance suites green; CI runs both suites on
-  every pull request.
+  every pull request that targets `main`.
 
 ## License
 
