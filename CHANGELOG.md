@@ -28,7 +28,7 @@ point if needed.
   body, synchronize; whoever is in it moves with it) and `vyshka.deletedestroyed` (world,
   destructive: every destroyed vehicle through the engine's safe delete, a wreck with
   someone seated skipped and reported, `dryRun` listing without deleting, the lists bounded
-  at 200 entries with complete counts beside them). `core.vehicle.spawn`
+  by a shared 40 000-byte budget with complete counts beside them). `core.vehicle.spawn`
   is deliberately not emitted, because the hive initializes every persisted vehicle at boot
   through the same hook. New file: `VyshkaVehicles.c`. The panel's live map reads the
   vehicles snapshot beside the players (squares beside dots, their own table, each type's

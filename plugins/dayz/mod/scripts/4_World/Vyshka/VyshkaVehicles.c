@@ -50,7 +50,7 @@ class VyshkaVehicles
 	// leaves this list as its health level changes (OnRepaired), and at the
 	// next capture as a fallback, so a second destruction is reported.
 	static ref array<Transport> s_Destroyed;
-	static const int REPORT_LIMIT = 200;   // entries listed per delete-destroyed result list (the hub's result cap is 64 KiB)
+	static const int REPORT_BUDGET = 40000;   // serialized bytes the delete-destroyed lists may take together (the hub's result cap is 64 KiB)
 	// The vehicle each seated identity is in, by plain Steam64 id.
 	static ref map<string, ref VyshkaSeat> s_Seated;
 
@@ -668,16 +668,17 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 		if (params && params.IsObject())
 			dryRun = params.GetBool("dryRun", false);
 
-		// The lists are bounded so the result stays inside the hub's cap
-		// (section 7: a result over 64 KiB is dropped whole); the counts
-		// are always complete, and truncated says when the lists are not.
+		// The lists are bounded by their serialized size, shared, so the
+		// result stays inside the hub's cap (section 7: a result over
+		// 64 KiB is dropped whole, counts included); the counts are always
+		// complete, and truncated says when the lists are not.
 		array<Transport> live = VyshkaVehicles.Live();
 		VyshkaJsonValue deleted = VyshkaJsonValue.NewArray();
 		VyshkaJsonValue skipped = VyshkaJsonValue.NewArray();
 		int deletedCount = 0;
 		int skippedCount = 0;
 		int intact = 0;
-		int limit = VyshkaVehicles.REPORT_LIMIT;
+		int budget = VyshkaVehicles.REPORT_BUDGET;
 		for (int i = 0; i < live.Count(); i++)
 		{
 			Transport vehicle = live.Get(i);
@@ -691,16 +692,22 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 			if (vehicle.IsAnyCrewPresent())
 			{
 				skippedCount++;
-				if (skipped.Count() < limit)
+				entry.Set("reason", VyshkaJsonValue.NewString("someone is still in it"));
+				int skippedBytes = entry.Serialize().Length() + 1;
+				if (skippedBytes <= budget)
 				{
-					entry.Set("reason", VyshkaJsonValue.NewString("someone is still in it"));
 					skipped.Add(entry);
+					budget -= skippedBytes;
 				}
 				continue;
 			}
 			deletedCount++;
-			if (deleted.Count() < limit)
+			int deletedBytes = entry.Serialize().Length() + 1;
+			if (deletedBytes <= budget)
+			{
 				deleted.Add(entry);
+				budget -= deletedBytes;
+			}
 			if (!dryRun)
 			{
 				VyshkaLog.Info("deleting destroyed " + vehicle.GetType() + " (" + VyshkaVehicles.Id(vehicle) + ") at " + vehicle.GetPosition().ToString());
@@ -715,7 +722,7 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 		result.Set("deletedCount", VyshkaJsonValue.NewInt(deletedCount));
 		result.Set("skippedCount", VyshkaJsonValue.NewInt(skippedCount));
 		result.Set("intact", VyshkaJsonValue.NewInt(intact));
-		result.Set("truncated", VyshkaJsonValue.NewBool(deletedCount > limit || skippedCount > limit));
+		result.Set("truncated", VyshkaJsonValue.NewBool(deletedCount > deleted.Count() || skippedCount > skipped.Count()));
 		return VyshkaActionOutcome.Success(result);
 	}
 }

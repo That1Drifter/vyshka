@@ -312,10 +312,14 @@ class VyshkaPlugin
 	{
 		if (!m_SnapshotsOn)
 			return;
+		// The traversal starts from where the cursor stood before this
+		// poll; the cursor itself moves as channels append, so it must not
+		// be the loop's base or a channel would be visited twice.
 		int count = m_SnapshotChannels.Count();
+		int start = m_NextSnapshotChannel;
 		for (int i = 0; i < count; i++)
 		{
-			int at = (m_NextSnapshotChannel + i) % count;
+			int at = (start + i) % count;
 			if (PublishSnapshot(m_SnapshotChannels.Get(at)))
 				m_NextSnapshotChannel = (at + 1) % count;
 		}
