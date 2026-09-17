@@ -282,17 +282,16 @@ class VyshkaPlayers
 		if (!player.IsAlive())
 		{
 			// The engine reports the hit that killed after applying it, so
-			// the character is already dead here. Once its fatal hit has been
-			// seen, or its death was reported longer ago than one tick can
-			// explain, a hit is on the corpse. (A death with no hit at all,
-			// starvation say, followed by a hit on the body inside the
-			// window would read as fatal; the window is short for that.)
-			if (player.m_VyshkaFatalSeen)
-				return;
-			if (player.m_VyshkaDead && GetGame().GetTime() - player.m_VyshkaDeathTime > FATAL_HIT_WINDOW_MS)
+			// the character is already dead here, and it evaluates the death
+			// (EEKilled) after this hook, inside the same damage call
+			// (measured on DayZ 1.29). So a hit on a character whose death
+			// has already been reported is a hit on the corpse, and the
+			// first hit on a character not yet reported dead is the one
+			// that killed it.
+			if (player.m_VyshkaDead)
 				return;
 			fatal = true;
-			player.m_VyshkaFatalSeen = true;
+			player.m_VyshkaDead = true;
 		}
 
 		float health = 0;
@@ -358,10 +357,6 @@ class VyshkaPlayers
 		return zone;
 	}
 
-	// A death reported before its fatal hit (the engine's usual order is the
-	// reverse) still claims a hit that lands within this window.
-	static const int FATAL_HIT_WINDOW_MS = 200;
-
 	static bool IsFallDamage(string ammo)
 	{
 		if (ammo == DayZPlayerImplementFallDamage.FALL_DAMAGE_AMMO_HEALTH)
@@ -422,8 +417,8 @@ class VyshkaPlayers
 		if (hit)
 		{
 			// The hit that killed came through the hit hook first (the
-			// engine applies the damage, reports the hit, and evaluates the
-			// death on a later tick), so the death can say where it landed.
+			// engine applies the damage, reports the hit, then evaluates
+			// the death), so the death can say where it landed.
 			if (hit.m_Zone != "")
 				data.Set("bodyPart", VyshkaJsonValue.NewString(hit.m_Zone));
 			if (hit.m_Ammo != "")
@@ -432,7 +427,6 @@ class VyshkaPlayers
 			player.m_VyshkaFatalHit = null;
 		}
 		player.m_VyshkaDead = true;
-		player.m_VyshkaDeathTime = GetGame().GetTime();
 		VyshkaPlugin.Emit("core.player.death", data);
 	}
 
@@ -599,13 +593,10 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 
 modded class PlayerBase
 {
-	// Whether this character's death has been reported, and when (engine
-	// time, ms); whether the hit that killed it has been seen; and that hit,
-	// for the death report that follows it. Together they keep hits on the
-	// corpse out of the feed (VyshkaPlayers.OnHit).
+	// Whether this character's fatal hit or death has been reported, which
+	// keeps hits on the corpse out of the feed (VyshkaPlayers.OnHit); and
+	// the hit that killed, for the death report that follows it.
 	bool m_VyshkaDead;
-	int m_VyshkaDeathTime;
-	bool m_VyshkaFatalSeen;
 	ref VyshkaHit m_VyshkaFatalHit;
 
 	override void EEKilled(Object killer)
