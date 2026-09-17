@@ -495,6 +495,17 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   finding 7). Against a hub that predates the option, or a proxy answering in its place, the
   refusal is still opaque and the plugin falls back to reasoning from the error class. Both
   paths are described under "Errors and recovery".
+- **The credential travels on a `POST` alone.** The engine writes the content-type header,
+  and so the `Authorization` line smuggled after it, only on a `POST`; a `GET` reaches the
+  wire with `Accept: */*` and nothing else (the same stub logs, read again for issue #71).
+  The plugin therefore never issues a `GET`, `PUT`, or `DELETE` against the hub: its
+  key/value calls use the Plugin API's POST spellings (protocol section 12.2), which exist
+  for this client.
+- **Two contexts run at once.** `GetRestContext` returns one context per base URL string,
+  and a request on a second context completes while the first holds a long-poll open: the
+  store client's get then set finished in under 300 ms under a held 25 s poll (measured on
+  DayZ 1.29 during the admin flags run). One request in flight per context is the plugin's
+  own rule, so a store call never waits behind a poll.
 
 ## Errors and recovery
 
