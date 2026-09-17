@@ -2,11 +2,11 @@
 
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
-dispatched actions, and publishes telemetry: the core player events a feed needs and the
-`state.players` snapshots a live map needs. It ships nine built-in actions (heal, kick, ban,
-unban, message, broadcast, teleport, spawn, set time), so an operator can moderate a server
-and move things around it from the panel or a `curl` against the hub. Protocol:
-`spec/protocol.md`.
+dispatched actions, and publishes telemetry: the core player and vehicle events a feed
+needs and the `state.players` and `state.vehicles` snapshots a live map needs. It ships
+eleven built-in actions (heal, kick, ban, unban, message, broadcast, teleport, spawn, set
+time, unstuck, delete destroyed vehicles), so an operator can moderate a server and move
+things around it from the panel or a `curl` against the hub. Protocol: `spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -17,7 +17,7 @@ Clean-room: written from the engine's public script headers and the measurements
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
 | `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
@@ -50,7 +50,8 @@ for a server-side mod; clients never load it.
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60). `game` is optional
    and defaults to `dayz`. `snapshotIntervalSeconds` is optional (default 10, honored between
-   2 and 600; `0` turns `state.players` snapshots off). `fpsIntervalSeconds` is optional
+   2 and 600; `0` turns the `state.players` and `state.vehicles` snapshots off).
+   `fpsIntervalSeconds` is optional
    (default 60, honored between 5 and 3600; `0` turns `core.server.fps` samples off).
 4. Start the server with the mod as a server mod:
 
@@ -79,7 +80,8 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 ```
 
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
-identity the telemetry publishes. The manifest (revision 3) declares:
+identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
+from the latest `state.vehicles` snapshot. The manifest (revision 4) declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
@@ -92,9 +94,12 @@ identity the telemetry publishes. The manifest (revision 3) declares:
 | `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
 | `vyshka.spawn` | player | warning | `className` (required) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
+| `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
+| `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
 
 Kick, message, teleport, spawn, and the ban's own kick need the player online and fail with
-`player <id> is not online` otherwise.
+`player <id> is not online` otherwise. Unstuck fails with `no vehicle <id> exists on this
+server` when the id is not in the current vehicle list.
 
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
 out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
@@ -175,10 +180,26 @@ always do. The result carries the clock as read back after the write, so what th
 made of the request is what is reported: on DayZ 1.29 a request for 03:15 read back as
 03:14 and 14:30 as 14:30, so expect the minute to land within one of what was asked.
 
+**Unstuck** is what an admin does for a car wedged in a rock, rolled onto its roof, or sunk
+into the terrain: the vehicle is raised by `lift` metres above where it stands, or above
+the terrain or sea surface when it is below one, its pitch and roll are zeroed with the
+heading kept (`level: false` keeps the orientation), its linear and angular velocity are
+zeroed, its physics body is woken, and its state is synchronized to the clients. Whoever
+is in it moves with it, the way a teleport moves a seated player, and the result lists
+them as `crew`. A destroyed vehicle can be unstuck like any other.
+
+**Delete destroyed vehicles** removes every vehicle whose damage state is destroyed, the
+wrecks a long-running server accumulates: each is deleted through the engine's own safe
+delete, which schedules the removal and synchronizes it to the clients. A wreck with
+someone still seated in it is left alone and listed under `skipped` with the reason, and
+`dryRun: true` lists what would be deleted without deleting anything, which is what to run
+first on a server whose wrecks may be someone's base furniture. Intact vehicles are only
+counted. The action is `destructive`: a deleted wreck's cargo goes with it.
+
 ## Telemetry
 
-The plugin publishes events (protocol section 8.1) and `state.players` snapshots (section
-8.3) as soon as it is running; nothing needs configuring. Player identity everywhere is
+The plugin publishes events (protocol section 8.1) and `state.players` and `state.vehicles`
+snapshots (section 8.3) as soon as it is running; nothing needs configuring. Player identity everywhere is
 `{ "platform": "steam", "id": "<Steam64>" }` (section 8.2), the same id the heal action
 takes as its `referenceKey`.
 
@@ -208,9 +229,14 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
 | `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
+| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens) | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`) |
+| `vyshka.vehicle.enter` | A player's vehicle command starts: the character takes a seat (a custom type: the core set has no enter) | `player`, `name`, `vehicle`, `type`, `kind`, `position`, `seat` (the crew index), `driver` |
+| `vyshka.vehicle.exit` | The vehicle command finishes (the character got out, or the command gave way to another, a death in the seat included), or a seated player disconnects; a seat switch inside the vehicle is not an exit, and the `seat` and `driver` reported are those of the seat actually left | the same, plus `cause` (`left` or `disconnect`) |
 
 A moderation event's `actionId` is the hub's id for the dispatch that caused it, so a feed
-entry can be joined to the action record and the audit log.
+entry can be joined to the action record and the audit log. `core.vehicle.spawn` is not
+emitted: the hive initializes every persisted vehicle at boot through the same hook a new
+one arrives by, and a feed entry per vehicle on every restart is noise, not news.
 
 `cause` is one of `player` (another player, bare hands or a held item; `killer` names them,
 `weapon` is the item's display name, `distance` in metres is present for a ranged weapon),
@@ -220,11 +246,11 @@ out, drowning, a fall), `infected`, `animal`, `explosion` (`weapon` is the devic
 reading of the killer object matches the one the engine's own admin log makes.
 
 **Snapshots.** The plugin captures the full list of characters with an identity attached,
-alive or not, as it builds each poll request, so the sample rides that very request instead
-of waiting behind a held poll. `snapshotIntervalSeconds` (default 10) is a floor on the
-spacing between captures, not a timer: a poll built sooner than that after the last capture
-carries none, and when the interval is shorter than the poll cycle it is the poll cycle that
-sets the cadence (see below):
+alive or not, and the full list of vehicles, as it builds each poll request, so the samples
+ride that very request instead of waiting behind a held poll. `snapshotIntervalSeconds`
+(default 10) is a floor on the spacing between captures of each type, not a timer: a poll
+built sooner than that after the last capture carries none, and when the interval is shorter
+than the poll cycle it is the poll cycle that sets the cadence (see below):
 
 ```json
 { "capturedAt": "2026-09-11T14:00:00Z",
@@ -233,7 +259,30 @@ sets the cadence (see below):
                  "data": { "alive": true, "health": 100, "blood": 5000 } } ] }
 ```
 
-No capture is made while the previous snapshot is still unacked, or while the outbox holds
+```json
+{ "capturedAt": "2026-09-16T23:00:00Z",
+  "vehicles": [ { "id": "0-2147", "kind": "car", "position": [6512.3, 284.6, 7498.1],
+                  "data": { "type": "OffroadHatchback", "displayName": "ADA 4x4", "seats": 4,
+                            "crew": [ { "player": { "platform": "steam", "id": "7656..." },
+                                        "name": "Survivor", "seat": 0, "driver": true } ] } } ] }
+```
+
+A vehicle's `id` is the engine's network id for the object (its high and low halves joined
+with a dash), which the engine keeps for the object's whole life on this server; a restart
+is a new life and the ids start over. `kind` is `car`, `boat`, or `helicopter` by the
+scripted base the vehicle extends, and `vehicle` for one that extends none of them. The
+list is the plugin's own, kept by hooks on those three bases (`CarScript`, `BoatScript`,
+`HelicopterScript`; their common engine parent cannot be modded from script): every vanilla
+vehicle and every modded one built on them is in it, one that extends the engine's `Car`,
+`Boat`, or `Helicopter` directly is not. The damage state (`intact`, `destroyed`,
+`exploded`) and the fluids arrive with the vehicles 2 slice; `vyshka.deletedestroyed` with
+`dryRun` says today which are wrecks.
+
+When a poll has room for only one snapshot (the hub has made the plugin shrink its batch to
+one envelope), the type that went last time waits for the other, so neither is left behind
+for the rest of the session; with room for both, both go on every poll.
+
+No capture is made while the previous snapshot of that type is still unacked, or while the outbox holds
 more than one poll can carry. A snapshot says what *is*, so a stale one waiting behind an
 outage is worth nothing, an envelope already in the outbox cannot be replaced by a fresher
 one (it may already have been stored, and the retransmission is then deduplicated), and a

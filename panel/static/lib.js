@@ -311,16 +311,21 @@ export function markNav(section) {
 // The route lives in the hash as a path with an optional query, so that a
 // filter survives a reload and can be handed to someone as a link.
 
-export function playerQuery(player) {
-  return player ? '?player=' + encodeURIComponent(player) : '';
+// targetQuery carries a preselected target into the action list and on into
+// an action form: ?player= for a player-context target, ?vehicle= for a
+// vehicle-context one. Both are preselections, never filters.
+export function targetQuery(player, vehicle = '') {
+  if (player) return '?player=' + encodeURIComponent(player);
+  if (vehicle) return '?vehicle=' + encodeURIComponent(vehicle);
+  return '';
 }
 
-export function serverHref(serverId, player = '') {
-  return '#/servers/' + encodeURIComponent(serverId) + playerQuery(player);
+export function serverHref(serverId, player = '', vehicle = '') {
+  return '#/servers/' + encodeURIComponent(serverId) + targetQuery(player, vehicle);
 }
 
-export function actionHref(serverId, code, player = '') {
-  return '#/servers/' + encodeURIComponent(serverId) + '/actions/' + encodeURIComponent(code) + playerQuery(player);
+export function actionHref(serverId, code, player = '', vehicle = '') {
+  return '#/servers/' + encodeURIComponent(serverId) + '/actions/' + encodeURIComponent(code) + targetQuery(player, vehicle);
 }
 
 export function mapHref(serverId, world = '') {

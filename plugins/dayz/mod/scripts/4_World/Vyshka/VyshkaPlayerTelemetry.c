@@ -213,6 +213,10 @@ class VyshkaPlayers
 		}
 		s_Roster.Remove(entry.m_Id);
 
+		// A player who logged out while seated has left the vehicle; the
+		// exit is reported before the disconnect, in the order it happened.
+		VyshkaVehicles.OnDisconnect(entry.m_Id, entry.m_Name);
+
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("player", Identity(entry.m_Id));
 		data.Set("name", VyshkaJsonValue.NewString(entry.m_Name));
@@ -388,6 +392,13 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 		body.Set("players", players);
 		return body.Serialize();
 	}
+
+	// The vehicle list lives with the vehicles (VyshkaVehicles); this is
+	// the one snapshot source the plugin holds, so it answers for both.
+	override string CaptureVehicles()
+	{
+		return VyshkaVehicles.Capture();
+	}
 }
 
 modded class PlayerBase
@@ -397,5 +408,30 @@ modded class PlayerBase
 		if (GetGame().IsServer())
 			VyshkaPlayers.OnDeath(this, killer);
 		super.EEKilled(killer);
+	}
+
+	// The engine starts a character's vehicle command as it takes a seat
+	// and finishes it as it leaves (or is pulled out dead): the enter and
+	// exit events of the vehicle telemetry (VyshkaVehicles).
+	override void OnCommandVehicleStart()
+	{
+		super.OnCommandVehicleStart();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnEnter(this);
+	}
+
+	override void OnCommandVehicleFinish()
+	{
+		super.OnCommandVehicleFinish();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnExit(this);
+	}
+
+	// A seat switch keeps the command; the plugin's record follows the seat.
+	override void OnVehicleSwitchSeat(int seatIndex)
+	{
+		super.OnVehicleSwitchSeat(seatIndex);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnSwitchSeat(this, seatIndex);
 	}
 }

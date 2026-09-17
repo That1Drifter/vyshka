@@ -89,6 +89,15 @@ var e2eManifest = map[string]any{
 				},
 			},
 		},
+	}, {
+		// A vehicle-context action: its target field is fed by the vehicles
+		// snapshot and preselected from the map, like the player one.
+		"code": "example-mod.unstuck", "name": "Unstuck vehicle", "context": "vehicle",
+		"namespace": "example-mod", "danger": "warning",
+		"params": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"lift": map[string]any{"type": "number", "minimum": 0, "default": 1}},
+		},
 	}},
 }
 
@@ -648,10 +657,21 @@ func TestPanelEndToEnd(t *testing.T) {
 			{"player": colon2, "name": "Colon two", "position": []float64{700, 0, 200}},
 		},
 	})
+	// The vehicles snapshot (issue #67) rides beside the players: one car
+	// at the centre of a raster quadrant, one with no position at all. Its
+	// markers are drawn apart from the players' and its rows listed apart.
+	plugin.queue("state.vehicles", map[string]any{
+		"capturedAt": time.Now().UTC().Add(-15 * time.Second).Format("2006-01-02T15:04:05Z"),
+		"vehicles": []map[string]any{
+			{"id": "0-4242", "kind": "car", "position": []float64{256, 5, 768}, "data": map[string]any{"type": "OffroadHatchback", "displayName": "ADA 4x4", "seats": 4}},
+			{"id": "0-4243", "kind": "boat", "data": map[string]any{"type": "Boat_01"}},
+		},
+	})
 	marker := func(platform, id string) string {
 		key, _ := json.Marshal([]string{platform, id})
 		return `.map-marker[data-marker-key='` + string(key) + `']`
 	}
+	vehicleMarker := func(id string) string { return `.map-marker-vehicle[data-marker-key='vehicle:` + id + `']` }
 	if err := plugin.awaitDrained(ctx); err != nil {
 		t.Fatalf("plugin never got its map snapshot acked: %v", err)
 	}
@@ -663,8 +683,19 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := evalString(`document.querySelector("#map-world").value + "|" + document.querySelector("#map-world option").textContent`); got != "|as reported by the server ("+e2eWorld+")" {
 		t.Fatalf("world selector = %q", got)
 	}
-	if got := text("#map-status"); !strings.Contains(got, "6 players") || !strings.Contains(got, "captured") || !strings.Contains(got, "1 without a position") {
+	if got := text("#map-status"); !strings.Contains(got, "6 players") || !strings.Contains(got, "captured") || !strings.Contains(got, "1 without a position") ||
+		!strings.Contains(got, "2 vehicles") {
 		t.Fatalf("map status = %q", got)
+	}
+	vehicleRow := func(id string) string { return `#vehicles tr[data-vehicle-id="` + id + `"]` }
+	if got := text(vehicleRow("0-4242")); !strings.Contains(got, "ADA 4x4") || !strings.Contains(got, "car") {
+		t.Fatalf("the car's row = %q, want its display name and kind", got)
+	}
+	if got := text(vehicleRow("0-4242") + " td.position"); got != "x 256, z 768" {
+		t.Fatalf("the car's position cell = %q", got)
+	}
+	if got := text(vehicleRow("0-4243") + " td.position"); got != "no position" {
+		t.Fatalf("the boat's position cell = %q", got)
 	}
 	playerRow := func(id string) string { return `#players tr[data-player-id="` + id + `"]` }
 	if got := text(playerRow("76561198000000001") + " td.position"); got != "x 384, z 640" {
@@ -680,8 +711,11 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("Alice's data cell = %q", got)
 	}
 	waitJS("every visible tile loaded", `(function(){const s=document.querySelector("#map .map-tiles");return s && s.dataset.total !== "0" && s.dataset.loaded === s.dataset.total && s.dataset.failed === "0"})()`)
-	if got := evalString(`String(document.querySelectorAll("#map .map-marker").length)`); got != "5" {
-		t.Fatalf("%s markers plotted, want Alice, Bob, Dave, and the two colon identities", got)
+	if got := evalString(`String(document.querySelectorAll("#map .map-marker:not(.map-marker-vehicle)").length)`); got != "5" {
+		t.Fatalf("%s player markers plotted, want Alice, Bob, Dave, and the two colon identities", got)
+	}
+	if got := evalString(`String(document.querySelectorAll("#map .map-marker-vehicle").length) + " " + document.querySelector(` + strconv.Quote(vehicleMarker("0-4242")) + `).title`); got != "1 ADA 4x4 (x 256, z 768)" {
+		t.Fatalf("vehicle markers = %q, want the one car with its label", got)
 	}
 	if got := evalString(`document.querySelector(` + strconv.Quote(marker("a:b", "c")) + `).title + " | " + document.querySelector(` + strconv.Quote(marker("a", "b:c")) + `).title`); got != "Colon one (x 600, z 200) | Colon two (x 700, z 200)" {
 		t.Fatalf("colon identities are not two distinct markers: %q", got)
@@ -738,7 +772,12 @@ func TestPanelEndToEnd(t *testing.T) {
 		},
 	})
 	waitJS("the new snapshot replaced the markers",
-		`document.querySelectorAll("#map .map-marker").length === 2 && document.querySelector(`+strconv.Quote(marker("steam", "76561198000000001"))+`).dataset.x === "640" && !document.querySelector('#players tr[data-player-id="76561198000000002"]')`)
+		`document.querySelectorAll("#map .map-marker:not(.map-marker-vehicle)").length === 2 && document.querySelector(`+strconv.Quote(marker("steam", "76561198000000001"))+`).dataset.x === "640" && !document.querySelector('#players tr[data-player-id="76561198000000002"]')`)
+	// The vehicles are their own snapshot: the players' replacement left
+	// the car where it was.
+	if got := evalString(`String(document.querySelectorAll("#map .map-marker-vehicle").length)`); got != "1" {
+		t.Fatalf("%s vehicle markers after the players snapshot, want the car still there", got)
+	}
 	if got := text("#map-status"); !strings.Contains(got, "3 players") {
 		t.Fatalf("map status after the second snapshot = %q", got)
 	}
@@ -756,9 +795,13 @@ func TestPanelEndToEnd(t *testing.T) {
 	run("zoom in on Alice", chromedp.Click(playerRow("76561198000000001")+" button[data-show]", chromedp.ByQuery))
 	// At one metre per pixel the scale bar's nicest length near 90 px is 50 m.
 	waitJS("the view is at native zoom on Alice", `document.querySelector("#map .map-scale-label").textContent === "50 m"`)
-	beforeDrag := evalString(`String(` + markerX() + `)`)
+	// The Show click scrolled Alice's row into view, which with the vehicle
+	// list below the players can leave the stage above the viewport, where
+	// a synthetic mouse event lands on nothing. Bring it back first.
 	var stageBox []float64
-	run("measure the stage", chromedp.Evaluate(`(function(){const r=document.querySelector("#map .map-stage").getBoundingClientRect();return [r.left, r.top, r.width, r.height]})()`, &stageBox))
+	run("measure the stage", chromedp.ScrollIntoView("#map .map-stage", chromedp.ByQuery),
+		chromedp.Evaluate(`(function(){const r=document.querySelector("#map .map-stage").getBoundingClientRect();return [r.left, r.top, r.width, r.height]})()`, &stageBox))
+	beforeDrag := evalString(`String(` + markerX() + `)`)
 	fromX, fromY := stageBox[0]+stageBox[2]/2, stageBox[1]+stageBox[3]/2
 	run("drag the map 40 px to the right",
 		input.DispatchMouseEvent(input.MousePressed, fromX, fromY).WithButton(input.Left).WithButtons(1).WithClickCount(1),
@@ -797,6 +840,34 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("referenceKey = %q, want the preselected player", got)
 	}
 
+	// 9c'. The same for a vehicle: its marker lands on the action list with
+	// the vehicle preselected, the vehicle action's form opens with the id
+	// filled in, and the vehicles snapshot feeds its suggestions.
+	run("back to the map for the car", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map"), nil),
+		chromedp.WaitVisible(vehicleMarker("0-4242"), chromedp.ByQuery))
+	run("click the car's marker", chromedp.Click(vehicleMarker("0-4242"), chromedp.ByQuery),
+		chromedp.WaitVisible("#target-vehicle", chromedp.ByQuery))
+	if got := evalString(`location.hash`); got != "#/servers/"+created.Server.ID+"?vehicle=0-4242" {
+		t.Fatalf("vehicle marker click landed on %q", got)
+	}
+	if got := text("#target-vehicle"); !strings.Contains(got, "ADA 4x4") || !strings.Contains(got, "0-4242") {
+		t.Fatalf("vehicle target banner = %q", got)
+	}
+	if got := attribute(`a[data-action-code="example-mod.unstuck"]`, "href"); !strings.HasSuffix(got, "?vehicle=0-4242") {
+		t.Fatalf("vehicle action href = %q, want the preselected vehicle", got)
+	}
+	if got := attribute(`a[data-action-code="example-mod.heal"]`, "href"); strings.Contains(got, "vehicle=") {
+		t.Fatalf("player action href = %q carries a vehicle preselection", got)
+	}
+	run("open the vehicle action with the target preselected", chromedp.Click(`a[data-action-code="example-mod.unstuck"]`, chromedp.ByQuery),
+		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+	if got := evalString(`document.querySelector('input[name="referenceKey"]').value`); got != "0-4242" {
+		t.Fatalf("referenceKey = %q, want the preselected vehicle", got)
+	}
+	if got := evalString(`(function(){const i=document.querySelector('input[name="referenceKey"]');const l=document.getElementById(i.getAttribute("list"));return Array.from(l.options).map(o=>o.value+"="+o.textContent).join(",")})()`); got != "0-4242=ADA 4x4 (car),0-4243=Boat_01 (boat)" {
+		t.Errorf("vehicle datalist = %q", got)
+	}
+
 	// 9d. A world with no tileset still lists the players, with their
 	// positions as numbers and a notice in place of the map.
 	run("open the map for a world with no tileset",
@@ -810,6 +881,9 @@ func TestPanelEndToEnd(t *testing.T) {
 	}
 	if got := text(playerRow("76561198000000001") + " td.position"); got != "640, 13, 640" {
 		t.Fatalf("Alice's position without a map = %q, want the raw numbers", got)
+	}
+	if got := text(vehicleRow("0-4242") + " td.position"); got != "256, 5, 768" {
+		t.Fatalf("the car's position without a map = %q, want the raw numbers", got)
 	}
 
 	// 10. Signing out forgets the token: the page is back at the prompt and

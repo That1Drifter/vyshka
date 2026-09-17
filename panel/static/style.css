@@ -412,6 +412,13 @@ tr.row-link:hover td { background: var(--code-bg); }
   text-overflow: ellipsis;
 }
 
+/* A vehicle is a square where a player is a round dot, in a colour of its
+   own, so the two read apart at a glance and in a printed screenshot. */
+.map-marker-vehicle .map-marker-dot {
+  border-radius: 2px;
+  background: #6bd1ff;
+}
+
 .map-marker:hover .map-marker-dot, .map-marker.highlighted .map-marker-dot, .map-marker:focus-visible .map-marker-dot {
   background: #ff6b6b;
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.45);

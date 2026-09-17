@@ -569,10 +569,12 @@ export function createMap(container, options = {}) {
       stage.setAttribute('aria-label', manifest.name + ' map. Drag or use the arrow keys to pan; plus, minus, and the wheel zoom; 0 fits the whole map.');
       fit();
     },
-    // setMarkers replaces every marker. Each is { key, label, position };
-    // one whose position the manifest cannot read is not plotted, and the
-    // caller decides what to say about it. Nodes are keyed and reused so
-    // a marker under the pointer survives a refresh.
+    // setMarkers replaces every marker. Each is { key, label, position,
+    // kind? }; one whose position the manifest cannot read is not plotted,
+    // and the caller decides what to say about it. kind, when given, is a
+    // word the stylesheet may draw differently (a vehicle beside a player),
+    // carried as a class and a data attribute. Nodes are keyed and reused
+    // so a marker under the pointer survives a refresh.
     setMarkers(markers) {
       const manifest = state.manifest;
       if (!manifest) return;
@@ -603,6 +605,14 @@ export function createMap(container, options = {}) {
         marker.x = point.x;
         marker.z = point.z;
         marker.label = given.label;
+        const kind = typeof given.kind === 'string' && /^[a-z][a-z0-9-]*$/.test(given.kind) ? given.kind : '';
+        if (marker.kind !== kind) {
+          if (marker.kind) marker.node.classList.remove('map-marker-' + marker.kind);
+          if (kind) marker.node.classList.add('map-marker-' + kind);
+          marker.kind = kind;
+        }
+        if (kind) marker.node.dataset.markerKind = kind;
+        else delete marker.node.dataset.markerKind;
         marker.node.querySelector('.map-marker-label').textContent = given.label;
         marker.node.title = given.label + ' (' + manifest.axes.east.name + ' ' + Math.round(point.x) + ', ' + manifest.axes.north.name + ' ' + Math.round(point.z) + ')';
         marker.node.dataset.x = String(point.x);
