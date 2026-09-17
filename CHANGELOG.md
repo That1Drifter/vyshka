@@ -24,7 +24,9 @@ arrived, since those entries were written for one stream.
   plugin-suite runs, and the hub conformance suite on Postgres. The last runs on pushes to
   `main` only, so a pull request waits for one five-minute conformance pass rather than
   two in series, and `main` is still graded on both databases before anything is tagged.
-  Nothing is graded less; the wall clock drops from about fifteen minutes to about six.
+  `main` is graded exactly as before; a pull request loses only the Postgres conformance
+  pass (its Go suite still runs against Postgres), and the wall clock drops from about
+  fifteen minutes to about six.
 
 ### [0.1.0] - 2026-09-17
 
