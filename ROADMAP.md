@@ -41,6 +41,10 @@ trust. A hosting outfit running servers for other people is out of scope until 1
 | M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Shipped 2026-09-15: panel v1 with a live DayZ player plotted on the staging map 2026-09-12 (issue #46), and the management views landed 2026-09-15 (issue #64) |
 | 1.0 | Protocol freeze | After at least one third-party plugin has been written from the spec alone |
 
+The first tagged release is out: hub 0.1.0 (`hub-v0.1.0`, static binaries for Linux, macOS,
+and Windows plus the container image) and DayZ plugin 0.7.0 (`dayz-plugin-v0.7.0`), both
+on 2026-09-17 (issue #69). Releases are described in `RELEASING.md`.
+
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
 custom contexts moved to Horizon 1 with a DayZ customer, `--auto-tls` to Horizon 2, and the
 Reforger plugin was tabled (see Horizon 4). The player identity shape froze the same day
@@ -92,9 +96,10 @@ release.
    suite, publishes the archives with checksums and the container image for amd64 and
    arm64, and publishes the DayZ plugin's `@Vyshka` folder from a `.pbo` build that is now
    byte-reproducible; a systemd unit under `deploy/`; per-artifact sections in
-   `CHANGELOG.md`; the steps in `RELEASING.md`. The tags `hub-v0.1.0` and
-   `dayz-plugin-v0.7.0` are cut from `main` by the operator, and the Steam Workshop
-   upload is the one manual step (it needs a Steam account). The two items parked on this
+   `CHANGELOG.md`; the steps in `RELEASING.md`. **Tagged 2026-09-17**: `hub-v0.1.0` and
+   `dayz-plugin-v0.7.0`, both from `main` after a rehearsal run of each job whose archives
+   matched a local rebuild byte for byte. No Steam Workshop item: the plugin is a
+   server-side mod, so the release zip is the distribution. The two items parked on this
    trigger became committed: #96 (client libraries) and #97 (the conformance suites as a
    published tool).
 

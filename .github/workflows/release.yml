@@ -5,7 +5,7 @@ name: Release
 #   hub-v<semver>          the hub: archives with checksums on a GitHub
 #                          release, and the container image on ghcr.io
 #   dayz-plugin-v<semver>  the DayZ plugin: the @Vyshka folder as a zip on
-#                          a GitHub release (the Workshop upload is manual)
+#                          a GitHub release (its only distribution)
 #
 # A manual dispatch is a rehearsal: it runs the same job for the chosen
 # artifact, uploads the result as a workflow artifact, and publishes nothing.
@@ -150,6 +150,11 @@ jobs:
         # rehearsal still builds both platforms so a broken Dockerfile shows
         # up before the tag exists.
         uses: docker/build-push-action@v6
+        env:
+          # The action otherwise uploads a build record as a workflow
+          # artifact beside the archives, which a plain `gh run download`
+          # trips over.
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           platforms: linux/amd64,linux/arm64

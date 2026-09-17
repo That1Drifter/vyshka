@@ -1,7 +1,7 @@
 # Releasing
 
 Three artifacts, versioned independently, each released from its own tag. Nothing is
-published by hand except the Steam Workshop item, which needs a Steam account.
+published by hand.
 
 | Artifact | Its version lives in | Tag | What the tag publishes |
 |---|---|---|---|
@@ -77,25 +77,12 @@ build` at the tag prints the same digest on any machine with a full clone. A sha
 stamps its boundary commit instead and the tool warns; the workflow checks out the full
 history for that reason.
 
-### The Steam Workshop
+### No Steam Workshop item
 
-The Workshop item is the same `@Vyshka` folder, uploaded with the DayZ Tools Publisher
-(Steam, DayZ Tools, Publisher). It is a GUI signed in to a Steam account, so this step is
-manual and done by whoever holds the account.
-
-1. Check out the tag in a full clone and build: `go run ./plugins/dayz/cmd/vyshka-dayz
-   build`. The printed digest must equal `Vyshka.pbo.sha256` on the GitHub release; if it
-   does not, stop.
-2. In Publisher choose the folder `plugins/dayz/build/@Vyshka`. First publish: a new item
-   titled **Vyshka**, the overview from the plugin README's first paragraph, the change
-   notes from the changelog entry, visibility public. Later versions: update the existing
-   item with the same folder and the changelog entry as the change notes.
-3. Publisher writes `meta.cpp` (with the item's `publishedid`) into the folder. It is
-   under the gitignored `build/` and is never committed; do not edit it by hand.
-4. After the first publish, record the item's id and URL in `plugins/dayz/README.md` under
-   "Installing on a server", so operators can subscribe from the launcher or fetch it with
-   `steamcmd +workshop_download_item 221100 <id>`. The item carries a server mod: clients
-   never need it.
+The plugin is a server-side mod loaded with `-serverMod`; clients never load it and are
+never asked for it, so nothing pairs against a Workshop id. The GitHub release zip is the
+distribution, decided 2026-09-17 with the first tag. A Workshop item would add a Steam
+account to the release path for no operator benefit.
 
 ## The protocol document
 

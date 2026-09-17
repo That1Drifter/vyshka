@@ -16,6 +16,11 @@ arrived, since those entries were written for one stream.
 
 ### [Unreleased]
 
+### [0.1.0] - 2026-09-17
+
+The first release: everything under "Before the first release" that concerns the hub, the
+panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1.0`.
+
 #### Added
 
 - 2026-09-17: release tooling for hub 0.1.0 (issue #69). `scripts/release-hub.sh` builds
@@ -35,12 +40,19 @@ arrived, since those entries were written for one stream.
   binary and a CRLF checkout built a different one. New under `deploy/`:
   `vyshka-hub.service` (a dedicated user, the state under `/var/lib/vyshka`, the admin
   token as a systemd credential, confinement) and `hub.env.example`, with the install steps
-  in `deploy/README.md`. `RELEASING.md` holds the tag scheme and the steps, including the
-  Workshop upload. The README gained an "Install" section.
+  in `deploy/README.md`. `RELEASING.md` holds the tag scheme and the steps. The README
+  gained an "Install" section.
 
 ## DayZ plugin
 
 ### [Unreleased]
+
+### [0.7.0] - 2026-09-17
+
+The first published build: the plugin as it stood after the vitals slice (plugin entries
+under "Before the first release" name each version up to 0.7.0), built reproducibly.
+Tag `dayz-plugin-v0.7.0`. Distributed as the release zip; there is no Steam Workshop item,
+because the mod is server-side and clients never load it.
 
 #### Changed
 
