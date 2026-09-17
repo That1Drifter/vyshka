@@ -298,9 +298,9 @@ class VyshkaPlayers
 		float shock = 0;
 		if (damageResult)
 		{
-			health = damageResult.GetHighestDamage("Health");
-			blood = damageResult.GetHighestDamage("Blood");
-			shock = damageResult.GetHighestDamage("Shock");
+			health = Loss(damageResult, "Health");
+			blood = Loss(damageResult, "Blood");
+			shock = Loss(damageResult, "Shock");
 		}
 
 		// A fall is two hits, one to health and one to shock, and a third
@@ -337,6 +337,18 @@ class VyshkaPlayers
 			player.m_VyshkaFatalHit = hit;
 		}
 		VyshkaPlugin.Emit("core.player.damage", data);
+	}
+
+	// Loss is the largest amount of one health type a hit took: the highest
+	// across the zones hit, or the global value when the hit named no zone
+	// (a fall, which the highest-zone reading misses on DayZ 1.29; measured).
+	static float Loss(TotalDamageResult damageResult, string healthType)
+	{
+		float zone = damageResult.GetHighestDamage(healthType);
+		float global = damageResult.GetDamage("", healthType);
+		if (global > zone)
+			return global;
+		return zone;
 	}
 
 	// A death reported before its fatal hit (the engine's usual order is the
