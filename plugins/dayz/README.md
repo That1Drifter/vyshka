@@ -280,7 +280,8 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.server.stop` | The mission finishes; written to the outbox and delivered by the next boot, ahead of that boot's start event | same |
 | `core.player.connect` | A character is attached to a newly connected identity (first join); a respawn or a reconnect inside the logout window is not a second connect | `player`, `name` |
 | `core.player.disconnect` | The logout is final (a cancelled logout never fires it) | `player`, `name` |
-| `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType` |
+| `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType`; when the hit that killed came through the hit hook (the engine's usual order), `bodyPart`, `ammo`, and `damageType` as on the damage event; when `cause` is `self`, the vitals at that moment: `water`, `energy`, `blood`, `bleedingSources`, and `drowning` (the head was under water) |
+| `core.player.damage` | The character takes a hit the engine reports to it (the hit hook, after the damage is applied), the fatal hit included; a hit on the corpse afterwards is not reported, and neither is a fall that cost no health (a fall is a health hit and a shock hit, and the admin log keeps the first only) | `player`, `name`, `position`, `cause` and its companions as on a death but named `attacker`, `attackerName`, and `sourceType`; `damageType` (`melee`, `firearm`, `explosion`, `stun`, or `other` for a vehicle, a fall, fire, or area damage: the engine's own categories); `bodyPart` (the engine's damage zone, `Torso`, `Head`, `Brain`, `LeftLeg`, ...); `ammo` (the engine's hit type, `Bullet_556x45`, `MeleeInfected`, `FallDamageHealth`, ...); `damage` (health lost, the highest across the zones hit, as the admin log counts it), `blood`, `shock`, `health` (left after the hit); `blocked` when the engine reports a hit with no damage result; `fatal` on the hit that killed |
 | `core.player.chat` | A chat line reaches the server mission | `name`, `channel` (`direct`, `megaphone`, `transmitter`, `publicAddress`, `admin`, `system`, `battleye`, or `other`), `channelId` (the engine's raw channel value), `text`, and `player` when exactly one online player has that name (the engine names the sender, it does not identify them). A retail client's direct chat arrived with a channel value outside the engine's documented set on DayZ 1.29, so it reads `other`; `channelId` carries what the engine said |
 | `core.player.kick` | A player is disconnected by `vyshka.kick`, or a banned identity is refused at connect | `player`, `name`, `reason`, `cause` (`action` or `ban`), `actionId` |
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
@@ -296,11 +297,19 @@ emitted: the hive initializes every persisted vehicle at boot through the same h
 one arrives by, and a feed entry per vehicle on every restart is noise, not news.
 
 `cause` is one of `player` (another player, bare hands or a held item; `killer` names them,
-`weapon` is the item's display name, `distance` in metres is present for a ranged weapon),
+`weapon` is the item's display name, `distance` in metres is present for a firearm's shot),
 `self` (the engine names the character as its own killer: starvation, dehydration, bleeding
 out, drowning, a fall), `infected`, `animal`, `explosion` (`weapon` is the device),
-`vehicle`, `other` (with `killerType`, the engine class of the killer), or `unknown`. This
-reading of the killer object matches the one the engine's own admin log makes.
+`vehicle`, `environment` (the engine's area damage: fire, barbed wire, a contaminated area;
+`ammo` on the hit says which), `other` (with `killerType`, the engine class of the killer),
+or `unknown`. This reading of the killer object matches the one the engine's own admin log
+makes, and the damage event reads the hit's source the same way with `attacker`,
+`attackerName`, and `sourceType` in place of the killer words.
+
+A damage event per hit is the busiest telemetry the plugin publishes: an infected fight is
+a hit every second or two, and a firefight more. The batching absorbs it, but a webhook
+subscribed to `core.player.*` now receives every hit; subscribe a kill feed to
+`core.player.death` alone.
 
 **Snapshots.** The plugin captures the full list of characters with an identity attached,
 alive or not, and the full list of vehicles, as it builds each poll request, so the samples

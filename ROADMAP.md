@@ -105,9 +105,12 @@ release.
 
 After the tag, in this order:
 
-7. **Damage telemetry** (#70): `core.player.damage` with source, weapon, body part, and
-   distance; hit events; the natural-death breakdown (water, energy, bleeding sources) on
-   `core.player.death` when there is no killer.
+7. **Damage telemetry** (#70), landed 2026-09-17: `core.player.damage` from the
+   character's hit hook with the source read as a death's killer is, the engine's damage
+   type, body part, hit type, the damage and the health left, and `fatal` on the hit that
+   killed; the death carries that hit's body part and hit type, and the natural-death
+   breakdown (water, energy, blood, bleeding sources, drowning) when the character was its
+   own killer. The `discord` template words both.
 8. **Admin flags** (#71): god mode, freeze, unlimited stamina and ammo, ignored by AI, set
    per player, persisted per identity in the key/value store so they survive a reconnect,
    and reported as `flags` in `state.players`. Includes a spike on whether invisibility and

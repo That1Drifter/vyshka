@@ -117,6 +117,8 @@ func discordEmbedFor(notificationType string, data map[string]any) discordEmbed 
 		return discordEmbed{Title: "Player disconnected", Description: playerLabel(data) + " left", Color: discordGrey}
 	case "core.player.death":
 		return discordDeath(data)
+	case "core.player.damage":
+		return discordDamage(data)
 	case "core.player.chat":
 		channel := stringField(data, "channel")
 		title := "Chat"
@@ -173,23 +175,16 @@ func discordEmbedFor(notificationType string, data map[string]any) discordEmbed 
 
 // discordDeath words a death the way a kill feed does, from the payload the
 // reference plugin publishes: cause, and where known the killer, weapon,
-// distance, and killer type. A payload without those words still reads.
+// distance, and killer type; the hit that killed and the vitals at a death
+// with no outside cause become fields. A payload without those words still
+// reads.
 func discordDeath(data map[string]any) discordEmbed {
 	victim := playerLabel(data)
 	weapon := escapeMarkdown(stringField(data, "weapon"))
 	var description string
 	switch stringField(data, "cause") {
 	case "player":
-		killer := escapeMarkdown(stringField(data, "killerName"))
-		if killer == "" {
-			killer = identityLabel(data["killer"])
-		}
-		if killer == "" {
-			killer = "another player"
-		} else {
-			killer = "**" + killer + "**"
-		}
-		description = victim + " was killed by " + killer
+		description = victim + " was killed by " + otherPlayerLabel(data, "killerName", "killer")
 		if weapon != "" {
 			description += " with " + weapon
 		}
@@ -198,7 +193,9 @@ func discordDeath(data map[string]any) discordEmbed {
 		}
 	case "self":
 		description = victim + " died"
-		if weapon != "" {
+		if drowning, _ := data["drowning"].(bool); drowning {
+			description = victim + " drowned"
+		} else if weapon != "" {
 			description += " to their own " + weapon
 		}
 	case "infected":
@@ -212,6 +209,11 @@ func discordDeath(data map[string]any) discordEmbed {
 		}
 	case "vehicle":
 		description = victim + " was killed by a vehicle"
+	case "environment":
+		description = victim + " was killed by the environment"
+		if ammo := escapeMarkdown(stringField(data, "ammo")); ammo != "" {
+			description += " (" + ammo + ")"
+		}
 	case "other":
 		description = victim + " was killed"
 		if killerType := escapeMarkdown(stringField(data, "killerType")); killerType != "" {
@@ -221,18 +223,136 @@ func discordDeath(data map[string]any) discordEmbed {
 		description = victim + " died"
 	}
 	embed := discordEmbed{Title: "Player died", Description: description, Color: discordRed}
-	if position, ok := data["position"].([]any); ok && len(position) == 3 {
-		parts := make([]string, 0, 3)
-		for _, component := range position {
-			if value, ok := numberValue(component); ok {
-				parts = append(parts, strconv.FormatFloat(value, 'f', 0, 64))
-			}
-		}
-		if len(parts) == 3 {
-			embed.Fields = []discordField{{Name: "Position", Value: strings.Join(parts, ", "), Inline: true}}
+	embed.Fields = append(embed.Fields, positionField(data)...)
+	if hit := hitLabel(data); hit != "" {
+		embed.Fields = append(embed.Fields, discordField{Name: "Hit", Value: hit, Inline: true})
+	}
+	vitals := make([]string, 0, 4)
+	for _, stat := range []string{"water", "energy", "blood"} {
+		if value, ok := numberField(data, stat); ok {
+			vitals = append(vitals, stat+" "+strconv.FormatFloat(value, 'f', 0, 64))
 		}
 	}
+	if sources, ok := numberField(data, "bleedingSources"); ok {
+		vitals = append(vitals, "bleeding sources "+strconv.FormatFloat(sources, 'f', 0, 64))
+	}
+	if len(vitals) > 0 {
+		embed.Fields = append(embed.Fields, discordField{Name: "At death", Value: strings.Join(vitals, ", "), Inline: true})
+	}
 	return embed
+}
+
+// discordDamage words one hit from the payload the reference plugin
+// publishes: cause and the attacker as for a death, then the body part, the
+// damage, and the ammunition; the health left is a field, and a fatal hit
+// says so in the title.
+func discordDamage(data map[string]any) discordEmbed {
+	victim := playerLabel(data)
+	weapon := escapeMarkdown(stringField(data, "weapon"))
+	var description string
+	switch stringField(data, "cause") {
+	case "player":
+		description = victim + " was hit by " + otherPlayerLabel(data, "attackerName", "attacker")
+		if weapon != "" {
+			description += " with " + weapon
+		}
+		if distance, ok := numberField(data, "distance"); ok {
+			description += " from " + strconv.FormatFloat(distance, 'f', 0, 64) + " m"
+		}
+	case "self":
+		description = victim + " was hurt"
+		if weapon != "" {
+			description += " by their own " + weapon
+		}
+	case "infected":
+		description = victim + " was hit by an infected"
+	case "animal":
+		description = victim + " was hit by an animal"
+	case "explosion":
+		description = victim + " was hit by an explosion"
+		if weapon != "" {
+			description += " (" + weapon + ")"
+		}
+	case "vehicle":
+		description = victim + " was hit by a vehicle"
+	case "environment":
+		description = victim + " was hurt by the environment"
+	case "other":
+		description = victim + " was hit"
+		if sourceType := escapeMarkdown(stringField(data, "sourceType")); sourceType != "" {
+			description += " by " + sourceType
+		}
+	default:
+		description = victim + " was hit"
+	}
+	if bodyPart := escapeMarkdown(stringField(data, "bodyPart")); bodyPart != "" {
+		description += " in the " + bodyPart
+	}
+	if blocked, _ := data["blocked"].(bool); blocked {
+		description += ", blocked"
+	} else if damage, ok := numberField(data, "damage"); ok {
+		description += " for " + strconv.FormatFloat(damage, 'f', 1, 64) + " damage"
+	}
+	if ammo := escapeMarkdown(stringField(data, "ammo")); ammo != "" {
+		description += " (" + ammo + ")"
+	}
+	embed := discordEmbed{Title: "Player hit", Description: description, Color: discordOrange}
+	if fatal, _ := data["fatal"].(bool); fatal {
+		embed.Title = "Player hit (fatal)"
+		embed.Color = discordRed
+	}
+	if health, ok := numberField(data, "health"); ok {
+		embed.Fields = append(embed.Fields, discordField{Name: "Health left", Value: strconv.FormatFloat(health, 'f', 0, 64), Inline: true})
+	}
+	embed.Fields = append(embed.Fields, positionField(data)...)
+	return embed
+}
+
+// otherPlayerLabel is the bold, escaped name of the other player a death or
+// hit payload names under nameKey, the identity under identityKey when there
+// is no name, and "another player" when there is neither.
+func otherPlayerLabel(data map[string]any, nameKey, identityKey string) string {
+	other := escapeMarkdown(stringField(data, nameKey))
+	if other == "" {
+		other = identityLabel(data[identityKey])
+	}
+	if other == "" {
+		return "another player"
+	}
+	return "**" + other + "**"
+}
+
+// hitLabel renders the body part and ammunition of the hit that killed, when
+// the payload carries them: "Brain (Bullet_556x45)".
+func hitLabel(data map[string]any) string {
+	bodyPart := escapeMarkdown(stringField(data, "bodyPart"))
+	ammo := escapeMarkdown(stringField(data, "ammo"))
+	switch {
+	case bodyPart != "" && ammo != "":
+		return bodyPart + " (" + ammo + ")"
+	case bodyPart != "":
+		return bodyPart
+	default:
+		return ammo
+	}
+}
+
+// positionField renders a [x, y, z] position as one inline field, or none.
+func positionField(data map[string]any) []discordField {
+	position, ok := data["position"].([]any)
+	if !ok || len(position) != 3 {
+		return nil
+	}
+	parts := make([]string, 0, 3)
+	for _, component := range position {
+		if value, ok := numberValue(component); ok {
+			parts = append(parts, strconv.FormatFloat(value, 'f', 0, 64))
+		}
+	}
+	if len(parts) != 3 {
+		return nil
+	}
+	return []discordField{{Name: "Position", Value: strings.Join(parts, ", "), Inline: true}}
 }
 
 // discordAction words an action.completed notification from the record it

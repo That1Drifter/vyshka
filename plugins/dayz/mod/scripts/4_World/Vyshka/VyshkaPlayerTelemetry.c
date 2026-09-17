@@ -1,10 +1,10 @@
 // Vyshka DayZ plugin: player telemetry (spec section 8).
 //
-// The core player events a feed needs (connect, disconnect, death) and the
-// state.players snapshots a live map needs, built from what the world module
-// can see: PlayerBase, PlayerIdentity, and the players list. The protocol
-// side (buffering, batching, the outbox) is in the game module; this file
-// only knows what a player is and what happened to one.
+// The core player events a feed needs (connect, disconnect, death, damage)
+// and the state.players snapshots a live map needs, built from what the
+// world module can see: PlayerBase, PlayerIdentity, and the players list.
+// The protocol side (buffering, batching, the outbox) is in the game module;
+// this file only knows what a player is and what happened to one.
 //
 // Identity on DayZ is the plain Steam64 id the engine exposes as
 // PlayerIdentity.GetPlainId(), published as { "platform": "steam", "id": ... }
@@ -19,6 +19,15 @@ class VyshkaRosterEntry
 	PlayerBase m_Player;   // the character currently attached to this identity; not owned
 	string m_Id;           // plain Steam64 id
 	string m_Name;
+}
+
+// VyshkaHit is what the character's hit hook saw: kept on the character so
+// the death that follows a fatal hit can say where it landed and with what.
+class VyshkaHit
+{
+	string m_Zone;
+	string m_Ammo;
+	string m_Type;
 }
 
 // VyshkaPlayers tracks who is connected so a disconnect can be attributed
@@ -223,15 +232,11 @@ class VyshkaPlayers
 		VyshkaPlugin.Emit("core.player.disconnect", data);
 	}
 
-	// OnDeath runs from the character's death hook, while its identity is
-	// still attached. The killer object is read the way the engine's own
-	// admin log reads it: the character itself for deaths with no outside
-	// cause, a weapon or melee item held by a player, a player's bare hands,
-	// an infected or animal, an explosive, a vehicle, or something else.
-	static void OnDeath(PlayerBase player, Object killer)
+	// Subject fills the player, name, and position of a payload about a
+	// character, from the roster first and the identity second. False when
+	// no identity is known, in which case nothing is reported.
+	static bool Subject(PlayerBase player, VyshkaJsonValue data)
 	{
-		if (!player)
-			return;
 		VyshkaRosterEntry entry = FindByPlayer(player);
 		string id = "";
 		string name = "";
@@ -250,93 +255,269 @@ class VyshkaPlayers
 			}
 		}
 		if (id == "")
-		{
-			VyshkaLog.Info("a character died that no known identity was attached to; not reported");
-			return;
-		}
-
-		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+			return false;
 		data.Set("player", Identity(id));
 		data.Set("name", VyshkaJsonValue.NewString(name));
 		VyshkaJsonValue position = Position(player.GetPosition());
 		if (position)
 			data.Set("position", position);
-		DescribeKiller(player, killer, data);
+		return true;
+	}
+
+	// OnHit runs from the character's hit hook, after the engine has applied
+	// the damage: the arguments are the hook's own. The source is read the
+	// way the killer of a death is (DescribeSource), and the damage the way
+	// the engine's own admin log reads it: the highest health damage across
+	// the zones hit, and the character's health afterwards.
+	//
+	// A hit on a corpse is not reported: the character is not a player any
+	// more, only its body. The hit that killed is, with fatal set, and it is
+	// kept on the character so the death that follows can name the zone and
+	// the ammunition.
+	static void OnHit(PlayerBase player, TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo)
+	{
+		if (!player)
+			return;
+		bool fatal = false;
+		if (!player.IsAlive())
+		{
+			// The engine reports the hit that killed after applying it, so
+			// the character is already dead here. Once its fatal hit has been
+			// seen, or its death was reported longer ago than one tick can
+			// explain, a hit is on the corpse.
+			if (player.m_VyshkaFatalSeen)
+				return;
+			if (player.m_VyshkaDead && GetGame().GetTime() - player.m_VyshkaDeathTime > FATAL_HIT_WINDOW_MS)
+				return;
+			fatal = true;
+			player.m_VyshkaFatalSeen = true;
+		}
+
+		float health = 0;
+		float blood = 0;
+		float shock = 0;
+		if (damageResult)
+		{
+			health = damageResult.GetHighestDamage("Health");
+			blood = damageResult.GetHighestDamage("Blood");
+			shock = damageResult.GetHighestDamage("Shock");
+		}
+
+		// A fall is two hits, one to health and one to shock, and a third
+		// for the gear; like the admin log, only the one that cost health
+		// is worth a line, so a fall that costs none is not reported.
+		if (damageType == DamageType.CUSTOM && IsFallDamage(ammo) && health <= 0)
+			return;
+
+		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+		if (!Subject(player, data))
+		{
+			VyshkaLog.Info("a character was hit that no known identity was attached to; not reported");
+			return;
+		}
+		DescribeSource(player, source, data, "attacker", "attackerName", "sourceType", damageType == DamageType.FIRE_ARM);
+		data.Set("damageType", VyshkaJsonValue.NewString(DamageTypeName(damageType)));
+		if (dmgZone != "")
+			data.Set("bodyPart", VyshkaJsonValue.NewString(dmgZone));
+		if (ammo != "")
+			data.Set("ammo", VyshkaJsonValue.NewString(ammo));
+		if (!damageResult)
+			data.Set("blocked", VyshkaJsonValue.NewBool(true));
+		SetNumber(data, "damage", health);
+		SetNumber(data, "blood", blood);
+		SetNumber(data, "shock", shock);
+		SetNumber(data, "health", player.GetHealth("", "Health"));
+		if (fatal)
+		{
+			data.Set("fatal", VyshkaJsonValue.NewBool(true));
+			VyshkaHit hit = new VyshkaHit();
+			hit.m_Zone = dmgZone;
+			hit.m_Ammo = ammo;
+			hit.m_Type = DamageTypeName(damageType);
+			player.m_VyshkaFatalHit = hit;
+		}
+		VyshkaPlugin.Emit("core.player.damage", data);
+	}
+
+	// A death reported before its fatal hit (the engine's usual order is the
+	// reverse) still claims a hit that lands within this window.
+	static const int FATAL_HIT_WINDOW_MS = 200;
+
+	static bool IsFallDamage(string ammo)
+	{
+		if (ammo == DayZPlayerImplementFallDamage.FALL_DAMAGE_AMMO_HEALTH)
+			return true;
+		if (ammo == DayZPlayerImplementFallDamage.FALL_DAMAGE_AMMO_SHOCK)
+			return true;
+		if (ammo == DayZPlayerImplementFallDamage.FALL_DAMAGE_AMMO_HEALTH_ATTACHMENT)
+			return true;
+		return ammo == DayZPlayerImplementFallDamage.FALL_DAMAGE_AMMO_HEALTH_OTHER_ATTACHMENTS;
+	}
+
+	// DamageTypeName words the engine's damage type: melee covers a player's
+	// hands and held items, infected, and animals; other is the engine's
+	// catch-all for vehicles, falls, fire, and area damage.
+	static string DamageTypeName(int damageType)
+	{
+		if (damageType == DamageType.CLOSE_COMBAT)
+			return "melee";
+		if (damageType == DamageType.FIRE_ARM)
+			return "firearm";
+		if (damageType == DamageType.EXPLOSION)
+			return "explosion";
+		if (damageType == DamageType.STUN)
+			return "stun";
+		if (damageType == DamageType.CUSTOM)
+			return "other";
+		return "unknown";
+	}
+
+	// SetNumber sets a float member, or nothing when the value is not a
+	// number the payload can carry.
+	static void SetNumber(VyshkaJsonValue data, string key, float value)
+	{
+		VyshkaJsonValue number = VyshkaJsonValue.NewFloat(value);
+		if (number)
+			data.Set(key, number);
+	}
+
+	// OnDeath runs from the character's death hook, while its identity is
+	// still attached. The killer object is read the way the engine's own
+	// admin log reads it: the character itself for deaths with no outside
+	// cause, a weapon or melee item held by a player, a player's bare hands,
+	// an infected or animal, an explosive, a vehicle, or something else.
+	static void OnDeath(PlayerBase player, Object killer)
+	{
+		if (!player)
+			return;
+		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+		if (!Subject(player, data))
+		{
+			VyshkaLog.Info("a character died that no known identity was attached to; not reported");
+			return;
+		}
+		DescribeSource(player, killer, data, "killer", "killerName", "killerType", killer && killer.IsWeapon());
+		if (killer == player)
+			DescribeNaturalDeath(player, data);
+		VyshkaHit hit = player.m_VyshkaFatalHit;
+		if (hit)
+		{
+			// The hit that killed came through the hit hook first (the
+			// engine applies the damage, reports the hit, and evaluates the
+			// death on a later tick), so the death can say where it landed.
+			if (hit.m_Zone != "")
+				data.Set("bodyPart", VyshkaJsonValue.NewString(hit.m_Zone));
+			if (hit.m_Ammo != "")
+				data.Set("ammo", VyshkaJsonValue.NewString(hit.m_Ammo));
+			data.Set("damageType", VyshkaJsonValue.NewString(hit.m_Type));
+			player.m_VyshkaFatalHit = null;
+		}
+		else if (killer == player)
+		{
+			// A death the character caused itself has no hit to wait for.
+			player.m_VyshkaFatalSeen = true;
+		}
+		player.m_VyshkaDead = true;
+		player.m_VyshkaDeathTime = GetGame().GetTime();
 		VyshkaPlugin.Emit("core.player.death", data);
 	}
 
-	// DescribeKiller adds cause, and where known killer, killerName, weapon,
-	// distance, and killerType, to a death payload.
-	static void DescribeKiller(PlayerBase victim, Object killer, VyshkaJsonValue data)
+	// DescribeNaturalDeath adds what the engine's admin log adds to a death
+	// the character caused itself: water, energy, and the open bleeding
+	// sources at that moment, so starvation, dehydration, and bleeding out
+	// can be told apart; blood, since bleeding out is a blood level; and
+	// whether the head was under water, since drowning is the other cause
+	// the engine names the character for. The bleeding manager is read here
+	// because the engine deletes it in its own death hook, after this one.
+	static void DescribeNaturalDeath(PlayerBase player, VyshkaJsonValue data)
 	{
-		if (!killer)
+		if (player.GetStatWater())
+			SetNumber(data, "water", player.GetStatWater().Get());
+		if (player.GetStatEnergy())
+			SetNumber(data, "energy", player.GetStatEnergy().Get());
+		SetNumber(data, "blood", player.GetHealth("", "Blood"));
+		if (player.GetBleedingManagerServer())
+			data.Set("bleedingSources", VyshkaJsonValue.NewInt(player.GetBleedingManagerServer().GetBleedingSourcesCount()));
+		data.Set("drowning", VyshkaJsonValue.NewBool(player.GetDrowningWaterLevelCheck()));
+	}
+
+	// DescribeSource adds cause, and where known the other player (under
+	// whoKey and whoNameKey), weapon, distance, and the engine class of a
+	// source that is not a player (under typeKey), to a death or damage
+	// payload. ranged says whether a distance to the other player is worth
+	// reporting: a firearm's shot, not its butt.
+	static void DescribeSource(PlayerBase victim, Object source, VyshkaJsonValue data, string whoKey, string whoNameKey, string typeKey, bool ranged)
+	{
+		if (!source)
 		{
 			data.Set("cause", VyshkaJsonValue.NewString("unknown"));
 			return;
 		}
-		if (killer == victim)
+		if (source == victim)
 		{
 			// Starvation, dehydration, bleeding out, drowning, a fall: the
-			// engine reports the character as its own killer.
+			// engine reports the character as its own source.
 			data.Set("cause", VyshkaJsonValue.NewString("self"));
 			return;
 		}
 
-		// A player holding the killing item, or the player itself.
-		PlayerBase killerPlayer = PlayerBase.Cast(killer);
-		EntityAI killerEntity = EntityAI.Cast(killer);
-		if (!killerPlayer && killerEntity)
-			killerPlayer = PlayerBase.Cast(killerEntity.GetHierarchyRootPlayer());
+		// A player holding the item, or the player itself.
+		PlayerBase sourcePlayer = PlayerBase.Cast(source);
+		EntityAI sourceEntity = EntityAI.Cast(source);
+		if (!sourcePlayer && sourceEntity)
+			sourcePlayer = PlayerBase.Cast(sourceEntity.GetHierarchyRootPlayer());
 
-		if (killerPlayer == victim)
+		if (sourcePlayer == victim)
 		{
 			// The victim's own item did it (a firearm in hand, a grenade
 			// still held): self-inflicted, and the item is worth naming.
 			data.Set("cause", VyshkaJsonValue.NewString("self"));
-			data.Set("weapon", VyshkaJsonValue.NewString(killer.GetDisplayName()));
+			data.Set("weapon", VyshkaJsonValue.NewString(source.GetDisplayName()));
 			return;
 		}
 
-		if (killerPlayer)
+		if (sourcePlayer)
 		{
 			data.Set("cause", VyshkaJsonValue.NewString("player"));
-			VyshkaRosterEntry killerEntry = FindByPlayer(killerPlayer);
-			PlayerIdentity killerIdentity = killerPlayer.GetIdentity();
-			if (killerEntry)
+			VyshkaRosterEntry sourceEntry = FindByPlayer(sourcePlayer);
+			PlayerIdentity sourceIdentity = sourcePlayer.GetIdentity();
+			if (sourceEntry)
 			{
-				data.Set("killer", Identity(killerEntry.m_Id));
-				data.Set("killerName", VyshkaJsonValue.NewString(killerEntry.m_Name));
+				data.Set(whoKey, Identity(sourceEntry.m_Id));
+				data.Set(whoNameKey, VyshkaJsonValue.NewString(sourceEntry.m_Name));
 			}
-			else if (killerIdentity && killerIdentity.GetPlainId() != "")
+			else if (sourceIdentity && sourceIdentity.GetPlainId() != "")
 			{
-				data.Set("killer", Identity(killerIdentity.GetPlainId()));
-				data.Set("killerName", VyshkaJsonValue.NewString(killerIdentity.GetName()));
+				data.Set(whoKey, Identity(sourceIdentity.GetPlainId()));
+				data.Set(whoNameKey, VyshkaJsonValue.NewString(sourceIdentity.GetName()));
 			}
-			if (killer != killerPlayer)
+			if (source != sourcePlayer)
 			{
-				data.Set("weapon", VyshkaJsonValue.NewString(killer.GetDisplayName()));
-				if (killer.IsWeapon())
-				{
-					VyshkaJsonValue distance = VyshkaJsonValue.NewFloat(vector.Distance(victim.GetPosition(), killerPlayer.GetPosition()));
-					if (distance)
-						data.Set("distance", distance);
-				}
+				data.Set("weapon", VyshkaJsonValue.NewString(source.GetDisplayName()));
+				if (ranged)
+					SetNumber(data, "distance", vector.Distance(victim.GetPosition(), sourcePlayer.GetPosition()));
 			}
 			return;
 		}
 
-		data.Set("killerType", VyshkaJsonValue.NewString(killer.GetType()));
-		if (ExplosivesBase.Cast(killer))
+		data.Set(typeKey, VyshkaJsonValue.NewString(source.GetType()));
+		if (ExplosivesBase.Cast(source))
 		{
 			data.Set("cause", VyshkaJsonValue.NewString("explosion"));
-			data.Set("weapon", VyshkaJsonValue.NewString(killer.GetDisplayName()));
+			data.Set("weapon", VyshkaJsonValue.NewString(source.GetDisplayName()));
 		}
-		else if (DayZInfected.Cast(killer))
+		else if (DayZInfected.Cast(source))
 			data.Set("cause", VyshkaJsonValue.NewString("infected"));
-		else if (DayZAnimal.Cast(killer))
+		else if (DayZAnimal.Cast(source))
 			data.Set("cause", VyshkaJsonValue.NewString("animal"));
-		else if (Transport.Cast(killer))
+		else if (Transport.Cast(source))
 			data.Set("cause", VyshkaJsonValue.NewString("vehicle"));
+		else if (source.GetType() == "AreaDamageManager")
+		{
+			// Fire, barbed wire, a contaminated area: the engine's area
+			// damage, which its admin log names the same way.
+			data.Set("cause", VyshkaJsonValue.NewString("environment"));
+		}
 		else
 			data.Set("cause", VyshkaJsonValue.NewString("other"));
 	}
@@ -403,11 +584,27 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 
 modded class PlayerBase
 {
+	// Whether this character's death has been reported, and when (engine
+	// time, ms); whether the hit that killed it has been seen; and that hit,
+	// for the death report that follows it. Together they keep hits on the
+	// corpse out of the feed (VyshkaPlayers.OnHit).
+	bool m_VyshkaDead;
+	int m_VyshkaDeathTime;
+	bool m_VyshkaFatalSeen;
+	ref VyshkaHit m_VyshkaFatalHit;
+
 	override void EEKilled(Object killer)
 	{
 		if (GetGame().IsServer())
 			VyshkaPlayers.OnDeath(this, killer);
 		super.EEKilled(killer);
+	}
+
+	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
+	{
+		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
+		if (GetGame().IsServer())
+			VyshkaPlayers.OnHit(this, damageResult, damageType, source, component, dmgZone, ammo);
 	}
 
 	// The engine starts a character's vehicle command as it takes a seat
