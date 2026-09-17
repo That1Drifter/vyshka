@@ -329,10 +329,15 @@ class VyshkaFlags
 		VyshkaFlagSet before = player.m_VyshkaFlags;
 		if (!before)
 			before = new VyshkaFlagSet();
-		// The store confirming what the process already applied (every
-		// reconnect) is not worth a line, and there is nothing to change.
-		if (player.m_VyshkaFlags && before.Equals(flags))
+		// Nothing to change: the store confirming what the process already
+		// applied (every reconnect), or an identity with no flags attaching
+		// (every ordinary player). Neither is worth a line.
+		if (before.Equals(flags))
+		{
+			if (!player.m_VyshkaFlags)
+				player.m_VyshkaFlags = flags.Copy();
 			return;
+		}
 		player.m_VyshkaFlags = flags.Copy();
 
 		if (flags.m_God != before.m_God)

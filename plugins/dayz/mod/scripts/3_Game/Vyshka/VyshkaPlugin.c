@@ -88,12 +88,18 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaActionRegistry m_Actions;
 	ref VyshkaEventBuffer m_Events;
 	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
+	// An outcome delivered through Complete while its action's Execute was
+	// still running (a store refusal answered on the spot, before the
+	// dispatch could be recorded as pending): kept until Execute returns.
+	ref map<string, ref VyshkaActionOutcome> m_EarlyOutcomes;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
 	int m_NextSnapshotChannel;                                 // the channel that gets the first try at the next poll
 	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
 	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
+
+	string m_Executing;        // the actionId whose Execute is on the stack, "" otherwise
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -177,6 +183,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_PollTimeoutSeconds = 25;
 		m_Events = new VyshkaEventBuffer();
 		m_PendingDispatches = new map<string, ref VyshkaPendingDispatch>;
+		m_EarlyOutcomes = new map<string, ref VyshkaActionOutcome>;
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
@@ -1106,9 +1113,18 @@ class VyshkaPlugin : VyshkaResponseSink
 		}
 
 		int started = VyshkaClock.MonotonicMs();
+		m_Executing = actionId;
 		VyshkaActionOutcome outcome = m_Actions.Execute(actionId, code, context, referenceKey, body.Get("params"));
+		m_Executing = "";
 		if (!outcome)
 			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
+		if (outcome.m_Pending && m_EarlyOutcomes.Contains(actionId))
+		{
+			// The action completed itself before Execute returned (a store
+			// call refused on the spot): that outcome is the result.
+			outcome = m_EarlyOutcomes.Get(actionId);
+			m_EarlyOutcomes.Remove(actionId);
+		}
 		if (outcome.m_Pending)
 		{
 			// The action has more to do (a store round trip) before it can
@@ -1158,6 +1174,13 @@ class VyshkaPlugin : VyshkaResponseSink
 		VyshkaPendingDispatch pending = m_PendingDispatches.Get(actionId);
 		if (!pending)
 		{
+			if (actionId != "" && actionId == m_Executing)
+			{
+				// Execute is still on the stack for this dispatch; the
+				// outcome waits for it to return (HandleDispatch).
+				m_EarlyOutcomes.Set(actionId, outcome);
+				return;
+			}
 			VyshkaLog.Warn("a completion arrived for action " + actionId + ", which is not pending; ignored");
 			return;
 		}
