@@ -12,12 +12,14 @@
 // Requests are queued and sent one at a time on a transport of the client's
 // own, so a store call does not wait behind the held poll of the link. Each
 // request carries a deadline: it is retried on a transport failure or a
-// hub-side error while the deadline allows a full attempt, waits for a fresh
-// session when the hub refuses the session token, and otherwise reports what
-// the hub said. The callback runs on the script thread like everything else,
-// once, with a result that says which of the four things happened: the key
-// was read (found or absent), written, refused with a revision mismatch, or
-// the operation failed.
+// hub-side error while the deadline allows, waits for a fresh session when
+// the hub refuses the session token, and otherwise reports what the hub
+// said. The callback runs on the script thread like everything else, once,
+// with a result that says which of the four things happened: the key was
+// read (found or absent), written, refused with a revision mismatch, or the
+// operation failed. A failure for time is not proof the hub did nothing: an
+// attempt abandoned at the deadline may still land, and a caller that
+// cares reads the key again afterwards.
 //
 // Revisions travel as the text the hub wrote: they may exceed the engine's
 // 32-bit int (section 12.1 allows 2^53), and a compare-and-swap with a
@@ -77,6 +79,7 @@ class VyshkaStore : VyshkaResponseSink
 	// engine still runs it would share the context with the next one.
 	static const int DEFAULT_BUDGET_MS = 45000;
 	static const int DEFAULT_DEADLINE_MS = 60000;   // per request, when the caller names none
+	static const int MIN_REMAINING_MS = 5000;       // a request with less time left than this is not sent
 	static const int RETRY_MIN_MS = 1000;
 	static const int RETRY_MAX_MS = 10000;
 	static const int QUEUE_CAPACITY = 64;           // requests waiting; more is a plugin bug, not a burst
@@ -86,6 +89,8 @@ class VyshkaStore : VyshkaResponseSink
 	ref VyshkaStoreRequest m_Current;
 	ref array<string> m_Namespaces;   // what the manifest declares; anything else is refused here
 	int m_BudgetMs;
+	int m_CurrentSentMs;       // when the request in flight was sent
+	int m_ContextBusyUntilMs;  // after a watchdog abandonment: the engine may still be running that request on the context until then
 	int m_Completed;
 	int m_Failed;
 
@@ -231,16 +236,19 @@ class VyshkaStore : VyshkaResponseSink
 	// Tick runs from the plugin's tick: the watchdog, the deadline sweep
 	// (which runs whether or not anything can be sent, so a request queued
 	// through a session outage still ends), then the next request when the
-	// transport is idle, the link has a session, and the request is not
-	// waiting out a retry delay or a refused token.
+	// transport is idle, the context is not still running an abandoned
+	// request, the link has a session, and the request is not waiting out a
+	// retry delay or a refused token.
 	void Tick(string sessionToken)
 	{
 		m_Transport.CheckWatchdog();
-		int now = VyshkaClock.MonotonicMs();
-		Sweep(now);
+		Sweep();
 		if (m_Transport.IsInFlight() || m_Current)
 			return;
 		if (sessionToken == "")
+			return;
+		int now = VyshkaClock.MonotonicMs();
+		if (now < m_ContextBusyUntilMs)
 			return;
 		for (int i = 0; i < m_Queue.Count(); i++)
 		{
@@ -255,17 +263,17 @@ class VyshkaStore : VyshkaResponseSink
 		}
 	}
 
-	// Sweep fails every queued request that cannot be answered in time: one
-	// past its deadline, or one with less time left than an attempt may take
-	// (the watchdog budget), so that no request is sent that could land
-	// after its caller has given up on it.
-	void Sweep(int now)
+	// Sweep fails every queued request with too little time left to be
+	// worth sending. The clock is read per request: a callback run here can
+	// hold the thread (a result written to disk), and a request judged on a
+	// stale reading could be sent past its deadline.
+	void Sweep()
 	{
 		int i = 0;
 		while (i < m_Queue.Count())
 		{
 			VyshkaStoreRequest request = m_Queue.Get(i);
-			if (request.m_DeadlineMs - now < m_BudgetMs)
+			if (request.m_DeadlineMs - VyshkaClock.MonotonicMs() < MIN_REMAINING_MS)
 			{
 				m_Queue.RemoveOrdered(i);
 				if (request.m_Attempts == 0)
@@ -278,8 +286,21 @@ class VyshkaStore : VyshkaResponseSink
 		}
 	}
 
+	// Send issues one attempt. The clock is read again here, after whatever
+	// the sweep's callbacks took. The attempt's watchdog is the budget or the
+	// time the caller has left, whichever is shorter: a callback after the
+	// deadline is of no use to the caller. An attempt the watchdog abandons
+	// may still be running in the engine, so the context is left alone for
+	// the rest of the budget before the next request (OnResponse).
 	void Send(VyshkaStoreRequest request, string sessionToken)
 	{
+		int now = VyshkaClock.MonotonicMs();
+		int remaining = request.m_DeadlineMs - now;
+		if (remaining < MIN_REMAINING_MS)
+		{
+			Fail(request, "the store did not get a chance to answer in the time the caller had");
+			return;
+		}
 		string verb = "get";
 		if (request.m_Op == OP_SET)
 			verb = "set";
@@ -288,8 +309,12 @@ class VyshkaStore : VyshkaResponseSink
 		string path = request.m_Namespace + "/" + request.m_Key + "/" + verb + VyshkaPlugin.INLINE_ERRORS;
 		request.m_Attempts++;
 		request.m_RefusedToken = sessionToken;   // cleared on any answer but session_invalid
+		int budget = m_BudgetMs;
+		if (remaining < budget)
+			budget = remaining;
 		m_Current = request;
-		if (!m_Transport.Post(request.m_Op, path, sessionToken, request.m_Body, m_BudgetMs))
+		m_CurrentSentMs = now;
+		if (!m_Transport.Post(request.m_Op, path, sessionToken, request.m_Body, budget))
 		{
 			m_Current = null;
 			Retry(request, "the transport refused to send");
@@ -302,6 +327,13 @@ class VyshkaStore : VyshkaResponseSink
 		m_Current = null;
 		if (!request)
 			return;
+		if (!ok && code == VyshkaTransport.ERROR_WATCHDOG)
+		{
+			// The engine may still run this request until its own timeouts
+			// pass; nothing else goes out on the context until then, and a
+			// write abandoned here may yet land (the caller reconciles).
+			m_ContextBusyUntilMs = m_CurrentSentMs + m_BudgetMs;
+		}
 		if (!ok)
 		{
 			if (code == VyshkaTransport.ERROR_CLIENT)
@@ -407,8 +439,8 @@ class VyshkaStore : VyshkaResponseSink
 		Fail(request, "the hub refused the request, " + refusal.Describe());
 	}
 
-	// Retry requeues a request after a backoff; the sweep fails it once the
-	// time left cannot hold another attempt.
+	// Retry requeues a request after a backoff; one whose deadline the
+	// backoff would run into is failed instead.
 	void Retry(VyshkaStoreRequest request, string why)
 	{
 		request.m_RefusedToken = "";
@@ -418,7 +450,7 @@ class VyshkaStore : VyshkaResponseSink
 			delay = delay * 2;
 		if (delay > RETRY_MAX_MS)
 			delay = RETRY_MAX_MS;
-		if (request.m_DeadlineMs - (now + delay) < m_BudgetMs)
+		if (request.m_DeadlineMs - (now + delay) < MIN_REMAINING_MS)
 		{
 			Fail(request, why + "; no time left for another attempt after " + request.m_Attempts.ToString());
 			return;

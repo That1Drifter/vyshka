@@ -55,8 +55,11 @@ class VyshkaHubError
 			if (index && index.IsNumber() && index.m_IsInteger)
 				refusal.m_Index = index.m_Int;
 			refusal.m_Seq = details.GetInt("seq", 0);
+			// The text is kept whatever the size: a revision past int range
+			// parses as a non-integer number (its int reading saturated),
+			// and the text is still exact.
 			VyshkaJsonValue revision = details.Get("revision");
-			if (revision && revision.IsNumber() && revision.m_IsInteger)
+			if (revision && revision.IsNumber())
 			{
 				refusal.m_Revision = revision.m_Int;
 				refusal.m_RevisionText = revision.m_Text;

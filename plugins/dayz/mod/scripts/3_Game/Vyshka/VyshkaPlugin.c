@@ -93,6 +93,9 @@ class VyshkaPlugin : VyshkaResponseSink
 	// still running (a store refusal answered on the spot, before the
 	// dispatch could be recorded as pending): kept until Execute returns.
 	ref map<string, ref VyshkaActionOutcome> m_EarlyOutcomes;
+	// Serialized action.result bodies the outbox could not hold when they
+	// were ready, appended in order as room frees (AppendHeldResults).
+	ref array<string> m_HeldResults;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
@@ -210,6 +213,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Events = new VyshkaEventBuffer();
 		m_PendingDispatches = new map<string, ref VyshkaPendingDispatch>;
 		m_EarlyOutcomes = new map<string, ref VyshkaActionOutcome>;
+		m_HeldResults = new array<string>;
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
@@ -286,6 +290,9 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Store.Shutdown();
 		FailPending("the server stopped before the action finished");
 		FlushEvents();
+		AppendHeldResults();
+		if (m_HeldResults.Count() > 0)
+			VyshkaLog.Error(m_HeldResults.Count().ToString() + " action result(s) the outbox could not hold are lost with this stop; the hub will expire those actions");
 		m_Running = false;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(Tick);
 		VyshkaLog.Info("stopped with " + m_Outbox.Count().ToString() + " unacked envelope(s) on disk");
@@ -316,9 +323,12 @@ class VyshkaPlugin : VyshkaResponseSink
 		// whatever is queued rides the next poll. Snapshots are captured by
 		// the poll itself (PublishSnapshots), so they never wait for one.
 		SampleFps();
+		// Results held back for room go first: they were owed before any
+		// event, and the events' flush leaves their slots alone.
+		AppendHeldResults();
+		ExpirePending();
 		if (m_Events.Due())
 			FlushEvents();
-		ExpirePending();
 		// The store's own transport: its requests go out whether or not a
 		// poll is in flight, which is the point of it having one.
 		m_Store.Tick(m_SessionToken);
@@ -384,8 +394,32 @@ class VyshkaPlugin : VyshkaResponseSink
 			if (count > VyshkaEventBuffer.FLUSH_COUNT)
 				count = VyshkaEventBuffer.FLUSH_COUNT;
 			string body = m_Events.TakeBatch();
-			if (!m_Outbox.Append("event.batch", body, count))
+			// The slots held for pending results (HandleDispatch) are not
+			// the events' to take: a batch that would eat into them is
+			// dropped as one the outbox could not hold.
+			if (!m_Outbox.HasRoom(1 + ReservedResults()) || !m_Outbox.Append("event.batch", body, count))
 				VyshkaLog.Warn("dropped " + count.ToString() + " event(s) the outbox could not hold");
+		}
+	}
+
+	// ReservedResults is how many outbox slots are spoken for by results not
+	// yet appended: one per pending dispatch, one per result held back
+	// because the outbox was full when it was ready.
+	int ReservedResults()
+	{
+		return m_PendingDispatches.Count() + m_HeldResults.Count();
+	}
+
+	// AppendHeldResults retries the results the outbox could not hold when
+	// they were ready, in order, as acks free room.
+	void AppendHeldResults()
+	{
+		while (m_HeldResults.Count() > 0)
+		{
+			if (!m_Outbox.Append("action.result", m_HeldResults.Get(0)))
+				return;
+			m_HeldResults.RemoveOrdered(0);
+			VyshkaLog.Info("a held action result was stored in the outbox; " + m_HeldResults.Count().ToString() + " still held");
 		}
 	}
 
@@ -903,10 +937,10 @@ class VyshkaPlugin : VyshkaResponseSink
 				// outcome it could never report (section 9.4). The hub ack was
 				// already applied above, so a poll that frees space unblocks
 				// this on the same tick.
-				// A pending dispatch has its result still to append, so
-				// its slot is held here against everything dispatched
-				// after it.
-				if (!m_Outbox.HasRoom(2 + m_PendingDispatches.Count()))
+				// A pending dispatch has its result still to append, and
+				// a held result its slot, so those are held here against
+				// everything dispatched after them.
+				if (!m_Outbox.HasRoom(2 + ReservedResults()))
 				{
 					VyshkaLog.Warn("outbox full; deferring hub envelope seq " + seq.ToString() + " until it drains");
 					break;
@@ -1211,11 +1245,17 @@ class VyshkaPlugin : VyshkaResponseSink
 		else
 			result.Set("error", VyshkaJsonValue.NewString(outcome.m_Error));
 		result.Set("durationMs", VyshkaJsonValue.NewInt(durationMs));
-		// Room for this result was checked at dispatch, and held for a
-		// pending one (HandleDispatch), so a refusal here is a plugin
-		// defect worth a line: the hub would expire the action.
-		if (!m_Outbox.Append("action.result", result.Serialize()))
-			VyshkaLog.Error("the outbox could not hold the result of action " + actionId + " (" + code + "); the hub will expire it");
+		// Room for this result was checked at dispatch and held for a
+		// pending one (HandleDispatch, FlushEvents). Should the outbox still
+		// refuse it, the result is kept and appended as soon as an ack frees
+		// room (AppendHeldResults) rather than lost: the executed-id dedup
+		// means a re-delivery could never produce it again.
+		string resultBody = result.Serialize();
+		if (!m_Outbox.Append("action.result", resultBody))
+		{
+			m_HeldResults.Insert(resultBody);
+			VyshkaLog.Warn("the outbox could not hold the result of action " + actionId + " (" + code + "); holding it until room frees");
+		}
 
 		if (outcome.m_Ok)
 			VyshkaLog.Info("action " + code + " (" + actionId + ") completed in " + durationMs.ToString() + " ms");

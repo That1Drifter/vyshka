@@ -584,9 +584,14 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 		VyshkaPlugin.Complete(m_ActionId, VyshkaActionOutcome.Success(result));
 	}
 
+	// Fail answers the dispatch with the error and asks the store for the
+	// identity's record again: a write abandoned for time may still have
+	// landed, and the game follows the store either way.
 	void Fail(string error)
 	{
 		VyshkaPlugin.Complete(m_ActionId, VyshkaActionOutcome.Failure(error));
+		if (m_Phase == PHASE_WRITE)
+			VyshkaFlags.Lookup(m_Id);
 	}
 }
 

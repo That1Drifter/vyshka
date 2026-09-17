@@ -270,10 +270,13 @@ then applies the set to the character if one is online and answers; a write the 
 refuses fails the action and changes nothing in the game. Clearing the last flag writes the
 record back with an empty set rather than deleting the key: the store's delete is
 unconditional (protocol section 12.2), so a delete could erase a flag another writer set in
-between, while the guarded write cannot; an operator who wants the key gone deletes it in
-the panel. Every store call the action makes is bounded by the action's own TTL (and by 90
+between, while the guarded write cannot; an operator who wants the key gone deletes it
+through the Admin API (`DELETE /api/v1/kv/vyshka/flags.<Steam64>`; the panel's store view is
+read-only). Every store call the action makes is bounded by the action's own TTL (and by 90
 s at most), so a store that does not answer in time fails the action while the hub still
-listens, and nothing lands after the hub has expired it. A character is
+listens. A write abandoned at that deadline may still land at the hub, so an action that
+failed for time is not proof the flags did not change: the plugin reads the record again
+afterwards and the game follows whatever the store holds. A character is
 given its identity's flags as it attaches (first join, respawn, or reconnect): what this
 server process last knew at once, then the store's answer, which may have changed while the
 player was away; a lookup the store does not answer is retried every 30 s while the player
