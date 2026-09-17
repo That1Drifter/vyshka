@@ -25,8 +25,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# No defaults here: BuildKit fills these from --platform, and a default would
+# replace that value, so every platform would get an amd64 binary.
+ARG TARGETOS
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w -X github.com/That1Drifter/vyshka/hub.Version=${VERSION}" \
     -o /out/vyshka-hub ./hub/cmd/vyshka-hub

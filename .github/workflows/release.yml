@@ -9,6 +9,9 @@ name: Release
 #
 # A manual dispatch is a rehearsal: it runs the same job for the chosen
 # artifact, uploads the result as a workflow artifact, and publishes nothing.
+# Every publishing step is gated on the event being a tag push, never on a
+# value a step could have written; dispatch inputs reach the shell only as
+# environment variables, never as interpolated script text.
 
 on:
   push:
@@ -30,14 +33,10 @@ permissions:
   contents: write
   packages: write
 
-env:
-  # Only a tag publishes. A dispatch builds everything and stops short.
-  PUBLISH: ${{ github.event_name == 'push' }}
-
 jobs:
   hub:
     name: Hub
-    if: startsWith(github.ref, 'refs/tags/hub-v') || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'hub')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/hub-v')) || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'hub')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,16 +48,20 @@ jobs:
 
       - name: Resolve the version
         id: meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then
             version="${GITHUB_REF_NAME#hub-}"
           else
-            version="${{ inputs.version }}"
+            version="$VERSION_INPUT"
           fi
-          case "$version" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "not a SemVer version: $version" >&2; exit 1 ;;
-          esac
+          # SemVer without build metadata: a "+" cannot appear in a container
+          # tag, so a version carrying it is refused rather than rewritten.
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], no build metadata): $version" >&2
+            exit 1
+          fi
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vyshka-hub"
           tags="$image:${version#v}"
           prerelease=false
@@ -81,7 +84,9 @@ jobs:
         run: go vet ./... && go test ./...
 
       - name: Build the archives
-        run: scripts/release-hub.sh "${{ steps.meta.outputs.version }}"
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: scripts/release-hub.sh "$VERSION"
 
       - name: Grade the Linux binary with the hub conformance suite
         # The archive that ships, not a rebuild: unpacked, its version
@@ -114,7 +119,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Sign in to the container registry
-        if: env.PUBLISH == 'true'
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -128,7 +133,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ env.PUBLISH == 'true' }}
+          push: ${{ github.event_name == 'push' }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
@@ -139,18 +144,34 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
 
+      - name: Check that each platform's image carries its own binary
+        # An amd64 executable in the arm64 image builds and even runs on an
+        # amd64 host; only the ELF header tells. Both platforms are extracted
+        # from the build cache and inspected.
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            rm -rf "$RUNNER_TEMP/image-$arch"
+            docker buildx build --platform "linux/$arch" --build-arg "VERSION=$VERSION" \
+              -o "type=local,dest=$RUNNER_TEMP/image-$arch" . >/dev/null 2>&1
+            file "$RUNNER_TEMP/image-$arch/vyshka-hub"
+          done
+          file "$RUNNER_TEMP/image-amd64/vyshka-hub" | grep -q 'x86-64'
+          file "$RUNNER_TEMP/image-arm64/vyshka-hub" | grep -q 'ARM aarch64'
+
       - name: Publish the release
-        if: env.PUBLISH == 'true'
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.meta.outputs.version }}
-          NUMBER: ${{ steps.meta.outputs.number }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           {
             echo "Hub $VERSION. The changes are under \"Hub\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
             echo
-            echo "Archives carry the static binary, LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download against SHA256SUMS. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
+            echo "Archives carry the static binary, LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download with \`sha256sum --ignore-missing -c SHA256SUMS\`. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
             echo
             echo "Container image (linux/amd64, linux/arm64):"
             echo
@@ -159,7 +180,7 @@ jobs:
             echo '```'
           } > "$RUNNER_TEMP/notes.md"
           flags=()
-          if [ "${{ steps.meta.outputs.prerelease }}" = true ]; then
+          if [ "$PRERELEASE" = true ]; then
             flags+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
@@ -167,10 +188,15 @@ jobs:
 
   dayz-plugin:
     name: DayZ plugin
-    if: startsWith(github.ref, 'refs/tags/dayz-plugin-v') || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'dayz-plugin')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/dayz-plugin-v')) || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'dayz-plugin')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The PBO's timestamp is the time of the last commit touching mod/,
+          # which a depth-one checkout cannot see (it would stamp the tagged
+          # commit instead, and no local rebuild would match).
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -179,19 +205,21 @@ jobs:
 
       - name: Resolve the version
         id: meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then
             version="${GITHUB_REF_NAME#dayz-plugin-}"
           else
-            version="${{ inputs.version }}"
+            version="$VERSION_INPUT"
           fi
-          case "$version" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "not a SemVer version: $version" >&2; exit 1 ;;
-          esac
-          # The tag must say what the plugin says about itself: the manifest
-          # and mod.cpp both take the version from this constant.
-          stated="$(sed -n 's/.*static const string PLUGIN_VERSION = "\(.*\)";.*/\1/p' plugins/dayz/mod/scripts/3_Game/Vyshka/VyshkaPlugin.c)"
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], no build metadata): $version" >&2
+            exit 1
+          fi
+          # The tag must say what the plugin says about itself, read by the
+          # same code that writes it into mod.cpp and the manifest.
+          stated="$(go run ./plugins/dayz/cmd/vyshka-dayz version)"
           if [ "v$stated" != "$version" ]; then
             echo "the tag says $version but PLUGIN_VERSION is $stated" >&2
             exit 1
@@ -226,18 +254,19 @@ jobs:
           if-no-files-found: error
 
       - name: Publish the release
-        if: env.PUBLISH == 'true'
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.meta.outputs.version }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
         run: |
           {
             echo "DayZ plugin $VERSION. The changes are under \"DayZ plugin\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
             echo
-            echo "The zip is the \`@Vyshka\` server-mod folder: \`addons/Vyshka.pbo\` and \`mod.cpp\`. Install it with \`-serverMod=@Vyshka\` (plugins/dayz/README.md, \"Installing on a server\"). The PBO is reproducible: \`go run ./plugins/dayz/cmd/vyshka-dayz build\` at this tag prints the digest in Vyshka.pbo.sha256."
+            echo "The zip is the \`@Vyshka\` server-mod folder: \`addons/Vyshka.pbo\` and \`mod.cpp\`. Install it with \`-serverMod=@Vyshka\` (plugins/dayz/README.md, \"Installing on a server\"). The PBO is reproducible: \`go run ./plugins/dayz/cmd/vyshka-dayz build\` at this tag, in a full clone, prints the digest in Vyshka.pbo.sha256."
           } > "$RUNNER_TEMP/notes.md"
           flags=()
-          if [ "${{ steps.meta.outputs.prerelease }}" = true ]; then
+          if [ "$PRERELEASE" = true ]; then
             flags+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \

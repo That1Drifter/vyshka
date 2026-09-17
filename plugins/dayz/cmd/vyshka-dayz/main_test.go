@@ -36,6 +36,24 @@ func TestModVersionReadsThePluginConstant(t *testing.T) {
 	if _, err := modVersion(src); err == nil {
 		t.Error("a version that is not SemVer was accepted")
 	}
+	write("class VyshkaPlugin\n{\n\tstatic const string PLUGIN_VERSION = \"1.2.3+build.4\";\n}\n")
+	if _, err := modVersion(src); err == nil {
+		t.Error("build metadata was accepted; it cannot appear in a release tag")
+	}
+	// A mention in a comment is not the declaration, on the same line or
+	// on its own, and two declarations are a contradiction, not a choice.
+	write("class VyshkaPlugin\n{\n\t/* static const string PLUGIN_VERSION = \"0.6.0\"; */ static const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
+	if got, err := modVersion(src); err == nil || got != "" {
+		t.Errorf("a declaration sharing a line with a commented one was accepted as %q", got)
+	}
+	write("class VyshkaPlugin\n{\n\t// static const string PLUGIN_VERSION = \"0.6.0\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
+	if got, err := modVersion(src); err != nil || got != "0.7.0" {
+		t.Errorf("modVersion beside a commented-out line = %q, %v; want 0.7.0", got, err)
+	}
+	write("class VyshkaPlugin\n{\n\tstatic const string PLUGIN_VERSION = \"0.6.0\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
+	if _, err := modVersion(src); err == nil {
+		t.Error("two declarations were accepted")
+	}
 }
 
 // Two builds of the same source, in different output directories and from

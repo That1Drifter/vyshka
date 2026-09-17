@@ -9,8 +9,10 @@ published by hand except the Steam Workshop item, which needs a Steam account.
 | DayZ plugin | `PLUGIN_VERSION` in `plugins/dayz/mod/scripts/3_Game/Vyshka/VyshkaPlugin.c`, which the manifest reports and `mod.cpp` carries | `dayz-plugin-v<version>`, equal to `PLUGIN_VERSION` or the workflow refuses | A GitHub release with `vyshka-dayz-plugin_<version>.zip` (the `@Vyshka` folder), `Vyshka.pbo.sha256`, and `SHA256SUMS` |
 | Protocol document | The header of `spec/protocol.md` (draft number and date until 1.0) | None | Nothing; the document is its own record, and a change lands with the implementation that needs it |
 
-A prerelease is `v0.2.0-rc.1`: the workflow marks the GitHub release as such and does not
-move the image's `latest` tag.
+A version is `v<major>.<minor>.<patch>`, optionally with a prerelease suffix such as
+`v0.2.0-rc.1`: the workflow marks that GitHub release as a prerelease and does not move the
+image's `latest` tag. SemVer build metadata (`+build.1`) is refused, because a container
+tag cannot carry a `+`.
 
 ## Before any tag
 
@@ -38,15 +40,22 @@ archive and runs the hub conformance suite against that binary, uploads the arch
 builds the image for both platforms, and only then creates the release and pushes the
 image. Afterwards:
 
-- `gh release view hub-v0.1.0` lists the assets. Download one and `sha256sum -c SHA256SUMS`.
-- `docker run --rm ghcr.io/that1drifter/vyshka-hub:0.1.0 version` prints the tag.
+- `gh release view hub-v0.1.0` lists the assets. Download one with `SHA256SUMS` and run
+  `sha256sum --ignore-missing -c SHA256SUMS` (the manifest lists every archive; without
+  the flag the four you did not download count as failures).
+- `docker run --rm ghcr.io/that1drifter/vyshka-hub:0.1.0 version` prints the tag, and
+  `docker run --rm --platform linux/arm64 ghcr.io/that1drifter/vyshka-hub:0.1.0 version`
+  does too on a host with emulation; the workflow already inspected both binaries' ELF
+  headers before publishing.
 - **The first image publish only**: a package published to a user namespace is private
   until made public. Open the package's settings on GitHub (Packages, `vyshka-hub`, Package
   settings), change the visibility to public, and confirm the package is linked to the
   repository so the README shows beside it. Later pushes keep the visibility.
 - To check a download against the repository: at the tagged commit, with the Go version
   the release notes name, run `scripts/release-hub.sh <version>` and compare `SHA256SUMS`.
-  The binaries match byte for byte; the archives match when GNU tar and gzip are used.
+  The binaries match byte for byte from a checkout that honours `.gitattributes` (every
+  text file LF, which is what the embedded panel files and the packed README need); the
+  archives match when GNU tar and gzip are used.
 
 ## The DayZ plugin
 
@@ -59,10 +68,13 @@ git push origin dayz-plugin-v0.7.0
 gh run watch
 ```
 
-The workflow checks the tag against `PLUGIN_VERSION`, runs the packer's tests, builds the
-mod, records the PBO digest, zips the `@Vyshka` folder, and creates the release. The PBO is
+The workflow checks the tag against `PLUGIN_VERSION` (read by `vyshka-dayz version`, the
+same code that writes the number into `mod.cpp`), runs the packer's tests, builds the mod,
+records the PBO digest, zips the `@Vyshka` folder, and creates the release. The PBO is
 reproducible (`plugins/dayz/README.md`, "Building"): `go run ./plugins/dayz/cmd/vyshka-dayz
-build` at the tag prints the same digest on any machine.
+build` at the tag prints the same digest on any machine with a full clone. A shallow clone
+stamps its boundary commit instead and the tool warns; the workflow checks out the full
+history for that reason.
 
 ### The Steam Workshop
 
@@ -70,8 +82,9 @@ The Workshop item is the same `@Vyshka` folder, uploaded with the DayZ Tools Pub
 (Steam, DayZ Tools, Publisher). It is a GUI signed in to a Steam account, so this step is
 manual and done by whoever holds the account.
 
-1. Check out the tag and build: `go run ./plugins/dayz/cmd/vyshka-dayz build`. The printed
-   digest must equal `Vyshka.pbo.sha256` on the GitHub release; if it does not, stop.
+1. Check out the tag in a full clone and build: `go run ./plugins/dayz/cmd/vyshka-dayz
+   build`. The printed digest must equal `Vyshka.pbo.sha256` on the GitHub release; if it
+   does not, stop.
 2. In Publisher choose the folder `plugins/dayz/build/@Vyshka`. First publish: a new item
    titled **Vyshka**, the overview from the plugin README's first paragraph, the change
    notes from the changelog entry, visibility public. Later versions: update the existing

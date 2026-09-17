@@ -38,27 +38,52 @@ const (
 	modDir   = "@Vyshka"
 	pboName  = "Vyshka.pbo"
 	gitIgn   = "*\n"
-	usageTxt = "usage: vyshka-dayz build|harness [flags]\n"
+	usageTxt = "usage: vyshka-dayz build|version|harness [flags]\n"
 	// versionFile is where the plugin states its own version, relative to
 	// the mod source directory. mod.cpp and the release tag both take it
 	// from there, so the manifest, the launcher, and the tag cannot drift.
 	versionFile = "scripts/3_Game/Vyshka/VyshkaPlugin.c"
 )
 
-// versionPattern matches the PLUGIN_VERSION constant in versionFile.
-var versionPattern = regexp.MustCompile(`static const string PLUGIN_VERSION = "([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)";`)
+// versionPattern matches the PLUGIN_VERSION declaration in versionFile: a
+// whole line, so a mention in a comment beside or above the real one cannot
+// be taken for it. The value is SemVer without build metadata, the same
+// rule the release tags follow.
+var versionPattern = regexp.MustCompile(`(?m)^[ \t]*static const string PLUGIN_VERSION = "((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?)";[ \t]*\r?$`)
 
-// modVersion reads the plugin version out of the mod source.
+// modVersion reads the plugin version out of the mod source. Exactly one
+// declaration line must exist: the manifest, mod.cpp, and the release tag
+// all take their number from it.
 func modVersion(src string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(versionFile)))
 	if err != nil {
 		return "", err
 	}
-	m := versionPattern.FindSubmatch(data)
-	if m == nil {
-		return "", fmt.Errorf("no PLUGIN_VERSION constant in %s", versionFile)
+	matches := versionPattern.FindAllSubmatch(data, -1)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no PLUGIN_VERSION declaration in %s (one line: static const string PLUGIN_VERSION = \"<major>.<minor>.<patch>\";)", versionFile)
+	case 1:
+		return string(matches[0][1]), nil
+	default:
+		return "", fmt.Errorf("%d PLUGIN_VERSION declarations in %s, want one", len(matches), versionFile)
 	}
-	return string(m[1]), nil
+}
+
+// runVersion prints the plugin version the mod source states, for the
+// release workflow to compare with its tag.
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	src := fs.String("src", defaultPath("plugins/dayz/mod"), "mod source directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	version, err := modVersion(*src)
+	if err != nil {
+		return err
+	}
+	fmt.Println(version)
+	return nil
 }
 
 // modCpp is the launcher-facing description of the mod folder. It is not
@@ -86,6 +111,15 @@ func buildTime(src string) (uint32, string) {
 	cmd.Dir = src
 	if out, err := cmd.Output(); err == nil {
 		if n, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 32); err == nil {
+			// A shallow clone cannot see past its boundary: the query
+			// answers with the boundary commit, and the digest differs
+			// from a full clone's. Say so rather than print a digest
+			// nothing else will match.
+			shallow := exec.Command("git", "rev-parse", "--is-shallow-repository")
+			shallow.Dir = src
+			if flag, err := shallow.Output(); err == nil && strings.TrimSpace(string(flag)) == "true" {
+				fmt.Fprintln(os.Stderr, "vyshka-dayz: WARNING: shallow clone; the timestamp is the clone boundary, not the last commit touching the mod, so the digest will not match a full clone's (git fetch --unshallow, or set SOURCE_DATE_EPOCH)")
+			}
 			return uint32(n), "the last commit touching the mod source"
 		}
 	}
@@ -101,6 +135,8 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		err = runBuild(os.Args[2:])
+	case "version":
+		err = runVersion(os.Args[2:])
 	case "harness":
 		err = runHarness(os.Args[2:])
 	default:

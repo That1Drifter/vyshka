@@ -13,10 +13,12 @@
 set -euo pipefail
 
 version="${1:-}"
-case "$version" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) echo "usage: scripts/release-hub.sh v<major>.<minor>.<patch>[-<prerelease>]" >&2; exit 2 ;;
-esac
+# SemVer without build metadata, the same rule as the release workflow: a
+# "+" cannot appear in a container tag.
+if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+  echo "usage: scripts/release-hub.sh v<major>.<minor>.<patch>[-<prerelease>]" >&2
+  exit 2
+fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="$root/dist"
 number="${version#v}"

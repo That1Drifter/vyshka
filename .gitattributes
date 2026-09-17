@@ -1,16 +1,6 @@
-* text=auto
-*.md text
-*.yml text
-LICENSE text
-
-# Go tooling treats CRLF as unformatted, so keep these LF in the working tree
-# too, not just in the repository.
-*.go text eol=lf
-*.sql text eol=lf
-
-# The DayZ mod is packed into a PBO whose bytes must not depend on the
-# checkout; keep its sources LF in the working tree as well.
-plugins/dayz/mod/** text eol=lf
-
-# Shell scripts run under bash on Linux and in Git Bash; CRLF breaks both.
-*.sh text eol=lf
+# Every text file is LF in the repository and in the working tree, on every
+# platform. Go tooling treats CRLF as unformatted, shell scripts break under
+# bash with CRLF, and the release artifacts must be the same bytes from any
+# checkout: the panel files embedded in the hub binary, the README and
+# LICENSE packed beside it, and the DayZ mod packed into the PBO.
+* text=auto eol=lf

@@ -36,10 +36,12 @@ is unsigned, which is fine for a server-side mod; clients never load it.
 The build is reproducible: the archive is a function of the source tree's bytes alone.
 Entries are sorted, line endings are normalized to LF whatever the checkout's, and every
 entry carries one timestamp, the commit time of the last commit that touched `mod/`
-(`SOURCE_DATE_EPOCH` overrides it). A build at a tagged commit on any machine prints the
-digest the release publishes as `Vyshka.pbo.sha256`, so a downloaded mod can be checked
-against the repository. The version in `mod.cpp` and in the manifest both come from
-`PLUGIN_VERSION` in `VyshkaPlugin.c`; a release tag must equal it (`RELEASING.md`).
+(`SOURCE_DATE_EPOCH` overrides it). A build at a tagged commit on any machine with a full
+clone prints the digest the release publishes as `Vyshka.pbo.sha256`, so a downloaded mod
+can be checked against the repository (a shallow clone stamps its boundary commit and the
+tool warns). The version in `mod.cpp` and in the manifest both come from `PLUGIN_VERSION`
+in `VyshkaPlugin.c`, printed by `vyshka-dayz version`; a release tag must equal it
+(`RELEASING.md`).
 
 Releases carry the `@Vyshka` folder as `vyshka-dayz-plugin_<version>.zip` on the GitHub
 release for the `dayz-plugin-v<version>` tag; the Steam Workshop item, when published,

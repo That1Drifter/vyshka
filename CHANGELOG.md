@@ -27,7 +27,10 @@ arrived, since those entries were written for one stream.
   anything is published, creates the GitHub release, and pushes the container image to
   `ghcr.io/that1drifter/vyshka-hub` for linux/amd64 and linux/arm64; a manual dispatch
   rehearses the same job and publishes nothing. `Dockerfile` cross-compiles from the
-  builder's platform, so the arm64 image needs no emulation. New under `deploy/`:
+  builder's platform, so the arm64 image needs no emulation, and the workflow inspects
+  each platform's binary before publishing. `.gitattributes` now keeps every text file LF
+  in the working tree on every platform, because the panel files are embedded in the
+  binary and a CRLF checkout built a different one. New under `deploy/`:
   `vyshka-hub.service` (a dedicated user, the state under `/var/lib/vyshka`, the admin
   token as a systemd credential, confinement) and `hub.env.example`, with the install steps
   in `deploy/README.md`. `RELEASING.md` holds the tag scheme and the steps, including the
@@ -44,10 +47,10 @@ arrived, since those entries were written for one stream.
   bytes as the checkout has them, so a build at a commit is the same bytes on any machine;
   `vyshka-dayz build` stamps the commit time of the last commit touching `mod/`
   (`SOURCE_DATE_EPOCH` overrides), prints the archive's SHA-256, and writes the plugin's
-  `PLUGIN_VERSION` into `mod.cpp` beside a description and the repository link.
-  `.gitattributes` pins `plugins/dayz/mod/` to LF in the working tree as well. The release
-  workflow refuses a `dayz-plugin-v*` tag that differs from `PLUGIN_VERSION`, builds the
-  mod, and publishes the `@Vyshka` folder as a zip with the PBO digest beside it.
+  `PLUGIN_VERSION` into `mod.cpp` beside a description and the repository link
+  (`vyshka-dayz version` prints it; exactly one declaration line is accepted). The release
+  workflow refuses a `dayz-plugin-v*` tag that differs from it, builds the mod from a full
+  clone, and publishes the `@Vyshka` folder as a zip with the PBO digest beside it.
 
 ## Protocol
 
