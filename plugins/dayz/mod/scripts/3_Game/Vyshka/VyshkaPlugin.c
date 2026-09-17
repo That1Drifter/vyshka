@@ -28,7 +28,18 @@ class VyshkaSnapshotChannel
 	}
 }
 
-class VyshkaPlugin
+// VyshkaPendingDispatch is a dispatch whose action returned a pending
+// outcome (VyshkaActionOutcome.Pending): acked, executed as far as it could
+// be, and waiting for VyshkaPlugin.Complete to bring the result.
+class VyshkaPendingDispatch
+{
+	string m_ActionId;
+	string m_Code;
+	int m_StartedMs;
+	int m_DeadlineMs;   // monotonic; the dispatch's TTL or PENDING_MAX_MS, whichever ends first
+}
+
+class VyshkaPlugin : VyshkaResponseSink
 {
 	static ref VyshkaPlugin s_Instance;
 
@@ -58,6 +69,14 @@ class VyshkaPlugin
 	static const string SNAPSHOT_PLAYERS = "state.players";
 	static const string SNAPSHOT_VEHICLES = "state.vehicles";
 
+	// A pending dispatch (an action waiting on the store) holds the next
+	// poll back for up to PENDING_POLL_HOLD_MS, so its result rides the poll
+	// that follows the dispatch instead of waiting out a held one; after
+	// PENDING_MAX_MS with no completion it is failed, so a callback that
+	// never comes cannot leave the hub waiting for the whole TTL.
+	static const int PENDING_POLL_HOLD_MS = 3000;
+	static const int PENDING_MAX_MS = 90000;
+
 	static const int REQUEST_ENROLL = 1;
 	static const int REQUEST_SESSION = 2;
 	static const int REQUEST_POLL = 3;
@@ -66,14 +85,26 @@ class VyshkaPlugin
 	ref VyshkaCredentials m_Credentials;
 	ref VyshkaOutbox m_Outbox;
 	ref VyshkaTransport m_Transport;
+	ref VyshkaStore m_Store;
 	ref VyshkaActionRegistry m_Actions;
 	ref VyshkaEventBuffer m_Events;
+	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
+	// An outcome delivered through Complete while its action's Execute was
+	// still running (a store refusal answered on the spot, before the
+	// dispatch could be recorded as pending): kept until Execute returns.
+	ref map<string, ref VyshkaActionOutcome> m_EarlyOutcomes;
+	// Serialized action.result bodies the outbox could not hold when they
+	// were ready, appended in order as room frees (AppendHeldResults).
+	ref array<string> m_HeldResults;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
 	int m_NextSnapshotChannel;                                 // the channel that gets the first try at the next poll
 	int m_LastFpsMs;           // monotonic time of the last core.server.fps sample, or of the start before the first
 	int m_FramesSinceSample;   // mission update frames counted since then (OnFrame)
+
+	string m_Executing;        // the actionId whose Execute is on the stack, "" otherwise
+	int m_ExecutingDeadlineMs; // that dispatch's deadline, for the action to bound its own work by
 
 	string m_SessionToken;
 	int m_SessionExpiresEpoch;
@@ -128,6 +159,50 @@ class VyshkaPlugin
 		return s_Instance.m_LinkState;
 	}
 
+	// Store is the key/value client, or null before the plugin has started
+	// or after it stopped (an action then fails with that as its reason).
+	static VyshkaStore Store()
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return null;
+		return s_Instance.m_Store;
+	}
+
+	// Complete delivers the outcome of a dispatch whose action returned
+	// pending. An actionId that is not pending (already failed by the hold
+	// running out, completed once, or never dispatched) is logged and
+	// ignored: the hub has its answer or will get the timeout's.
+	static void Complete(string actionId, VyshkaActionOutcome outcome)
+	{
+		if (!s_Instance)
+			return;
+		s_Instance.FinishPending(actionId, outcome);
+	}
+
+	// IsPending says whether a dispatch is still waiting for its outcome:
+	// the one whose Execute is running counts, since it may go pending. An
+	// action with work left after a failed or expired dispatch checks this
+	// before doing anything on the dispatch's behalf.
+	static bool IsPending(string actionId)
+	{
+		if (!s_Instance || actionId == "")
+			return false;
+		if (actionId == s_Instance.m_Executing)
+			return true;
+		return s_Instance.m_PendingDispatches.Contains(actionId);
+	}
+
+	// CurrentDeadlineMs is the monotonic deadline of the dispatch whose
+	// Execute is on the stack: its TTL, or the pending hold, whichever ends
+	// first. An action that will complete later bounds its own work by it.
+	// Outside Execute it is the hold counted from now.
+	static int CurrentDeadlineMs()
+	{
+		if (s_Instance && s_Instance.m_Executing != "")
+			return s_Instance.m_ExecutingDeadlineMs;
+		return VyshkaClock.MonotonicMs() + PENDING_MAX_MS;
+	}
+
 	void VyshkaPlugin()
 	{
 		m_RenewMarginSeconds = RENEW_MARGIN_SECONDS;
@@ -136,6 +211,9 @@ class VyshkaPlugin
 		m_LinkState = "buffering";
 		m_PollTimeoutSeconds = 25;
 		m_Events = new VyshkaEventBuffer();
+		m_PendingDispatches = new map<string, ref VyshkaPendingDispatch>;
+		m_EarlyOutcomes = new map<string, ref VyshkaActionOutcome>;
+		m_HeldResults = new array<string>;
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
@@ -171,9 +249,17 @@ class VyshkaPlugin
 		LoadExecuted();
 
 		m_Transport = new VyshkaTransport();
-		if (!m_Transport.Init(m_Config.m_HubUrl, this))
+		if (!m_Transport.Init(m_Config.m_HubUrl + "/plugin/v1/", this))
 			return;
-		m_Transport.SetReadTimeout(m_Config.m_PollTimeoutSeconds + 5);
+
+		// The store client has a transport of its own so a key/value call
+		// never waits behind a held poll (VyshkaStore).
+		array<string> namespaces = new array<string>;
+		namespaces.Insert(VyshkaActionRegistry.KV_NAMESPACE);
+		m_Store = new VyshkaStore();
+		if (!m_Store.Init(m_Config.m_HubUrl, namespaces))
+			return;
+		ApplyReadTimeout(m_Config.m_PollTimeoutSeconds);
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
@@ -197,7 +283,16 @@ class VyshkaPlugin
 		// it is flushed to the outbox so the next boot delivers it, stamped
 		// with the time it happened, ahead of that boot's own start event.
 		Emit("core.server.stop", ServerEventData());
+		// A dispatch still waiting on its action is answered now, so the
+		// next boot delivers a failure rather than leaving the hub to time
+		// the action out; the store's own callbacks are failed first, so no
+		// completion arrives after this.
+		m_Store.Shutdown();
+		FailPending("the server stopped before the action finished");
 		FlushEvents();
+		AppendHeldResults();
+		if (m_HeldResults.Count() > 0)
+			VyshkaLog.Error(m_HeldResults.Count().ToString() + " action result(s) the outbox could not hold are lost with this stop; the hub will expire those actions");
 		m_Running = false;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(Tick);
 		VyshkaLog.Info("stopped with " + m_Outbox.Count().ToString() + " unacked envelope(s) on disk");
@@ -228,8 +323,16 @@ class VyshkaPlugin
 		// whatever is queued rides the next poll. Snapshots are captured by
 		// the poll itself (PublishSnapshots), so they never wait for one.
 		SampleFps();
+		// Results held back for room go first: they were owed before any
+		// event, and the events' flush leaves their slots alone.
+		AppendHeldResults();
+		QueueManifest();
+		ExpirePending();
 		if (m_Events.Due())
 			FlushEvents();
+		// The store's own transport: its requests go out whether or not a
+		// poll is in flight, which is the point of it having one.
+		m_Store.Tick(m_SessionToken);
 		m_Transport.CheckWatchdog();
 		if (m_Transport.IsInFlight())
 			return;
@@ -292,8 +395,51 @@ class VyshkaPlugin
 			if (count > VyshkaEventBuffer.FLUSH_COUNT)
 				count = VyshkaEventBuffer.FLUSH_COUNT;
 			string body = m_Events.TakeBatch();
-			if (!m_Outbox.Append("event.batch", body, count))
+			// The slots held for pending results (HandleDispatch) are not
+			// the events' to take: a batch that would eat into them is
+			// dropped, and counted, as one the outbox could not hold.
+			VyshkaOutboxEntry stored = null;
+			if (!m_Outbox.HasRoom(1 + ReservedResults()))
+				m_Outbox.Refuse("event.batch");
+			else
+				stored = m_Outbox.Append("event.batch", body, count);
+			if (!stored)
 				VyshkaLog.Warn("dropped " + count.ToString() + " event(s) the outbox could not hold");
+		}
+	}
+
+	// QueueManifest appends the manifest.publish once per boot, at the first
+	// session start with room for it, or on a later tick when the outbox was
+	// full then (a boot that restored a full outbox). It leaves the slots
+	// held for owed results alone like everything else that is not one.
+	void QueueManifest()
+	{
+		if (m_ManifestQueued || m_SessionToken == "")
+			return;
+		if (!m_Outbox.HasRoom(1 + ReservedResults()))
+			return;
+		if (m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
+			m_ManifestQueued = true;
+	}
+
+	// ReservedResults is how many outbox slots are spoken for by results not
+	// yet appended: one per pending dispatch, one per result held back
+	// because the outbox was full when it was ready.
+	int ReservedResults()
+	{
+		return m_PendingDispatches.Count() + m_HeldResults.Count();
+	}
+
+	// AppendHeldResults retries the results the outbox could not hold when
+	// they were ready, in order, as acks free room.
+	void AppendHeldResults()
+	{
+		while (m_HeldResults.Count() > 0)
+		{
+			if (!m_Outbox.Append("action.result", m_HeldResults.Get(0)))
+				return;
+			m_HeldResults.RemoveOrdered(0);
+			VyshkaLog.Info("a held action result was stored in the outbox; " + m_HeldResults.Count().ToString() + " still held");
 		}
 	}
 
@@ -369,6 +515,17 @@ class VyshkaPlugin
 		if (!m_Running || m_Transport.IsInFlight())
 			return;
 
+		// A dispatch whose action is still working (on the store, a round
+		// trip away) gets a moment to finish, so its result rides the poll
+		// that follows the dispatch instead of waiting out a held one. The
+		// hold is short and bounded: past it the poll goes, and the result
+		// rides the next.
+		if (YoungestPendingMs() < PENDING_POLL_HOLD_MS)
+		{
+			Delay(50);
+			return;
+		}
+
 		if (!m_Credentials)
 		{
 			if (m_Config.m_EnrollmentToken == "")
@@ -423,6 +580,18 @@ class VyshkaPlugin
 	{
 		m_BackoffMs = 0;
 		m_NextAttemptMs = 0;
+	}
+
+	// ApplyReadTimeout sets the engine's process-wide read timeout for a
+	// pollTimeout (the hold plus 5 s of slack) and keeps the store client's
+	// watchdog above it plus the engine's 10 s connection timeout: a request
+	// the watchdog abandoned while the engine still ran it would share the
+	// context with the next one (VyshkaStore).
+	void ApplyReadTimeout(int pollTimeoutSeconds)
+	{
+		m_Transport.SetReadTimeout(pollTimeoutSeconds + 5);
+		if (m_Store)
+			m_Store.SetBudgetMs((pollTimeoutSeconds + 5 + 10 + 5) * 1000);
 	}
 
 	void SetLinkState(string state)
@@ -497,7 +666,7 @@ class VyshkaPlugin
 
 	// ---- responses ----
 
-	void OnResponse(int kind, bool ok, int code, string data)
+	override void OnResponse(int kind, bool ok, int code, string data)
 	{
 		if (!m_Running)
 			return;
@@ -636,7 +805,7 @@ class VyshkaPlugin
 		m_PollTimeoutSeconds = root.GetInt("pollTimeoutSeconds", 25);
 		if (m_PollTimeoutSeconds < 1)
 			m_PollTimeoutSeconds = 25;
-		m_Transport.SetReadTimeout(m_PollTimeoutSeconds + 5);
+		ApplyReadTimeout(m_PollTimeoutSeconds);
 		int expires;
 		if (VyshkaClock.ParseRfc3339(root.GetString("expiresAt", ""), expires))
 			m_SessionExpiresEpoch = expires;
@@ -659,8 +828,7 @@ class VyshkaPlugin
 		m_PolledThisSession = false;
 		m_Outbox.Renumber();
 
-		if (!m_ManifestQueued && m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
-			m_ManifestQueued = true;
+		QueueManifest();
 
 		VyshkaLog.Info("session started; pollTimeout " + m_PollTimeoutSeconds.ToString() + " s, " + m_Outbox.Count().ToString() + " envelope(s) to send");
 		SetLinkState("connected");
@@ -743,7 +911,7 @@ class VyshkaPlugin
 		if (pollTimeout >= 1 && pollTimeout != m_PollTimeoutSeconds)
 		{
 			m_PollTimeoutSeconds = pollTimeout;
-			m_Transport.SetReadTimeout(m_PollTimeoutSeconds + 5);
+			ApplyReadTimeout(m_PollTimeoutSeconds);
 		}
 		int expires;
 		if (VyshkaClock.ParseRfc3339(root.GetString("sessionExpiresAt", ""), expires))
@@ -788,7 +956,10 @@ class VyshkaPlugin
 				// outcome it could never report (section 9.4). The hub ack was
 				// already applied above, so a poll that frees space unblocks
 				// this on the same tick.
-				if (!m_Outbox.HasRoom(2))
+				// A pending dispatch has its result still to append, and
+				// a held result its slot, so those are held here against
+				// everything dispatched after them.
+				if (!m_Outbox.HasRoom(2 + ReservedResults()))
 				{
 					VyshkaLog.Warn("outbox full; deferring hub envelope seq " + seq.ToString() + " until it drains");
 					break;
@@ -1019,7 +1190,7 @@ class VyshkaPlugin
 		string context = body.GetString("context", "");
 		string referenceKey = body.GetString("referenceKey", "");
 
-		int deadline;
+		int deadline = 0;
 		// The engine clock is whole-second, and the parser floors expiresAt to
 		// its second, so the true deadline lies anywhere in [deadline,
 		// deadline+1). Discarding once the current second reaches that second
@@ -1036,11 +1207,51 @@ class VyshkaPlugin
 		}
 
 		int started = VyshkaClock.MonotonicMs();
+		// The deadline an action that completes later works under: the
+		// dispatch's own TTL when it is shorter than the pending hold, so
+		// nothing lands after the hub has expired the action.
+		int deadlineMs = started + PENDING_MAX_MS;
+		if (deadline > 0)
+		{
+			int ttlSeconds = deadline - VyshkaClock.EpochSeconds();
+			if (ttlSeconds < PENDING_MAX_MS / 1000)
+				deadlineMs = started + ttlSeconds * 1000;
+		}
+		m_Executing = actionId;
+		m_ExecutingDeadlineMs = deadlineMs;
 		VyshkaActionOutcome outcome = m_Actions.Execute(actionId, code, context, referenceKey, body.Get("params"));
-		int durationMs = VyshkaClock.MonotonicMs() - started;
+		m_Executing = "";
 		if (!outcome)
 			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
+		if (outcome.m_Pending && m_EarlyOutcomes.Contains(actionId))
+		{
+			// The action completed itself before Execute returned (a store
+			// call refused on the spot): that outcome is the result.
+			outcome = m_EarlyOutcomes.Get(actionId);
+			m_EarlyOutcomes.Remove(actionId);
+		}
+		if (outcome.m_Pending)
+		{
+			// The action has more to do (a store round trip) before it can
+			// say how it went. The ack is out; the result follows through
+			// Complete, or the hold runs out and FailPending answers.
+			VyshkaPendingDispatch pending = new VyshkaPendingDispatch();
+			pending.m_ActionId = actionId;
+			pending.m_Code = code;
+			pending.m_StartedMs = started;
+			pending.m_DeadlineMs = deadlineMs;
+			m_PendingDispatches.Set(actionId, pending);
+			VyshkaLog.Info("action " + code + " (" + actionId + ") is pending");
+			return;
+		}
+		AppendResult(actionId, code, started, outcome);
+	}
 
+	// AppendResult writes the action.result for a dispatch, whether the
+	// outcome came back from Execute at once or through Complete later.
+	void AppendResult(string actionId, string code, int started, VyshkaActionOutcome outcome)
+	{
+		int durationMs = VyshkaClock.MonotonicMs() - started;
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
 		result.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		result.Set("ok", VyshkaJsonValue.NewBool(outcome.m_Ok));
@@ -1053,12 +1264,94 @@ class VyshkaPlugin
 		else
 			result.Set("error", VyshkaJsonValue.NewString(outcome.m_Error));
 		result.Set("durationMs", VyshkaJsonValue.NewInt(durationMs));
-		m_Outbox.Append("action.result", result.Serialize());
+		// Room for this result was checked at dispatch and held for a
+		// pending one (HandleDispatch, FlushEvents). Should the outbox still
+		// refuse it, the result is kept and appended as soon as an ack frees
+		// room (AppendHeldResults) rather than lost: the executed-id dedup
+		// means a re-delivery could never produce it again.
+		string resultBody = result.Serialize();
+		if (!m_Outbox.Append("action.result", resultBody))
+		{
+			m_HeldResults.Insert(resultBody);
+			VyshkaLog.Warn("the outbox could not hold the result of action " + actionId + " (" + code + "); holding it until room frees");
+		}
 
 		if (outcome.m_Ok)
 			VyshkaLog.Info("action " + code + " (" + actionId + ") completed in " + durationMs.ToString() + " ms");
 		else
 			VyshkaLog.Info("action " + code + " (" + actionId + ") failed: " + outcome.m_Error);
+	}
+
+	// FinishPending answers a pending dispatch with the outcome its action
+	// brought. Pending is checked before anything else, so a completion for
+	// an unknown or already-answered actionId changes nothing.
+	void FinishPending(string actionId, VyshkaActionOutcome outcome)
+	{
+		VyshkaPendingDispatch pending = m_PendingDispatches.Get(actionId);
+		if (!pending)
+		{
+			if (actionId != "" && actionId == m_Executing)
+			{
+				// Execute is still on the stack for this dispatch; the
+				// outcome waits for it to return (HandleDispatch).
+				m_EarlyOutcomes.Set(actionId, outcome);
+				return;
+			}
+			VyshkaLog.Warn("a completion arrived for action " + actionId + ", which is not pending; ignored");
+			return;
+		}
+		m_PendingDispatches.Remove(actionId);
+		if (!outcome)
+			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
+		if (outcome.m_Pending)
+			outcome = VyshkaActionOutcome.Failure("the action completed with a pending outcome");
+		AppendResult(actionId, pending.m_Code, pending.m_StartedMs, outcome);
+	}
+
+	// ExpirePending fails every dispatch pending past its deadline (its TTL
+	// or PENDING_MAX_MS): a store client that gives up answers its callback
+	// ahead of this, so this is the guard against a callback that never
+	// comes at all.
+	void ExpirePending()
+	{
+		if (m_PendingDispatches.Count() == 0)
+			return;
+		int now = VyshkaClock.MonotonicMs();
+		array<string> expired = new array<string>;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+		{
+			if (now > m_PendingDispatches.GetElement(i).m_DeadlineMs)
+				expired.Insert(m_PendingDispatches.GetKey(i));
+		}
+		for (int j = 0; j < expired.Count(); j++)
+			FinishPending(expired.Get(j), VyshkaActionOutcome.Failure("the action did not finish within its deadline"));
+	}
+
+	// FailPending answers every pending dispatch with one failure.
+	void FailPending(string error)
+	{
+		array<string> ids = new array<string>;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+			ids.Insert(m_PendingDispatches.GetKey(i));
+		for (int j = 0; j < ids.Count(); j++)
+			FinishPending(ids.Get(j), VyshkaActionOutcome.Failure(error));
+	}
+
+	// YoungestPendingMs is the age of the most recent pending dispatch, or
+	// a very large number when none is pending.
+	int YoungestPendingMs()
+	{
+		if (m_PendingDispatches.Count() == 0)
+			return int.MAX;
+		int now = VyshkaClock.MonotonicMs();
+		int youngest = int.MAX;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+		{
+			int age = now - m_PendingDispatches.GetElement(i).m_StartedMs;
+			if (age < youngest)
+				youngest = age;
+		}
+		return youngest;
 	}
 
 	// MarkExecuted records an executed actionId in the in-memory LRU and on

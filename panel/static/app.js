@@ -925,14 +925,23 @@ async function viewMap(app, route, seq) {
     for (const player of state.players) {
       const point = manifest ? worldPoint(manifest, player.position) : null;
       if (point) plotted++;
+      // The admin flags in effect on the player (the DayZ plugin's
+      // data.flags, issue #71: an object of the set flags) are badges
+      // beside the name, so who has one set is visible at a glance, and
+      // are left out of the data summary that would otherwise repeat them.
+      const flags = player.data.flags && typeof player.data.flags === 'object' && !Array.isArray(player.data.flags)
+        ? Object.keys(player.data.flags).filter((flag) => player.data.flags[flag] === true) : [];
+      const rest = Object.assign({}, player.data);
+      if (flags.length > 0) delete rest.flags;
       const row = el('tr', { 'data-player-key': player.key, 'data-player-id': player.id },
-        el('td', {}, player.name || el('span', { class: 'muted' }, 'unnamed')),
+        el('td', {}, player.name || el('span', { class: 'muted' }, 'unnamed'),
+          flags.length > 0 ? [' ', el('span', { class: 'badges flags' }, flags.map((flag) => badge(flag, 'warning flag')))] : null),
         el('td', { class: 'mono' }, player.identity),
         el('td', { class: 'position' }, Array.isArray(player.position)
           ? positionText(manifest, player.position)
           : el('span', { class: 'muted' }, 'no position')),
-        el('td', { class: 'data' }, Object.keys(player.data).length > 0
-          ? attempt(() => summarizeEventData(player.data), 'The data is nested too deeply to summarize.')
+        el('td', { class: 'data' }, Object.keys(rest).length > 0
+          ? attempt(() => summarizeEventData(rest), 'The data is nested too deeply to summarize.')
           : el('span', { class: 'muted' }, 'none')),
         el('td', { class: 'row-actions' },
           point ? el('button', {

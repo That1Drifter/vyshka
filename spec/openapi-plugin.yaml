@@ -354,6 +354,91 @@ paths:
         "403": { $ref: "#/components/responses/KVForbidden" }
         "404": { $ref: "#/components/responses/KVNotFound" }
 
+  /plugin/v1/kv/{namespace}/{key}/get:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+      - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
+    post:
+      tags: [kv]
+      operationId: kvGetPost
+      summary: The POST spelling of get (section 12.2).
+      description: |
+        For an engine client that can issue only GET and POST and carries its
+        credential on a POST alone. No body; one sent anyway is ignored. The
+        answer, status, and errors are those of `GET` on the key.
+      security:
+        - sessionToken: []
+      responses:
+        "200":
+          description: The key, its value, and its revision, or an InlineError under `?errors=inline`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/KVEntry"
+                  - $ref: "#/components/schemas/InlineError"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "404": { $ref: "#/components/responses/KVNotFound" }
+
+  /plugin/v1/kv/{namespace}/{key}/set:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+      - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
+    post:
+      tags: [kv]
+      operationId: kvSetPost
+      summary: The POST spelling of set (section 12.2).
+      description: |
+        The same body, answer, status, and errors as `PUT` on the key,
+        `ifRevision` and `ttlSeconds` included.
+      security:
+        - sessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KVSetRequest" }
+      responses:
+        "200":
+          description: The key's new revision, or an InlineError under `?errors=inline`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/KVWriteResult"
+                  - $ref: "#/components/schemas/InlineError"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "409": { $ref: "#/components/responses/KVRevisionMismatch" }
+
+  /plugin/v1/kv/{namespace}/{key}/delete:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+      - $ref: "#/components/parameters/KVKey"
+      - $ref: "#/components/parameters/InlineErrors"
+    post:
+      tags: [kv]
+      operationId: kvDeletePost
+      summary: The POST spelling of delete (section 12.2).
+      description: |
+        No body; one sent anyway is ignored. The answer, status, and errors
+        are those of `DELETE` on the key.
+      security:
+        - sessionToken: []
+      responses:
+        "204":
+          description: The key was deleted.
+        "200": { $ref: "#/components/responses/InlineError" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "403": { $ref: "#/components/responses/KVForbidden" }
+        "404": { $ref: "#/components/responses/KVNotFound" }
+
   /plugin/v1/kv/{namespace}/{key}/incr:
     parameters:
       - $ref: "#/components/parameters/KVNamespace"

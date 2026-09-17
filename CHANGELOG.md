@@ -19,6 +19,16 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-17: POST spellings of the Plugin API's key/value get, set, and delete (issue
+  #71, protocol draft 0.24): `POST /plugin/v1/kv/{namespace}/{key}/get`, `/set`, and
+  `/delete` are the same operations behind the same session and confinement gate, with
+  the same bodies, answers, and errors, the way `/incr` already was. They exist for an
+  engine HTTP client that can issue only GET and POST and carries its credential on a
+  POST alone, which the DayZ plugin measured its own to be. The Admin API has no POST
+  spellings. The hub conformance suite grades them (`kv.postSpellings`), and
+  `spec/openapi-plugin.yaml` describes them. The panel's live map shows a player's admin
+  flags (the `flags` object a plugin puts in a `state.players` entry's `data`) as badges
+  beside the name and leaves them out of the data summary.
 - 2026-09-17: the `discord` webhook template words `core.player.damage` (issue #70): who
   hit whom, with what, from how far, in which body part, for how much, the health left as
   a field, and a fatal hit titled as one. A death now also carries the fatal hit as a
@@ -81,6 +91,28 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-17: admin flags (issue #71, plugin 0.8.0, manifest revision 6). `vyshka.flags`
+  (player, `warning`) sets any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, and
+  `ignoredByAi` on an identity, online or not, and leaves the ones it does not name alone.
+  The set lives in the hub's key/value store as `vyshka/flags.<Steam64>` (the manifest now
+  declares the `vyshka` namespace), read and written through the Plugin API's new POST
+  spellings on a transport of its own so a store call never waits behind a held poll,
+  written under the revision read so a concurrent writer makes the action start over
+  (clearing the last flag writes an empty record rather than deleting the key, since the
+  store's delete is unconditional), and bounded by the dispatch's TTL; the game follows the
+  store, so a write the store refuses changes nothing. A character is given its identity's flags as it attaches, from what the
+  process last knew and then from the store, so the flags survive a respawn, a reconnect,
+  and a restart and follow the identity across the installation's servers. `state.players`
+  carries the set flags as `data.flags`. God is the engine's `SetAllowDamage(false)`,
+  freeze the input controller's movement override at zero, unlimited stamina and ignored
+  by AI reproduce the engine's own diagnostic-build switches with overrides on the stamina
+  handler and the character, and unlimited ammo refills the magazine after every shot from
+  the weapon's fire event. Actions can now complete later than they execute
+  (`VyshkaActionOutcome.Pending` and `VyshkaPlugin.Complete`): the dispatch is acked at
+  once, its result's outbox slot is held, the next poll is held back up to 3 s so the
+  result rides it, and a completion that never comes is failed at the dispatch's deadline
+  (its TTL, 90 s at most) or at shutdown. Invisibility and no-collision stay
+  parked; `spikes/dayz-admin-flags` records what the engine let a server do about them.
 - 2026-09-17: damage telemetry (issue #70, plugin 0.8.0). `core.player.damage` is emitted
   from the character's hit hook, one event per hit the engine reports after applying it:
   `cause` and the source read as a death's killer is (`attacker`, `attackerName`, `weapon`,
@@ -116,7 +148,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.23 (2026-09-15). The document's header carries the draft number and date; each
+Draft 0.24 (2026-09-17). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

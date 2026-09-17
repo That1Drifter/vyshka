@@ -3376,6 +3376,12 @@ var checks = []Check{
 		Run:     checkKVPluginWrite,
 	},
 	{
+		ID:      "kv.postSpellings",
+		Title:   "The POST spellings of get, set, and delete are the same operations behind the same gate",
+		Section: "12.2",
+		Run:     checkKVPluginPostSpellings,
+	},
+	{
 		ID:      "kv.cas",
 		Title:   "A stale ifRevision loses with the current revision; a fresh one wins",
 		Section: "12.2",

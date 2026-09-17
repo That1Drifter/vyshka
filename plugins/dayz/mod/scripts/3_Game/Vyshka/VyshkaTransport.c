@@ -13,9 +13,23 @@
 //     completed (connection refused), 8 on timeout. The protocol's error
 //     codes are invisible, so the plugin reasons from these four instead.
 //
-// One request is in flight at a time. Every request carries a generation
-// number, and a callback from a superseded generation is ignored, so a
-// response that arrives after the watchdog gave up cannot corrupt state.
+// One request is in flight at a time per transport. Every request carries a
+// generation number, and a callback from a superseded generation is ignored,
+// so a response that arrives after the watchdog gave up cannot corrupt state.
+// The link (VyshkaPlugin) and the key/value client (VyshkaStore) each own one
+// transport with its own RestContext, so a key/value call does not wait
+// behind a held poll; the engine keys contexts by base URL, which is why the
+// two are created with different ones.
+
+// VyshkaResponseSink is what a transport reports to: the owner of the
+// request, told the kind it gave the request, whether the engine reported
+// success, the error code otherwise, and the body of a success.
+class VyshkaResponseSink
+{
+	void OnResponse(int kind, bool ok, int code, string data)
+	{
+	}
+}
 
 class VyshkaRequestCallback : RestCallback
 {
@@ -69,7 +83,7 @@ class VyshkaTransport
 	static const int ERROR_UNEXPECTED = 101;  // a callback the plugin never asked for
 
 	RestContext m_Context;
-	VyshkaPlugin m_Plugin;
+	VyshkaResponseSink m_Sink;
 	ref VyshkaRequestCallback m_Callback;
 	int m_Generation;
 	bool m_InFlight;
@@ -78,9 +92,13 @@ class VyshkaTransport
 	int m_BudgetMs;
 	string m_Path;
 
-	bool Init(string hubUrl, VyshkaPlugin plugin)
+	// Init opens the transport's context at baseUrl, which every request path
+	// is relative to (the link uses the Plugin API root, the store its kv
+	// path). Two transports with the same base URL would share one engine
+	// context and its request queue, which is why they never do.
+	bool Init(string baseUrl, VyshkaResponseSink sink)
 	{
-		m_Plugin = plugin;
+		m_Sink = sink;
 		RestApi api = GetRestApi();
 		if (!api)
 			api = CreateRestApi();
@@ -89,10 +107,10 @@ class VyshkaTransport
 			VyshkaLog.Error("the engine's RestApi is unavailable; the plugin cannot talk to a hub");
 			return false;
 		}
-		m_Context = api.GetRestContext(hubUrl + "/plugin/v1/");
+		m_Context = api.GetRestContext(baseUrl);
 		if (!m_Context)
 		{
-			VyshkaLog.Error("could not create a RestContext for " + hubUrl);
+			VyshkaLog.Error("could not create a RestContext for " + baseUrl);
 			return false;
 		}
 		api.SetOption(OPTION_CONNECT_TIMEOUT, 10);
@@ -154,8 +172,8 @@ class VyshkaTransport
 			return;
 		m_InFlight = false;
 		m_Callback = null;
-		if (m_Plugin)
-			m_Plugin.OnResponse(m_Kind, ok, code, data);
+		if (m_Sink)
+			m_Sink.OnResponse(m_Kind, ok, code, data);
 	}
 
 	// CheckWatchdog fails a request whose callback never came. Bumping the
@@ -170,8 +188,8 @@ class VyshkaTransport
 		m_Generation++;
 		m_InFlight = false;
 		m_Callback = null;
-		if (m_Plugin)
-			m_Plugin.OnResponse(m_Kind, false, ERROR_WATCHDOG, "");
+		if (m_Sink)
+			m_Sink.OnResponse(m_Kind, false, ERROR_WATCHDOG, "");
 	}
 
 	static string DescribeError(int code)

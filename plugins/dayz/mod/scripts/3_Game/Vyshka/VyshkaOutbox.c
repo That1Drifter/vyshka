@@ -161,6 +161,16 @@ class VyshkaOutbox
 		return m_Entries.Count();
 	}
 
+	// Refuse counts an envelope the plugin chose not to append because the
+	// room left is spoken for (results owed for pending dispatches), so the
+	// refusal counter of section 9.4 covers it like one the capacity bound
+	// itself refused.
+	void Refuse(string envelopeType)
+	{
+		m_Dropped++;
+		VyshkaLog.Warn("outbox: the room left is held for owed action results; refused a " + envelopeType + " (total refused " + m_Dropped.ToString() + ")");
+	}
+
 	// HasRoom reports whether n more envelopes fit under the capacity bound.
 	// Inbound processing consults this before taking a dispatch, so an action
 	// is never executed when its ack and result could not both be queued.

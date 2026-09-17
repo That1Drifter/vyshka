@@ -17,8 +17,8 @@ Clean-room: written from the engine's public script headers and the measurements
 | Path | What it is |
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
-| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
+| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list, the key/value store client (`VyshkaStore`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
@@ -96,7 +96,8 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
 identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
-from the latest `state.vehicles` snapshot. The manifest (revision 5) declares:
+from the latest `state.vehicles` snapshot. The manifest (revision 6, declaring the `vyshka`
+key/value namespace for the admin flags) declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
@@ -106,6 +107,7 @@ from the latest `state.vehicles` snapshot. The manifest (revision 5) declares:
 | `vyshka.dry` | player | none | none | `name`, `wasWet` (the player's wet flag before), `items` (in the inventory tree), `dried` (how many were wet) |
 | `vyshka.brokenlegs` | player | warning | `broken` (required) | `name`, `before` and `after` (`none`, `broken`, `splint`), `legHealth` (the four leg zones after) |
 | `vyshka.bloodyhands` | player | none | `bloody` (required) | `name`, `before`, `after` |
+| `vyshka.flags` | player | warning | any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, `ignoredByAi` (booleans; an absent one is left as it is; at least one is required) | `player`, `name` (when known), `online`, `flags` (all five after the change), `changed` (the ones named), `revision` (of the store key; 0 when nothing was ever stored); the player need not be online |
 | `vyshka.kick` | player | warning | `reason` | `name`, `reason`; the player is disconnected through the engine's own disconnect call and `core.player.kick` is emitted |
 | `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`; the identity goes on the ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id |
 | `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
@@ -118,7 +120,8 @@ from the latest `state.vehicles` snapshot. The manifest (revision 5) declares:
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
 
 Kick, message, teleport, spawn, the ban's own kick, vitals, stop bleeding, dry, broken legs,
-and bloody hands need the player online and fail with `player <id> is not online` otherwise. Unstuck fails with `no vehicle <id> exists on this
+and bloody hands need the player online and fail with `player <id> is not online` otherwise;
+ban, unban, and flags take an offline identity by its plain Steam64 id. Unstuck fails with `no vehicle <id> exists on this
 server` when the id is not in the current vehicle list.
 
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
@@ -253,6 +256,61 @@ does by itself once both legs are back at full health, and removes a splint if o
 **Bloody hands** sets or clears the flag the engine shows on the character's hands and
 uses for the salmonella roll when eating.
 
+**Flags** are five server-authoritative per-player switches set with one action: `god` (no
+damage), `freeze` (no movement), `unlimitedStamina`, `unlimitedAmmo`, and `ignoredByAi`. A
+flag belongs to the identity, not the character: the set is kept in the hub's key/value
+store as `vyshka/flags.<Steam64>` (protocol section 12; the manifest declares the
+namespace), so it survives a respawn, a reconnect, and a server restart, and follows the
+identity to every server enrolled in the installation, because the store is
+installation-wide (a player frozen on one server is frozen on the operator's other servers
+too). The store is the truth and the game follows it: the action reads the identity's
+record, merges the flags it names, writes the record back guarded by the revision it read
+(a bot writing the same key in between makes it start over, three times at most), and only
+then applies the set to the character if one is online and answers; a write the store
+refuses fails the action and changes nothing in the game. Clearing the last flag writes the
+record back with an empty set rather than deleting the key: the store's delete is
+unconditional (protocol section 12.2), so a delete could erase a flag another writer set in
+between, while the guarded write cannot; an operator who wants the key gone deletes it
+through the Admin API (`DELETE /api/v1/kv/vyshka/flags.<Steam64>`; the panel's store view is
+read-only). Every store call the action makes is bounded by the action's own TTL (and by 90
+s at most), so a store that does not answer in time fails the action while the hub still
+listens. A write abandoned at that deadline may still land at the hub, so an action that
+failed for time is not proof the flags did not change: the plugin reads the record again
+afterwards and the game follows whatever the store holds. A character is
+given its identity's flags as it attaches (first join, respawn, or reconnect): what this
+server process last knew at once, then the store's answer, which may have changed while the
+player was away; a lookup the store does not answer is retried every 30 s while the player
+is online. The record is `{ "flags": { "god": true }, "name", "updatedAt", "actionId" }`
+with the set flags only, readable in the panel's key/value browser. The set flags also ride
+`state.players` as `data.flags` (below).
+
+What each flag does, with the engine's own mechanisms: `god` is `SetAllowDamage(false)`,
+the call the engine's invincibility cheat makes, which also stops the bleeding manager
+from opening a source (verified live: a firearm hit through the engine's direct damage
+call left health at 100); `freeze` holds the input controller's movement-speed override at
+zero, the override the engine's developer "server walk" drives a character with from the
+server (verified live: held W and Shift+W moved the server position by nothing where the
+same input had moved it 8.4 m in 2.5 s before; the client may show its own predicted step
+snapping back); `unlimitedStamina` keeps the stamina handler from depleting and regenerates
+as if idle whatever the character does, and fills the bar when set (verified live: twenty
+seconds of sprint at 100 where eight unflagged seconds read 100 to 82; the client's own
+predicted bar may dip and snap back at the engine's half-second sync); `unlimitedAmmo`
+refills the magazine after every shot from the weapon's fire event on the server, the way
+the engine's own debug option does at five rounds, and an internal magazine with cartridges
+of the type just fired (verified through the weapon's fire event from the test rig: a
+magazine at 28 read 27 after the round was taken and 30 after the event, and 28 after it
+unflagged; a client-fired shot and an internal magazine were not exercised live). A weapon
+with neither, a single-shot break-action such as the IZH-18, is not refilled: its one
+round is the chamber itself, whose state the plugin leaves to the engine;
+`ignoredByAi` answers the engine's AI-targeting question with no, which is what the
+engine's diagnostic builds do for an untargetable character, so infected and animals do not
+take the player as a target (verified live: the engine's answer for a spawned infected read
+true, then false once flagged). The engine's own stamina and AI switches
+compile only in its diagnostic builds, so the plugin reproduces them with overrides on the
+stamina handler and the character. A frozen player seated in a vehicle drives it as usual:
+the override is the character's movement, not the vehicle's controls. The action is
+`warning` because god and freeze change what a player can do to and with others.
+
 ## Telemetry
 
 The plugin publishes events (protocol section 8.1) and `state.players` and `state.vehicles`
@@ -322,8 +380,12 @@ than the poll cycle it is the poll cycle that sets the cadence (see below):
 { "capturedAt": "2026-09-11T14:00:00Z",
   "players": [ { "player": { "platform": "steam", "id": "7656..." }, "name": "Survivor",
                  "position": [4231.5, 300.2, 10620.0],
-                 "data": { "alive": true, "health": 100, "blood": 5000 } } ] }
+                 "data": { "alive": true, "health": 100, "blood": 5000,
+                           "flags": { "god": true } } } ] }
 ```
+
+`data.flags` lists the admin flags in effect on the character, the set ones only, and is
+absent when none is; the panel shows them as badges beside the name.
 
 ```json
 { "capturedAt": "2026-09-16T23:00:00Z",
@@ -443,6 +505,17 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   finding 7). Against a hub that predates the option, or a proxy answering in its place, the
   refusal is still opaque and the plugin falls back to reasoning from the error class. Both
   paths are described under "Errors and recovery".
+- **The credential travels on a `POST` alone.** The engine writes the content-type header,
+  and so the `Authorization` line smuggled after it, only on a `POST`; a `GET` reaches the
+  wire with `Accept: */*` and nothing else (the same stub logs, read again for issue #71).
+  The plugin therefore never issues a `GET`, `PUT`, or `DELETE` against the hub: its
+  key/value calls use the Plugin API's POST spellings (protocol section 12.2), which exist
+  for this client.
+- **Two contexts run at once.** `GetRestContext` returns one context per base URL string,
+  and a request on a second context completes while the first holds a long-poll open: the
+  store client's get then set finished in under 300 ms under a held 25 s poll (measured on
+  DayZ 1.29 during the admin flags run). One request in flight per context is the plugin's
+  own rule, so a store call never waits behind a poll.
 
 ## Errors and recovery
 
