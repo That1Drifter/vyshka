@@ -12,6 +12,20 @@ point if needed.
 
 ### Added
 
+- 2026-09-17: DayZ vitals (issue #68, plugin 0.7.0, manifest revision 5). Five actions join
+  the eleven: `vyshka.vitals` (player, `warning`: one `stat`, `health`, `blood`, `shock`,
+  `energy`, `water`, `stamina`, or `heatBuffer`, set to one `value` within the range the
+  character's engine holds for it, read at dispatch time and refused outside it rather than
+  clamped, `before` and `after` read back; 0 health or blood is death and 0 shock is
+  unconsciousness, hence the warning), `vyshka.stopbleeding` (every bleeding source removed
+  and counted, with the engine's self-closing wound-infection roll undone, since an admin's
+  stop is a perfect bandage), `vyshka.dry` (every item in the inventory tree to its minimum wetness and
+  the player's wet flag cleared at once), `vyshka.brokenlegs` (`broken: true` activates the
+  engine's broken-legs modifier, the path a ruined leg zone takes, resetting one already on
+  and so taking a splint off; `false` restores the four leg zones and turns the modifier
+  off, which is what it does by itself once both legs heal), and `vyshka.bloodyhands`
+  (`bloody` on or off). The generalization of `vyshka.heal`, which stays as the shortcut
+  for health, shock, blood, and bleeding together. New file: `VyshkaVitalsActions.c`.
 - 2026-09-16: DayZ vehicles 1 (issue #67, plugin 0.6.0, manifest revision 4). The plugin
   keeps its own list of vehicles (hooks on `CarScript`, `BoatScript`, and
   `HelicopterScript`; their engine parent cannot be modded from script) and publishes

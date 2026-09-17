@@ -79,9 +79,12 @@ release.
    vehicles beside the players and hands a vehicle to the vehicle-context actions. Wreck
    cleanup is the routine chore on a long-running server and unstuck is the most-requested
    action in every admin tool.
-5. **Vitals** (#68): one action with a `stat` parameter (health, blood, shock, energy,
-   water, stamina, heat buffer), plus stop bleeding, dry, and the legs and hands toggles.
-   The generalization of `vyshka.heal`.
+5. **Vitals** (#68), landed 2026-09-17: one action with a `stat` parameter (health, blood,
+   shock, energy, water, stamina, heat buffer) and a value the engine's own range for that
+   character bounds, plus stop bleeding, dry, and the broken-legs and bloody-hands toggles,
+   the legs through the engine's own broken-legs modifier. The generalization of
+   `vyshka.heal`, which stays as the shortcut for health, shock, blood, and bleeding
+   together. Each was verified live on DayZ 1.29 with a retail client.
 6. **First release** (#69): hub 0.1.0 as static binaries for Linux, Windows, and macOS and
    a published container image; a systemd unit under `deploy/`; the DayZ plugin on the
    Steam Workshop with the `.pbo` build reproducible from the repo; per-artifact SemVer in

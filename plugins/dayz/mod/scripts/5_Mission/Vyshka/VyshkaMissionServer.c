@@ -44,6 +44,11 @@ class VyshkaBoot
 		registry.Register(new VyshkaSetTimeAction());
 		registry.Register(new VyshkaUnstuckAction());
 		registry.Register(new VyshkaDeleteDestroyedAction());
+		registry.Register(new VyshkaVitalsAction());
+		registry.Register(new VyshkaStopBleedingAction());
+		registry.Register(new VyshkaDryAction());
+		registry.Register(new VyshkaBrokenLegsAction());
+		registry.Register(new VyshkaBloodyHandsAction());
 		VyshkaPlayers.Reset();
 		VyshkaWorld.Reset();
 		VyshkaVehicles.Reset();
