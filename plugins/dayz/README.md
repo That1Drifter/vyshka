@@ -135,7 +135,9 @@ as that instant rather than wrapped into the past.
 
 **Teleports** move the character with the engine's own position call, the one its restricted
 area enforcement and its developer tooling use; a player seated in a vehicle is moved with the
-vehicle and everyone in it, which the result reports as `vehicle`. A `position` is in the
+vehicle and everyone in it, which the result reports as `vehicle`, and the result's `from`
+and `to` describe whatever was moved (the vehicle, in that case, which is what arrives
+beside a `toPlayer` target). A `position` is in the
 frame the snapshots publish (`[x, y, z]`, `y` the elevation in metres); given as `[x, z]` it
 is placed on the terrain at that point. A position off the map (outside `0` to the world
 size on `x` and `z`) or above 10 000 m is refused, and one below the terrain, or below sea

@@ -67,10 +67,12 @@ release.
    demanded no code change; the loss window is now stated with its measurement in the
    plugin README and `spikes/dayz-outbox-crash`. A power loss is not measured and cannot be
    closed from script.
-3. **Position and world actions** (#66): teleport to coordinates, to a player, and to
-   previous (one saved position per identity as the undo); spawn one item near a player;
-   set time. Teleport and spawn were out of scope for the tracer bullet and never
-   rescheduled until now.
+3. **Position and world actions** (#66), landed 2026-09-16: teleport to coordinates, to a
+   player, and to previous (one saved position per identity as the undo); spawn one item
+   near a player; set time. Teleport and spawn were out of scope for the tracer bullet and
+   never rescheduled until then. Each was verified live on DayZ 1.29 with a retail client;
+   the engine was found to leave a character wherever an explicit `y` puts it, so the
+   plugin lifts a position below the terrain up to it.
 4. **Vehicles 1** (#67): `state.vehicles` snapshots with enter, exit, and destroy events;
    delete all destroyed; unstuck. Wreck cleanup is the routine chore on a long-running
    server and unstuck is the most-requested action in every admin tool.
