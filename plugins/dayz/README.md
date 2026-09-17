@@ -4,9 +4,10 @@ The reference game plugin for DayZ: a server-side Enforce Script mod that enroll
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player and vehicle events a feed
 needs and the `state.players` and `state.vehicles` snapshots a live map needs. It ships
-eleven built-in actions (heal, kick, ban, unban, message, broadcast, teleport, spawn, set
-time, unstuck, delete destroyed vehicles), so an operator can moderate a server and move
-things around it from the panel or a `curl` against the hub. Protocol: `spec/protocol.md`.
+sixteen built-in actions (heal, vitals, stop bleeding, dry, broken legs, bloody hands,
+kick, ban, unban, message, broadcast, teleport, spawn, set time, unstuck, delete destroyed
+vehicles), so an operator can moderate a server, patch a player up, and move things around
+it from the panel or a `curl` against the hub. Protocol: `spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -17,7 +18,7 @@ Clean-room: written from the engine's public script headers and the measurements
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
 | `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
@@ -81,11 +82,16 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
 identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
-from the latest `state.vehicles` snapshot. The manifest (revision 4) declares:
+from the latest `state.vehicles` snapshot. The manifest (revision 5) declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
 | `vyshka.heal` | player | none | `restoreBlood` (default true) | `health`, `blood`, `shock`, `name` after the heal |
+| `vyshka.vitals` | player | warning | `stat` (required: `health`, `blood`, `shock`, `energy`, `water`, `stamina`, `heatBuffer`), `value` (required, a number within the stat's range) | `name`, `stat`, `before`, `after` (read back from the engine), `min`, `max` (the range this character's engine holds for the stat); a value outside the range fails the action and names the range |
+| `vyshka.stopbleeding` | player | none | none | `name`, `sourcesRemoved`, `bleeding` (read back) |
+| `vyshka.dry` | player | none | none | `name`, `wasWet` (the player's wet flag before), `items` (in the inventory tree), `dried` (how many were wet) |
+| `vyshka.brokenlegs` | player | warning | `broken` (required) | `name`, `before` and `after` (`none`, `broken`, `splint`), `legHealth` (the four leg zones after) |
+| `vyshka.bloodyhands` | player | none | `bloody` (required) | `name`, `before`, `after` |
 | `vyshka.kick` | player | warning | `reason` | `name`, `reason`; the player is disconnected through the engine's own disconnect call and `core.player.kick` is emitted |
 | `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`; the identity goes on the ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id |
 | `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
@@ -97,8 +103,8 @@ from the latest `state.vehicles` snapshot. The manifest (revision 4) declares:
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
 
-Kick, message, teleport, spawn, and the ban's own kick need the player online and fail with
-`player <id> is not online` otherwise. Unstuck fails with `no vehicle <id> exists on this
+Kick, message, teleport, spawn, the ban's own kick, vitals, stop bleeding, dry, broken legs,
+and bloody hands need the player online and fail with `player <id> is not online` otherwise. Unstuck fails with `no vehicle <id> exists on this
 server` when the id is not in the current vehicle list.
 
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
@@ -195,6 +201,37 @@ someone still seated in it is left alone and listed under `skipped` with the rea
 `dryRun: true` lists what would be deleted without deleting anything, which is what to run
 first on a server whose wrecks may be someone's base furniture. Intact vehicles are only
 counted. The action is `destructive`: a deleted wreck's cargo goes with it.
+
+**Vitals** sets one stat of one player to one value; `vyshka.heal` stays as the
+everything-to-full shortcut. `health`, `blood`, and `shock` go through the damage system on
+the character's global zone, the same values the heal writes and `state.players` reports;
+`energy` and `water` are the character's own stats (the client learns of them through the
+engine's hunger and thirst notifiers, as it does for a meal); `stamina` goes through the
+stamina handler, which synchronizes it at once and brings a value above the player's
+load-dependent cap down to that cap on its next tick; `heatBuffer` is the synced stat whose
+HUD stage (the plus signs) the engine's own modifier recomputes on its next tick. The range
+is read from the character at dispatch time, not fixed in the schema (a mod may change a
+maximum, and the heat buffer runs from -30 to 30 while the others start at 0), so a value
+outside it fails the action with the range in the error rather than being clamped
+silently, and the result carries `min` and `max` beside `before` and `after`. The action is
+`warning` because 0 health or 0 blood is death and 0 shock is unconsciousness. On vanilla
+DayZ 1.29 the ranges read back as health 0 to 100, blood 0 to 5000, shock 0 to 100, energy
+0 to 5000, water 0 to 5000, stamina 0 to 100, heat buffer -30 to 30.
+
+**Stop bleeding** removes every bleeding source through the server-side bleeding manager,
+the same call the heal makes, and reports how many there were. **Dry** sets every item in
+the player's inventory tree (clothing, hands, cargo, and attachments alike) to its minimum
+wetness and clears the player's own wet flag at once rather than waiting for the engine's
+environment tick to notice the dry clothes. **Broken legs** with `broken: true` activates
+the engine's broken-legs modifier, the path a hit that ruins a leg zone takes (the modifier
+zeroes the leg zones, raises the fracture notifier, and sets the state the client animates;
+one already active is reset first, which also takes a splint off; the modifier is activated
+in the same frame rather than left to its request, which the engine honors on the manager's
+next tick up to 3 s later, so the result's `after` describes what was done); `broken: false` restores
+the four leg zones to full health and turns the modifier off, which is what the modifier
+does by itself once both legs are back at full health, and removes a splint if one is worn.
+**Bloody hands** sets or clears the flag the engine shows on the character's hands and
+uses for the salmonella roll when eating.
 
 ## Telemetry
 
