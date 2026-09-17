@@ -12,6 +12,19 @@ point if needed.
 
 ### Added
 
+- 2026-09-16: DayZ position and world actions (issue #66, plugin 0.5.0, manifest
+  revision 3). Three actions join the six: `vyshka.teleport` (to `[x, y, z]` or `[x, z]`
+  placed on the terrain, beside another player, or back to the position the last teleport
+  took the player from, one previous position kept per identity in memory; a player in a
+  vehicle is moved with it; off-map and above-sky positions refused, one below the
+  terrain or sea level lifted up to it, because the engine leaves a character wherever an
+  explicit `y` puts it, measured 280 m under the ground), `vyshka.spawn` (one public class from
+  `CfgVehicles`, `CfgWeapons`, or `CfgMagazines`, created on the ground in front of the
+  player with the central economy's placement flags; quantity, health, attachments, and the
+  blocklist wait for the spawning extension), and `vyshka.settime` (hour and minute through
+  the world's `SetDate`, the date kept, the clock read back into the result). The schema
+  subset cannot express "exactly one destination", so the plugin refuses a teleport naming
+  none or several. New file: `VyshkaWorldActions.c`.
 - 2026-09-16: `spikes/dayz-outbox-crash` (issue #65): the DayZ plugin's outbox measured
   across a process kill. A load generator appended to a mission `init.c` emits numbered
   events through the plugin's own `Emit`, announcing each tick before its `Emit` calls and

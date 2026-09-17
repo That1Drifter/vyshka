@@ -39,7 +39,11 @@ class VyshkaBoot
 		registry.Register(new VyshkaUnbanAction());
 		registry.Register(new VyshkaMessageAction());
 		registry.Register(new VyshkaBroadcastAction());
+		registry.Register(new VyshkaTeleportAction());
+		registry.Register(new VyshkaSpawnAction());
+		registry.Register(new VyshkaSetTimeAction());
 		VyshkaPlayers.Reset();
+		VyshkaWorld.Reset();
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
 		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());
