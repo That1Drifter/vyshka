@@ -56,10 +56,12 @@ jobs:
           else
             version="$VERSION_INPUT"
           fi
-          # SemVer without build metadata: a "+" cannot appear in a container
-          # tag, so a version carrying it is refused rather than rewritten.
-          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
-            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], no build metadata): $version" >&2
+          # SemVer 2.0.0 without build metadata (a "+" cannot appear in a
+          # container tag), the prerelease identifiers checked one by one.
+          # The same expression is in scripts/release-hub.sh and the plugin's
+          # version parser; change all three together.
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], SemVer 2.0.0, no build metadata): $version" >&2
             exit 1
           fi
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vyshka-hub"
@@ -118,6 +120,23 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Check that each platform's image carries its own binary
+        # Before anything is pushed: an amd64 executable in the arm64 image
+        # builds and even runs on an amd64 host, and only the ELF header
+        # tells. Both platforms are built to a local directory (the build
+        # below then hits the cache) and inspected.
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            rm -rf "$RUNNER_TEMP/image-$arch"
+            docker buildx build --platform "linux/$arch" --build-arg "VERSION=$VERSION" \
+              -o "type=local,dest=$RUNNER_TEMP/image-$arch" . >/dev/null 2>&1
+            file "$RUNNER_TEMP/image-$arch/vyshka-hub"
+          done
+          file "$RUNNER_TEMP/image-amd64/vyshka-hub" | grep -q 'x86-64'
+          file "$RUNNER_TEMP/image-arm64/vyshka-hub" | grep -q 'ARM aarch64'
+
       - name: Sign in to the container registry
         if: github.event_name == 'push'
         uses: docker/login-action@v3
@@ -127,8 +146,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the container image for amd64 and arm64
-        # Pushed only from a tag; a rehearsal still builds both platforms so
-        # a broken Dockerfile shows up before the tag exists.
+        # Pushed only from a tag, and only after the check above; a
+        # rehearsal still builds both platforms so a broken Dockerfile shows
+        # up before the tag exists.
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -143,22 +163,6 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
-
-      - name: Check that each platform's image carries its own binary
-        # An amd64 executable in the arm64 image builds and even runs on an
-        # amd64 host; only the ELF header tells. Both platforms are extracted
-        # from the build cache and inspected.
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          for arch in amd64 arm64; do
-            rm -rf "$RUNNER_TEMP/image-$arch"
-            docker buildx build --platform "linux/$arch" --build-arg "VERSION=$VERSION" \
-              -o "type=local,dest=$RUNNER_TEMP/image-$arch" . >/dev/null 2>&1
-            file "$RUNNER_TEMP/image-$arch/vyshka-hub"
-          done
-          file "$RUNNER_TEMP/image-amd64/vyshka-hub" | grep -q 'x86-64'
-          file "$RUNNER_TEMP/image-arm64/vyshka-hub" | grep -q 'ARM aarch64'
 
       - name: Publish the release
         if: github.event_name == 'push'
@@ -213,8 +217,8 @@ jobs:
           else
             version="$VERSION_INPUT"
           fi
-          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
-            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], no build metadata): $version" >&2
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], SemVer 2.0.0, no build metadata): $version" >&2
             exit 1
           fi
           # The tag must say what the plugin says about itself, read by the

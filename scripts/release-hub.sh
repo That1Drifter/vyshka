@@ -6,16 +6,20 @@
 #   scripts/release-hub.sh v0.1.0
 #
 # The binaries are reproducible for a given Go toolchain (-trimpath, no cgo,
-# the version linked in) and so are the archives: entries sorted, owned by
-# nobody, dated by the commit (SOURCE_DATE_EPOCH overrides). The release
-# workflow runs this on a hub-v* tag; run it at the tagged commit with the
-# same Go version to check a published archive against the repository.
+# the version linked in) and so are the archives, written by scripts/archive
+# rather than the host's tar or zip: entries sorted, owned by nobody, dated
+# by the commit in UTC (SOURCE_DATE_EPOCH overrides), the binary alone
+# executable. The release workflow runs this on a hub-v* tag; run it at the
+# tagged commit with the same Go version, on any host, to check a published
+# archive against the repository.
 set -euo pipefail
 
 version="${1:-}"
-# SemVer without build metadata, the same rule as the release workflow: a
-# "+" cannot appear in a container tag.
-if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+# SemVer 2.0.0 without build metadata (a "+" cannot appear in a container
+# tag), with the prerelease identifiers checked one by one so a numeric one
+# cannot carry a leading zero. The same expression guards the release
+# workflow and the plugin's version parser; change all three together.
+if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
   echo "usage: scripts/release-hub.sh v<major>.<minor>.<patch>[-<prerelease>]" >&2
   exit 2
 fi
@@ -43,18 +47,11 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   if [ "$os" = linux ]; then
     cp "$root/deploy/vyshka-hub.service" "$root/deploy/hub.env.example" "$stage/"
   fi
-  find "$stage" -exec touch -d "@$epoch" {} +
+  suffix="tar.gz"
   if [ "$os" = windows ]; then
-    if command -v zip >/dev/null 2>&1; then
-      (cd "$dist" && zip -q -r -X "$name.zip" "$name")
-    else
-      # Git Bash on Windows ships no zip; 7-Zip writes the same archive.
-      (cd "$dist" && 7z a -tzip -bd -y "$name.zip" "$name" >/dev/null)
-    fi
-  else
-    tar -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
-      -cf - "$name" | gzip -n > "$dist/$name.tar.gz"
+    suffix="zip"
   fi
+  (cd "$root" && go run ./scripts/archive -out "$dist/$name.$suffix" -epoch "$epoch" -exec "$bin" "$stage")
   rm -rf "$stage"
 done
 (cd "$dist" && sha256sum -- * > SHA256SUMS)

@@ -22,7 +22,9 @@ arrived, since those entries were written for one stream.
   the static binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and
   windows/amd64 (`-trimpath`, cgo-free, the version linked in, so the same toolchain at the
   same commit rebuilds the same bytes), packs each with LICENSE, README, and on Linux the
-  systemd unit, and writes `SHA256SUMS`. `.github/workflows/release.yml` runs it on a
+  systemd unit through `scripts/archive` (a small Go archiver: sorted members, no owner,
+  the commit time in UTC, the binary alone executable, so the archive is the same bytes
+  from any host), and writes `SHA256SUMS`. `.github/workflows/release.yml` runs it on a
   `hub-v*` tag, grades the shipped Linux binary with the hub conformance suite before
   anything is published, creates the GitHub release, and pushes the container image to
   `ghcr.io/that1drifter/vyshka-hub` for linux/amd64 and linux/arm64; a manual dispatch

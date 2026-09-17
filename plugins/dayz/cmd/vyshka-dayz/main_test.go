@@ -43,8 +43,8 @@ func TestModVersionReadsThePluginConstant(t *testing.T) {
 	// A mention in a comment is not the declaration, on the same line or
 	// on its own, and two declarations are a contradiction, not a choice.
 	write("class VyshkaPlugin\n{\n\t/* static const string PLUGIN_VERSION = \"0.6.0\"; */ static const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
-	if got, err := modVersion(src); err == nil || got != "" {
-		t.Errorf("a declaration sharing a line with a commented one was accepted as %q", got)
+	if got, err := modVersion(src); err != nil || got != "0.7.0" {
+		t.Errorf("modVersion beside a same-line block comment = %q, %v; want 0.7.0", got, err)
 	}
 	write("class VyshkaPlugin\n{\n\t// static const string PLUGIN_VERSION = \"0.6.0\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
 	if got, err := modVersion(src); err != nil || got != "0.7.0" {
@@ -53,6 +53,31 @@ func TestModVersionReadsThePluginConstant(t *testing.T) {
 	write("class VyshkaPlugin\n{\n\tstatic const string PLUGIN_VERSION = \"0.6.0\";\n\tstatic const string PLUGIN_VERSION = \"0.7.0\";\n}\n")
 	if _, err := modVersion(src); err == nil {
 		t.Error("two declarations were accepted")
+	}
+	// A block comment spanning lines hides its declaration, a trailing
+	// line comment does not hide the real one, and a comment in the
+	// middle of the file is the engine's business, not the parser's.
+	write("class VyshkaPlugin\n{\n\t/*\n\tstatic const string PLUGIN_VERSION = \"0.6.0\";\n\t*/\n\tstatic const string PLUGIN_VERSION = \"0.7.0\"; // current\n}\n")
+	if got, err := modVersion(src); err != nil || got != "0.7.0" {
+		t.Errorf("modVersion with a block comment above and a line comment beside = %q, %v; want 0.7.0", got, err)
+	}
+	write("class VyshkaPlugin\n{\n\t/* old\n\tstatic const string PLUGIN_VERSION = \"0.6.0\";\n\t*/\n}\n")
+	if _, err := modVersion(src); err == nil {
+		t.Error("a declaration inside a block comment was accepted")
+	}
+	// Prerelease identifiers follow SemVer 2.0.0: a numeric one has no
+	// leading zero, and an empty one is not an identifier.
+	for _, bad := range []string{"1.2.3-01", "1.2.3-rc.01", "1.2.3-", "1.2.3-rc..1", "01.2.3"} {
+		write("class VyshkaPlugin\n{\n\tstatic const string PLUGIN_VERSION = \"" + bad + "\";\n}\n")
+		if got, err := modVersion(src); err == nil {
+			t.Errorf("%s was accepted as %q", bad, got)
+		}
+	}
+	for _, good := range []string{"1.2.3-rc.1", "1.2.3-0", "1.2.3-alpha-1.0.x", "10.0.0"} {
+		write("class VyshkaPlugin\n{\n\tstatic const string PLUGIN_VERSION = \"" + good + "\";\n}\n")
+		if got, err := modVersion(src); err != nil || got != good {
+			t.Errorf("%s = %q, %v", good, got, err)
+		}
 	}
 }
 

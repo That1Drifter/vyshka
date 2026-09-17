@@ -54,8 +54,9 @@ image. Afterwards:
 - To check a download against the repository: at the tagged commit, with the Go version
   the release notes name, run `scripts/release-hub.sh <version>` and compare `SHA256SUMS`.
   The binaries match byte for byte from a checkout that honours `.gitattributes` (every
-  text file LF, which is what the embedded panel files and the packed README need); the
-  archives match when GNU tar and gzip are used.
+  text file LF, which is what the embedded panel files and the packed README need), and
+  so do the archives on any host, because `scripts/archive` writes them rather than the
+  host's tar or zip.
 
 ## The DayZ plugin
 

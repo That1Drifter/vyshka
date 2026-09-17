@@ -45,20 +45,27 @@ const (
 	versionFile = "scripts/3_Game/Vyshka/VyshkaPlugin.c"
 )
 
-// versionPattern matches the PLUGIN_VERSION declaration in versionFile: a
-// whole line, so a mention in a comment beside or above the real one cannot
-// be taken for it. The value is SemVer without build metadata, the same
-// rule the release tags follow.
-var versionPattern = regexp.MustCompile(`(?m)^[ \t]*static const string PLUGIN_VERSION = "((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?)";[ \t]*\r?$`)
+// versionPattern matches the PLUGIN_VERSION declaration in versionFile once
+// the comments are gone: a whole line, so nothing else on it can pass for
+// the declaration. The value is SemVer 2.0.0 without build metadata, the
+// same expression that guards the release tags (scripts/release-hub.sh and
+// the release workflow); change all three together.
+var versionPattern = regexp.MustCompile(`(?m)^[ \t]*static const string PLUGIN_VERSION = "((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?)";[ \t]*\r?$`)
+
+// commentPattern removes block and line comments, which is what the engine's
+// parser does before it sees a declaration, so a version mentioned in a
+// comment above, beside, or around the real one is never the answer.
+var commentPattern = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
 
 // modVersion reads the plugin version out of the mod source. Exactly one
-// declaration line must exist: the manifest, mod.cpp, and the release tag
-// all take their number from it.
+// declaration must exist: the manifest, mod.cpp, and the release tag all
+// take their number from it.
 func modVersion(src string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(versionFile)))
 	if err != nil {
 		return "", err
 	}
+	data = commentPattern.ReplaceAll(data, nil)
 	matches := versionPattern.FindAllSubmatch(data, -1)
 	switch len(matches) {
 	case 0:
