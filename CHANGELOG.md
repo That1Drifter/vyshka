@@ -3,12 +3,13 @@
 All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), kept per
-artifact: the hub (with the panel and the conformance suites), the DayZ plugin, and the
-protocol document are versioned independently and each has its own section below, with
-its own **Unreleased** heading and one heading per released version. Dates mark when a
-change landed on `main`. The hub and the plugin follow SemVer and are released on tags
-(`hub-v<version>`, `dayz-plugin-v<version>`; `RELEASING.md`); the protocol document keeps
-its draft numbering until 1.0 and records its own history in its header. Everything that
+artifact: the hub (with the panel and the conformance suites) and the DayZ plugin are
+versioned independently, follow SemVer, are released on tags (`hub-v<version>`,
+`dayz-plugin-v<version>`; `RELEASING.md`), and each has its own section below with its
+own **Unreleased** heading and one heading per released version. The protocol document
+has a section of its own that only names the current draft: it keeps draft numbering
+until 1.0, its header is its history, and a protocol change is recorded under the hub or
+plugin entry that carried it. Dates mark when a change landed on `main`. Everything that
 landed before the first tag stays under **Before the first release** in the order it
 arrived, since those entries were written for one stream.
 

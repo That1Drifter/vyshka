@@ -1,9 +1,11 @@
 # Contributing to Vyshka
 
-Thanks for your interest. Vyshka is in the **design phase**: the deliverable right now is
-the protocol spec and its conformance suites, not code. Contributions that matter most at
-this stage are design review, protocol feedback, and firsthand knowledge of engine
-constraints (DayZ `RestApi` behavior, Arma Reforger scripting capabilities).
+Thanks for your interest. Vyshka is **spec-first**: the protocol document and its
+conformance suites are the product, and the hub and the DayZ plugin are reference
+implementations of it, released since 2026-09-17 (hub 0.1.0, plugin 0.7.0). Contributions
+that matter most are design review, protocol feedback, firsthand knowledge of engine
+constraints (DayZ `RestApi` behavior, Arma Reforger scripting capabilities), and plugins
+for other games written from the spec alone, which is what protocol 1.0 waits for.
 
 ## How the project works
 
@@ -47,7 +49,8 @@ technical quality.
   implementation that carries it); typo and wording fixes do not need entries. A slice that
   changes the DayZ mod bumps `PLUGIN_VERSION`. Tags and releases are described in
   `RELEASING.md`.
-- Once code exists, plugin and hub changes must keep their conformance suites green.
+- Plugin and hub changes must keep their conformance suites green; CI runs both suites on
+  every pull request.
 
 ## License
 

@@ -1,7 +1,8 @@
 # Releasing
 
-Three artifacts, versioned independently, each released from its own tag. Nothing is
-published by hand.
+Three artifacts, versioned independently: the hub and the DayZ plugin are each released
+from their own tag, and the protocol document carries a draft number in its header with
+no tag. Nothing is published by hand.
 
 | Artifact | Its version lives in | Tag | What the tag publishes |
 |---|---|---|---|

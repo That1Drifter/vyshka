@@ -136,7 +136,7 @@ func runVersion(args []string) error {
 }
 
 // modCpp is the launcher-facing description of the mod folder. It is not
-// part of the PBO; the Workshop and the release archive carry it beside it.
+// part of the PBO; the release archive carries it beside it.
 func modCpp(version string) string {
 	return "name = \"Vyshka\";\n" +
 		"author = \"Vyshka contributors\";\n" +
