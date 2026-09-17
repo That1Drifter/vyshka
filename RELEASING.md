@@ -48,10 +48,11 @@ image. Afterwards:
   `docker run --rm --platform linux/arm64 ghcr.io/that1drifter/vyshka-hub:0.1.0 version`
   does too on a host with emulation; the workflow already inspected both binaries' ELF
   headers before publishing.
-- **The first image publish only**: a package published to a user namespace is private
-  until made public. Open the package's settings on GitHub (Packages, `vyshka-hub`, Package
-  settings), change the visibility to public, and confirm the package is linked to the
-  repository so the README shows beside it. Later pushes keep the visibility.
+- The package is public: a package first published by a workflow with `GITHUB_TOKEN`
+  from a public repository inherits the repository's visibility and is linked to it,
+  which is what happened with 0.1.0 (the manifest and the tag list answered an anonymous
+  pull). If a later push ever lands in a private package, the package's settings page
+  (Packages, `vyshka-hub`, Package settings) is where the visibility changes.
 - To check a download against the repository: at the tagged commit, with the Go version
   the release notes name, run `scripts/release-hub.sh <version>` and compare `SHA256SUMS`.
   The binaries match byte for byte from a checkout that honours `.gitattributes` (every
