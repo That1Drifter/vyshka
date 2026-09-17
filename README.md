@@ -72,8 +72,9 @@ revocation never survived a restart. Logs are structured JSON on stdout.
 ## Install
 
 Releases are on the [releases page](https://github.com/That1Drifter/vyshka/releases). The
-hub, the DayZ plugin, and the protocol document are versioned independently, each on its
-own tag (`RELEASING.md`). A hub release carries:
+hub and the DayZ plugin are versioned independently, each on its own tag; the protocol
+document keeps its draft number in its header and has no tag (`RELEASING.md`). A hub
+release carries:
 
 - `vyshka-hub_<version>_<os>_<arch>.tar.gz` for Linux and macOS (amd64 and arm64) and
   `vyshka-hub_<version>_windows_amd64.zip`: the static binary, LICENSE, this README, and on

@@ -2,8 +2,11 @@
 
 ## Supported versions
 
-Vyshka is in the design phase; there are no released versions yet. Once releases exist,
-this section will list which versions receive security fixes.
+The hub and the DayZ plugin are released independently (`RELEASING.md`); the first tags
+are hub 0.1.0 and DayZ plugin 0.7.0 (2026-09-17). Before 1.0, only the latest release of
+each artifact receives security fixes, as a new patch or minor release; there are no
+backports to earlier 0.x versions. The protocol document is a draft and fixes to it land
+in the next draft.
 
 ## Reporting a vulnerability
 

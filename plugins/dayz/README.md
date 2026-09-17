@@ -44,8 +44,8 @@ in `VyshkaPlugin.c`, printed by `vyshka-dayz version`; a release tag must equal 
 (`RELEASING.md`).
 
 Releases carry the `@Vyshka` folder as `vyshka-dayz-plugin_<version>.zip` on the GitHub
-release for the `dayz-plugin-v<version>` tag; the Steam Workshop item, when published,
-carries the same folder.
+release for the `dayz-plugin-v<version>` tag. There is no Steam Workshop item: the mod is
+server-side, clients never load it, so nothing needs a Workshop id to pair against.
 
 ## Installing on a server
 
