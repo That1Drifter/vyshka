@@ -176,8 +176,8 @@ func discordEmbedFor(notificationType string, data map[string]any) discordEmbed 
 // discordDeath words a death the way a kill feed does, from the payload the
 // reference plugin publishes: cause, and where known the killer, weapon,
 // distance, and killer type; the hit that killed and the vitals at a death
-// with no outside cause become fields. A payload without those words still
-// reads.
+// the engine names the character itself as the killer of become fields. A
+// payload without those words still reads.
 func discordDeath(data map[string]any) discordEmbed {
 	victim := playerLabel(data)
 	weapon := escapeMarkdown(stringField(data, "weapon"))
@@ -193,9 +193,7 @@ func discordDeath(data map[string]any) discordEmbed {
 		}
 	case "self":
 		description = victim + " died"
-		if drowning, _ := data["drowning"].(bool); drowning {
-			description = victim + " drowned"
-		} else if weapon != "" {
+		if weapon != "" {
 			description += " to their own " + weapon
 		}
 	case "infected":
@@ -209,11 +207,6 @@ func discordDeath(data map[string]any) discordEmbed {
 		}
 	case "vehicle":
 		description = victim + " was killed by a vehicle"
-	case "environment":
-		description = victim + " was killed by the environment"
-		if ammo := escapeMarkdown(stringField(data, "ammo")); ammo != "" {
-			description += " (" + ammo + ")"
-		}
 	case "other":
 		description = victim + " was killed"
 		if killerType := escapeMarkdown(stringField(data, "killerType")); killerType != "" {
@@ -235,6 +228,12 @@ func discordDeath(data map[string]any) discordEmbed {
 	}
 	if sources, ok := numberField(data, "bleedingSources"); ok {
 		vitals = append(vitals, "bleeding sources "+strconv.FormatFloat(sources, 'f', 0, 64))
+	}
+	// The head under water is an observation the plugin makes, not a
+	// verdict on the cause (a submerged character can bleed out), so it is
+	// listed with the vitals rather than worded as a drowning.
+	if submerged, _ := data["submerged"].(bool); submerged {
+		vitals = append(vitals, "submerged")
 	}
 	if len(vitals) > 0 {
 		embed.Fields = append(embed.Fields, discordField{Name: "At death", Value: strings.Join(vitals, ", "), Inline: true})
@@ -275,8 +274,6 @@ func discordDamage(data map[string]any) discordEmbed {
 		}
 	case "vehicle":
 		description = victim + " was hit by a vehicle"
-	case "environment":
-		description = victim + " was hurt by the environment"
 	case "other":
 		description = victim + " was hit"
 		if sourceType := escapeMarkdown(stringField(data, "sourceType")); sourceType != "" {

@@ -284,7 +284,9 @@ class VyshkaPlayers
 			// The engine reports the hit that killed after applying it, so
 			// the character is already dead here. Once its fatal hit has been
 			// seen, or its death was reported longer ago than one tick can
-			// explain, a hit is on the corpse.
+			// explain, a hit is on the corpse. (A death with no hit at all,
+			// starvation say, followed by a hit on the body inside the
+			// window would read as fatal; the window is short for that.)
 			if (player.m_VyshkaFatalSeen)
 				return;
 			if (player.m_VyshkaDead && GetGame().GetTime() - player.m_VyshkaDeathTime > FATAL_HIT_WINDOW_MS)
@@ -339,9 +341,14 @@ class VyshkaPlayers
 		VyshkaPlugin.Emit("core.player.damage", data);
 	}
 
-	// Loss is the largest amount of one health type a hit took: the highest
-	// across the zones hit, or the global value when the hit named no zone
-	// (a fall, which the highest-zone reading misses on DayZ 1.29; measured).
+	// Loss is the largest amount of one health type the engine's damage
+	// result holds for a hit: the highest across the zones hit, or the
+	// global value, whichever is larger. Measured on DayZ 1.29: the
+	// highest-zone reading is 0 for a fall (which names no zone) and half
+	// the global value for a head hit, so neither alone is the health the
+	// character lost. It is still the engine's figure for the hit, not a
+	// before-and-after of the vitals: a hit that overshoots reports more
+	// than the character had left.
 	static float Loss(TotalDamageResult damageResult, string healthType)
 	{
 		float zone = damageResult.GetHighestDamage(healthType);
@@ -424,22 +431,18 @@ class VyshkaPlayers
 			data.Set("damageType", VyshkaJsonValue.NewString(hit.m_Type));
 			player.m_VyshkaFatalHit = null;
 		}
-		else if (killer == player)
-		{
-			// A death the character caused itself has no hit to wait for.
-			player.m_VyshkaFatalSeen = true;
-		}
 		player.m_VyshkaDead = true;
 		player.m_VyshkaDeathTime = GetGame().GetTime();
 		VyshkaPlugin.Emit("core.player.death", data);
 	}
 
 	// DescribeNaturalDeath adds what the engine's admin log adds to a death
-	// the character caused itself: water, energy, and the open bleeding
-	// sources at that moment, so starvation, dehydration, and bleeding out
-	// can be told apart; blood, since bleeding out is a blood level; and
-	// whether the head was under water, since drowning is the other cause
-	// the engine names the character for. The bleeding manager is read here
+	// it names the character itself as the killer of: water, energy, and
+	// the open bleeding sources at that moment, so starvation, dehydration,
+	// and bleeding out can be told apart; blood, since bleeding out is a
+	// blood level; and whether the head was under water, the engine's own
+	// eligibility check for drowning (an observation, not a verdict: a
+	// submerged character can bleed out). The bleeding manager is read here
 	// because the engine deletes it in its own death hook, after this one.
 	static void DescribeNaturalDeath(PlayerBase player, VyshkaJsonValue data)
 	{
@@ -450,7 +453,7 @@ class VyshkaPlayers
 		SetNumber(data, "blood", player.GetHealth("", "Blood"));
 		if (player.GetBleedingManagerServer())
 			data.Set("bleedingSources", VyshkaJsonValue.NewInt(player.GetBleedingManagerServer().GetBleedingSourcesCount()));
-		data.Set("drowning", VyshkaJsonValue.NewBool(player.GetDrowningWaterLevelCheck()));
+		data.Set("submerged", VyshkaJsonValue.NewBool(player.GetDrowningWaterLevelCheck()));
 	}
 
 	// DescribeSource adds cause, and where known the other player (under
@@ -524,14 +527,14 @@ class VyshkaPlayers
 			data.Set("cause", VyshkaJsonValue.NewString("animal"));
 		else if (Transport.Cast(source))
 			data.Set("cause", VyshkaJsonValue.NewString("vehicle"));
-		else if (source.GetType() == "AreaDamageManager")
-		{
-			// Fire, barbed wire, a contaminated area: the engine's area
-			// damage, which its admin log names the same way.
-			data.Set("cause", VyshkaJsonValue.NewString("environment"));
-		}
 		else
+		{
+			// Fire and barbed wire arrive here too: the engine's area damage
+			// names the fireplace or the wire itself as the source (its
+			// admin log still tests for a manager class that is not an
+			// entity and never arrives), so typeKey and ammo say which.
 			data.Set("cause", VyshkaJsonValue.NewString("other"));
+		}
 	}
 
 	static VyshkaRosterEntry FindByPlayer(PlayerBase player)

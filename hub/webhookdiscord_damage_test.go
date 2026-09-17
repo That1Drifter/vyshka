@@ -66,7 +66,7 @@ func TestDiscordDeathCarriesTheHitAndTheVitals(t *testing.T) {
 	}
 
 	starved := renderForTest(t, "core.player.death", `{"name": "Survivor", "cause": "self",
-		"water": 812.4, "energy": 0, "blood": 4980.5, "bleedingSources": 0, "drowning": false}`, "")
+		"water": 812.4, "energy": 0, "blood": 4980.5, "bleedingSources": 0, "submerged": false}`, "")
 	if starved.Embeds[0].Description != "**Survivor** died" {
 		t.Errorf("starved = %q", starved.Embeds[0].Description)
 	}
@@ -74,13 +74,21 @@ func TestDiscordDeathCarriesTheHitAndTheVitals(t *testing.T) {
 		t.Errorf("fields = %+v, want one At death field", starved.Embeds[0].Fields)
 	}
 
-	drowned := renderForTest(t, "core.player.death", `{"name": "Survivor", "cause": "self", "drowning": true, "water": 1000, "energy": 4960, "bleedingSources": 0}`, "")
-	if drowned.Embeds[0].Description != "**Survivor** drowned" {
-		t.Errorf("drowned = %q", drowned.Embeds[0].Description)
+	// The head under water is listed with the vitals, never worded as a
+	// drowning: the plugin observes submersion, it does not rule on the cause.
+	submerged := renderForTest(t, "core.player.death", `{"name": "Survivor", "cause": "self", "submerged": true, "water": 1000, "energy": 4960, "bleedingSources": 0}`, "")
+	if submerged.Embeds[0].Description != "**Survivor** died" {
+		t.Errorf("submerged death = %q", submerged.Embeds[0].Description)
+	}
+	if len(submerged.Embeds[0].Fields) != 1 || submerged.Embeds[0].Fields[0].Value != "water 1000, energy 4960, bleeding sources 0, submerged" {
+		t.Errorf("submerged fields = %+v", submerged.Embeds[0].Fields)
 	}
 
-	wire := renderForTest(t, "core.player.death", `{"name": "Survivor", "cause": "environment", "killerType": "AreaDamageManager", "ammo": "BarbedWireHit"}`, "")
-	if drowned := wire.Embeds[0].Description; drowned != "**Survivor** was killed by the environment (BarbedWireHit)" {
-		t.Errorf("environment death = %q", drowned)
+	wire := renderForTest(t, "core.player.death", `{"name": "Survivor", "cause": "other", "killerType": "BarbedWire", "ammo": "BarbedWireHit"}`, "")
+	if got := wire.Embeds[0].Description; got != "**Survivor** was killed by BarbedWire" {
+		t.Errorf("wire death = %q", got)
+	}
+	if len(wire.Embeds[0].Fields) != 1 || wire.Embeds[0].Fields[0].Value != "BarbedWireHit" {
+		t.Errorf("wire fields = %+v, want the ammunition as the Hit field", wire.Embeds[0].Fields)
 	}
 }

@@ -22,8 +22,8 @@ arrived, since those entries were written for one stream.
 - 2026-09-17: the `discord` webhook template words `core.player.damage` (issue #70): who
   hit whom, with what, from how far, in which body part, for how much, the health left as
   a field, and a fatal hit titled as one. A death now also carries the fatal hit as a
-  `Hit` field and, for a death with no outside cause, the vitals at that moment as an
-  `At death` field; a drowning reads as one, and the new `environment` cause has words.
+  `Hit` field and, for a death the engine names the character itself as the killer of,
+  the vitals at that moment as an `At death` field, submersion listed among them.
 
 #### Changed
 
@@ -74,13 +74,14 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   `cause` and the source read as a death's killer is (`attacker`, `attackerName`, `weapon`,
   `distance` for a firearm's shot, `sourceType`), the engine's damage type as `damageType`
   (`melee`, `firearm`, `explosion`, `stun`, `other`), the damage zone as `bodyPart`, the
-  hit type as `ammo`, `damage`, `blood`, and `shock` lost, `health` left, `blocked`, and
+  hit type as `ammo`, the engine's damage result as `damage`, `blood`, and `shock` (the
+  larger of the highest zone value and the whole character's, since the zone reading is 0
+  for a fall and half the loss for a head hit on 1.29), `health` left, `blocked`, and
   `fatal` on the hit that killed. Hits on a corpse and falls that cost no health are not
   reported. `core.player.death` gains `bodyPart`, `ammo`, and `damageType` from the fatal
-  hit, and, when the character was its own killer, the natural-death breakdown the engine's
-  admin log prints: `water`, `energy`, `blood`, `bleedingSources`, and `drowning`. A new
-  cause, `environment`, names the engine's area damage (fire, barbed wire, a contaminated
-  area) on both events.
+  hit, and, when the engine names the character itself as the killer, the natural-death
+  breakdown its admin log prints: `water`, `energy`, `blood`, `bleedingSources`, and
+  `submerged` (the head under water, an observation rather than a verdict).
 
 ### [0.7.0] - 2026-09-17
 

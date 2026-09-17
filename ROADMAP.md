@@ -109,8 +109,8 @@ After the tag, in this order:
    character's hit hook with the source read as a death's killer is, the engine's damage
    type, body part, hit type, the damage and the health left, and `fatal` on the hit that
    killed; the death carries that hit's body part and hit type, and the natural-death
-   breakdown (water, energy, blood, bleeding sources, drowning) when the character was its
-   own killer. The `discord` template words both.
+   breakdown (water, energy, blood, bleeding sources, submersion) when the engine names the
+   character itself as the killer. The `discord` template words both.
 8. **Admin flags** (#71): god mode, freeze, unlimited stamina and ammo, ignored by AI, set
    per player, persisted per identity in the key/value store so they survive a reconnect,
    and reported as `flags` in `state.players`. Includes a spike on whether invisibility and
