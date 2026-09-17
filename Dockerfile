@@ -13,14 +13,23 @@
 # timestamps, the platform, and VERSION still vary); bump the tag and the
 # digest together
 # (docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}').
+#
+# The build stage runs on the builder's own platform and cross-compiles for
+# the target (Go needs no emulation for that), so a multi-platform build
+# (docker buildx build --platform linux/amd64,linux/arm64) costs one
+# compile per platform and no QEMU. The release workflow publishes both.
 
-FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+# No defaults here: BuildKit fills these from --platform, and a default would
+# replace that value, so every platform would get an amd64 binary.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w -X github.com/That1Drifter/vyshka/hub.Version=${VERSION}" \
     -o /out/vyshka-hub ./hub/cmd/vyshka-hub
 # The data directory is created here, owned by the runtime user, and copied

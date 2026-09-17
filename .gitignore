@@ -22,3 +22,6 @@ vyshka-spec.md
 
 # Browser-automation logs the playwright MCP server writes beside the tree
 /.playwright-mcp/
+
+# Release archives built by scripts/release-hub.sh and the release workflow
+/dist/

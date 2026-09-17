@@ -2,13 +2,70 @@
 
 All notable changes to this project are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Until the
-first release, entries accumulate under **Unreleased**; dates mark when a change landed on
-`main`. The protocol document, the hub, and each plugin will be versioned independently
-(SemVer) once implementation starts, and this file will gain per-artifact sections at that
-point if needed.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), kept per
+artifact: the hub (with the panel and the conformance suites), the DayZ plugin, and the
+protocol document are versioned independently and each has its own section below, with
+its own **Unreleased** heading and one heading per released version. Dates mark when a
+change landed on `main`. The hub and the plugin follow SemVer and are released on tags
+(`hub-v<version>`, `dayz-plugin-v<version>`; `RELEASING.md`); the protocol document keeps
+its draft numbering until 1.0 and records its own history in its header. Everything that
+landed before the first tag stays under **Before the first release** in the order it
+arrived, since those entries were written for one stream.
 
-## [Unreleased]
+## Hub
+
+### [Unreleased]
+
+#### Added
+
+- 2026-09-17: release tooling for hub 0.1.0 (issue #69). `scripts/release-hub.sh` builds
+  the static binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and
+  windows/amd64 (`-trimpath`, cgo-free, the version linked in, so the same toolchain at the
+  same commit rebuilds the same bytes), packs each with LICENSE, README, and on Linux the
+  systemd unit through `scripts/archive` (a small Go archiver: sorted members, no owner,
+  the commit time in UTC, the binary alone executable, so the archive is the same bytes
+  from any host), and writes `SHA256SUMS`. `.github/workflows/release.yml` runs it on a
+  `hub-v*` tag, grades the shipped Linux binary with the hub conformance suite before
+  anything is published, creates the GitHub release, and pushes the container image to
+  `ghcr.io/that1drifter/vyshka-hub` for linux/amd64 and linux/arm64; a manual dispatch
+  rehearses the same job and publishes nothing. `Dockerfile` cross-compiles from the
+  builder's platform, so the arm64 image needs no emulation, and the workflow inspects
+  each platform's binary before publishing. `.gitattributes` now keeps every text file LF
+  in the working tree on every platform, because the panel files are embedded in the
+  binary and a CRLF checkout built a different one. New under `deploy/`:
+  `vyshka-hub.service` (a dedicated user, the state under `/var/lib/vyshka`, the admin
+  token as a systemd credential, confinement) and `hub.env.example`, with the install steps
+  in `deploy/README.md`. `RELEASING.md` holds the tag scheme and the steps, including the
+  Workshop upload. The README gained an "Install" section.
+
+## DayZ plugin
+
+### [Unreleased]
+
+#### Changed
+
+- 2026-09-17: the PBO build is reproducible (issue #69). The packer takes a fixed timestamp
+  and normalizes line endings to LF instead of reading each file's modification time and
+  bytes as the checkout has them, so a build at a commit is the same bytes on any machine;
+  `vyshka-dayz build` stamps the commit time of the last commit touching `mod/`
+  (`SOURCE_DATE_EPOCH` overrides), prints the archive's SHA-256, and writes the plugin's
+  `PLUGIN_VERSION` into `mod.cpp` beside a description and the repository link
+  (`vyshka-dayz version` prints it; exactly one declaration line is accepted). The release
+  workflow refuses a `dayz-plugin-v*` tag that differs from it, builds the mod from a full
+  clone, and publishes the `@Vyshka` folder as a zip with the PBO digest beside it.
+
+## Protocol
+
+Draft 0.23 (2026-09-15). The document's header carries the draft number and date; each
+draft's changes are recorded in the entries under "Before the first release" and, from now
+on, under the hub or plugin entry that carried them, because a protocol change lands with
+the implementation that needs it.
+
+## Before the first release
+
+Everything that landed on `main` from 2026-08-15 to 2026-09-17, before the first tag, in
+one stream. Plugin entries name the plugin version they shipped; protocol entries name the
+draft.
 
 ### Added
 

@@ -15,6 +15,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -34,10 +37,143 @@ const (
 	prefix   = "Vyshka"
 	modDir   = "@Vyshka"
 	pboName  = "Vyshka.pbo"
-	modCpp   = "name = \"Vyshka\";\nauthor = \"Vyshka contributors\";\noverview = \"Vyshka hub integration plugin (server side).\";\n"
 	gitIgn   = "*\n"
-	usageTxt = "usage: vyshka-dayz build|harness [flags]\n"
+	usageTxt = "usage: vyshka-dayz build|version|harness [flags]\n"
+	// versionFile is where the plugin states its own version, relative to
+	// the mod source directory. mod.cpp and the release tag both take it
+	// from there, so the manifest, the launcher, and the tag cannot drift.
+	versionFile = "scripts/3_Game/Vyshka/VyshkaPlugin.c"
 )
+
+// versionPattern matches the PLUGIN_VERSION declaration in versionFile once
+// the comments are gone: a whole line, so nothing else on it can pass for
+// the declaration. The value is SemVer 2.0.0 without build metadata, the
+// same expression that guards the release tags (scripts/release-hub.sh and
+// the release workflow); change all three together.
+var versionPattern = regexp.MustCompile(`(?m)^[ \t]*static const string PLUGIN_VERSION = "((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?)";[ \t]*\r?$`)
+
+// stripComments removes block and line comments the way the engine's parser
+// skips them, so a version mentioned in a comment above, beside, or around
+// the real declaration is never the answer. String literals are copied
+// through untouched (a "/*" inside quotes is text, not a comment), and every
+// newline survives so the whole-line match still sees lines.
+func stripComments(src []byte) []byte {
+	out := make([]byte, 0, len(src))
+	for i := 0; i < len(src); {
+		c := src[i]
+		switch {
+		case c == '"':
+			out = append(out, c)
+			i++
+			for i < len(src) && src[i] != '"' && src[i] != '\n' {
+				if src[i] == '\\' && i+1 < len(src) {
+					out = append(out, src[i], src[i+1])
+					i += 2
+					continue
+				}
+				out = append(out, src[i])
+				i++
+			}
+			if i < len(src) && src[i] == '"' {
+				out = append(out, '"')
+				i++
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			i += 2
+			for i < len(src) && !(src[i] == '*' && i+1 < len(src) && src[i+1] == '/') {
+				if src[i] == '\n' {
+					out = append(out, '\n')
+				}
+				i++
+			}
+			i = min(i+2, len(src))
+		default:
+			out = append(out, c)
+			i++
+		}
+	}
+	return out
+}
+
+// modVersion reads the plugin version out of the mod source. Exactly one
+// declaration must exist: the manifest, mod.cpp, and the release tag all
+// take their number from it.
+func modVersion(src string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(versionFile)))
+	if err != nil {
+		return "", err
+	}
+	data = stripComments(data)
+	matches := versionPattern.FindAllSubmatch(data, -1)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no PLUGIN_VERSION declaration in %s (one line: static const string PLUGIN_VERSION = \"<major>.<minor>.<patch>\";)", versionFile)
+	case 1:
+		return string(matches[0][1]), nil
+	default:
+		return "", fmt.Errorf("%d PLUGIN_VERSION declarations in %s, want one", len(matches), versionFile)
+	}
+}
+
+// runVersion prints the plugin version the mod source states, for the
+// release workflow to compare with its tag.
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	src := fs.String("src", defaultPath("plugins/dayz/mod"), "mod source directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	version, err := modVersion(*src)
+	if err != nil {
+		return err
+	}
+	fmt.Println(version)
+	return nil
+}
+
+// modCpp is the launcher-facing description of the mod folder. It is not
+// part of the PBO; the Workshop and the release archive carry it beside it.
+func modCpp(version string) string {
+	return "name = \"Vyshka\";\n" +
+		"author = \"Vyshka contributors\";\n" +
+		"version = \"" + version + "\";\n" +
+		"overview = \"Vyshka hub integration plugin (server side). Enrolls a DayZ dedicated server with a Vyshka hub: actions, telemetry, and live state for the panel.\";\n" +
+		"action = \"https://github.com/That1Drifter/vyshka\";\n"
+}
+
+// buildTime is the timestamp every PBO entry carries. SOURCE_DATE_EPOCH
+// wins when set (the reproducible-builds convention); otherwise it is the
+// commit time of the last commit that touched the mod source, which every
+// clone agrees on; a tree outside git falls back to zero and says so.
+func buildTime(src string) (uint32, string) {
+	if raw := os.Getenv("SOURCE_DATE_EPOCH"); raw != "" {
+		if n, err := strconv.ParseUint(raw, 10, 32); err == nil {
+			return uint32(n), "SOURCE_DATE_EPOCH"
+		}
+		fmt.Fprintf(os.Stderr, "vyshka-dayz: ignoring unparsable SOURCE_DATE_EPOCH %q\n", raw)
+	}
+	cmd := exec.Command("git", "log", "-1", "--format=%ct", "--", ".")
+	cmd.Dir = src
+	if out, err := cmd.Output(); err == nil {
+		if n, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 32); err == nil {
+			// A shallow clone cannot see past its boundary: the query
+			// answers with the boundary commit, and the digest differs
+			// from a full clone's. Say so rather than print a digest
+			// nothing else will match.
+			shallow := exec.Command("git", "rev-parse", "--is-shallow-repository")
+			shallow.Dir = src
+			if flag, err := shallow.Output(); err == nil && strings.TrimSpace(string(flag)) == "true" {
+				fmt.Fprintln(os.Stderr, "vyshka-dayz: WARNING: shallow clone; the timestamp is the clone boundary, not the last commit touching the mod, so the digest will not match a full clone's (git fetch --unshallow, or set SOURCE_DATE_EPOCH)")
+			}
+			return uint32(n), "the last commit touching the mod source"
+		}
+	}
+	return 0, "no git history and no SOURCE_DATE_EPOCH; timestamps are zero"
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,6 +184,8 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		err = runBuild(os.Args[2:])
+	case "version":
+		err = runVersion(os.Args[2:])
 	case "harness":
 		err = runHarness(os.Args[2:])
 	default:
@@ -76,30 +214,36 @@ func runBuild(args []string) error {
 	if _, err := os.Stat(filepath.Join(*src, "config.cpp")); err != nil {
 		return fmt.Errorf("no config.cpp under %s: %w", *src, err)
 	}
+	version, err := modVersion(*src)
+	if err != nil {
+		return err
+	}
+	modTime, timeSource := buildTime(*src)
 	addons := filepath.Join(*out, modDir, "addons")
 	if err := os.MkdirAll(addons, 0o755); err != nil {
 		return err
 	}
+	// The archive is a function of the source tree's bytes: fixed
+	// timestamps, LF line endings whatever the checkout's, sorted paths. A
+	// build of the same commit anywhere produces the same file, so the
+	// digest printed below is what a downloaded PBO can be checked against.
+	var archive bytes.Buffer
+	if err := pbo.Pack(&archive, *src, prefix, pbo.Options{ModTime: modTime, NormalizeLineEndings: true}); err != nil {
+		return err
+	}
 	target := filepath.Join(addons, pboName)
-	file, err := os.Create(target)
-	if err != nil {
+	if err := os.WriteFile(target, archive.Bytes(), 0o644); err != nil {
 		return err
 	}
-	if err := pbo.Pack(file, *src, prefix); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(*out, modDir, "mod.cpp"), []byte(modCpp), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*out, modDir, "mod.cpp"), []byte(modCpp(version)), 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(*out, ".gitignore"), []byte(gitIgn), 0o644); err != nil {
 		return err
 	}
-	info, _ := os.Stat(target)
-	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes)\n", target, info.Size())
+	digest := sha256.Sum256(archive.Bytes())
+	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes, plugin %s, timestamps %d from %s)\n", target, archive.Len(), version, modTime, timeSource)
+	fmt.Printf("%x  %s\n", digest, pboName)
 	return nil
 }
 

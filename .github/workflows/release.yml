@@ -1,0 +1,277 @@
+name: Release
+
+# One workflow, two artifacts, each published from its own tag (RELEASING.md):
+#
+#   hub-v<semver>          the hub: archives with checksums on a GitHub
+#                          release, and the container image on ghcr.io
+#   dayz-plugin-v<semver>  the DayZ plugin: the @Vyshka folder as a zip on
+#                          a GitHub release (the Workshop upload is manual)
+#
+# A manual dispatch is a rehearsal: it runs the same job for the chosen
+# artifact, uploads the result as a workflow artifact, and publishes nothing.
+# Every publishing step is gated on the event being a tag push, never on a
+# value a step could have written; dispatch inputs reach the shell only as
+# environment variables, never as interpolated script text.
+
+on:
+  push:
+    tags:
+      - "hub-v*"
+      - "dayz-plugin-v*"
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Which artifact to rehearse
+        type: choice
+        options: [hub, dayz-plugin]
+        required: true
+      version:
+        description: Version to stamp, for example v0.1.0
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  hub:
+    name: Hub
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/hub-v')) || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'hub')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve the version
+        id: meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version="${GITHUB_REF_NAME#hub-}"
+          else
+            version="$VERSION_INPUT"
+          fi
+          # SemVer 2.0.0 without build metadata (a "+" cannot appear in a
+          # container tag), the prerelease identifiers checked one by one.
+          # The same expression is in scripts/release-hub.sh and the plugin's
+          # version parser; change all three together.
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], SemVer 2.0.0, no build metadata): $version" >&2
+            exit 1
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vyshka-hub"
+          tags="$image:${version#v}"
+          prerelease=false
+          case "$version" in
+            *-*) prerelease=true ;;
+            *) tags="$tags"$'\n'"$image:latest" ;;
+          esac
+          {
+            echo "version=$version"
+            echo "number=${version#v}"
+            echo "prerelease=$prerelease"
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        env:
+          VYSHKA_E2E: required
+        run: go vet ./... && go test ./...
+
+      - name: Build the archives
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: scripts/release-hub.sh "$VERSION"
+
+      - name: Grade the Linux binary with the hub conformance suite
+        # The archive that ships, not a rebuild: unpacked, its version
+        # checked, and the same suite CI runs pointed at it.
+        env:
+          # Not a secret: this hub exists for the length of one step and
+          # listens on loopback.
+          VYSHKA_ADMIN_TOKEN: vya_release_admin_token_not_a_secret
+          VERSION: ${{ steps.meta.outputs.version }}
+          NUMBER: ${{ steps.meta.outputs.number }}
+        run: |
+          tar -xzf "dist/vyshka-hub_${NUMBER}_linux_amd64.tar.gz" -C "$RUNNER_TEMP"
+          bin="$RUNNER_TEMP/vyshka-hub_${NUMBER}_linux_amd64/vyshka-hub"
+          reported="$("$bin" version)"
+          if [ "$reported" != "$VERSION" ]; then
+            echo "the binary reports $reported, expected $VERSION" >&2
+            exit 1
+          fi
+          "$bin" serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/release.db" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub-${{ steps.meta.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Check that each platform's image carries its own binary
+        # Before anything is pushed: an amd64 executable in the arm64 image
+        # builds and even runs on an amd64 host, and only the ELF header
+        # tells. Both platforms are built to a local directory (the build
+        # below then hits the cache) and inspected.
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            rm -rf "$RUNNER_TEMP/image-$arch"
+            docker buildx build --platform "linux/$arch" --build-arg "VERSION=$VERSION" \
+              -o "type=local,dest=$RUNNER_TEMP/image-$arch" . >/dev/null 2>&1
+            file "$RUNNER_TEMP/image-$arch/vyshka-hub"
+          done
+          file "$RUNNER_TEMP/image-amd64/vyshka-hub" | grep -q 'x86-64'
+          file "$RUNNER_TEMP/image-arm64/vyshka-hub" | grep -q 'ARM aarch64'
+
+      - name: Sign in to the container registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the container image for amd64 and arm64
+        # Pushed only from a tag, and only after the check above; a
+        # rehearsal still builds both platforms so a broken Dockerfile shows
+        # up before the tag exists.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=vyshka-hub
+            org.opencontainers.image.description=Vyshka hub, the reference implementation
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Publish the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "Hub $VERSION. The changes are under \"Hub\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
+            echo
+            echo "Archives carry the static binary, LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download with \`sha256sum --ignore-missing -c SHA256SUMS\`. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
+            echo
+            echo "Container image (linux/amd64, linux/arm64):"
+            echo
+            echo '```'
+            echo "$IMAGE_TAGS" | sed 's/^/docker pull /'
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+            --title "hub $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+
+  dayz-plugin:
+    name: DayZ plugin
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/dayz-plugin-v')) || (github.event_name == 'workflow_dispatch' && inputs.artifact == 'dayz-plugin')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PBO's timestamp is the time of the last commit touching mod/,
+          # which a depth-one checkout cannot see (it would stamp the tagged
+          # commit instead, and no local rebuild would match).
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve the version
+        id: meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version="${GITHUB_REF_NAME#dayz-plugin-}"
+          else
+            version="$VERSION_INPUT"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
+            echo "not a release version (v<major>.<minor>.<patch>[-<prerelease>], SemVer 2.0.0, no build metadata): $version" >&2
+            exit 1
+          fi
+          # The tag must say what the plugin says about itself, read by the
+          # same code that writes it into mod.cpp and the manifest.
+          stated="$(go run ./plugins/dayz/cmd/vyshka-dayz version)"
+          if [ "v$stated" != "$version" ]; then
+            echo "the tag says $version but PLUGIN_VERSION is $stated" >&2
+            exit 1
+          fi
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "number=${version#v}"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test the packer and the build tool
+        run: go vet ./plugins/... && go test ./plugins/...
+
+      - name: Build the mod
+        env:
+          NUMBER: ${{ steps.meta.outputs.number }}
+        run: |
+          mkdir -p dist
+          # The build prints the PBO's SHA-256; a rebuild at this commit on
+          # any machine prints the same line (plugins/dayz/README.md).
+          go run ./plugins/dayz/cmd/vyshka-dayz build | tee dist/Vyshka.pbo.sha256
+          (cd plugins/dayz/build && zip -q -r -X "$GITHUB_WORKSPACE/dist/vyshka-dayz-plugin_${NUMBER}.zip" @Vyshka)
+          (cd dist && sha256sum -- *.zip > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dayz-plugin-${{ steps.meta.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          {
+            echo "DayZ plugin $VERSION. The changes are under \"DayZ plugin\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
+            echo
+            echo "The zip is the \`@Vyshka\` server-mod folder: \`addons/Vyshka.pbo\` and \`mod.cpp\`. Install it with \`-serverMod=@Vyshka\` (plugins/dayz/README.md, \"Installing on a server\"). The PBO is reproducible: \`go run ./plugins/dayz/cmd/vyshka-dayz build\` at this tag, in a full clone, prints the digest in Vyshka.pbo.sha256."
+          } > "$RUNNER_TEMP/notes.md"
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+            --title "DayZ plugin $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"

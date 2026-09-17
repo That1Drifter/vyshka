@@ -40,10 +40,22 @@ type Archive struct {
 	Files      []File
 }
 
+// Options controls how Pack turns a directory into an archive.
+type Options struct {
+	// ModTime is the timestamp every entry carries. Pack never reads file
+	// modification times: a checkout's times vary from clone to clone, and
+	// the archive must not. Zero is a valid timestamp.
+	ModTime uint32
+	// NormalizeLineEndings turns CRLF into LF in every file. A checkout on
+	// Windows with core.autocrlf carries CRLF in the working tree while the
+	// repository holds LF; the archive must be the same bytes from either.
+	NormalizeLineEndings bool
+}
+
 // Pack walks srcDir and writes every regular file under it into a PBO with
-// the given prefix. Paths are sorted so the output is deterministic for a
-// given tree; modification times come from the files.
-func Pack(w io.Writer, srcDir, prefix string) error {
+// the given prefix. Paths are sorted and every entry carries opts.ModTime,
+// so the output is a function of the tree's bytes alone.
+func Pack(w io.Writer, srcDir, prefix string, opts Options) error {
 	var files []File
 	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -60,14 +72,13 @@ func Pack(w io.Writer, srcDir, prefix string) error {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
+		if opts.NormalizeLineEndings {
+			data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 		}
 		files = append(files, File{
 			Name:    strings.ReplaceAll(filepath.ToSlash(rel), "/", `\`),
 			Data:    data,
-			ModTime: uint32(info.ModTime().Unix()),
+			ModTime: opts.ModTime,
 		})
 		return nil
 	})

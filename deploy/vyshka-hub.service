@@ -1,0 +1,61 @@
+# The hub as a systemd service on a host without Docker: the static binary
+# from a release archive, a dedicated user, the SQLite file under
+# /var/lib/vyshka, and the admin token handed in as a systemd credential so
+# it is never in the environment or the process list. deploy/README.md has
+# the install steps; /etc/vyshka/hub.env (hub.env.example) overrides the
+# defaults set here.
+[Unit]
+Description=Vyshka hub
+Documentation=https://github.com/That1Drifter/vyshka
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vyshka
+Group=vyshka
+ExecStart=/usr/local/bin/vyshka-hub serve
+
+# Defaults. hub.env wins where it sets the same name.
+Environment=VYSHKA_ADDR=127.0.0.1:8080
+Environment=DATABASE_URL=/var/lib/vyshka/vyshka.db
+EnvironmentFile=-/etc/vyshka/hub.env
+
+# The token file stays root-owned and unreadable to the service user;
+# systemd copies it into a private directory the hub reads through file:.
+LoadCredential=admin_token:/etc/vyshka/admin-token
+Environment=VYSHKA_ADMIN_TOKEN=file:%d/admin_token
+
+# /var/lib/vyshka is created and owned by the service user; the database,
+# its WAL files, and any map tilesets (VYSHKA_MAPS_DIR) live there.
+StateDirectory=vyshka
+WorkingDirectory=/var/lib/vyshka
+
+Restart=on-failure
+RestartSec=5s
+# The hub drains held polls for up to 15 s on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Confinement. The hub needs the network, its state directory, and nothing
+# else; everything below is what a static Go binary tolerates.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

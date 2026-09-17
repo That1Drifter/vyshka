@@ -1,6 +1,7 @@
 # Roadmap
 
-**As of:** 2026-09-14 (roadmap review; every proposed item settled). This document lists
+**As of:** 2026-09-17 (release tooling landed; the two items parked on the first tag became
+committed). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -85,10 +86,17 @@ release.
    the legs through the engine's own broken-legs modifier. The generalization of
    `vyshka.heal`, which stays as the shortcut for health, shock, blood, and bleeding
    together. Each was verified live on DayZ 1.29 with a retail client.
-6. **First release** (#69): hub 0.1.0 as static binaries for Linux, Windows, and macOS and
-   a published container image; a systemd unit under `deploy/`; the DayZ plugin on the
-   Steam Workshop with the `.pbo` build reproducible from the repo; per-artifact SemVer in
-   `CHANGELOG.md` (protocol draft, hub, DayZ plugin).
+6. **First release** (#69), tooling landed 2026-09-17: a release workflow on per-artifact
+   tags (`hub-v<version>`, `dayz-plugin-v<version>`) that builds the hub's static binaries
+   for Linux, macOS, and Windows, grades the shipped Linux binary with the hub conformance
+   suite, publishes the archives with checksums and the container image for amd64 and
+   arm64, and publishes the DayZ plugin's `@Vyshka` folder from a `.pbo` build that is now
+   byte-reproducible; a systemd unit under `deploy/`; per-artifact sections in
+   `CHANGELOG.md`; the steps in `RELEASING.md`. The tags `hub-v0.1.0` and
+   `dayz-plugin-v0.7.0` are cut from `main` by the operator, and the Steam Workshop
+   upload is the one manual step (it needs a Steam account). The two items parked on this
+   trigger became committed: #96 (client libraries) and #97 (the conformance suites as a
+   published tool).
 
 After the tag, in this order:
 
@@ -193,11 +201,12 @@ spec reader is not surprised.
   trigger, and nothing on this roadmap depends on it: the identity shape froze on DayZ
   evidence and protocol 1.0 gates on a third-party plugin rather than on this project
   writing a second one. A roadmap review reopens it.
-- **Admin API client libraries**: parked. Generated from `spec/openapi-admin.yaml`, Go and
-  TypeScript first. Trigger: the first tagged release (#69).
-- **Conformance suites as a published tool**: parked. A versioned binary third-party
-  implementers can run without cloning this repository, and a badge policy for what
-  "conformant" may claim. Trigger: the first tagged release (#69).
+- **Admin API client libraries** (#96): committed 2026-09-17, when the release tooling
+  landed. Generated from `spec/openapi-admin.yaml`, Go and TypeScript first. After the
+  post-release DayZ slices unless a consumer asks sooner.
+- **Conformance suites as a published tool** (#97): committed 2026-09-17, the same
+  trigger. A versioned binary third-party implementers can run without cloning this
+  repository, and a badge policy for what "conformant" may claim.
 - **Protocol 1.0**: committed, no date. The freeze happens after at least one third-party
   plugin has been written from the spec alone. Until then `v` stays at 1 with draft
   numbering, and every envelope-level change is discussed in an issue first.
@@ -216,7 +225,6 @@ Collected here so no trigger is lost in a horizon:
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |
 | Multi-instance hub | A single installation exceeds the capacity measured in #87 |
-| Admin API client libraries; conformance suites as a published tool | The first tagged release |
 
 ## Not on the roadmap
 
