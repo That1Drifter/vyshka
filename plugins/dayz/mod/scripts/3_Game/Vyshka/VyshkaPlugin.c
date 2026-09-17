@@ -33,7 +33,7 @@ class VyshkaPlugin
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.7.0";
+	static const string PLUGIN_VERSION = "0.8.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;

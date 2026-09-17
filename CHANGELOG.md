@@ -17,6 +17,14 @@ arrived, since those entries were written for one stream.
 
 ### [Unreleased]
 
+#### Added
+
+- 2026-09-17: the `discord` webhook template words `core.player.damage` (issue #70): who
+  hit whom, with what, from how far, in which body part, for how much, the health left as
+  a field, and a fatal hit titled as one. A death now also carries the fatal hit as a
+  `Hit` field and, for a death the engine names the character itself as the killer of,
+  the vitals at that moment as an `At death` field, submersion listed among them.
+
 #### Changed
 
 - 2026-09-17: CI runs as three parallel jobs instead of one sequence: the Go suite on both
@@ -58,6 +66,22 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 ## DayZ plugin
 
 ### [Unreleased]
+
+#### Added
+
+- 2026-09-17: damage telemetry (issue #70, plugin 0.8.0). `core.player.damage` is emitted
+  from the character's hit hook, one event per hit the engine reports after applying it:
+  `cause` and the source read as a death's killer is (`attacker`, `attackerName`, `weapon`,
+  `distance` for a firearm's shot, `sourceType`), the engine's damage type as `damageType`
+  (`melee`, `firearm`, `explosion`, `stun`, `other`), the damage zone as `bodyPart`, the
+  hit type as `ammo`, the engine's damage result as `damage`, `blood`, and `shock` (the
+  larger of the highest zone value and the whole character's, since the zone reading is 0
+  for a fall and half the loss for a head hit on 1.29), `health` left, `blocked`, and
+  `fatal` on the hit that killed. Hits on a corpse and falls that cost no health are not
+  reported. `core.player.death` gains `bodyPart`, `ammo`, and `damageType` from the fatal
+  hit, and, when the engine names the character itself as the killer, the natural-death
+  breakdown its admin log prints: `water`, `energy`, `blood`, `bleedingSources`, and
+  `submerged` (the head under water, an observation rather than a verdict).
 
 ### [0.7.0] - 2026-09-17
 
