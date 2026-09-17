@@ -649,7 +649,7 @@ func TestPanelEndToEnd(t *testing.T) {
 	plugin.queue("state.players", map[string]any{
 		"capturedAt": time.Now().UTC().Add(-20 * time.Second).Format("2006-01-02T15:04:05Z"),
 		"players": []map[string]any{
-			{"player": alice, "name": "Alice", "position": []float64{384, 12.5, 640}, "data": map[string]any{"alive": true, "health": 82}},
+			{"player": alice, "name": "Alice", "position": []float64{384, 12.5, 640}, "data": map[string]any{"alive": true, "health": 82, "flags": map[string]any{"god": true, "freeze": true, "unlimitedAmmo": false}}},
 			{"player": bob, "name": "Bob", "position": []float64{896, 3, 128}},
 			{"player": carol, "name": "Carol"},
 			{"player": dave, "name": "Dave", "position": []float64{128, 896}},
@@ -708,7 +708,17 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("Dave's flat position cell = %q", got)
 	}
 	if got := text(playerRow("76561198000000001") + " td.data"); got != "alive: true, health: 82" {
-		t.Fatalf("Alice's data cell = %q", got)
+		t.Fatalf("Alice's data cell = %q (the flags belong beside the name, not in the summary)", got)
+	}
+	// The admin flags set on Alice are badges beside her name (issue #71),
+	// the set ones only, in the order the snapshot lists them (a Go map
+	// encodes its keys sorted, hence freeze before god here); Bob, with no
+	// flags, has none.
+	if got := evalString(`Array.from(document.querySelectorAll(` + strconv.Quote(playerRow("76561198000000001")+" .badge.flag") + `)).map((b) => b.textContent).join(",")`); got != "freeze,god" {
+		t.Fatalf("Alice's flag badges = %q, want freeze,god", got)
+	}
+	if got := evalString(`String(document.querySelectorAll(` + strconv.Quote(playerRow("76561198000000002")+" .badge.flag") + `).length)`); got != "0" {
+		t.Fatalf("Bob has %s flag badges, want none", got)
 	}
 	waitJS("every visible tile loaded", `(function(){const s=document.querySelector("#map .map-tiles");return s && s.dataset.total !== "0" && s.dataset.loaded === s.dataset.total && s.dataset.failed === "0"})()`)
 	if got := evalString(`String(document.querySelectorAll("#map .map-marker:not(.map-marker-vehicle)").length)`); got != "5" {

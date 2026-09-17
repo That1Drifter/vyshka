@@ -28,7 +28,17 @@ class VyshkaSnapshotChannel
 	}
 }
 
-class VyshkaPlugin
+// VyshkaPendingDispatch is a dispatch whose action returned a pending
+// outcome (VyshkaActionOutcome.Pending): acked, executed as far as it could
+// be, and waiting for VyshkaPlugin.Complete to bring the result.
+class VyshkaPendingDispatch
+{
+	string m_ActionId;
+	string m_Code;
+	int m_StartedMs;
+}
+
+class VyshkaPlugin : VyshkaResponseSink
 {
 	static ref VyshkaPlugin s_Instance;
 
@@ -58,6 +68,14 @@ class VyshkaPlugin
 	static const string SNAPSHOT_PLAYERS = "state.players";
 	static const string SNAPSHOT_VEHICLES = "state.vehicles";
 
+	// A pending dispatch (an action waiting on the store) holds the next
+	// poll back for up to PENDING_POLL_HOLD_MS, so its result rides the poll
+	// that follows the dispatch instead of waiting out a held one; after
+	// PENDING_MAX_MS with no completion it is failed, so a callback that
+	// never comes cannot leave the hub waiting for the whole TTL.
+	static const int PENDING_POLL_HOLD_MS = 3000;
+	static const int PENDING_MAX_MS = 90000;
+
 	static const int REQUEST_ENROLL = 1;
 	static const int REQUEST_SESSION = 2;
 	static const int REQUEST_POLL = 3;
@@ -66,8 +84,10 @@ class VyshkaPlugin
 	ref VyshkaCredentials m_Credentials;
 	ref VyshkaOutbox m_Outbox;
 	ref VyshkaTransport m_Transport;
+	ref VyshkaStore m_Store;
 	ref VyshkaActionRegistry m_Actions;
 	ref VyshkaEventBuffer m_Events;
+	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
@@ -128,6 +148,26 @@ class VyshkaPlugin
 		return s_Instance.m_LinkState;
 	}
 
+	// Store is the key/value client, or null before the plugin has started
+	// or after it stopped (an action then fails with that as its reason).
+	static VyshkaStore Store()
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return null;
+		return s_Instance.m_Store;
+	}
+
+	// Complete delivers the outcome of a dispatch whose action returned
+	// pending. An actionId that is not pending (already failed by the hold
+	// running out, completed once, or never dispatched) is logged and
+	// ignored: the hub has its answer or will get the timeout's.
+	static void Complete(string actionId, VyshkaActionOutcome outcome)
+	{
+		if (!s_Instance)
+			return;
+		s_Instance.FinishPending(actionId, outcome);
+	}
+
 	void VyshkaPlugin()
 	{
 		m_RenewMarginSeconds = RENEW_MARGIN_SECONDS;
@@ -136,6 +176,7 @@ class VyshkaPlugin
 		m_LinkState = "buffering";
 		m_PollTimeoutSeconds = 25;
 		m_Events = new VyshkaEventBuffer();
+		m_PendingDispatches = new map<string, ref VyshkaPendingDispatch>;
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
@@ -171,9 +212,17 @@ class VyshkaPlugin
 		LoadExecuted();
 
 		m_Transport = new VyshkaTransport();
-		if (!m_Transport.Init(m_Config.m_HubUrl, this))
+		if (!m_Transport.Init(m_Config.m_HubUrl + "/plugin/v1/", this))
 			return;
 		m_Transport.SetReadTimeout(m_Config.m_PollTimeoutSeconds + 5);
+
+		// The store client has a transport of its own so a key/value call
+		// never waits behind a held poll (VyshkaStore).
+		array<string> namespaces = new array<string>;
+		namespaces.Insert(VyshkaActionRegistry.KV_NAMESPACE);
+		m_Store = new VyshkaStore();
+		if (!m_Store.Init(m_Config.m_HubUrl, namespaces))
+			return;
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
@@ -197,6 +246,12 @@ class VyshkaPlugin
 		// it is flushed to the outbox so the next boot delivers it, stamped
 		// with the time it happened, ahead of that boot's own start event.
 		Emit("core.server.stop", ServerEventData());
+		// A dispatch still waiting on its action is answered now, so the
+		// next boot delivers a failure rather than leaving the hub to time
+		// the action out; the store's own callbacks are failed first, so no
+		// completion arrives after this.
+		m_Store.Shutdown();
+		FailPending("the server stopped before the action finished");
 		FlushEvents();
 		m_Running = false;
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(Tick);
@@ -230,6 +285,10 @@ class VyshkaPlugin
 		SampleFps();
 		if (m_Events.Due())
 			FlushEvents();
+		ExpirePending();
+		// The store's own transport: its requests go out whether or not a
+		// poll is in flight, which is the point of it having one.
+		m_Store.Tick(m_SessionToken);
 		m_Transport.CheckWatchdog();
 		if (m_Transport.IsInFlight())
 			return;
@@ -369,6 +428,17 @@ class VyshkaPlugin
 		if (!m_Running || m_Transport.IsInFlight())
 			return;
 
+		// A dispatch whose action is still working (on the store, a round
+		// trip away) gets a moment to finish, so its result rides the poll
+		// that follows the dispatch instead of waiting out a held one. The
+		// hold is short and bounded: past it the poll goes, and the result
+		// rides the next.
+		if (YoungestPendingMs() < PENDING_POLL_HOLD_MS)
+		{
+			Delay(50);
+			return;
+		}
+
 		if (!m_Credentials)
 		{
 			if (m_Config.m_EnrollmentToken == "")
@@ -497,7 +567,7 @@ class VyshkaPlugin
 
 	// ---- responses ----
 
-	void OnResponse(int kind, bool ok, int code, string data)
+	override void OnResponse(int kind, bool ok, int code, string data)
 	{
 		if (!m_Running)
 			return;
@@ -1037,10 +1107,29 @@ class VyshkaPlugin
 
 		int started = VyshkaClock.MonotonicMs();
 		VyshkaActionOutcome outcome = m_Actions.Execute(actionId, code, context, referenceKey, body.Get("params"));
-		int durationMs = VyshkaClock.MonotonicMs() - started;
 		if (!outcome)
 			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
+		if (outcome.m_Pending)
+		{
+			// The action has more to do (a store round trip) before it can
+			// say how it went. The ack is out; the result follows through
+			// Complete, or the hold runs out and FailPending answers.
+			VyshkaPendingDispatch pending = new VyshkaPendingDispatch();
+			pending.m_ActionId = actionId;
+			pending.m_Code = code;
+			pending.m_StartedMs = started;
+			m_PendingDispatches.Set(actionId, pending);
+			VyshkaLog.Info("action " + code + " (" + actionId + ") is pending");
+			return;
+		}
+		AppendResult(actionId, code, started, outcome);
+	}
 
+	// AppendResult writes the action.result for a dispatch, whether the
+	// outcome came back from Execute at once or through Complete later.
+	void AppendResult(string actionId, string code, int started, VyshkaActionOutcome outcome)
+	{
+		int durationMs = VyshkaClock.MonotonicMs() - started;
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
 		result.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		result.Set("ok", VyshkaJsonValue.NewBool(outcome.m_Ok));
@@ -1059,6 +1148,70 @@ class VyshkaPlugin
 			VyshkaLog.Info("action " + code + " (" + actionId + ") completed in " + durationMs.ToString() + " ms");
 		else
 			VyshkaLog.Info("action " + code + " (" + actionId + ") failed: " + outcome.m_Error);
+	}
+
+	// FinishPending answers a pending dispatch with the outcome its action
+	// brought. Pending is checked before anything else, so a completion for
+	// an unknown or already-answered actionId changes nothing.
+	void FinishPending(string actionId, VyshkaActionOutcome outcome)
+	{
+		VyshkaPendingDispatch pending = m_PendingDispatches.Get(actionId);
+		if (!pending)
+		{
+			VyshkaLog.Warn("a completion arrived for action " + actionId + ", which is not pending; ignored");
+			return;
+		}
+		m_PendingDispatches.Remove(actionId);
+		if (!outcome)
+			outcome = VyshkaActionOutcome.Failure("the action produced no outcome");
+		if (outcome.m_Pending)
+			outcome = VyshkaActionOutcome.Failure("the action completed with a pending outcome");
+		AppendResult(actionId, pending.m_Code, pending.m_StartedMs, outcome);
+	}
+
+	// ExpirePending fails every dispatch that has been pending longer than
+	// PENDING_MAX_MS: a store client that gives up answers its callback, so
+	// this is the guard against a callback that never comes at all.
+	void ExpirePending()
+	{
+		if (m_PendingDispatches.Count() == 0)
+			return;
+		int now = VyshkaClock.MonotonicMs();
+		array<string> expired = new array<string>;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+		{
+			if (now - m_PendingDispatches.GetElement(i).m_StartedMs > PENDING_MAX_MS)
+				expired.Insert(m_PendingDispatches.GetKey(i));
+		}
+		for (int j = 0; j < expired.Count(); j++)
+			FinishPending(expired.Get(j), VyshkaActionOutcome.Failure("the action did not finish within " + (PENDING_MAX_MS / 1000).ToString() + " s"));
+	}
+
+	// FailPending answers every pending dispatch with one failure.
+	void FailPending(string error)
+	{
+		array<string> ids = new array<string>;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+			ids.Insert(m_PendingDispatches.GetKey(i));
+		for (int j = 0; j < ids.Count(); j++)
+			FinishPending(ids.Get(j), VyshkaActionOutcome.Failure(error));
+	}
+
+	// YoungestPendingMs is the age of the most recent pending dispatch, or
+	// a very large number when none is pending.
+	int YoungestPendingMs()
+	{
+		if (m_PendingDispatches.Count() == 0)
+			return int.MAX;
+		int now = VyshkaClock.MonotonicMs();
+		int youngest = int.MAX;
+		for (int i = 0; i < m_PendingDispatches.Count(); i++)
+		{
+			int age = now - m_PendingDispatches.GetElement(i).m_StartedMs;
+			if (age < youngest)
+				youngest = age;
+		}
+		return youngest;
 	}
 
 	// MarkExecuted records an executed actionId in the in-memory LRU and on

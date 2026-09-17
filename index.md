@@ -17,7 +17,7 @@ protocol is game-agnostic by design.
 The project is **spec-first**: the [protocol specification](spec/protocol.html) and its
 conformance suites are the product; the hub and plugins are reference implementations.
 
-**Status:** early implementation, protocol at draft 0.23 (2026-09-15). The hub implements
+**Status:** early implementation, protocol at draft 0.24 (2026-09-17). The hub implements
 every protocol surface: enrollment, sessions, the envelope exchange over long-poll,
 manifest publish with schema-subset validation, the full action lifecycle (dispatch,
 execute, observe, expire), telemetry ingest with a queryable event feed, full-list state

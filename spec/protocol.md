@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.23 (2026-09-15)
+**Status:** draft 0.24 (2026-09-17)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -2078,6 +2078,25 @@ land exactly once: two clients adding 1 to a key at revision n leave it at n+2 w
 deltas applied, never n+1. This is the one operation whose atomicity the hub owes the
 client outright, with no `ifRevision` in the loop.
 
+**POST spellings (Plugin API).** Some engine HTTP clients issue only `GET` and `POST`, and
+attach the credential of section 2.1 to a `POST` alone (Appendix A: the reference DayZ
+plugin measured that the header it smuggles travels with a `POST` and not with a `GET`).
+Such a plugin cannot reach get, set, or delete as spelled above, so the Plugin API also
+offers each per-key operation as a `POST` on a verb-suffixed path, the way `incr` already
+is:
+
+| Operation | POST spelling |
+|---|---|
+| get | `POST /plugin/v1/kv/{namespace}/{key}/get` |
+| set | `POST /plugin/v1/kv/{namespace}/{key}/set` |
+| delete | `POST /plugin/v1/kv/{namespace}/{key}/delete` |
+
+A spelling takes the same body as the operation it spells (none for get and delete, and a
+body sent anyway is ignored), gives the same answer with the same status, raises the same
+errors, and runs the same confinement check first (section 12.3). A hub MUST serve both
+spellings. A plugin MAY use either, and one whose client can issue the method in the table
+above SHOULD use that. The Admin API has no POST spellings: its clients have full HTTP.
+
 **list keys** answers `200` with one page of the namespace's live keys, key ascending in
 byte order:
 
@@ -2235,6 +2254,11 @@ notes for such environments:
   or unknown token. The reference DayZ plugin takes the query parameter through the same
   `POST` path as everything else; the measurement that it survives the engine's client is
   in its repository.
+- Where the content-type header is the only header a client can set, it may also be sent
+  with a `POST` alone: the reference DayZ plugin's `GET` requests reached the wire with no
+  content type and therefore no credential. The POST spellings of the key/value operations
+  (section 12.2) exist for such a client, which uses them for every key/value call and
+  never issues a `GET`, `PUT`, or `DELETE` against the hub.
 - File-backed ring buffers get whatever fsync semantics the engine provides; document the
   loss window honestly rather than claiming durability the engine cannot deliver.
 - Engines with richer facilities (e.g. Arma Reforger's Enfusion) SHOULD still implement

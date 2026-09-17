@@ -89,6 +89,79 @@ func TestKVPluginConfinedToDeclaredNamespaces(t *testing.T) {
 	}
 }
 
+// The POST spellings of get, set, and delete (spec section 12.2) are the
+// same operations behind the same gate: an engine client that can issue only
+// GET and POST, and carries its credential on a POST alone, reaches the
+// whole per-key surface through them.
+func TestKVPluginPostSpellings(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	_, live := enrolledKVSession(t, server, "kv post spellings", "example-mod")
+
+	var written kvEntry
+	status := call(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/set",
+		live.SessionToken, map[string]any{"value": map[string]any{"god": true}}, &written)
+	if status != http.StatusOK || written.Revision != 1 {
+		t.Fatalf("POST /set: status %d revision %d, want 200 and 1", status, written.Revision)
+	}
+
+	var read kvEntry
+	status = call(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/get",
+		live.SessionToken, nil, &read)
+	var stored struct {
+		God bool `json:"god"`
+	}
+	if status != http.StatusOK || json.Unmarshal(read.Value, &stored) != nil || !stored.God || read.Revision != 1 {
+		t.Fatalf("POST /get: status %d value %s revision %d, want 200, the stored object, 1", status, read.Value, read.Revision)
+	}
+	// A body on a get spelling is ignored, not refused.
+	status = call(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/get",
+		live.SessionToken, map[string]any{"ignored": true}, &read)
+	if status != http.StatusOK {
+		t.Fatalf("POST /get with a body: status %d, want 200", status)
+	}
+
+	// The compare-and-swap rides the set spelling exactly as it rides PUT.
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/set",
+		live.SessionToken, map[string]any{"value": 2, "ifRevision": 7}, http.StatusConflict); code != "revision_mismatch" {
+		t.Errorf("stale CAS through POST /set: code = %q, want revision_mismatch", code)
+	}
+	status = call(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/set",
+		live.SessionToken, map[string]any{"value": 2, "ifRevision": 1}, &written)
+	if status != http.StatusOK || written.Revision != 2 {
+		t.Fatalf("fresh CAS through POST /set: status %d revision %d, want 200 and 2", status, written.Revision)
+	}
+
+	// The key is the same key whichever spelling wrote it.
+	status = call(t, server, http.MethodGet, "/plugin/v1/kv/example-mod/flags.1", live.SessionToken, nil, &read)
+	if status != http.StatusOK || string(read.Value) != "2" {
+		t.Fatalf("GET after POST /set: status %d value %s, want 200 and 2", status, read.Value)
+	}
+
+	status = call(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/delete", live.SessionToken, nil, nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("POST /delete: status %d, want 204", status)
+	}
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/get",
+		live.SessionToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("POST /get after delete: code = %q, want not_found", code)
+	}
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/kv/example-mod/flags.1/delete",
+		live.SessionToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("repeated POST /delete: code = %q, want not_found", code)
+	}
+
+	// Confinement runs first on the spellings too.
+	if code := errorCode(t, server, http.MethodPost, "/plugin/v1/kv/other-mod/flags.1/get",
+		live.SessionToken, nil, http.StatusForbidden); code != "forbidden" {
+		t.Errorf("POST /get on an undeclared namespace: code = %q, want forbidden", code)
+	}
+	// The spellings are POST only.
+	if status := call(t, server, http.MethodGet, "/plugin/v1/kv/example-mod/flags.1/set", live.SessionToken, nil, nil); status != http.StatusMethodNotAllowed {
+		t.Errorf("GET on the set spelling: status %d, want 405", status)
+	}
+}
+
 func TestKVAdminScopedByNamespace(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)

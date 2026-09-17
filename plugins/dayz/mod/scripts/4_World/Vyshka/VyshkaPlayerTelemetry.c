@@ -93,9 +93,10 @@ class VyshkaPlayers
 		{
 			// A respawn or a reconnect within the logout window: the identity
 			// never left, so there is nothing to announce beyond the new
-			// character.
+			// character, which gets the identity's admin flags like any.
 			entry.m_Player = player;
 			entry.m_Name = identity.GetName();
+			VyshkaFlags.OnConnect(player, id);
 			return;
 		}
 		entry = new VyshkaRosterEntry();
@@ -108,6 +109,10 @@ class VyshkaPlayers
 		data.Set("player", Identity(id));
 		data.Set("name", VyshkaJsonValue.NewString(entry.m_Name));
 		VyshkaPlugin.Emit("core.player.connect", data);
+
+		// The identity's admin flags (VyshkaFlags): what this process last
+		// knew at once, the store's word when it answers.
+		VyshkaFlags.OnConnect(player, id);
 
 		// A banned identity is refused here, the earliest hook that has a
 		// character to disconnect through the engine's ordinary logout. The
@@ -576,6 +581,10 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 			data.Set("alive", VyshkaJsonValue.NewBool(player.IsAlive()));
 			data.Set("health", VyshkaJsonValue.NewInt((int)player.GetHealth("", "Health")));
 			data.Set("blood", VyshkaJsonValue.NewInt((int)player.GetHealth("", "Blood")));
+			// The admin flags in effect on this character, set ones only,
+			// so a panel can show who has one (issue #71); absent when none.
+			if (player.m_VyshkaFlags && player.m_VyshkaFlags.Any())
+				data.Set("flags", player.m_VyshkaFlags.ToJson());
 			entry.Set("data", data);
 			players.Add(entry);
 		}
@@ -601,12 +610,26 @@ modded class PlayerBase
 	// the hit that killed, for the death report that follows it.
 	bool m_VyshkaDead;
 	ref VyshkaHit m_VyshkaFatalHit;
+	// The admin flags in effect on this character (VyshkaFlags.Apply); null
+	// until the plugin has applied a set. Read by the stamina and fire hooks
+	// and by the AI-targeting question below.
+	ref VyshkaFlagSet m_VyshkaFlags;
 
 	override void EEKilled(Object killer)
 	{
 		if (GetGame().IsServer())
 			VyshkaPlayers.OnDeath(this, killer);
 		super.EEKilled(killer);
+	}
+
+	// The engine's AI asks this before an infected or an animal takes a
+	// character as a target; a character ignored by AI says no, which is
+	// what the engine's own diagnostic builds do for an untargetable player.
+	override bool CanBeTargetedByAI(EntityAI ai)
+	{
+		if (VyshkaFlags.Has(this, VyshkaFlagSet.IGNORED_BY_AI))
+			return false;
+		return super.CanBeTargetedByAI(ai);
 	}
 
 	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)

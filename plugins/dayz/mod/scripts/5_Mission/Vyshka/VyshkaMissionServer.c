@@ -49,9 +49,11 @@ class VyshkaBoot
 		registry.Register(new VyshkaDryAction());
 		registry.Register(new VyshkaBrokenLegsAction());
 		registry.Register(new VyshkaBloodyHandsAction());
+		registry.Register(new VyshkaFlagsAction());
 		VyshkaPlayers.Reset();
 		VyshkaWorld.Reset();
 		VyshkaVehicles.Reset();
+		VyshkaFlags.Reset();
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
 		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());

@@ -120,7 +120,9 @@ management views).
 - **Live map** per server, at `#/servers/{id}/map`, over
   `GET /api/v1/servers/{id}/state/players` and `.../state/vehicles` (protocol section 8.3)
   re-read every five seconds. The latest snapshots' players and vehicles are listed with
-  identity or id, position, and extras, and plotted on a basemap when the hub has a
+  identity or id, position, and extras (a player's admin flags, the `flags` object the
+  DayZ plugin puts in an entry's `data`, are badges beside the name rather than part of
+  the extras), and plotted on a basemap when the hub has a
   tileset installed for the server's world (below): players as round dots, vehicles as
   squares in a colour of their own, labelled by the plugin's display name or class. The
   world is the one the plugin reported in its latest `core.server.start`

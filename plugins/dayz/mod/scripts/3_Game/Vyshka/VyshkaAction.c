@@ -9,8 +9,21 @@
 class VyshkaActionOutcome
 {
 	bool m_Ok;
+	bool m_Pending;                 // the outcome comes later, through VyshkaPlugin.Complete
 	ref VyshkaJsonValue m_Result;   // arbitrary JSON, null for none
 	string m_Error;
+
+	// Pending is the outcome of an action that has more to do before it can
+	// say how it went: one that waits on the hub's key/value store, for
+	// instance. The plugin holds the dispatch open and sends no result until
+	// the action calls VyshkaPlugin.Complete with the real outcome, or the
+	// hold runs out (VyshkaPlugin.PENDING_MAX_MS) and it is failed.
+	static VyshkaActionOutcome Pending()
+	{
+		VyshkaActionOutcome outcome = new VyshkaActionOutcome();
+		outcome.m_Pending = true;
+		return outcome;
+	}
 
 	static VyshkaActionOutcome Success(VyshkaJsonValue result)
 	{
@@ -99,9 +112,15 @@ class VyshkaAction
 
 class VyshkaActionRegistry
 {
-	// Bump when the set of actions or any schema changes; the hub ignores a
-	// manifest whose revision is not above the one it stored (section 6.1).
-	static const int MANIFEST_REVISION = 5;
+	// Bump when the set of actions, any schema, or the declared key/value
+	// namespaces change; the hub ignores a manifest whose revision is not
+	// above the one it stored (section 6.1).
+	static const int MANIFEST_REVISION = 6;
+
+	// The key/value namespaces the plugin's own actions use (spec section
+	// 6.6): the sole source of the plugin's store access. VyshkaStore
+	// confines its own calls to this list before the hub does.
+	static const string KV_NAMESPACE = "vyshka";
 
 	ref array<ref VyshkaAction> m_Actions;
 
@@ -161,6 +180,9 @@ class VyshkaActionRegistry
 		body.Set("actions", actions);
 		body.Set("contexts", VyshkaJsonValue.NewArray());
 		body.Set("events", VyshkaJsonValue.NewArray());
+		VyshkaJsonValue namespaces = VyshkaJsonValue.NewArray();
+		namespaces.Add(VyshkaJsonValue.NewString(KV_NAMESPACE));
+		body.Set("kvNamespaces", namespaces);
 		return body.Serialize();
 	}
 }

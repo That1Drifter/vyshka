@@ -1,7 +1,7 @@
 # Roadmap
 
-**As of:** 2026-09-17 (release tooling landed; the two items parked on the first tag became
-committed). Last full review 2026-09-14, at which every proposed item was settled. This document lists
+**As of:** 2026-09-17 (admin flags landed; the invisibility and no-collision trigger was
+sharpened by the spike). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -51,7 +51,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.23 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.24 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -111,10 +111,17 @@ After the tag, in this order:
    killed; the death carries that hit's body part and hit type, and the natural-death
    breakdown (water, energy, blood, bleeding sources, submersion) when the engine names the
    character itself as the killer. The `discord` template words both.
-8. **Admin flags** (#71): god mode, freeze, unlimited stamina and ammo, ignored by AI, set
-   per player, persisted per identity in the key/value store so they survive a reconnect,
-   and reported as `flags` in `state.players`. Includes a spike on whether invisibility and
-   no-collision can be done server-side; they stay parked until it says yes.
+8. **Admin flags** (#71), landed 2026-09-17: `vyshka.flags` sets god mode, freeze,
+   unlimited stamina, unlimited ammo, and ignored by AI per identity, online or not; the
+   set lives in the key/value store (the store's first real customer, through the Plugin
+   API's new POST spellings, protocol draft 0.24), so it survives a respawn, a reconnect,
+   and a restart and follows the identity across the installation's servers, and rides
+   `state.players` as `flags`, which the panel shows as badges. God, freeze, stamina, and
+   AI were verified live on DayZ 1.29; ammo through the weapon's fire event from the test
+   rig. The spike (`spikes/dayz-admin-flags`) could not show invisibility or no-collision
+   from the server with one client: the character draws and collides on the client, and
+   whether a server-side `SetInvisible` reaches other clients needs a second one to see.
+   Both stay parked with that trigger.
 9. **Mod surface with a self-contained sample mod** (#72): `class MyAction extends
    VyshkaAction` from a modded `MissionServer` hook, `#ifdef VYSHKA` guards, `GetVyshka()`,
    `VyshkaStore("my-mod")`, `VyshkaMapMarker`. The sample declares one custom action, one
@@ -136,7 +143,8 @@ After the tag, in this order:
 13. **Presets** (#76): loadouts captured from a player's gear or a placed object; named
     teleport locations with a scatter radius; vehicle spawn presets with the parts a car
     needs to drive; operator-defined weather presets. All live in the key/value store, so
-    the read-only browser from #64 becomes an editor here. The store's first real customers.
+    the read-only browser from #64 becomes an editor here. The store's first operator-written
+    data (the admin flags of #71 were its first customer, written by the plugin).
 14. **Vehicles 2** (#77): refuel, repair, and intact, destroyed, and exploded states in the
     snapshot. Delete-all-unclaimed depends on an ownership mod and becomes a documented
     mod-surface example instead of a plugin action.
@@ -228,7 +236,7 @@ Collected here so no trigger is lost in a horizon:
 | Chat-triggered actions (a hub rule dispatching an action when a whitelisted identity's chat matches a pattern, audited as that identity) | An operator asks for in-game commands. It is a rule engine, and rule engines grow |
 | Random infected or animals spawned near a point | An event host asks |
 | Entities and base building (`state.entities`, set position and orientation and health on ids, duplicate, build and dismantle with a no-materials option, `dayz.build.place` and `dismantle` events) | The mod surface has a customer that places map objects. `state.entities` is the likeliest snapshot to hit the 256 KiB cap. The build and dismantle hook spike rides along with any plugin slice |
-| Invisibility and no-collision admin flags | The #71 spike shows they can be done server-side |
+| Invisibility and no-collision admin flags | A two-client measurement (the #71 spike had one) shows a server-side `SetInvisible` hides the character from another client, or the client-side simulation can be told to ignore geometry from the server |
 | Position telemetry cadence | The WebSocket transport lands |
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |

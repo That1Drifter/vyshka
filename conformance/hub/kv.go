@@ -167,6 +167,101 @@ func checkKVPluginWrite(ctx context.Context, env Env) error {
 		plugin.Session.SessionToken, nil, http.StatusNotFound, "not_found")
 }
 
+// checkKVPluginPostSpellings grades the POST spellings of get, set, and
+// delete (spec section 12.2): the same operation, answer, and errors as the
+// method they spell, behind the same confinement, and reachable from a client
+// that can issue nothing but POST.
+func checkKVPluginPostSpellings(ctx context.Context, env Env) error {
+	namespace := uniqueKVNamespace()
+	plugin, err := env.newKVPlugin(ctx, "conformance: kv post spellings", namespace)
+	if err != nil {
+		return err
+	}
+	bearer := plugin.Session.SessionToken
+	spelled := func(key, verb string) string { return kvPath("/plugin/v1", namespace, key) + "/" + verb }
+
+	var written kvEntry
+	if err := env.expect(ctx, http.MethodPost, spelled("flags", "set"), bearer,
+		map[string]any{"value": map[string]any{"god": true}}, http.StatusOK, &written); err != nil {
+		return err
+	}
+	if written.Revision != 1 || written.Namespace != namespace || written.Key != "flags" {
+		return fmt.Errorf("POST set answered %s/%s revision %d, want %s/flags revision 1",
+			written.Namespace, written.Key, written.Revision, namespace)
+	}
+
+	// The get spelling reads what the set spelling wrote, and the Admin API
+	// sees the same key: a spelling is not a separate store.
+	var read kvEntry
+	if err := env.expect(ctx, http.MethodPost, spelled("flags", "get"), bearer, nil, http.StatusOK, &read); err != nil {
+		return err
+	}
+	var value struct {
+		God bool `json:"god"`
+	}
+	if err := json.Unmarshal(read.Value, &value); err != nil || !value.God || read.Revision != 1 {
+		return fmt.Errorf("POST get answered value %s revision %d, want the stored object at revision 1", read.Value, read.Revision)
+	}
+	if err := env.expect(ctx, http.MethodGet, kvPath("/api/v1", namespace, "flags"), env.AdminToken, nil, http.StatusOK, &read); err != nil {
+		return err
+	}
+	if read.Revision != 1 {
+		return fmt.Errorf("admin read after POST set: revision %d, want 1", read.Revision)
+	}
+
+	// ifRevision rides the set spelling: a stale one loses with the current
+	// revision in the details, a fresh one wins.
+	resp, body, err := env.do(ctx, http.MethodPost, spelled("flags", "set"), bearer,
+		map[string]any{"value": 2, "ifRevision": 5})
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusConflict {
+		return fmt.Errorf("stale CAS through POST set: status = %d, want 409, body %q", resp.StatusCode, truncate(body))
+	}
+	var failure struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				Revision int64 `json:"revision"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &failure); err != nil || failure.Error.Code != "revision_mismatch" || failure.Error.Details.Revision != 1 {
+		return fmt.Errorf("stale CAS through POST set: want revision_mismatch with details.revision 1, got %q", truncate(body))
+	}
+	if err := env.expect(ctx, http.MethodPost, spelled("flags", "set"), bearer,
+		map[string]any{"value": 2, "ifRevision": 1}, http.StatusOK, &written); err != nil {
+		return err
+	}
+	if written.Revision != 2 {
+		return fmt.Errorf("fresh CAS through POST set: revision = %d, want 2", written.Revision)
+	}
+
+	// Delete through its spelling answers as delete does, and the key is gone
+	// for every spelling and realm; a repeat is not_found.
+	if err := env.expect(ctx, http.MethodPost, spelled("flags", "delete"), bearer, nil, http.StatusNoContent, nil); err != nil {
+		return err
+	}
+	if err := env.expectError(ctx, http.MethodPost, spelled("flags", "get"), bearer, nil, http.StatusNotFound, "not_found"); err != nil {
+		return err
+	}
+	if err := env.expectError(ctx, http.MethodGet, kvPath("/api/v1", namespace, "flags"), env.AdminToken, nil, http.StatusNotFound, "not_found"); err != nil {
+		return err
+	}
+	if err := env.expectError(ctx, http.MethodPost, spelled("flags", "delete"), bearer, nil, http.StatusNotFound, "not_found"); err != nil {
+		return err
+	}
+
+	// Confinement runs first on the spellings too: an undeclared namespace is
+	// forbidden whether or not the key exists.
+	other := uniqueKVNamespace()
+	if err := env.expectError(ctx, http.MethodPost, kvPath("/plugin/v1", other, "flags")+"/get", bearer, nil, http.StatusForbidden, "forbidden"); err != nil {
+		return err
+	}
+	return env.expectError(ctx, http.MethodPost, spelled("no-such-key", "get"), bearer, nil, http.StatusNotFound, "not_found")
+}
+
 func checkKVCompareAndSwap(ctx context.Context, env Env) error {
 	namespace := uniqueKVNamespace()
 	plugin, err := env.newKVPlugin(ctx, "conformance: kv cas", namespace)

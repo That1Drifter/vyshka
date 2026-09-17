@@ -656,6 +656,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/incr", s.pluginKV(kvIncr))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
 
+	// The POST spellings of get, set, and delete (spec section 12.2), for an
+	// engine client that can issue only GET and POST and carries its
+	// credential on a POST alone. The same handlers behind the same gate.
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/get", s.pluginKV(kvGet))
+	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/get", methodNotAllowed("POST"))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/set", s.pluginKV(kvSet))
+	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/set", methodNotAllowed("POST"))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/delete", s.pluginKV(kvDelete))
+	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/delete", methodNotAllowed("POST"))
+
 	// The panel, when one is mounted. It is a static asset surface and not
 	// part of either API realm: its responses are pages, so a missing asset
 	// is a plain 404 from the handler itself, not the protocol error shape.
