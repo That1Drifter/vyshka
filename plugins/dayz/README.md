@@ -3,9 +3,10 @@
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player events a feed needs and the
-`state.players` snapshots a live map needs. It ships six built-in actions (heal, kick, ban,
-unban, message, broadcast), so an operator can moderate a server from the panel or a `curl`
-against the hub. Protocol: `spec/protocol.md`.
+`state.players` snapshots a live map needs. It ships nine built-in actions (heal, kick, ban,
+unban, message, broadcast, teleport, spawn, set time), so an operator can moderate a server
+and move things around it from the panel or a `curl` against the hub. Protocol:
+`spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -16,7 +17,7 @@ Clean-room: written from the engine's public script headers and the measurements
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
 | `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the moderation actions, the position and world actions, the player roster and telemetry (`VyshkaPlayerTelemetry`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
 | `pbo/` | Go package that packs and reads PBO archives |
 | `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
@@ -78,7 +79,7 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 ```
 
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
-identity the telemetry publishes. The manifest (revision 2) declares:
+identity the telemetry publishes. The manifest (revision 3) declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
@@ -88,9 +89,12 @@ identity the telemetry publishes. The manifest (revision 2) declares:
 | `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
 | `vyshka.message` | player | none | `message` (required), `title`, `seconds` (1 to 60, default 10), `style` (`notification`, the default, or `chat`) | `name`, `style` |
 | `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
+| `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
+| `vyshka.spawn` | player | warning | `className` (required) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
+| `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 
-Kick, message, and the ban's own kick need the player online and fail with `player <id> is
-not online` otherwise.
+Kick, message, teleport, spawn, and the ban's own kick need the player online and fail with
+`player <id> is not online` otherwise.
 
 **Kicks** run the mission's own logout finalization (the same code a logout timer running
 out reaches): the disconnect hook fires, so `core.player.disconnect` follows the kick event,
@@ -128,6 +132,41 @@ is left alone, enforces nothing, and makes the ban and unban actions refuse unti
 fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
 duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
 as that instant rather than wrapped into the past.
+
+**Teleports** move the character with the engine's own position call, the one its restricted
+area enforcement and its developer tooling use; a player seated in a vehicle is moved with the
+vehicle and everyone in it, which the result reports as `vehicle`. A `position` is in the
+frame the snapshots publish (`[x, y, z]`, `y` the elevation in metres); given as `[x, z]` it
+is placed on the terrain at that point. A position off the map (outside `0` to the world
+size on `x` and `z`) or above 10 000 m is refused, and one below the terrain, or below sea
+level, is lifted up to it: measured on DayZ 1.29 while building this slice, the engine
+leaves a character exactly where an explicit `y` puts it, 280 m under the ground included,
+where it is stranded rather than moved. The engine's own teleport lifts to sea level only;
+the terrain lift is the plugin's, and its cost is that an interior below the heightmap
+cannot be a teleport destination. `toPlayer` puts the player 1.5 m beside the other player,
+at that player's elevation rather than the terrain's, so a player standing on a floor is
+not placed under it. Every teleport records where the player stood as that identity's
+previous position, one per identity, and `previous` goes back there: the undo of a
+teleport, and a second `previous` undoes the undo. The record is in memory only; a restart
+forgets it, and `previous` then fails until something has teleported the player again.
+The schema subset of protocol section 6.1 cannot say "exactly one of", so a dispatch naming
+no destination, or more than one, is refused by the plugin.
+
+**Spawn** creates one object of `className` on the ground 1.5 m in front of the player, with
+the placement flags the central economy uses (traced to the surface, physics on, navmesh
+updated) and the item's default quantity and condition; the inventory target, quantity,
+health, and attachments belong to the spawning extension slice. The name must be made of
+letters, digits, and underscores, and must be a public class (`scope` 2) declared in
+`CfgVehicles`, `CfgWeapons`, or `CfgMagazines`; anything else is refused before the engine
+is asked, with the reason in the result. That admits every vanilla and modded item, and also
+vehicles, infected, and animals, which is what an event host wants; a blocklist arrives with
+the spawning extension. `className` in the result is the class as the engine reports it.
+
+**Set time** writes the world clock through the engine's `SetDate`, keeping the year, month,
+and day and replacing the hour and minute; the clients follow the server's clock as they
+always do. The result carries the clock as read back after the write, so what the engine
+made of the request is what is reported: on DayZ 1.29 a request for 03:15 read back as
+03:14 and 14:30 as 14:30, so expect the minute to land within one of what was asked.
 
 ## Telemetry
 

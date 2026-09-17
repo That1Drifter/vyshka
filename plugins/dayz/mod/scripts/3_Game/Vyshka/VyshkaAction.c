@@ -101,7 +101,7 @@ class VyshkaActionRegistry
 {
 	// Bump when the set of actions or any schema changes; the hub ignores a
 	// manifest whose revision is not above the one it stored (section 6.1).
-	static const int MANIFEST_REVISION = 2;
+	static const int MANIFEST_REVISION = 3;
 
 	ref array<ref VyshkaAction> m_Actions;
 
