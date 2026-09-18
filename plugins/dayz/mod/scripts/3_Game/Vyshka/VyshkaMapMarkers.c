@@ -57,6 +57,12 @@ class VyshkaMapMarker
 			marker = new VyshkaMapMarker();
 			marker.m_Id = markerId;
 		}
+		VyshkaJsonValue kept;
+		if (!VyshkaMapMarkers.Own(data, kept))
+		{
+			VyshkaLog.Warn("marker " + markerId + " was given data the map cannot carry (nested deeper than JSON here reads); it was not placed");
+			return null;
+		}
 		string kindBefore = marker.m_Kind;
 		string labelBefore = marker.m_Label;
 		vector positionBefore = marker.m_Position;
@@ -64,7 +70,7 @@ class VyshkaMapMarker
 		marker.m_Kind = VyshkaAction.Bound(kind, KIND_MAX);
 		marker.m_Label = VyshkaAction.Bound(label, LABEL_MAX);
 		marker.m_Position = position;
-		marker.m_Data = VyshkaMapMarkers.Own(data);
+		marker.m_Data = kept;
 		if (!VyshkaMapMarkers.Fits(marker))
 		{
 			// Refused either way: a fresh marker is not placed, and one
@@ -115,8 +121,14 @@ class VyshkaMapMarker
 	// which case the marker keeps what it had.
 	void SetData(VyshkaJsonValue data)
 	{
+		VyshkaJsonValue kept;
+		if (!VyshkaMapMarkers.Own(data, kept))
+		{
+			VyshkaLog.Warn("marker " + m_Id + " was given data the map cannot carry (nested deeper than JSON here reads); it keeps what it had");
+			return;
+		}
 		VyshkaJsonValue before = m_Data;
-		m_Data = VyshkaMapMarkers.Own(data);
+		m_Data = kept;
 		if (!VyshkaMapMarkers.Fits(this))
 		{
 			VyshkaLog.Warn("marker " + m_Id + " could not take its new data: the map would pass the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3)");
@@ -245,17 +257,22 @@ class VyshkaMapMarkers
 	// Own copies the extras a caller hands in, so the marker holds an object
 	// nobody else can change after its size was counted: a caller adding to
 	// its own object later would otherwise grow the entry past the budget
-	// unseen. A value that is not an object reads as none. The copy goes
-	// through the JSON text, which is what the entry is made of anyway.
-	static VyshkaJsonValue Own(VyshkaJsonValue data)
+	// unseen. A value that is null or not an object reads as none. The copy
+	// goes through the JSON text, which is what the entry is made of
+	// anyway; a value the text cannot carry back (nested deeper than the
+	// parser reads) is a failure, reported as false, and the caller refuses
+	// the change rather than keeping a marker with less than it was given.
+	static bool Own(VyshkaJsonValue data, out VyshkaJsonValue kept)
 	{
+		kept = null;
 		if (!data || !data.IsObject())
-			return null;
+			return true;
 		string text = data.Serialize();
 		VyshkaJsonValue copy = VyshkaJson.Parse(text);
 		if (!copy || !copy.IsObject())
-			return null;
-		return copy;
+			return false;
+		kept = copy;
+		return true;
 	}
 
 	// Fits says whether the marker, as it now reads, keeps the entries

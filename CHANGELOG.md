@@ -126,8 +126,11 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   last published content and its revision, changed content takes the larger of the
   stored revision plus one and the current epoch second, and a revision not above the one
   the hub reports at session start (`server.manifestRevision`, protocol section 5.3) moves
-  to the hub's plus one, so a wiped profile directory or a clock set back cannot leave the
-  manifest below what the hub holds; the lists are published in a fixed order so the mods'
+  to the hub's plus one (a minted revision stays marked pending in the record, across
+  restarts, until the hub acks a publish sent above what it reported, and an equal
+  revision at the hub is a collision until then), so a wiped profile directory or a clock
+  set back cannot leave the manifest below what the hub holds; the lists are published in
+  a fixed order so the mods'
   load order does not change the content. The registry refuses what the hub would reject
   the whole manifest over (the count caps, an overlong event or context id), the marker
   set is bounded by what one snapshot may carry (a placement, move, or data change past

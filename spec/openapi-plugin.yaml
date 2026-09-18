@@ -576,9 +576,10 @@ components:
           description: |
             On a session response (spec section 5.3), the `manifestRevision` of
             the manifest the hub currently holds for this server, absent when it
-            holds none. A hub SHOULD report it: a publish at an equal or lower
-            revision is ignored (section 6.1), so a plugin that lost its own
-            record publishes above what is reported here.
+            holds none. A hub holding a manifest MUST report it: a publish at an
+            equal or lower revision is ignored (section 6.1), so a plugin that
+            lost its own record publishes above what is reported here. A plugin
+            tolerates its absence (a hub predating the field).
 
     Session:
       type: object

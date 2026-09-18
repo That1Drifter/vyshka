@@ -186,7 +186,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"pollTimeoutSeconds", session.PollTimeoutSeconds,
 		"protocolVersion", session.ProtocolVersion)
 
-	response := s.newSessionResponse(r.Context(), session, server)
+	response, err := s.newSessionResponse(r.Context(), session, server)
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
 	response.SessionToken = sessionToken
 	writeJSON(w, http.StatusOK, response)
 }
@@ -199,10 +203,15 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.newSessionResponse(r.Context(), session, server))
+	response, err := s.newSessionResponse(r.Context(), session, server)
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) newSessionResponse(ctx context.Context, session store.Session, server store.Server) sessionResponse {
+func (s *Server) newSessionResponse(ctx context.Context, session store.Session, server store.Server) (sessionResponse, error) {
 	response := sessionResponse{
 		SessionID:          session.ID,
 		ExpiresAt:          session.ExpiresAt,
@@ -215,19 +224,18 @@ func (s *Server) newSessionResponse(ctx context.Context, session store.Session, 
 	}
 
 	// The revision the hub holds is reported so a plugin can publish above it
-	// (spec section 5.3). The field is OPTIONAL, so a read that fails for any
-	// reason other than there being no manifest is logged and left out rather
-	// than failing a session the plugin needs.
+	// (spec section 5.3): a hub holding a manifest MUST report it, so a read
+	// that fails for any reason other than there being no manifest fails the
+	// response rather than answering without what the plugin needs to recover.
 	manifest, err := s.store.Manifest(ctx, server.ID)
 	switch {
 	case err == nil:
 		revision := manifest.Revision
 		response.Server.ManifestRevision = &revision
 	case !errors.Is(err, store.ErrNotFound):
-		s.log.Warn("could not read the stored manifest revision for a session response",
-			"serverId", server.ID, "error", err)
+		return sessionResponse{}, err
 	}
-	return response
+	return response, nil
 }
 
 // authenticateSession resolves the bearer session token on a Plugin API call.
