@@ -442,8 +442,9 @@ const (
 	// about: enough to show the answer is per-context rather than canned,
 	// few enough that a manifest declaring dozens does not stretch the run.
 	maxEnumeratedContexts = 5
-	// absentContext is the context id the stage asks about that no manifest
-	// can have declared, because it names this harness.
+	// absentContext is where the stage starts looking for a context id no
+	// manifest declares. Nothing stops a plugin from declaring this id, so it
+	// is a starting point rather than the probe itself: see absentContextID.
 	absentContext = "conformance.absent"
 
 	// The bounds of a reply (section 6.2): the same entry and byte caps a
@@ -470,6 +471,11 @@ var contextEnumerateStage = Stage{
 		if len(contexts) == 0 {
 			return ungraded{"the manifest declares no custom context, so there was nothing to enumerate"}
 		}
+		// The probe is chosen against every declared context, before the list
+		// is cut down to what the stage enumerates: a context the stage never
+		// asks about is still declared, and probing it would grade a correct
+		// plugin as wrong.
+		probe := absentContextID(contexts)
 		if len(contexts) > maxEnumeratedContexts {
 			contexts = contexts[:maxEnumeratedContexts]
 		}
@@ -489,22 +495,39 @@ var contextEnumerateStage = Stage{
 		// A context the manifest does not declare is answered too, and the
 		// answer says why, so a hub whose cached manifest has gone stale
 		// learns that rather than waiting for a reply that never comes.
-		reply, err := h.enumerate(absentContext)
+		reply, err := h.enumerate(probe)
 		if err != nil {
 			return err
 		}
-		graded, err := gradeContextEntries(absentContext, reply)
+		graded, err := gradeContextEntries(probe, reply)
 		if err != nil {
 			return err
 		}
 		if len(graded.entries) != 0 {
-			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with %d entries; such a request is answered with an empty entries and a reason (section 6.2)", absentContext, len(graded.entries))
+			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with %d entries; such a request is answered with an empty entries and a reason (section 6.2)", probe, len(graded.entries))
 		}
 		if reason := decodeString(graded.fields["reason"]); reason == "" {
-			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with an empty entries but no reason string; the reason is how a hub learns that it and the manifest disagree (section 6.2)", absentContext)
+			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with an empty entries but no reason string; the reason is how a hub learns that it and the manifest disagree (section 6.2)", probe)
 		}
 		return nil
 	},
+}
+
+// absentContextID picks the id the stage probes with: one the manifest does
+// not declare. A manifest is free to declare any id, this harness's own
+// included, so a declared starting point is pushed aside with a random suffix
+// until nothing answers to it. Every declared context is weighed, not only the
+// ones the stage goes on to enumerate.
+func absentContextID(contexts []manifestContext) string {
+	declared := make(map[string]bool, len(contexts))
+	for _, context := range contexts {
+		declared[context.ID] = true
+	}
+	probe := absentContext
+	for declared[probe] {
+		probe = absentContext + "-" + randomHex()
+	}
+	return probe
 }
 
 // contextEntriesReply is one graded context.entries body: the decoded
@@ -576,9 +599,12 @@ func gradeContextEntries(contextID string, envelope *inboundEnvelope) (*contextE
 		if !hasKey || json.Unmarshal(keyRaw, &referenceKey) != nil || referenceKey == "" || utf8.RuneCountInString(referenceKey) > maxReferenceKeyLength {
 			return nil, fmt.Errorf("%s.referenceKey must be a non-empty string of at most %d code points; it is what a hub hands back verbatim as an action's referenceKey (section 6.2)", path, maxReferenceKeyLength)
 		}
+		// label is REQUIRED, and a JSON null is not a display string: it
+		// decodes into a Go string without complaint, so it is refused here
+		// rather than left to pass as an empty one.
 		var entryLabel string
 		labelRaw, hasLabel := entry["label"]
-		if !hasLabel || json.Unmarshal(labelRaw, &entryLabel) != nil || utf8.RuneCountInString(entryLabel) > maxContextLabelLength {
+		if !hasLabel || isJSONNull(labelRaw) || json.Unmarshal(labelRaw, &entryLabel) != nil || utf8.RuneCountInString(entryLabel) > maxContextLabelLength {
 			return nil, fmt.Errorf("%s.label must be a display string of at most %d code points (section 6.2)", path, maxContextLabelLength)
 		}
 		// position is OPTIONAL, with the shape and the meaning it has in

@@ -376,3 +376,46 @@ func TestQueueEnvelopeRefusesManifestTypes(t *testing.T) {
 		}
 	}
 }
+
+// A session reports the revision of the manifest the hub holds, so a plugin
+// that lost its own record can publish above it instead of stranding its
+// manifest below what the hub already has (spec section 5.3).
+func TestSessionReportsStoredManifestRevision(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created := createServer(t, server, "manifest revision", "test-game")
+	credentials := enroll(t, server, created.Enrollment.Token, "test-game")
+
+	first := startSession(t, server, credentials, 5)
+	if first.Server.ManifestRevision != nil {
+		t.Fatalf("manifestRevision = %d before any manifest was published, want it absent",
+			*first.Server.ManifestRevision)
+	}
+	// Absent means the key is missing, not present as a zero: a plugin reading
+	// a 0 would think the hub holds revision 0, which no manifest can be.
+	var introspected struct {
+		Server map[string]json.RawMessage `json:"server"`
+	}
+	if status := call(t, server, http.MethodGet, "/plugin/v1/session",
+		first.SessionToken, nil, &introspected); status != http.StatusOK {
+		t.Fatalf("get session: status = %d, want 200", status)
+	}
+	if raw, present := introspected.Server["manifestRevision"]; present {
+		t.Errorf("server carries manifestRevision %s with no manifest stored, want the key absent", raw)
+	}
+
+	result := pollNow(t, server, created.Server.ID, first.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(1, healManifest(7))},
+	})
+	if result.Ack != 1 {
+		t.Fatalf("ack = %d after manifest.publish, want 1", result.Ack)
+	}
+
+	second := startSession(t, server, credentials, 5)
+	if second.Server.ManifestRevision == nil {
+		t.Fatalf("manifestRevision is absent after revision 7 was published, want 7")
+	}
+	if *second.Server.ManifestRevision != 7 {
+		t.Errorf("manifestRevision = %d, want the published 7", *second.Server.ManifestRevision)
+	}
+}

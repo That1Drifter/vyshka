@@ -234,11 +234,11 @@
               },
               "label": { "$ref": "#/$defs/label" },
               "position": {
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 3,
-                "items": { "type": "number" },
-                "description": "As in section 8.3: two or three finite numbers in the game's own map frame, advisory, for display."
+                "oneOf": [
+                  { "type": "array", "minItems": 2, "maxItems": 3, "items": { "type": "number" } },
+                  { "type": "null" }
+                ],
+                "description": "As in section 8.3: two or three finite numbers in the game's own map frame, advisory, for display. Absent and null both read as no position."
               },
               "data": {
                 "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],

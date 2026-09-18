@@ -474,6 +474,13 @@ func (r *enumerateResponder) stop(t *testing.T) {
 // published it.
 func enumerateHub(t *testing.T) (*mockHub, *testPlugin) {
 	t.Helper()
+	return enumerateHubDeclaring(t, []map[string]any{{"id": "test.zone", "name": "Zone", "namespace": "test"}})
+}
+
+// enumerateHubDeclaring is enumerateHub with the declared contexts chosen, for
+// the tests that care which ids a manifest claims.
+func enumerateHubDeclaring(t *testing.T, contexts []map[string]any) (*mockHub, *testPlugin) {
+	t.Helper()
 	h, err := startMockHub("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -484,7 +491,7 @@ func enumerateHub(t *testing.T) (*mockHub, *testPlugin) {
 		"game":             "conformance",
 		"manifestRevision": 1,
 		"actions":          []map[string]any{{"code": "test.echo", "context": "world"}},
-		"contexts":         []map[string]any{{"id": "test.zone", "name": "Zone", "namespace": "test"}},
+		"contexts":         contexts,
 	}))
 	return h, p
 }
@@ -595,6 +602,62 @@ func TestEnumerateStageFailsWhenAnUndeclaredContextCarriesNoReason(t *testing.T)
 	}
 	if !strings.Contains(result.Error, absentContext) || !strings.Contains(result.Error, "no reason string") {
 		t.Fatalf("the missing reason was not named: %q", result.Error)
+	}
+}
+
+// Nothing stops a manifest from declaring the id the stage starts its probe
+// from. A plugin that enumerates it properly is conformant, so the probe has
+// to move rather than read a correct answer as a fault.
+func TestEnumerateStagePassesWhenTheManifestDeclaresTheProbeId(t *testing.T) {
+	h, p := enumerateHubDeclaring(t, []map[string]any{
+		{"id": "test.zone", "name": "Zone", "namespace": "test"},
+		{"id": absentContext, "name": "Absent in name only", "namespace": "conformance"},
+	})
+	responder := startEnumerateResponder(p, 2, func(requestID, contextID string) map[string]any {
+		// Both declared contexts have members. Anything else is the probe,
+		// and gets the empty answer with a reason.
+		if contextID == "test.zone" || contextID == absentContext {
+			return map[string]any{
+				"requestId": requestID, "context": contextID,
+				"entries": []map[string]any{{"referenceKey": "north-ridge", "label": "North Ridge"}},
+			}
+		}
+		return map[string]any{
+			"requestId": requestID, "context": contextID,
+			"entries": []map[string]any{},
+			"reason":  "this plugin declares no context named " + contextID,
+		}
+	})
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 10*time.Second)
+	if !result.Passed || result.Note != "" {
+		t.Fatalf("a plugin that declares %q as a real context did not pass: %+v; faults: %s",
+			absentContext, result, faultMessages(h))
+	}
+}
+
+// A JSON null decodes into a Go string without complaint, so a label of null
+// has to be refused on its own rather than through the length bound.
+func TestEnumerateStageFailsOnANullLabel(t *testing.T) {
+	h, p := enumerateHub(t)
+	responder := startEnumerateResponder(p, 2, func(requestID, contextID string) map[string]any {
+		if contextID != "test.zone" {
+			return goodEntries(requestID, contextID)
+		}
+		return map[string]any{
+			"requestId": requestID, "context": contextID,
+			"entries": []map[string]any{{"referenceKey": "north-ridge", "label": nil}},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 10*time.Second)
+	if result.Passed {
+		t.Fatal("an entry whose label is JSON null passed")
+	}
+	if !strings.Contains(result.Error, "entries[0].label must be a display string") {
+		t.Fatalf("the null label was not named: %q", result.Error)
 	}
 }
 

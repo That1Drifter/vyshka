@@ -25,6 +25,7 @@ class VyshkaMapMarker
 	string m_Label;
 	vector m_Position;
 	ref VyshkaJsonValue m_Data;
+	int m_Bytes;   // what the registry last counted this marker at (VyshkaMapMarkers.Resize)
 
 	// Place puts a marker on the map, replacing any marker with the same id:
 	// a mod that places the same thing twice moves it rather than doubling
@@ -40,7 +41,8 @@ class VyshkaMapMarker
 			return null;
 		}
 		VyshkaMapMarker marker = VyshkaMapMarkers.Find(markerId);
-		if (!marker)
+		bool fresh = !marker;
+		if (fresh)
 		{
 			if (!VyshkaMapMarkers.HasRoom())
 			{
@@ -50,12 +52,30 @@ class VyshkaMapMarker
 			}
 			marker = new VyshkaMapMarker();
 			marker.m_Id = markerId;
-			VyshkaMapMarkers.Keep(marker);
 		}
+		string kindBefore = marker.m_Kind;
+		string labelBefore = marker.m_Label;
+		vector positionBefore = marker.m_Position;
+		VyshkaJsonValue dataBefore = marker.m_Data;
 		marker.m_Kind = VyshkaAction.Bound(kind, KIND_MAX);
 		marker.m_Label = VyshkaAction.Bound(label, LABEL_MAX);
 		marker.m_Position = position;
 		marker.m_Data = data;
+		if (!VyshkaMapMarkers.Fits(marker))
+		{
+			VyshkaLog.Warn("marker " + markerId + " would put the map past the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3); it was not placed");
+			if (fresh)
+				return null;
+			marker.m_Kind = kindBefore;
+			marker.m_Label = labelBefore;
+			marker.m_Position = positionBefore;
+			marker.m_Data = dataBefore;
+			return marker;
+		}
+		if (fresh)
+			VyshkaMapMarkers.Keep(marker);
+		else
+			VyshkaMapMarkers.Resize(marker);
 		return marker;
 	}
 
@@ -69,14 +89,44 @@ class VyshkaMapMarker
 		return VyshkaMapMarkers.Count();
 	}
 
+	// Move puts the marker somewhere else. A position that would not fit
+	// (a longer number) is refused the way a placement is, and the marker
+	// stays where it was.
 	void Move(vector position)
 	{
+		vector before = m_Position;
 		m_Position = position;
+		if (!VyshkaMapMarkers.Fits(this))
+		{
+			VyshkaLog.Warn("marker " + m_Id + " could not be moved: the map would pass the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3)");
+			m_Position = before;
+			return;
+		}
+		VyshkaMapMarkers.Resize(this);
 	}
 
+	// SetData replaces the marker's extras, unless they would not fit, in
+	// which case the marker keeps what it had.
 	void SetData(VyshkaJsonValue data)
 	{
+		VyshkaJsonValue before = m_Data;
 		m_Data = data;
+		if (!VyshkaMapMarkers.Fits(this))
+		{
+			VyshkaLog.Warn("marker " + m_Id + " could not take its new data: the map would pass the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3)");
+			m_Data = before;
+			return;
+		}
+		VyshkaMapMarkers.Resize(this);
+	}
+
+	// Bytes is what this marker's entry costs in the snapshot body, with the
+	// comma that separates it from the next.
+	int Bytes()
+	{
+		VyshkaJsonValue entry = Describe();
+		string text = entry.Serialize();
+		return text.Length() + 1;
 	}
 
 	// Remove takes the marker off the map. The next snapshot says so, even
@@ -126,8 +176,17 @@ class VyshkaMapMarkers
 	// reject whole.
 	static const int MAX_MARKERS = 5000;
 
+	// A snapshot body is capped at 262144 bytes as well (section 8.3), and a
+	// body over the hub's request limit would wedge the whole poll stream
+	// behind an immutable envelope (section 9.3). The entries share this
+	// budget, which leaves room for the body's own members; a marker that
+	// would pass it is refused at placement rather than dropped at capture,
+	// so a capture always fits.
+	static const int BYTE_BUDGET = 261000;
+
 	static ref array<ref VyshkaMapMarker> s_Markers;
 	static bool s_Removed;   // a marker was taken off the map since the last capture
+	static int s_Bytes;      // the entries' bytes as last counted, kept markers only
 
 	static array<ref VyshkaMapMarker> All()
 	{
@@ -146,6 +205,7 @@ class VyshkaMapMarkers
 	{
 		array<ref VyshkaMapMarker> markers = All();
 		markers.Clear();
+		s_Bytes = 0;
 		s_Removed = true;
 	}
 
@@ -175,12 +235,36 @@ class VyshkaMapMarkers
 		return markers.Count() < MAX_MARKERS;
 	}
 
+	// Fits says whether the marker, as it now reads, keeps the entries
+	// inside the byte budget: the bytes of every other kept marker plus its
+	// own. A kept marker is counted at its new size in place of its old one.
+	static bool Fits(VyshkaMapMarker marker)
+	{
+		int others = s_Bytes;
+		if (Find(marker.m_Id) == marker)
+			others -= marker.m_Bytes;
+		int own = marker.Bytes();
+		return others + own <= BYTE_BUDGET;
+	}
+
+	// Resize recounts a kept marker after a change Fits allowed.
+	static void Resize(VyshkaMapMarker marker)
+	{
+		if (Find(marker.m_Id) != marker)
+			return;
+		s_Bytes -= marker.m_Bytes;
+		marker.m_Bytes = marker.Bytes();
+		s_Bytes += marker.m_Bytes;
+	}
+
 	static void Keep(VyshkaMapMarker marker)
 	{
 		if (!marker)
 			return;
 		array<ref VyshkaMapMarker> markers = All();
 		markers.Insert(marker);
+		marker.m_Bytes = marker.Bytes();
+		s_Bytes += marker.m_Bytes;
 	}
 
 	static void Forget(VyshkaMapMarker marker)
@@ -193,6 +277,7 @@ class VyshkaMapMarkers
 			VyshkaMapMarker held = markers.Get(i);
 			if (held == marker)
 			{
+				s_Bytes -= held.m_Bytes;
 				markers.RemoveOrdered(i);
 				s_Removed = true;
 				return;

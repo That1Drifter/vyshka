@@ -132,6 +132,15 @@ class VyshkaRegistry
 	static const int LABEL_MAX = 200;
 	static const int NAMESPACE_MAX = 64;
 
+	// The manifest's count bounds, the reference hub's own (hub/manifest.go):
+	// a manifest over any of them is rejected whole, which would take every
+	// mod's actions down with the one that went over, so the registry refuses
+	// the entry past the bound instead and says so.
+	static const int ACTIONS_MAX = 500;
+	static const int CONTEXTS_MAX = 100;
+	static const int EVENTS_MAX = 500;
+	static const int NAMESPACES_MAX = 100;
+
 	ref array<ref VyshkaAction> m_Actions;
 	ref array<ref VyshkaContext> m_Contexts;
 	ref array<string> m_EventIds;              // the declared event ids, for the duplicate check
@@ -155,6 +164,11 @@ class VyshkaRegistry
 		if (Find(action.Code()))
 		{
 			VyshkaLog.Warn("action " + action.Code() + " registered twice; keeping the first");
+			return;
+		}
+		if (m_Actions.Count() >= ACTIONS_MAX)
+		{
+			VyshkaLog.Warn("action " + action.Code() + " was not registered: the manifest already declares " + ACTIONS_MAX.ToString() + " actions, the most a hub accepts (spec section 6)");
 			return;
 		}
 		m_Actions.Insert(action);
@@ -204,6 +218,11 @@ class VyshkaRegistry
 			VyshkaLog.Warn("context " + id + " registered twice; keeping the first");
 			return;
 		}
+		if (m_Contexts.Count() >= CONTEXTS_MAX)
+		{
+			VyshkaLog.Warn("context " + id + " was not registered: the manifest already declares " + CONTEXTS_MAX.ToString() + " contexts, the most a hub accepts (spec section 6.2)");
+			return;
+		}
 		m_Contexts.Insert(context);
 	}
 
@@ -236,13 +255,27 @@ class VyshkaRegistry
 			VyshkaLog.Warn("an event with no id was not declared");
 			return;
 		}
+		// An id past the bound is refused rather than shortened: shortened, it
+		// could collide with another declaration the duplicate check above
+		// did not see, and the hub rejects the whole manifest over a
+		// duplicate.
+		if (id.LengthUtf8() > EVENT_ID_MAX)
+		{
+			VyshkaLog.Warn("event " + id + " has an id longer than " + EVENT_ID_MAX.ToString() + " characters (spec section 6.3) and was not declared");
+			return;
+		}
 		if (m_EventIds.Find(id) >= 0)
 		{
 			VyshkaLog.Warn("event " + id + " declared twice; keeping the first");
 			return;
 		}
+		if (m_EventIds.Count() >= EVENTS_MAX)
+		{
+			VyshkaLog.Warn("event " + id + " was not declared: the manifest already declares " + EVENTS_MAX.ToString() + " events, the most a hub accepts (spec section 6.3)");
+			return;
+		}
 		VyshkaJsonValue declaration = VyshkaJsonValue.NewObject();
-		declaration.Set("id", VyshkaJsonValue.NewString(VyshkaAction.Bound(id, EVENT_ID_MAX)));
+		declaration.Set("id", VyshkaJsonValue.NewString(id));
 		declaration.Set("name", VyshkaJsonValue.NewString(VyshkaAction.Bound(name, LABEL_MAX)));
 		declaration.Set("namespace", VyshkaJsonValue.NewString(VyshkaAction.Bound(namespace, NAMESPACE_MAX)));
 		if (payloadSchema)
@@ -262,6 +295,11 @@ class VyshkaRegistry
 		if (!VyshkaStoreClient.ValidName(namespace, NAMESPACE_MAX))
 		{
 			VyshkaLog.Warn("the key/value namespace " + namespace + " is not a name the store accepts (spec section 12.1) and was not declared");
+			return;
+		}
+		if (m_Namespaces.Count() >= NAMESPACES_MAX)
+		{
+			VyshkaLog.Warn("the key/value namespace " + namespace + " was not declared: the manifest already declares " + NAMESPACES_MAX.ToString() + " namespaces, the most a hub accepts (spec section 6.6)");
 			return;
 		}
 		m_Namespaces.Insert(namespace);
@@ -286,9 +324,21 @@ class VyshkaRegistry
 		return sorted;
 	}
 
+	// InsertOrdered puts one declaration into the two parallel arrays at the
+	// place its key sorts to, so a walk over them is in key order.
+	static void InsertOrdered(array<string> keys, array<ref VyshkaJsonValue> values, string key, VyshkaJsonValue value)
+	{
+		int at = 0;
+		while (at < keys.Count() && Before(keys.Get(at), key))
+			at++;
+		keys.InsertAt(key, at);
+		values.InsertAt(value, at);
+	}
+
 	// Before orders two names by their characters. Enforce Script compares
 	// strings for equality only, so the comparison is made on the character
-	// codes; every name here is from the store's grammar, which is ASCII.
+	// codes; the codes and ids here are ASCII by convention, and a name that
+	// is not still gets one fixed place.
 	static bool Before(string first, string second)
 	{
 		int firstLength = first.Length();
@@ -327,23 +377,39 @@ class VyshkaRegistry
 		plugin.Set("name", VyshkaJsonValue.NewString(pluginName));
 		plugin.Set("version", VyshkaJsonValue.NewString(pluginVersion));
 		body.Set("plugin", plugin);
+		// Every list is published in a fixed order (by code or id) rather than
+		// the order of registration, so two boots that load the same mods in
+		// a different order produce the same content and so the same
+		// revision (ManifestContent, VyshkaPlugin.ResolveManifestRevision).
 		VyshkaJsonValue actions = VyshkaJsonValue.NewArray();
+		array<string> actionCodes = new array<string>;
+		array<ref VyshkaJsonValue> actionDeclarations = new array<ref VyshkaJsonValue>;
 		for (int i = 0; i < m_Actions.Count(); i++)
 		{
 			VyshkaAction action = m_Actions.Get(i);
-			actions.Add(action.Declaration());
+			InsertOrdered(actionCodes, actionDeclarations, action.Code(), action.Declaration());
 		}
+		for (int a = 0; a < actionDeclarations.Count(); a++)
+			actions.Add(actionDeclarations.Get(a));
 		body.Set("actions", actions);
 		VyshkaJsonValue contexts = VyshkaJsonValue.NewArray();
+		array<string> contextIds = new array<string>;
+		array<ref VyshkaJsonValue> contextDeclarations = new array<ref VyshkaJsonValue>;
 		for (int j = 0; j < m_Contexts.Count(); j++)
 		{
 			VyshkaContext context = m_Contexts.Get(j);
-			contexts.Add(context.Declaration());
+			InsertOrdered(contextIds, contextDeclarations, context.Id(), context.Declaration());
 		}
+		for (int c = 0; c < contextDeclarations.Count(); c++)
+			contexts.Add(contextDeclarations.Get(c));
 		body.Set("contexts", contexts);
 		VyshkaJsonValue events = VyshkaJsonValue.NewArray();
+		array<string> eventIds = new array<string>;
+		array<ref VyshkaJsonValue> eventDeclarations = new array<ref VyshkaJsonValue>;
 		for (int k = 0; k < m_Events.Count(); k++)
-			events.Add(m_Events.Get(k));
+			InsertOrdered(eventIds, eventDeclarations, m_EventIds.Get(k), m_Events.Get(k));
+		for (int e = 0; e < eventDeclarations.Count(); e++)
+			events.Add(eventDeclarations.Get(e));
 		body.Set("events", events);
 		VyshkaJsonValue namespaces = VyshkaJsonValue.NewArray();
 		array<string> declared = Namespaces();

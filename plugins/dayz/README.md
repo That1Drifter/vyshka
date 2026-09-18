@@ -535,7 +535,9 @@ completion never comes). `RegisterContext` takes a `VyshkaContext` subclass (`Id
 `Name()`, `Namespace()`, and `Enumerate(VyshkaContextList list)`, which fills the list with
 `list.Add(referenceKey, label)` or `list.AddAt(referenceKey, label, position)`); the plugin
 answers the hub's `context.enumerate` requests for it (protocol section 6.2), and an action
-in that context gets one of those reference keys as its `referenceKey`. `DeclareEvent`
+in that context gets one of those reference keys as its `referenceKey`; a context offering
+more than a reply may carry (5000 entries, 256 KiB) is answered with no entries and a
+reason rather than a list that reads as complete. `DeclareEvent`
 declares a custom event type for display and webhook filtering (declaration is advisory;
 an undeclared type is stored too). `DeclareNamespace` names a key/value namespace your mod
 will read and write: the manifest's `kvNamespaces` is the sole source of the plugin's
@@ -564,15 +566,24 @@ marker with that id (use `<namespace>:<thing>` ids so mods cannot collide), the 
 marker has `Move(position)`, `SetData(data)`, and `Remove()`, and `VyshkaMapMarker.Find(id)`
 finds one. Markers ride `state.entities` (above), captured with the other snapshots, and
 they live in memory: a restart starts with none, so a mod that wants its markers back
-places them again from its own state.
+places them again from its own state. The set is bounded by what one snapshot may carry
+(5000 entries, 256 KiB, section 8.3): a placement, a move, or a data change that would pass
+either is refused with a log line and the marker keeps what it had, so a capture can never
+build a body the hub rejects.
 
 **Manifest revision.** The hub replaces its stored manifest only for a higher revision
 (protocol section 6.1), and which mods are loaded changes the manifest, so the revision is
 not a constant. The plugin keeps `<profiles>/Vyshka/manifest.json` with the last content it
 published and the revision it used: unchanged content republishes at the same revision, and
 changed content takes the larger of the stored revision plus one and the current epoch
-second, so the revision stays above whatever a hub holds even after the profile directory
-is wiped. There is nothing to do when you add or change a mod; the next boot publishes.
+second. The hub reports the revision it holds with every session (`server.manifestRevision`,
+section 5.3), and a plugin whose revision is not above it moves to the hub's plus one, so
+a wiped profile directory or a clock set back cannot leave the manifest stranded below what
+the hub holds. The lists are published in a fixed order (by code or id), so the load order
+of the mods does not change the content. There is nothing to do when you add or change a
+mod; the next boot publishes. The registry refuses what the hub would reject the whole
+manifest over, with a log line: an action past 500, a context past 100, an event past 500,
+a namespace past 100, an event id over 128 characters, a context id over 64.
 
 **What the sample shows.** `sample/` declares the namespace `sample`, a context
 `sample.landmark` with two fixed entries (Green Mountain and the Northwest Airfield), an

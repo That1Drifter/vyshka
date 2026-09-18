@@ -23,10 +23,15 @@ arrived, since those entries were written for one stream.
   0.25, section 6.2): the hub asks `{ requestId, context }` and the plugin answers
   `context.entries` with `{ requestId, context, entries: [ { referenceKey, label,
   position?, data? } ] }`, an undeclared context with an empty list and a `reason`;
-  `spec/manifest.schema.json` carries both bodies. The plugin conformance suite gains the
-  `context.enumerate` stage, which enumerates every context a candidate declares (and one
-  it does not) and grades the replies, `PART` for a manifest that declares none; the
-  reference driver declares a context and answers. The reference hub does not send
+  `spec/manifest.schema.json` carries both bodies. The session response gains the
+  OPTIONAL `server.manifestRevision` (section 5.3): the revision of the manifest the hub
+  holds, so a plugin that derives its revision can publish above it instead of being
+  ignored in silence after a lost record; the reference hub reports it, the hub
+  conformance suite grades it (`plugin.session.manifestRevision`), and
+  `spec/openapi-plugin.yaml` (0.5.0) describes it. The plugin conformance suite
+  gains the `context.enumerate` stage, which enumerates every context a candidate declares
+  (and one it does not) and grades the replies, `PART` for a manifest that declares none;
+  the reference driver declares a context and answers. The reference hub does not send
   `context.enumerate` yet (that half stays with issue #73) and acks and ignores a
   `context.entries`. The panel's live map plots the `state.entities` snapshot beside the
   players and vehicles, with a table of the entities and their count in the status line.
@@ -117,9 +122,16 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   published empty once at boot (so a marker from before a restart is cleared), then only
   while a marker exists, and once more, empty, when the last is removed. The
   manifest revision is no longer a constant: `<profiles>/Vyshka/manifest.json` keeps the
-  last published content and its revision, and changed content takes the larger of the
-  stored revision plus one and the current epoch second, so a wiped profile directory
-  cannot republish below what a hub holds. `sample/` is a self-contained sample mod built
+  last published content and its revision, changed content takes the larger of the
+  stored revision plus one and the current epoch second, and a revision not above the one
+  the hub reports at session start (`server.manifestRevision`, protocol section 5.3) moves
+  to the hub's plus one, so a wiped profile directory or a clock set back cannot leave the
+  manifest below what the hub holds; the lists are published in a fixed order so the mods'
+  load order does not change the content. The registry refuses what the hub would reject
+  the whole manifest over (the count caps, an overlong event or context id), the marker
+  set is bounded by what one snapshot may carry (a placement, move, or data change past
+  5000 entries or 256 KiB is refused), and a context offering more than a reply may carry
+  is answered with no entries and a reason. `sample/` is a self-contained sample mod built
   on the surface (namespace `sample`: the `sample.landmark` context with two fixed
   entries, the `sample.beacon` action that places a marker, emits `sample.beacon.placed`,
   and counts the placement in the store with a guarded write, requiring nothing but the

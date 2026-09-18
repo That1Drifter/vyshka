@@ -98,7 +98,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaTransport m_Transport;
 	ref VyshkaStoreClient m_Store;
 	ref VyshkaRegistry m_Actions;
-	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision)
+	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision, ReconcileManifestRevision)
+	string m_ManifestContent;  // the manifest body without the revision, as this boot declares it
 	ref VyshkaEventBuffer m_Events;
 	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
 	// An outcome delivered through Complete while its action's Execute was
@@ -291,8 +292,8 @@ class VyshkaPlugin : VyshkaResponseSink
 		// The revision the manifest publishes is derived from what the
 		// registry holds, so a boot that changed nothing republishes the
 		// same revision and the hub keeps what it has (spec section 6.1).
-		string content = m_Actions.ManifestContent(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION);
-		m_ManifestRevision = ResolveManifestRevision(content);
+		m_ManifestContent = m_Actions.ManifestContent(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION);
+		m_ManifestRevision = ResolveManifestRevision(m_ManifestContent);
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
@@ -507,14 +508,67 @@ class VyshkaPlugin : VyshkaResponseSink
 		int now = VyshkaClock.EpochSeconds();
 		if (now > revision)
 			revision = now;
-		VyshkaJsonValue next = VyshkaJsonValue.NewObject();
-		next.Set("revision", VyshkaJsonValue.NewInt(revision));
-		next.Set("content", VyshkaJsonValue.NewString(content));
-		string text = next.Serialize();
-		if (!VyshkaFiles.WriteAll(VyshkaFiles.MANIFEST_PATH, text))
-			VyshkaLog.Warn("could not write " + VyshkaFiles.MANIFEST_PATH + "; every boot will publish a new manifest revision, even one that changed nothing");
+		SaveManifestRecord(revision, content);
 		VyshkaLog.Info("publishing manifest revision " + revision.ToString() + ": " + why);
 		return revision;
+	}
+
+	// SaveManifestRecord writes the revision and the content it goes with
+	// to VyshkaFiles.MANIFEST_PATH, so the next boot can tell whether it
+	// changed anything.
+	void SaveManifestRecord(int revision, string content)
+	{
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("revision", VyshkaJsonValue.NewInt(revision));
+		record.Set("content", VyshkaJsonValue.NewString(content));
+		string text = record.Serialize();
+		if (!VyshkaFiles.WriteAll(VyshkaFiles.MANIFEST_PATH, text))
+			VyshkaLog.Warn("could not write " + VyshkaFiles.MANIFEST_PATH + "; every boot will publish a new manifest revision, even one that changed nothing");
+	}
+
+	// ReconcileManifestRevision reads the revision the hub says it holds
+	// (server.manifestRevision in the session response, spec section 5.3)
+	// and moves this plugin's above it when it is not. The hub ignores a
+	// publish at an equal or lower revision and says nothing (section 6.1),
+	// so without this a record lost with the profile directory, or a clock
+	// set back, could leave the plugin publishing below the hub forever.
+	// Equal means the hub holds this boot's own publish, or a boot that
+	// declared the same, and needs nothing; the manifest is queued at
+	// session start regardless, and an equal revision costs one ignored
+	// envelope.
+	void ReconcileManifestRevision(VyshkaJsonValue session)
+	{
+		VyshkaJsonValue server = session.Get("server");
+		if (!server || !server.IsObject())
+			return;
+		VyshkaJsonValue held = server.Get("manifestRevision");
+		if (!held || !held.IsNumber())
+			return;
+		if (!held.m_IsInteger)
+		{
+			// A revision past the engine's int (the parser saturates) is one
+			// this plugin cannot publish above; the operator has to see it.
+			VyshkaLog.Error("the hub holds manifest revision " + held.m_Text + ", beyond what this plugin's 32-bit revision can exceed; the manifest cannot be updated from here");
+			return;
+		}
+		int hubRevision = held.m_Int;
+		if (hubRevision < m_ManifestRevision)
+			return;
+		if (hubRevision == m_ManifestRevision)
+		{
+			// The hub holds this very revision: the one this record was
+			// published at, whose content it then also holds. Nothing to do.
+			return;
+		}
+		int revision = hubRevision + 1;
+		if (revision <= hubRevision)
+		{
+			VyshkaLog.Error("the hub holds manifest revision " + hubRevision.ToString() + ", the largest this plugin can represent; the manifest cannot be updated from here");
+			return;
+		}
+		VyshkaLog.Info("the hub holds manifest revision " + hubRevision.ToString() + ", above this plugin's " + m_ManifestRevision.ToString() + "; publishing at " + revision.ToString());
+		m_ManifestRevision = revision;
+		SaveManifestRecord(revision, m_ManifestContent);
 	}
 
 	// ReservedResults is how many outbox slots are spoken for by results not
@@ -933,6 +987,9 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_InAck = 0;
 		m_PolledThisSession = false;
 		m_Outbox.Renumber();
+		// The hub's own word on the revision it holds, before the manifest
+		// for this session is queued below.
+		ReconcileManifestRevision(root);
 
 		QueueManifest();
 
@@ -1254,11 +1311,23 @@ class VyshkaPlugin : VyshkaResponseSink
 		{
 			VyshkaContextList list = new VyshkaContextList();
 			context.Enumerate(list);
-			VyshkaJsonValue entries = list.ToJson();
-			answer.Set("entries", entries);
 			int dropped = list.Dropped();
 			if (dropped > 0)
-				VyshkaLog.Warn("context " + contextId + " offered more members than a reply may carry; " + dropped.ToString() + " were left out");
+			{
+				// A reply carries at most 5000 entries (section 6.2). A list
+				// cut at the cap would read as complete, so a context past it
+				// is answered with none and a reason, the same answer an
+				// oversized body gets below.
+				int offered = list.Count() + dropped;
+				VyshkaLog.Warn("context " + contextId + " offered " + offered.ToString() + " members, more than the " + VyshkaContextList.MAX_ENTRIES.ToString() + " a reply may carry (spec section 6.2); answering with none");
+				answer.Set("entries", VyshkaJsonValue.NewArray());
+				answer.Set("reason", VyshkaJsonValue.NewString("the members of context " + contextId + " do not fit in one reply"));
+			}
+			else
+			{
+				VyshkaJsonValue entries = list.ToJson();
+				answer.Set("entries", entries);
+			}
 		}
 		string answerBody = answer.Serialize();
 		// A reply is bounded in bytes as a snapshot is (section 6.2), and a
