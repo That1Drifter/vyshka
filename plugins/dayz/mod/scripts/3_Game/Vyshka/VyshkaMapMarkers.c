@@ -30,8 +30,12 @@ class VyshkaMapMarker
 	// Place puts a marker on the map, replacing any marker with the same id:
 	// a mod that places the same thing twice moves it rather than doubling
 	// it. data is the mod's own extras, carried under the entry's data
-	// beside the label, or null for none. Returns the marker, or null when
-	// the id was unusable or the registry is full.
+	// beside the label, or null for none; the marker keeps a copy of its
+	// own, so what the caller does with the object afterwards changes
+	// nothing on the map. Returns the marker, or null when nothing was
+	// placed: the id was unusable, the registry is full, or the entries
+	// would pass the byte budget (a marker already on the map then keeps
+	// what it had, and Find gives it back).
 	static VyshkaMapMarker Place(string id, string kind, string label, vector position, VyshkaJsonValue data = null)
 	{
 		string markerId = VyshkaAction.Bound(id, ID_MAX);
@@ -60,9 +64,11 @@ class VyshkaMapMarker
 		marker.m_Kind = VyshkaAction.Bound(kind, KIND_MAX);
 		marker.m_Label = VyshkaAction.Bound(label, LABEL_MAX);
 		marker.m_Position = position;
-		marker.m_Data = data;
+		marker.m_Data = VyshkaMapMarkers.Own(data);
 		if (!VyshkaMapMarkers.Fits(marker))
 		{
+			// Refused either way: a fresh marker is not placed, and one
+			// already on the map keeps what it had (Find gives it back).
 			VyshkaLog.Warn("marker " + markerId + " would put the map past the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3); it was not placed");
 			if (fresh)
 				return null;
@@ -70,7 +76,7 @@ class VyshkaMapMarker
 			marker.m_Label = labelBefore;
 			marker.m_Position = positionBefore;
 			marker.m_Data = dataBefore;
-			return marker;
+			return null;
 		}
 		if (fresh)
 			VyshkaMapMarkers.Keep(marker);
@@ -110,7 +116,7 @@ class VyshkaMapMarker
 	void SetData(VyshkaJsonValue data)
 	{
 		VyshkaJsonValue before = m_Data;
-		m_Data = data;
+		m_Data = VyshkaMapMarkers.Own(data);
 		if (!VyshkaMapMarkers.Fits(this))
 		{
 			VyshkaLog.Warn("marker " + m_Id + " could not take its new data: the map would pass the " + VyshkaMapMarkers.BYTE_BUDGET.ToString() + " bytes a snapshot may carry (spec section 8.3)");
@@ -183,6 +189,7 @@ class VyshkaMapMarkers
 	// would pass it is refused at placement rather than dropped at capture,
 	// so a capture always fits.
 	static const int BYTE_BUDGET = 261000;
+	static const int BODY_MAX_BYTES = 262144;   // the snapshot body cap itself (section 8.3)
 
 	static ref array<ref VyshkaMapMarker> s_Markers;
 	static bool s_Removed;   // a marker was taken off the map since the last capture
@@ -233,6 +240,22 @@ class VyshkaMapMarkers
 	{
 		array<ref VyshkaMapMarker> markers = All();
 		return markers.Count() < MAX_MARKERS;
+	}
+
+	// Own copies the extras a caller hands in, so the marker holds an object
+	// nobody else can change after its size was counted: a caller adding to
+	// its own object later would otherwise grow the entry past the budget
+	// unseen. A value that is not an object reads as none. The copy goes
+	// through the JSON text, which is what the entry is made of anyway.
+	static VyshkaJsonValue Own(VyshkaJsonValue data)
+	{
+		if (!data || !data.IsObject())
+			return null;
+		string text = data.Serialize();
+		VyshkaJsonValue copy = VyshkaJson.Parse(text);
+		if (!copy || !copy.IsObject())
+			return null;
+		return copy;
 	}
 
 	// Fits says whether the marker, as it now reads, keeps the entries
@@ -308,7 +331,18 @@ class VyshkaMapMarkers
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
 		body.Set("entities", entities);
-		return body.Serialize();
+		string text = body.Serialize();
+		// The budget at placement keeps this from happening; should it
+		// anyway (a count gone wrong), no body goes out: an envelope the hub
+		// refuses whole tells the map nothing, and one over the request
+		// limit would hold the whole outbox behind it (spec section 9.3).
+		int bytes = text.Length();
+		if (bytes > BODY_MAX_BYTES)
+		{
+			VyshkaLog.Error("the state.entities body is " + bytes.ToString() + " bytes, over the " + BODY_MAX_BYTES.ToString() + " a snapshot may carry; not published (the marker budget should have prevented this)");
+			return "";
+		}
+		return text;
 	}
 
 	// Unpublished is the caller's word that the body Capture last built was

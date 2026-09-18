@@ -572,13 +572,14 @@ POST /plugin/v1/session
 
 - `serverId` and `serverSecret` are REQUIRED. The remaining fields are the plugin's
   requests, and the response is authoritative for all of them.
-- `server.manifestRevision` is OPTIONAL in the response: the `manifestRevision` of the
-  manifest the hub currently holds for this server (section 6), absent when it holds none.
-  A hub SHOULD report it, because it ignores a publish at an equal or lower revision
-  (section 6.1) and has no other way to say so; a plugin that derives its revision from
-  its own record rather than counting SHOULD publish above the reported one, so a record
-  lost with a profile directory, or a clock set back, cannot strand its manifest below
-  what the hub holds.
+- `server.manifestRevision` is the `manifestRevision` of the manifest the hub currently
+  holds for this server (section 6). A hub MUST report it when it holds one and MUST omit
+  it when it holds none: the hub ignores a publish at an equal or lower revision (section
+  6.1) and has no other way to say so. A plugin that derives its revision from its own
+  record rather than counting SHOULD publish above the reported one, so a record lost with
+  a profile directory, or a clock set back, cannot strand its manifest below what the hub
+  holds; a plugin MUST tolerate the field's absence, since a hub predating this draft
+  never sends it.
 - `protocolVersion` is what the plugin speaks; omitted means the current version. A hub MUST
   support the current and previous major version (section 13) and MUST reject anything else
   with `protocol_version_unsupported`.

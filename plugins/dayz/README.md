@@ -569,7 +569,10 @@ they live in memory: a restart starts with none, so a mod that wants its markers
 places them again from its own state. The set is bounded by what one snapshot may carry
 (5000 entries, 256 KiB, section 8.3): a placement, a move, or a data change that would pass
 either is refused with a log line and the marker keeps what it had, so a capture can never
-build a body the hub rejects.
+build a body the hub rejects. `Place` returns `null` when it refused (a marker already on
+the map is then unchanged; `Find` gives it back), and a mod that reports or counts a
+placement checks that before it does. The marker keeps a copy of the `data` it was given,
+so changing the object afterwards changes nothing on the map.
 
 **Manifest revision.** The hub replaces its stored manifest only for a higher revision
 (protocol section 6.1), and which mods are loaded changes the manifest, so the revision is

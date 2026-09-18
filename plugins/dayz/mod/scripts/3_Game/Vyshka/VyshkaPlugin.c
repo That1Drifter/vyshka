@@ -100,6 +100,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaRegistry m_Actions;
 	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision, ReconcileManifestRevision)
 	string m_ManifestContent;  // the manifest body without the revision, as this boot declares it
+	bool m_ManifestChanged;    // this boot minted its revision (the content differs from the record), so the number is not one the hub is known to hold
 	ref VyshkaEventBuffer m_Events;
 	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
 	// An outcome delivered through Complete while its action's Execute was
@@ -504,6 +505,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		}
 		if (stored > 0 && storedContent == content)
 			return stored;
+		m_ManifestChanged = true;
 		int revision = stored + 1;
 		int now = VyshkaClock.EpochSeconds();
 		if (now > revision)
@@ -552,23 +554,30 @@ class VyshkaPlugin : VyshkaResponseSink
 			return;
 		}
 		int hubRevision = held.m_Int;
+		// A revision this boot minted is a number the hub is not known to
+		// hold: an equal one at the hub is a collision (a restored record
+		// one below the hub's, say, with the clock behind), not this
+		// content. A revision reused from the record was published at, and
+		// the hub holding it holds this content. Either way the answer is
+		// settled once the hub's word is in, so the flag is cleared below.
+		bool minted = m_ManifestChanged;
+		m_ManifestChanged = false;
 		if (hubRevision < m_ManifestRevision)
 			return;
-		if (hubRevision == m_ManifestRevision)
-		{
-			// The hub holds this very revision: the one this record was
-			// published at, whose content it then also holds. Nothing to do.
+		if (hubRevision == m_ManifestRevision && !minted)
 			return;
-		}
 		int revision = hubRevision + 1;
 		if (revision <= hubRevision)
 		{
 			VyshkaLog.Error("the hub holds manifest revision " + hubRevision.ToString() + ", the largest this plugin can represent; the manifest cannot be updated from here");
 			return;
 		}
-		VyshkaLog.Info("the hub holds manifest revision " + hubRevision.ToString() + ", above this plugin's " + m_ManifestRevision.ToString() + "; publishing at " + revision.ToString());
+		VyshkaLog.Info("the hub holds manifest revision " + hubRevision.ToString() + ", not below this plugin's " + m_ManifestRevision.ToString() + "; publishing at " + revision.ToString());
 		m_ManifestRevision = revision;
 		SaveManifestRecord(revision, m_ManifestContent);
+		// A publish already queued this process carries the old number; the
+		// corrected body has to go out as well.
+		m_ManifestQueued = false;
 	}
 
 	// ReservedResults is how many outbox slots are spoken for by results not

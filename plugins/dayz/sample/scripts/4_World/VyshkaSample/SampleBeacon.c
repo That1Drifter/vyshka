@@ -262,7 +262,14 @@ class SampleBeaconAction : VyshkaAction
 		// beacon twice moves the one marker rather than making a second.
 		VyshkaJsonValue markerData = VyshkaJsonValue.NewObject();
 		markerData.Set("landmark", VyshkaJsonValue.NewString(landmark));
-		link.Mark("sample:beacon:" + landmark, "beacon", label, position, markerData);
+		VyshkaMapMarker marker = link.Mark("sample:beacon:" + landmark, "beacon", label, position, markerData);
+		if (!marker)
+		{
+			// The map refused it (full, or past what a snapshot may carry;
+			// the plugin's log says which). Nothing was placed, so nothing is
+			// announced or counted.
+			return VyshkaActionOutcome.Failure("the map could not take the beacon at " + landmark + "; see the plugin's log");
+		}
 
 		VyshkaJsonValue placed = VyshkaJsonValue.NewObject();
 		placed.Set("landmark", VyshkaJsonValue.NewString(landmark));

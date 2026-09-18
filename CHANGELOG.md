@@ -23,10 +23,11 @@ arrived, since those entries were written for one stream.
   0.25, section 6.2): the hub asks `{ requestId, context }` and the plugin answers
   `context.entries` with `{ requestId, context, entries: [ { referenceKey, label,
   position?, data? } ] }`, an undeclared context with an empty list and a `reason`;
-  `spec/manifest.schema.json` carries both bodies. The session response gains the
-  OPTIONAL `server.manifestRevision` (section 5.3): the revision of the manifest the hub
-  holds, so a plugin that derives its revision can publish above it instead of being
-  ignored in silence after a lost record; the reference hub reports it, the hub
+  `spec/manifest.schema.json` carries both bodies. The session response gains
+  `server.manifestRevision` (section 5.3), the revision of the manifest the hub holds,
+  which a hub holding one MUST report and a plugin MUST tolerate the absence of, so a
+  plugin that derives its revision can publish above it instead of being ignored in
+  silence after a lost record; the reference hub reports it, the hub
   conformance suite grades it (`plugin.session.manifestRevision`), and
   `spec/openapi-plugin.yaml` (0.5.0) describes it. The plugin conformance suite
   gains the `context.enumerate` stage, which enumerates every context a candidate declares
