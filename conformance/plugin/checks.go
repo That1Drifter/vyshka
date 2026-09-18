@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
+	"unicode/utf8"
 )
 
 // ungraded is what a stage returns when everything it could assert passed
@@ -37,6 +40,9 @@ type harness struct {
 
 	// The action the manifest stage chose; every dispatch stage uses it.
 	action manifestAction
+	// enumerations counts the context.enumerate requests the harness has
+	// sent, so every one carries a requestId of its own.
+	enumerations int
 	// The delivered dispatch envelope of the round-trip stage, kept so the
 	// dedup stage can force its re-delivery verbatim.
 	firstDispatch *outboundItem
@@ -144,6 +150,7 @@ var stages = []Stage{
 			return nil
 		},
 	},
+	contextEnumerateStage,
 	telemetryStage,
 	{
 		ID:      "action.roundTrip",
@@ -421,6 +428,179 @@ var stages = []Stage{
 			return nil
 		},
 	},
+}
+
+// Context enumeration (spec section 6.2). For each custom context a manifest
+// declares, a hub that wants to offer that context's members asks for them
+// with a context.enumerate, and the plugin answers with a context.entries
+// echoing the requestId and the context. The stage asks about every declared
+// context (to a bound), then about one no manifest declares, which is
+// answered too: an empty entries and a reason, so a hub learns that it and
+// the manifest disagree instead of waiting.
+const (
+	// maxEnumeratedContexts bounds how many declared contexts the stage asks
+	// about: enough to show the answer is per-context rather than canned,
+	// few enough that a manifest declaring dozens does not stretch the run.
+	maxEnumeratedContexts = 5
+	// absentContext is the context id the stage asks about that no manifest
+	// can have declared, because it names this harness.
+	absentContext = "conformance.absent"
+
+	// The bounds of a reply (section 6.2): the same entry and byte caps a
+	// snapshot has, a referenceKey of at most 128 code points, a label of at
+	// most 200.
+	maxContextEntries     = 5000
+	maxContextReplyBytes  = 256 << 10
+	maxReferenceKeyLength = 128
+	maxContextLabelLength = 200
+)
+
+var contextEnumerateStage = Stage{
+	ID:      "context.enumerate",
+	Title:   "Every declared context is enumerated on request",
+	Section: "6.2",
+	Run: func(h *harness) error {
+		hub := h.hub
+		var contexts []manifestContext
+		hub.view(func() {
+			if hub.manifest != nil {
+				contexts = append(contexts, hub.manifest.Contexts...)
+			}
+		})
+		if len(contexts) == 0 {
+			return ungraded{"the manifest declares no custom context, so there was nothing to enumerate"}
+		}
+		if len(contexts) > maxEnumeratedContexts {
+			contexts = contexts[:maxEnumeratedContexts]
+		}
+		for index, context := range contexts {
+			if context.ID == "" {
+				return fmt.Errorf("manifest context %d carries no id; a context is named by an id of at most 64 code points, unique within the manifest, and an unnamed one can never be enumerated or dispatched against (section 6.2)", index)
+			}
+			reply, err := h.enumerate(context.ID)
+			if err != nil {
+				return err
+			}
+			if _, err := gradeContextEntries(context.ID, reply); err != nil {
+				return err
+			}
+		}
+
+		// A context the manifest does not declare is answered too, and the
+		// answer says why, so a hub whose cached manifest has gone stale
+		// learns that rather than waiting for a reply that never comes.
+		reply, err := h.enumerate(absentContext)
+		if err != nil {
+			return err
+		}
+		graded, err := gradeContextEntries(absentContext, reply)
+		if err != nil {
+			return err
+		}
+		if len(graded.entries) != 0 {
+			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with %d entries; such a request is answered with an empty entries and a reason (section 6.2)", absentContext, len(graded.entries))
+		}
+		if reason := decodeString(graded.fields["reason"]); reason == "" {
+			return fmt.Errorf("the plugin answered an enumerate for %q, a context no manifest declares, with an empty entries but no reason string; the reason is how a hub learns that it and the manifest disagree (section 6.2)", absentContext)
+		}
+		return nil
+	},
+}
+
+// contextEntriesReply is one graded context.entries body: the decoded
+// members of the body, and its entries as raw JSON.
+type contextEntriesReply struct {
+	fields  map[string]json.RawMessage
+	entries []json.RawMessage
+}
+
+// enumerate asks the plugin about one context and waits for the reply that
+// echoes the question. Every request carries a requestId of its own, so a
+// plugin that answers the previous question again is not mistaken for one
+// that answered this one.
+func (h *harness) enumerate(contextID string) (*inboundEnvelope, error) {
+	hub := h.hub
+	h.enumerations++
+	requestID := fmt.Sprintf("conformance-enumerate-%d-%s", h.enumerations, randomHex())
+	hub.queueOutbound("context.enumerate", map[string]any{
+		"requestId": requestID,
+		"context":   contextID,
+	})
+	var reply *inboundEnvelope
+	err := hub.await(h.checkTimeout, fmt.Sprintf("a context.entries reply for context %q", contextID), func() bool {
+		reply = hub.contextEntries[requestID]
+		return reply != nil
+	})
+	if err != nil {
+		var replies int
+		hub.view(func() { replies = hub.contextReplies })
+		return nil, fmt.Errorf("%w; a plugin MUST answer a context.enumerate with a context.entries echoing its requestId (%s) and its context, whether or not it declares that context, because a hub cannot tell a slow plugin from one that will never answer (section 6.2); %d context.entries envelope(s) have arrived in all", err, requestID, replies)
+	}
+	return reply, nil
+}
+
+// gradeContextEntries grades one reply against section 6.2: the echoed
+// context, the presence of entries, the bounds of the reply, and every
+// entry's fields.
+func gradeContextEntries(contextID string, envelope *inboundEnvelope) (*contextEntriesReply, error) {
+	label := fmt.Sprintf("the context.entries reply for context %q", contextID)
+	var fields map[string]json.RawMessage
+	if !isJSONObject(json.RawMessage(envelope.Body)) || json.Unmarshal([]byte(envelope.Body), &fields) != nil {
+		return nil, fmt.Errorf("%s: the body is not a JSON object (section 6.2)", label)
+	}
+	if echoed := decodeString(fields["context"]); echoed != contextID {
+		return nil, fmt.Errorf("%s echoes context %q; a reply echoes the requestId and the context of the request, which is how a hub matches an answer to the question it asked (section 6.2)", label, echoed)
+	}
+	entriesRaw, present := fields["entries"]
+	if !present || isJSONNull(entriesRaw) {
+		return nil, fmt.Errorf("%s carries no entries array; entries is REQUIRED in a reply, and an empty array is how a plugin says there is nothing to offer (section 6.2)", label)
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(entriesRaw, &entries) != nil {
+		return nil, fmt.Errorf("%s: entries is not an array (section 6.2)", label)
+	}
+	if len(entries) > maxContextEntries {
+		return nil, fmt.Errorf("%s carries %d entries; a reply is bounded as a snapshot is, at most %d entries, and a hub refuses it whole above that (section 6.2)", label, len(entries), maxContextEntries)
+	}
+	if len(envelope.Body) > maxContextReplyBytes {
+		return nil, fmt.Errorf("%s is %d bytes; a reply is bounded as a snapshot is, at most %d bytes, and a hub refuses it whole above that (section 6.2)", label, len(envelope.Body), maxContextReplyBytes)
+	}
+	for index, raw := range entries {
+		path := fmt.Sprintf("%s entries[%d]", label, index)
+		var entry map[string]json.RawMessage
+		if !isJSONObject(raw) || json.Unmarshal(raw, &entry) != nil {
+			return nil, fmt.Errorf("%s is not an object (section 6.2)", path)
+		}
+		var referenceKey string
+		keyRaw, hasKey := entry["referenceKey"]
+		if !hasKey || json.Unmarshal(keyRaw, &referenceKey) != nil || referenceKey == "" || utf8.RuneCountInString(referenceKey) > maxReferenceKeyLength {
+			return nil, fmt.Errorf("%s.referenceKey must be a non-empty string of at most %d code points; it is what a hub hands back verbatim as an action's referenceKey (section 6.2)", path, maxReferenceKeyLength)
+		}
+		var entryLabel string
+		labelRaw, hasLabel := entry["label"]
+		if !hasLabel || json.Unmarshal(labelRaw, &entryLabel) != nil || utf8.RuneCountInString(entryLabel) > maxContextLabelLength {
+			return nil, fmt.Errorf("%s.label must be a display string of at most %d code points (section 6.2)", path, maxContextLabelLength)
+		}
+		// position is OPTIONAL, with the shape and the meaning it has in
+		// section 8.3: null reads as absent, and present it is two or three
+		// real numbers.
+		if positionRaw, hasPosition := entry["position"]; hasPosition && !isJSONNull(positionRaw) {
+			var position []json.RawMessage
+			if json.Unmarshal(positionRaw, &position) != nil || len(position) < 2 || len(position) > 3 {
+				return nil, fmt.Errorf("%s.position must be an array of two or three numbers, the shape it has in section 8.3 (section 6.2)", path)
+			}
+			for axis, component := range position {
+				var number float64
+				if isJSONNull(component) || json.Unmarshal(component, &number) != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+					return nil, fmt.Errorf("%s.position[%d] is not a finite number (section 6.2)", path, axis)
+				}
+			}
+		}
+		if dataRaw, hasData := entry["data"]; hasData && !isJSONNull(dataRaw) && !isJSONObject(dataRaw) {
+			return nil, fmt.Errorf("%s.data must be a JSON object of mod-specific extras (section 6.2)", path)
+		}
+	}
+	return &contextEntriesReply{fields: fields, entries: entries}, nil
 }
 
 // dispatch queues the chosen action with valid synthesized params. The body's

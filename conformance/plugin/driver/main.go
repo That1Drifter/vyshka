@@ -1,7 +1,8 @@
 // Command driver is the reference candidate for the plugin conformance
 // harness: a minimal but correct autonomous plugin. It enrolls, keeps a
-// session, long-polls, publishes a manifest, executes dispatched actions with
-// an executed-actionId LRU, buffers unacked envelopes across outages, and
+// session, long-polls, publishes a manifest, enumerates the one custom
+// context that manifest declares, executes dispatched actions with an
+// executed-actionId LRU, buffers unacked envelopes across outages, and
 // renumbers them across session changes. CI runs the harness against it to
 // prove the suite goes green against a compliant implementation.
 //
@@ -45,6 +46,11 @@ type pollResponse struct {
 }
 
 const executedLRUCap = 128
+
+// driverContext is the one custom context this driver declares (spec section
+// 6.2). It has two members, so a hub asking for them gets an answer that is
+// clearly this context's rather than a canned empty list.
+const driverContext = "driver.zone"
 
 // hubError is a refusal as the driver understands it, whichever way it
 // arrived: from the status and body of a 4xx or 5xx, from the body of a 200
@@ -597,8 +603,12 @@ func (d *driver) manifest(game string) map[string]any {
 				},
 			},
 		}},
-		"contexts": []any{},
-		"events":   []any{},
+		"contexts": []map[string]any{{
+			"id":        driverContext,
+			"name":      "Zone",
+			"namespace": "conformance-driver",
+		}},
+		"events": []any{},
 	}
 }
 
@@ -635,6 +645,39 @@ func (d *driver) handle(delivered envelope) {
 			"actionId": body.ActionID, "ok": true,
 			"result": map[string]any{"echo": params}, "durationMs": 1,
 		})
+
+	case "context.enumerate":
+		// The members of a declared context (spec section 6.2). A request
+		// naming a context this driver does not declare is answered too,
+		// with an empty entries and a reason, never treated as a fault of
+		// the link.
+		var body struct {
+			RequestID string `json:"requestId"`
+			Context   string `json:"context"`
+		}
+		if err := json.Unmarshal(delivered.Body, &body); err != nil || body.RequestID == "" {
+			log.Println("ignoring a context.enumerate with an unusable body")
+			return
+		}
+		reply := map[string]any{"requestId": body.RequestID, "context": body.Context}
+		if body.Context == driverContext {
+			reply["entries"] = []map[string]any{
+				{
+					"referenceKey": "north-ridge",
+					"label":        "North Ridge",
+					"position":     []float64{4231.5, 300.25, 10620},
+				},
+				{
+					"referenceKey": "south-hollow",
+					"label":        "South Hollow",
+					"data":         map[string]any{"guarded": true},
+				},
+			}
+		} else {
+			reply["entries"] = []map[string]any{}
+			reply["reason"] = "this plugin declares no context named " + body.Context
+		}
+		d.send("context.entries", reply)
 
 	default:
 		// Unknown types are acked and ignored (spec section 4).

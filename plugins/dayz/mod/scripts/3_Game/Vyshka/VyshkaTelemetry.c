@@ -9,9 +9,9 @@
 //
 // Snapshots say what is rather than what happened, so they are not
 // buffered at all: the plugin asks a game-side source for the current
-// state.players and state.vehicles bodies as it builds the poll that will
-// carry them, no more often than the configured interval, and only when
-// the previous snapshot of that type has been acked (see
+// state.players, state.vehicles and state.entities bodies as it builds the
+// poll that will carry them, no more often than the configured interval,
+// and only when the previous snapshot of that type has been acked (see
 // VyshkaPlugin.PublishSnapshots and VyshkaOutbox.HasUnacked).
 
 class VyshkaEventBuffer
@@ -106,5 +106,14 @@ class VyshkaSnapshotSource
 	string CaptureVehicles()
 	{
 		return "";
+	}
+
+	// CaptureEntities returns a serialized state.entities body, or "" when
+	// there is nothing to say. Entities are the map markers a mod placed
+	// (VyshkaMapMarker), which the game module holds, so this answers for
+	// every source rather than being left to the world module to override.
+	string CaptureEntities()
+	{
+		return VyshkaMapMarkers.Capture();
 	}
 }

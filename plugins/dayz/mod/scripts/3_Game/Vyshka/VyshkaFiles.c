@@ -13,6 +13,8 @@
 //                                      aside with the hub's reason for the operator
 //                                      (section 2.3); never sent again
 //   $profile:Vyshka/bans.json          the plugin's ban list (VyshkaBans); operator-editable
+//   $profile:Vyshka/manifest.json      the manifest revision last published and the content
+//                                      it went with (VyshkaPlugin.ResolveManifestRevision)
 
 class VyshkaFiles
 {
@@ -23,9 +25,12 @@ class VyshkaFiles
 	static const string REJECTED_DIR = "$profile:Vyshka/rejected";
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 	static const string BANS_PATH = "$profile:Vyshka/bans.json";
+	static const string MANIFEST_PATH = "$profile:Vyshka/manifest.json";
 
 	// EnsureLayout creates the directories, one level at a time, because
-	// MakeDirectory creates only the last path segment.
+	// MakeDirectory creates only the last path segment. The files directly
+	// under the root (the credentials, the ban list, the manifest revision)
+	// need no directory of their own; the root is made here for them.
 	static void EnsureLayout()
 	{
 		if (!FileExist(ROOT))

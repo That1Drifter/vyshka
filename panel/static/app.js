@@ -871,6 +871,14 @@ async function viewMap(app, route, seq) {
     el('thead', {}, el('tr', {}, el('th', {}, 'Vehicle'), el('th', {}, 'Id'), el('th', {}, 'Position'), el('th', {}, 'Data'), el('th', {}, ''))),
     vehicleBody);
   const vehiclesEmpty = el('p', { class: 'notice', id: 'vehicles-empty', hidden: true }, 'No vehicles in the latest snapshot.');
+  // The entities of the latest state.entities snapshot (issue #72): the
+  // third whole list, anything a plugin or a mod put on the map that is
+  // neither a player nor a vehicle, with its kind as the plugin named it.
+  const entityBody = el('tbody', {});
+  const entityTable = el('table', { id: 'entities', hidden: true },
+    el('thead', {}, el('tr', {}, el('th', {}, 'Label'), el('th', {}, 'Kind'), el('th', {}, 'Id'), el('th', {}, 'Position'), el('th', {}, 'Data'))),
+    entityBody);
+  const entitiesEmpty = el('p', { class: 'notice', id: 'entities-empty', hidden: true }, 'No entities in the latest snapshot.');
 
   let notice = null;
   if (datasetProblem) {
@@ -890,9 +898,15 @@ async function viewMap(app, route, seq) {
       el('span', { class: 'muted title-tail' }, ' live map')),
     controls, problem, status, notice, mapContainer,
     el('h2', {}, 'Players'), empty, table,
-    el('h2', {}, 'Vehicles'), vehiclesEmpty, vehicleTable]);
+    el('h2', {}, 'Vehicles'), vehiclesEmpty, vehicleTable,
+    el('h2', {}, 'Entities'), entitiesEmpty, entityTable]);
 
-  const state = { response: null, players: [], vehicleResponse: null, vehicles: [], loaded: false };
+  const state = {
+    response: null, players: [],
+    vehicleResponse: null, vehicles: [],
+    entityResponse: null, entities: [],
+    loaded: false,
+  };
 
   // The widget is created once the container is laid out, so its first
   // measurement is the real one.
@@ -983,27 +997,58 @@ async function viewMap(app, route, seq) {
       }
       vehicleBody.append(row);
     }
+    clear(entityBody);
+    let entitiesPlotted = 0;
+    for (const entity of state.entities) {
+      const point = manifest ? worldPoint(manifest, entity.position) : null;
+      if (point) entitiesPlotted++;
+      // The label is the row's first cell, so the summary beside it says
+      // what else the snapshot carried and does not repeat it.
+      const rest = Object.assign({}, entity.data);
+      delete rest.label;
+      const row = el('tr', { 'data-entity-id': entity.id },
+        el('td', {}, entityLabel(entity)),
+        el('td', {}, entity.kind ? badge(entity.kind) : el('span', { class: 'muted' }, 'none')),
+        el('td', { class: 'mono' }, entity.id),
+        el('td', { class: 'position' }, Array.isArray(entity.position)
+          ? positionText(manifest, entity.position)
+          : el('span', { class: 'muted' }, 'no position')),
+        el('td', { class: 'data' }, Object.keys(rest).length > 0
+          ? attempt(() => summarizeEventData(rest), 'The data is nested too deeply to summarize.')
+          : el('span', { class: 'muted' }, 'none')));
+      if (map) {
+        row.addEventListener('mouseenter', () => map.setHighlight(entity.key));
+        row.addEventListener('mouseleave', () => map.setHighlight(null));
+      }
+      entityBody.append(row);
+    }
     if (map) {
       map.setMarkers(state.players.map((player) => ({
         key: player.key, label: player.name || player.id, position: player.position,
       })).concat(state.vehicles.map((vehicle) => ({
         key: vehicle.key, label: vehicleLabel(vehicle), position: vehicle.position, kind: 'vehicle',
+      })), state.entities.map((entity) => ({
+        key: entity.key, label: entityLabel(entity), position: entity.position, kind: 'entity',
       }))));
     }
     table.hidden = state.players.length === 0;
     empty.hidden = !state.loaded || state.players.length > 0;
     vehicleTable.hidden = state.vehicles.length === 0;
     vehiclesEmpty.hidden = !state.loaded || state.vehicles.length > 0;
+    entityTable.hidden = state.entities.length === 0;
+    entitiesEmpty.hidden = !state.loaded || state.entities.length > 0;
     status.dataset.plotted = String(plotted);
     status.dataset.players = String(state.players.length);
     status.dataset.vehiclesPlotted = String(vehiclesPlotted);
     status.dataset.vehicles = String(state.vehicles.length);
+    status.dataset.entitiesPlotted = String(entitiesPlotted);
+    status.dataset.entities = String(state.entities.length);
     updateStatus();
   };
   const updateStatus = () => {
     if (!state.loaded) return;
-    if (!state.response && !state.vehicleResponse) {
-      status.textContent = 'No snapshot yet. The plugin publishes state.players and state.vehicles snapshots (protocol section 8.3); until the hub accepts one there is nothing to show.';
+    if (!state.response && !state.vehicleResponse && !state.entityResponse) {
+      status.textContent = 'No snapshot yet. The plugin publishes state.players, state.vehicles, and state.entities snapshots (protocol section 8.3); until the hub accepts one there is nothing to show.';
       return;
     }
     const parts = [];
@@ -1025,6 +1070,15 @@ async function viewMap(app, route, seq) {
     } else {
       parts.push('no vehicle snapshot yet');
     }
+    if (state.entityResponse) {
+      const entities = state.entities.length;
+      const unplottedEntities = entities - Number(status.dataset.entitiesPlotted || 0);
+      parts.push(entities + ' entit' + (entities === 1 ? 'y' : 'ies') + ', captured ' + ago(state.entityResponse.capturedAt) +
+        ', received ' + ago(state.entityResponse.receivedAt) +
+        (manifest && unplottedEntities > 0 ? '; ' + unplottedEntities + ' without a position the map can plot' : ''));
+    } else {
+      parts.push('no entity snapshot yet');
+    }
     status.textContent = parts.join('; ') +
       (manifest ? '' : '; listed without a map') +
       '. Re-read every ' + (MAP_REFRESH_MS / 1000) + ' s.';
@@ -1045,21 +1099,25 @@ async function viewMap(app, route, seq) {
       throw err;
     }
   };
-  // Both reads settle before either failure is raised, and a rejected
+  // Every read settles before any failure is raised, and a rejected
   // token wins: a players read failing first for another reason must not
-  // hide the vehicles read's 401 from the sign-out path.
+  // hide another read's 401 from the sign-out path. All three reads sit
+  // behind the same servers:read scope (section 8.3), so a refusal on one
+  // is a refusal on all and is shown, not soaked up.
   const load = async () => {
-    const settled = await Promise.allSettled([readSnapshot('players'), readSnapshot('vehicles')]);
+    const settled = await Promise.allSettled([readSnapshot('players'), readSnapshot('vehicles'), readSnapshot('entities')]);
     if (stale(seq)) return;
     const failures = settled.filter((entry) => entry.status === 'rejected').map((entry) => entry.reason);
     const rejectedToken = failures.find((err) => err instanceof ApiError && err.status === 401);
     if (rejectedToken) throw rejectedToken;
     if (failures.length > 0) throw failures[0];
-    const [response, vehicleResponse] = settled.map((entry) => entry.value);
+    const [response, vehicleResponse, entityResponse] = settled.map((entry) => entry.value);
     state.response = response;
     state.players = snapshotPlayers(response);
     state.vehicleResponse = vehicleResponse;
     state.vehicles = snapshotVehicles(vehicleResponse);
+    state.entityResponse = entityResponse;
+    state.entities = snapshotEntities(entityResponse);
     state.loaded = true;
     problem.hidden = true;
     draw();
@@ -1749,6 +1807,37 @@ function vehicleLabel(vehicle) {
   if (typeof data.displayName === 'string' && data.displayName !== '') return data.displayName;
   if (typeof data.type === 'string' && data.type !== '') return data.type;
   return vehicle.kind || 'vehicle';
+}
+
+// snapshotEntities reads a state.entities snapshot (section 8.3) into what
+// the map and the list need. An entity is whatever a plugin or a mod put on
+// the map that is neither a player nor a vehicle, so nothing beyond the id
+// is assumed: the kind is advisory and the display label lives in data.
+function snapshotEntities(response) {
+  const entries = response && response.snapshot && Array.isArray(response.snapshot.entities) ? response.snapshot.entities : [];
+  const entities = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.id !== 'string' || entry.id === '') continue;
+    entities.push({
+      // Keyed apart from the players and the vehicles, the same way: a
+      // player key is a JSON array, and no vehicle key starts with this
+      // prefix, so the three marker sets stay distinct.
+      key: 'entity:' + entry.id,
+      id: entry.id,
+      kind: typeof entry.kind === 'string' ? entry.kind : '',
+      position: entry.position,
+      data: entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {},
+    });
+  }
+  return entities;
+}
+
+// entityLabel is how an entity is named to an operator: the label the
+// snapshot carries, its kind otherwise, and the id when it has neither.
+function entityLabel(entity) {
+  const data = entity.data || {};
+  if (typeof data.label === 'string' && data.label !== '') return data.label;
+  return entity.kind || entity.id;
 }
 
 async function viewAction(app, route, seq) {

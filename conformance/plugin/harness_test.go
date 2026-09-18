@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -364,6 +365,261 @@ func TestHeldTelemetryFaultsSurviveAFatalStage(t *testing.T) {
 	}
 	if !strings.Contains(results[1].Error, "prerequisite failed") || !strings.Contains(results[1].Error, "held-1 carries no events array") {
 		t.Fatalf("the skipped telemetry stage did not report the held fault: %q", results[1].Error)
+	}
+}
+
+// ---- context enumeration (spec section 6.2) ----
+
+// enumerateResponder polls the mock hub in the background and answers every
+// context.enumerate it is handed with whatever reply returns, so a test can
+// run the enumerate stage against a plugin that behaves in one named way.
+// A nil reply sends nothing, which is how a plugin that never answers is
+// played.
+type enumerateResponder struct {
+	done     chan struct{}
+	finished chan struct{}
+	err      error
+}
+
+func startEnumerateResponder(p *testPlugin, nextSeq int64, reply func(requestID, contextID string) map[string]any) *enumerateResponder {
+	r := &enumerateResponder{done: make(chan struct{}), finished: make(chan struct{})}
+	go func() {
+		defer close(r.finished)
+		client := &http.Client{Timeout: 10 * time.Second}
+		var ack int64
+		var buffer []map[string]any
+		for {
+			select {
+			case <-r.done:
+				return
+			default:
+			}
+			request := map[string]any{"ack": ack, "envelopes": buffer}
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				r.err = err
+				return
+			}
+			httpRequest, err := http.NewRequest(http.MethodPost, p.baseURL+"/plugin/v1/poll", bytes.NewReader(encoded))
+			if err != nil {
+				r.err = err
+				return
+			}
+			httpRequest.Header.Set("Content-Type", "application/json")
+			httpRequest.Header.Set("Authorization", "Bearer "+p.sessionToken)
+			response, err := client.Do(httpRequest)
+			if err != nil {
+				r.err = err
+				return
+			}
+			var decoded struct {
+				Envelopes []deliverable `json:"envelopes"`
+				Ack       int64         `json:"ack"`
+			}
+			decodeErr := json.NewDecoder(response.Body).Decode(&decoded)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				r.err = fmt.Errorf("poll: status %d", response.StatusCode)
+				return
+			}
+			if decodeErr != nil {
+				r.err = decodeErr
+				return
+			}
+			// Everything the hub has taken leaves the buffer; the rest is
+			// sent again, as a plugin's outbox does.
+			kept := buffer[:0]
+			for _, unacked := range buffer {
+				if seq, ok := unacked["seq"].(int64); ok && seq > decoded.Ack {
+					kept = append(kept, unacked)
+				}
+			}
+			buffer = kept
+			for _, delivered := range decoded.Envelopes {
+				if delivered.Seq != ack+1 {
+					continue
+				}
+				ack = delivered.Seq
+				if delivered.Type != "context.enumerate" {
+					continue
+				}
+				var asked struct {
+					RequestID string `json:"requestId"`
+					Context   string `json:"context"`
+				}
+				_ = json.Unmarshal(delivered.Body, &asked)
+				answer := reply(asked.RequestID, asked.Context)
+				if answer == nil {
+					continue
+				}
+				buffer = append(buffer, typedEnvelope(fmt.Sprintf("ctx-%d", nextSeq), nextSeq, "context.entries", answer))
+				nextSeq++
+			}
+		}
+	}()
+	return r
+}
+
+func (r *enumerateResponder) stop(t *testing.T) {
+	t.Helper()
+	close(r.done)
+	<-r.finished
+	if r.err != nil {
+		t.Fatalf("the responder failed: %v", r.err)
+	}
+}
+
+// enumerateHub starts a hub whose manifest declares one custom context, the
+// state the enumerate stage begins from, and returns the plugin that
+// published it.
+func enumerateHub(t *testing.T) (*mockHub, *testPlugin) {
+	t.Helper()
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	p := newTestPlugin(t, h)
+	p.poll(typedEnvelope("manifest-1", 1, "manifest.publish", map[string]any{
+		"game":             "conformance",
+		"manifestRevision": 1,
+		"actions":          []map[string]any{{"code": "test.echo", "context": "world"}},
+		"contexts":         []map[string]any{{"id": "test.zone", "name": "Zone", "namespace": "test"}},
+	}))
+	return h, p
+}
+
+func runEnumerateStage(t *testing.T, h *mockHub, timeout time.Duration) Result {
+	t.Helper()
+	results := runStages(&harness{hub: h, checkTimeout: timeout}, []Stage{contextEnumerateStage})
+	if len(results) != 1 {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	return results[0]
+}
+
+// goodEntries is a reply a conformant plugin sends: the declared context
+// enumerated, an undeclared one answered with an empty list and a reason.
+func goodEntries(requestID, contextID string) map[string]any {
+	if contextID != "test.zone" {
+		return map[string]any{
+			"requestId": requestID, "context": contextID,
+			"entries": []map[string]any{},
+			"reason":  "this plugin declares no context named " + contextID,
+		}
+	}
+	return map[string]any{
+		"requestId": requestID, "context": contextID,
+		"entries": []map[string]any{
+			{"referenceKey": "north-ridge", "label": "North Ridge", "position": []float64{4231.5, 300.25, 10620}},
+			{"referenceKey": "south-hollow", "label": "South Hollow", "data": map[string]any{"guarded": true}},
+		},
+	}
+}
+
+func TestEnumerateStagePassesAgainstAConformantReply(t *testing.T) {
+	h, p := enumerateHub(t)
+	responder := startEnumerateResponder(p, 2, goodEntries)
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 10*time.Second)
+	if !result.Passed || result.Note != "" {
+		t.Fatalf("a conformant enumeration did not pass: %+v; faults:\n%s", result, faultMessages(h))
+	}
+	h.mu.Lock()
+	replies := h.contextReplies
+	h.mu.Unlock()
+	if replies != 2 {
+		t.Fatalf("the stage collected %d context.entries replies, want 2 (the declared context and the undeclared one)", replies)
+	}
+}
+
+func TestEnumerateStageFailsWhenNoReplyArrives(t *testing.T) {
+	h, p := enumerateHub(t)
+	// The plugin polls and acks the request, and answers nothing.
+	responder := startEnumerateResponder(p, 2, func(string, string) map[string]any { return nil })
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 500*time.Millisecond)
+	if result.Passed {
+		t.Fatal("a plugin that never answered a context.enumerate passed")
+	}
+	if !strings.Contains(result.Error, "a context.entries reply for context \"test.zone\"") ||
+		!strings.Contains(result.Error, "section 6.2") {
+		t.Fatalf("the missing reply was not named: %q", result.Error)
+	}
+}
+
+func TestEnumerateStageFailsOnAnEntryOutsideItsBounds(t *testing.T) {
+	h, p := enumerateHub(t)
+	responder := startEnumerateResponder(p, 2, func(requestID, contextID string) map[string]any {
+		if contextID != "test.zone" {
+			return goodEntries(requestID, contextID)
+		}
+		return map[string]any{
+			"requestId": requestID, "context": contextID,
+			"entries": []map[string]any{
+				{"referenceKey": "north-ridge", "label": "North Ridge"},
+				{"referenceKey": "", "label": "Nameless"},
+			},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 10*time.Second)
+	if result.Passed {
+		t.Fatal("an entry with an empty referenceKey passed")
+	}
+	if !strings.Contains(result.Error, "entries[1].referenceKey must be a non-empty string") {
+		t.Fatalf("the bad entry was not named: %q", result.Error)
+	}
+}
+
+func TestEnumerateStageFailsWhenAnUndeclaredContextCarriesNoReason(t *testing.T) {
+	h, p := enumerateHub(t)
+	responder := startEnumerateResponder(p, 2, func(requestID, contextID string) map[string]any {
+		if contextID == "test.zone" {
+			return goodEntries(requestID, contextID)
+		}
+		// Empty, but silent about why.
+		return map[string]any{
+			"requestId": requestID, "context": contextID,
+			"entries": []map[string]any{},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runEnumerateStage(t, h, 10*time.Second)
+	if result.Passed {
+		t.Fatal("an undeclared context answered without a reason passed")
+	}
+	if !strings.Contains(result.Error, absentContext) || !strings.Contains(result.Error, "no reason string") {
+		t.Fatalf("the missing reason was not named: %q", result.Error)
+	}
+}
+
+// A manifest declaring no custom context leaves the stage nothing to grade,
+// which is a PART with a note rather than a pass or a failure.
+func TestEnumerateStageIsUngradedWithoutADeclaredContext(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	p := newTestPlugin(t, h)
+	p.poll(typedEnvelope("manifest-1", 1, "manifest.publish", map[string]any{
+		"game":             "conformance",
+		"manifestRevision": 1,
+		"actions":          []map[string]any{{"code": "test.echo", "context": "world"}},
+		"contexts":         []any{},
+	}))
+
+	result := runEnumerateStage(t, h, 500*time.Millisecond)
+	if !result.Passed || result.Note == "" {
+		t.Fatalf("want a pass with a note, got %+v", result)
+	}
+	if !strings.Contains(result.Note, "declares no custom context") {
+		t.Fatalf("unexpected note: %q", result.Note)
 	}
 }
 

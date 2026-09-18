@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,91 @@ func TestBuildIsReproducible(t *testing.T) {
 	version, _ := modVersion(source)
 	if !bytes.Contains(modCppBytes, []byte("version = \""+version+"\";")) {
 		t.Errorf("mod.cpp does not carry the plugin version %s:\n%s", version, modCppBytes)
+	}
+}
+
+// writeSampleTree writes a small mod source tree, the shape build-sample
+// packs. The test builds from one of these rather than from
+// plugins/dayz/sample, so it grades the packing rather than whatever the
+// sample happens to contain.
+func writeSampleTree(t *testing.T, lineEnding string) string {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		"config.cpp": "class CfgPatches\n{\n\tclass VyshkaSample\n\t{\n\t\trequiredAddons[] = { \"DZ_Data\" };\n\t};\n};\n",
+		filepath.FromSlash("scripts/5_Mission/VyshkaSample/SampleMission.c"): "modded class MissionServer\n{\n}\n",
+	}
+	for name, content := range files {
+		if lineEnding != "\n" {
+			content = strings.ReplaceAll(content, "\n", lineEnding)
+		}
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// The sample is packed by the same rules as the plugin: the same source
+// bytes build the same archive whatever the checkout's line endings, and the
+// mod.cpp beside it names the sample and carries the plugin's version.
+func TestBuildSampleIsReproducible(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1758067200")
+	mod := filepath.Join("..", "..", "mod")
+
+	digest := func(src string) [32]byte {
+		out := t.TempDir()
+		if err := runBuildSample([]string{"-src", src, "-out", out, "-mod", mod}); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(out, sampleModDir, "addons", samplePboName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sha256.Sum256(data)
+	}
+	if a, b := digest(writeSampleTree(t, "\n")), digest(writeSampleTree(t, "\r\n")); a != b {
+		t.Fatalf("an LF tree and its CRLF copy built different archives: %x and %x", a, b)
+	}
+
+	out := t.TempDir()
+	if err := runBuildSample([]string{"-src", writeSampleTree(t, "\n"), "-out", out, "-mod", mod}); err != nil {
+		t.Fatal(err)
+	}
+	modCppBytes, err := os.ReadFile(filepath.Join(out, sampleModDir, "mod.cpp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, _ := modVersion(mod)
+	for _, want := range []string{
+		"name = \"VyshkaSample\";",
+		"version = \"" + version + "\";",
+		"author = \"Vyshka contributors\";",
+		"https://github.com/That1Drifter/vyshka",
+	} {
+		if !bytes.Contains(modCppBytes, []byte(want)) {
+			t.Errorf("the sample mod.cpp does not carry %q:\n%s", want, modCppBytes)
+		}
+	}
+	// The plugin's own build is untouched by the sample's: they write
+	// different folders under the same output directory.
+	if _, err := os.Stat(filepath.Join(out, modDir)); err == nil {
+		t.Errorf("build-sample wrote a %s folder", modDir)
+	}
+}
+
+// The sample source directory is optional: a checkout without one (or a
+// mistyped -src) must say so rather than write an empty archive.
+func TestBuildSampleRefusesASourceWithoutConfigCpp(t *testing.T) {
+	err := runBuildSample([]string{"-src", t.TempDir(), "-out", t.TempDir(), "-mod", filepath.Join("..", "..", "mod")})
+	if err == nil {
+		t.Fatal("a source directory without a config.cpp was packed")
+	}
+	if !strings.Contains(err.Error(), "no config.cpp under") {
+		t.Fatalf("unhelpful error: %v", err)
 	}
 }

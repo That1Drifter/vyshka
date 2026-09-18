@@ -2,9 +2,10 @@
 //
 // One object drives the whole lifecycle of spec sections 5, 6, 7, 8 and 9:
 // enroll once, start a session on every boot, long-poll forever, publish the
-// manifest, execute dispatched actions behind an executed-actionId LRU, flush
-// events and snapshots into the outbox, keep unacked envelopes there, and
-// renumber them across session changes.
+// manifest, execute dispatched actions behind an executed-actionId LRU,
+// answer a hub asking what a custom context holds, flush events and
+// snapshots into the outbox, keep unacked envelopes there, and renumber them
+// across session changes.
 //
 // Everything runs on the script tick. A repeating call-queue timer wakes the
 // plugin, and the transport's callbacks land on the same thread, so there is
@@ -18,7 +19,7 @@
 // hub acks and keeps them separately (spec section 8.3).
 class VyshkaSnapshotChannel
 {
-	string m_Type;      // state.players, state.vehicles
+	string m_Type;      // state.players, state.vehicles, state.entities
 	int m_LastMs;       // monotonic time of the last capture; 0 before the first
 	int m_Held;         // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
 
@@ -68,6 +69,16 @@ class VyshkaPlugin : VyshkaResponseSink
 
 	static const string SNAPSHOT_PLAYERS = "state.players";
 	static const string SNAPSHOT_VEHICLES = "state.vehicles";
+	// The map markers a mod placed (VyshkaMapMarker); the third snapshot
+	// type of spec section 8.3, paced like the other two.
+	static const string SNAPSHOT_ENTITIES = "state.entities";
+
+	// A context.enumerate requestId is hub-assigned and opaque, at most this
+	// many code points (spec section 6.2); the reply echoes it.
+	static const int REQUEST_ID_MAX = 128;
+	// A context.entries body is bounded as a snapshot body is (section 6.2):
+	// 256 KiB, past which a hub refuses it whole.
+	static const int CONTEXT_REPLY_MAX_BYTES = 262144;
 
 	// A pending dispatch (an action waiting on the store) holds the next
 	// poll back for up to PENDING_POLL_HOLD_MS, so its result rides the poll
@@ -85,8 +96,9 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaCredentials m_Credentials;
 	ref VyshkaOutbox m_Outbox;
 	ref VyshkaTransport m_Transport;
-	ref VyshkaStore m_Store;
-	ref VyshkaActionRegistry m_Actions;
+	ref VyshkaStoreClient m_Store;
+	ref VyshkaRegistry m_Actions;
+	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision)
 	ref VyshkaEventBuffer m_Events;
 	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
 	// An outcome delivered through Complete while its action's Execute was
@@ -125,7 +137,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	string m_LinkState;        // connected | degraded | buffering (section 9.4)
 	int m_LastWarnMs;
 
-	static void Start(VyshkaActionRegistry actions, VyshkaSnapshotSource snapshots)
+	static void Start(VyshkaRegistry actions, VyshkaSnapshotSource snapshots)
 	{
 		if (s_Instance)
 			return;
@@ -159,13 +171,26 @@ class VyshkaPlugin : VyshkaResponseSink
 		return s_Instance.m_LinkState;
 	}
 
-	// Store is the key/value client, or null before the plugin has started
-	// or after it stopped (an action then fails with that as its reason).
-	static VyshkaStore Store()
+	// StoreClient is the key/value client, or null before the plugin has
+	// started or after it stopped (an action then fails with that as its
+	// reason). A mod goes through a namespace-bound VyshkaStore handle
+	// instead (GetVyshka().Store("my-mod")), which answers for itself when
+	// there is no client.
+	static VyshkaStoreClient StoreClient()
 	{
 		if (!s_Instance || !s_Instance.m_Running)
 			return null;
 		return s_Instance.m_Store;
+	}
+
+	// IsRunning says whether the plugin booted with a usable config and has
+	// not stopped. It says nothing about the link: a running plugin with no
+	// hub in reach buffers what it is given (LinkState says which).
+	static bool IsRunning()
+	{
+		if (!s_Instance)
+			return false;
+		return s_Instance.m_Running;
 	}
 
 	// Complete delivers the outcome of a dispatch whose action returned
@@ -217,9 +242,10 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
+		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_ENTITIES));
 	}
 
-	void Boot(VyshkaActionRegistry actions, VyshkaSnapshotSource snapshots)
+	void Boot(VyshkaRegistry actions, VyshkaSnapshotSource snapshots)
 	{
 		if (!GetGame().IsServer())
 			return;
@@ -253,13 +279,20 @@ class VyshkaPlugin : VyshkaResponseSink
 			return;
 
 		// The store client has a transport of its own so a key/value call
-		// never waits behind a held poll (VyshkaStore).
-		array<string> namespaces = new array<string>;
-		namespaces.Insert(VyshkaActionRegistry.KV_NAMESPACE);
-		m_Store = new VyshkaStore();
+		// never waits behind a held poll (VyshkaStoreClient). It is confined
+		// to the namespaces the manifest declares: the plugin's own and
+		// whatever the mods registered (VyshkaRegistry.DeclareNamespace).
+		array<string> namespaces = m_Actions.Namespaces();
+		m_Store = new VyshkaStoreClient();
 		if (!m_Store.Init(m_Config.m_HubUrl, namespaces))
 			return;
 		ApplyReadTimeout(m_Config.m_PollTimeoutSeconds);
+
+		// The revision the manifest publishes is derived from what the
+		// registry holds, so a boot that changed nothing republishes the
+		// same revision and the hub keeps what it has (spec section 6.1).
+		string content = m_Actions.ManifestContent(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION);
+		m_ManifestRevision = ResolveManifestRevision(content);
 
 		m_Running = true;
 		m_SnapshotsOn = m_Config.m_SnapshotIntervalSeconds > 0 && m_Snapshots;
@@ -267,11 +300,13 @@ class VyshkaPlugin : VyshkaResponseSink
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
 		string snapshotNote = "snapshots off";
 		if (m_SnapshotsOn)
-			snapshotNote = "state.players and state.vehicles with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
+			snapshotNote = "state.players, state.vehicles and state.entities with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
 		string fpsNote = "fps samples off";
 		if (m_Config.m_FpsIntervalSeconds > 0)
 			fpsNote = "core.server.fps every " + m_Config.m_FpsIntervalSeconds.ToString() + " s";
-		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + m_Actions.Count().ToString() + " action(s) declared, " + snapshotNote + ", " + fpsNote);
+		int actionCount = m_Actions.Count();
+		int contextCount = m_Actions.ContextCount();
+		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + actionCount.ToString() + " action(s) and " + contextCount.ToString() + " custom context(s) declared at manifest revision " + m_ManifestRevision.ToString() + ", " + snapshotNote + ", " + fpsNote);
 		Emit("core.server.start", ServerEventData());
 	}
 
@@ -418,8 +453,68 @@ class VyshkaPlugin : VyshkaResponseSink
 			return;
 		if (!m_Outbox.HasRoom(1 + ReservedResults()))
 			return;
-		if (m_Outbox.Append("manifest.publish", m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION)))
+		string body = m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION, m_ManifestRevision);
+		if (m_Outbox.Append("manifest.publish", body))
 			m_ManifestQueued = true;
+	}
+
+	// ResolveManifestRevision derives the revision this boot publishes with
+	// and remembers it at VyshkaFiles.MANIFEST_PATH, beside the content it
+	// went with: a boot whose actions, contexts, events and namespaces are
+	// the ones the file records republishes the same revision, which the hub
+	// ignores as the duplicate it is (spec section 6.1), and any change to
+	// what the plugin declares takes a new one.
+	//
+	// A changed manifest takes the stored revision plus one, or the current
+	// epoch second when that is larger. The epoch seed matters after the
+	// profile directory is wiped or moved: the hub keeps the revision it
+	// stored and ignores anything at or below it, so a plugin starting over
+	// from 1 would never be heard again, while a revision seeded from the
+	// clock is above whatever any earlier boot could have sent. Epoch
+	// seconds fit the engine's 32-bit script int until 2038, and stay well
+	// inside the [1, 2^53) the spec allows.
+	int ResolveManifestRevision(string content)
+	{
+		int stored = 0;
+		string storedContent = "";
+		string raw;
+		string why = "no " + VyshkaFiles.MANIFEST_PATH + " yet";
+		if (VyshkaFiles.ReadAll(VyshkaFiles.MANIFEST_PATH, raw))
+		{
+			// The file is one line of JSON with no newline of its own, read
+			// back whole the way the outbox's records are (an 8 KiB record
+			// restores intact on every boot). It is not scrubbed of newlines
+			// first: with a `raw.Replace("\n", "")` here, the string read
+			// back measured 0 bytes on every boot on DayZ 1.29 (2026-09-18,
+			// issue #72), and without it the same file reads back whole and
+			// the stored revision is republished.
+			int rawLength = raw.Length();
+			VyshkaJsonValue root = VyshkaJson.Parse(raw);
+			if (root && root.IsObject())
+			{
+				stored = root.GetInt("revision", 0);
+				storedContent = root.GetString("content", "");
+				int storedLength = storedContent.Length();
+				int contentLength = content.Length();
+				why = "the record at revision " + stored.ToString() + " holds " + storedLength.ToString() + " bytes of content and this boot declares " + contentLength.ToString();
+			}
+			else
+				why = VyshkaFiles.MANIFEST_PATH + " (" + rawLength.ToString() + " bytes) did not parse as a JSON object";
+		}
+		if (stored > 0 && storedContent == content)
+			return stored;
+		int revision = stored + 1;
+		int now = VyshkaClock.EpochSeconds();
+		if (now > revision)
+			revision = now;
+		VyshkaJsonValue next = VyshkaJsonValue.NewObject();
+		next.Set("revision", VyshkaJsonValue.NewInt(revision));
+		next.Set("content", VyshkaJsonValue.NewString(content));
+		string text = next.Serialize();
+		if (!VyshkaFiles.WriteAll(VyshkaFiles.MANIFEST_PATH, text))
+			VyshkaLog.Warn("could not write " + VyshkaFiles.MANIFEST_PATH + "; every boot will publish a new manifest revision, even one that changed nothing");
+		VyshkaLog.Info("publishing manifest revision " + revision.ToString() + ": " + why);
+		return revision;
 	}
 
 	// ReservedResults is how many outbox slots are spoken for by results not
@@ -500,10 +595,21 @@ class VyshkaPlugin : VyshkaResponseSink
 			body = m_Snapshots.CapturePlayers();
 		else if (channel.m_Type == SNAPSHOT_VEHICLES)
 			body = m_Snapshots.CaptureVehicles();
+		else if (channel.m_Type == SNAPSHOT_ENTITIES)
+			body = m_Snapshots.CaptureEntities();
 		if (body == "")
 			return false;
 		if (!m_Outbox.Append(channel.m_Type, body))
+		{
+			// The entities capture only speaks when a marker exists or one
+			// was removed since the last capture, and it forgets the removal
+			// as it captures; a body the outbox refused was never sent, so
+			// the removal is owed again or the hub keeps a marker that is
+			// gone.
+			if (channel.m_Type == SNAPSHOT_ENTITIES)
+				VyshkaMapMarkers.Unpublished();
 			return false;
+		}
 		channel.m_LastMs = now;
 		return true;
 	}
@@ -1101,11 +1207,73 @@ class VyshkaPlugin : VyshkaResponseSink
 		VyshkaJsonValue body = envelope.Get("body");
 		if (envelopeType == "action.dispatch")
 			HandleDispatch(body);
+		else if (envelopeType == "context.enumerate")
+			HandleContextEnumerate(body);
 		else if (envelopeType == "manifest.reject")
 			HandleManifestReject(body);
 		else if (envelopeType == "event.reject" || envelopeType == "state.reject")
 			HandleTelemetryReject(envelopeType, body);
 		// Anything else is acked and ignored (spec section 4).
+	}
+
+	// HandleContextEnumerate answers a hub asking for the members of one
+	// custom context (spec section 6.2) with a context.entries reply that
+	// echoes the request. A context this plugin does not declare is answered
+	// too, with an empty list and a reason, so the hub learns that it and the
+	// manifest disagree instead of waiting; it is not a fault of the link.
+	// Nothing here is deduplicated: an enumeration is a read of what is, so
+	// answering the same request twice changes nothing.
+	void HandleContextEnumerate(VyshkaJsonValue body)
+	{
+		if (!body || !body.IsObject())
+		{
+			VyshkaLog.Warn("ignoring a context.enumerate with an unusable body");
+			return;
+		}
+		VyshkaJsonValue requestIdValue = body.Get("requestId");
+		if (!requestIdValue || !requestIdValue.IsString() || requestIdValue.m_Text == "")
+		{
+			// Without the id there is nothing the hub could match an answer
+			// to, so there is no answer worth sending.
+			VyshkaLog.Warn("ignoring a context.enumerate without a requestId");
+			return;
+		}
+		string requestId = VyshkaAction.Bound(requestIdValue.m_Text, REQUEST_ID_MAX);
+		string contextId = VyshkaAction.Bound(body.GetString("context", ""), VyshkaRegistry.CONTEXT_ID_MAX);
+
+		VyshkaJsonValue answer = VyshkaJsonValue.NewObject();
+		answer.Set("requestId", VyshkaJsonValue.NewString(requestId));
+		answer.Set("context", VyshkaJsonValue.NewString(contextId));
+		VyshkaContext context = m_Actions.FindContext(contextId);
+		if (!context)
+		{
+			answer.Set("entries", VyshkaJsonValue.NewArray());
+			answer.Set("reason", VyshkaJsonValue.NewString("this plugin declares no context " + contextId));
+		}
+		else
+		{
+			VyshkaContextList list = new VyshkaContextList();
+			context.Enumerate(list);
+			VyshkaJsonValue entries = list.ToJson();
+			answer.Set("entries", entries);
+			int dropped = list.Dropped();
+			if (dropped > 0)
+				VyshkaLog.Warn("context " + contextId + " offered more members than a reply may carry; " + dropped.ToString() + " were left out");
+		}
+		string answerBody = answer.Serialize();
+		// A reply is bounded in bytes as a snapshot is (section 6.2), and a
+		// hub refuses one over the bound whole. An empty list with a reason
+		// still tells the hub something; a refused reply tells it nothing.
+		int answerBytes = answerBody.Length();
+		if (answerBytes > CONTEXT_REPLY_MAX_BYTES)
+		{
+			VyshkaLog.Warn("the entries of context " + contextId + " serialize to " + answerBytes.ToString() + " bytes, over the " + CONTEXT_REPLY_MAX_BYTES.ToString() + " a reply may carry (spec section 6.2); answering with none");
+			answer.Set("entries", VyshkaJsonValue.NewArray());
+			answer.Set("reason", VyshkaJsonValue.NewString("the members of context " + contextId + " do not fit in one reply"));
+			answerBody = answer.Serialize();
+		}
+		if (!m_Outbox.Append("context.entries", answerBody))
+			VyshkaLog.Warn("the outbox could not hold the entries of context " + contextId + " for request " + requestId + "; a hub that still wants them will ask again");
 	}
 
 	// HandleTelemetryReject surfaces a refused event.batch or state.*

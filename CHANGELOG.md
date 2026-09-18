@@ -19,6 +19,17 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-18: the `context.enumerate` exchange is specified (issue #72, protocol draft
+  0.25, section 6.2): the hub asks `{ requestId, context }` and the plugin answers
+  `context.entries` with `{ requestId, context, entries: [ { referenceKey, label,
+  position?, data? } ] }`, an undeclared context with an empty list and a `reason`;
+  `spec/manifest.schema.json` carries both bodies. The plugin conformance suite gains the
+  `context.enumerate` stage, which enumerates every context a candidate declares (and one
+  it does not) and grades the replies, `PART` for a manifest that declares none; the
+  reference driver declares a context and answers. The reference hub does not send
+  `context.enumerate` yet (that half stays with issue #73) and acks and ignores a
+  `context.entries`. The panel's live map plots the `state.entities` snapshot beside the
+  players and vehicles, with a table of the entities and their count in the status line.
 - 2026-09-17: POST spellings of the Plugin API's key/value get, set, and delete (issue
   #71, protocol draft 0.24): `POST /plugin/v1/kv/{namespace}/{key}/get`, `/set`, and
   `/delete` are the same operations behind the same session and confinement gate, with
@@ -91,6 +102,30 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-18: the mod surface (issue #72, plugin 0.8.0). A server mod loaded after
+  `@Vyshka` overrides the modded `MissionServer`'s new `VyshkaRegister(VyshkaRegistry)`
+  hook, which the plugin calls once before the link starts, to register `VyshkaAction`
+  subclasses, `VyshkaContext` subclasses (the plugin answers `context.enumerate` for them
+  with `context.entries`, protocol draft 0.25), declared events, and key/value namespaces,
+  and the manifest carries them all (`contexts`, `events`, and `kvNamespaces` were empty
+  before). The plugin's `config.cpp` declares `defines[] = { "VYSHKA" }`, so a mod wraps
+  its Vyshka code in `#ifdef VYSHKA` and loads without the plugin. `GetVyshka()` is the
+  global accessor (`Version`, `LinkState`, `IsRunning`, `Emit`, `Store`, `Mark`);
+  `VyshkaStore(namespace)` is a store handle bound to one namespace (the client behind it
+  is now `VyshkaStoreClient`); `VyshkaMapMarker.Place` puts a map object that is not a
+  player or a vehicle on the panel's live map through a new `state.entities` snapshot,
+  published empty once at boot (so a marker from before a restart is cleared), then only
+  while a marker exists, and once more, empty, when the last is removed. The
+  manifest revision is no longer a constant: `<profiles>/Vyshka/manifest.json` keeps the
+  last published content and its revision, and changed content takes the larger of the
+  stored revision plus one and the current epoch second, so a wiped profile directory
+  cannot republish below what a hub holds. `sample/` is a self-contained sample mod built
+  on the surface (namespace `sample`: the `sample.landmark` context with two fixed
+  entries, the `sample.beacon` action that places a marker, emits `sample.beacon.placed`,
+  and counts the placement in the store with a guarded write, requiring nothing but the
+  game's own addons); `vyshka-dayz build-sample` packs it and `harness -extra-mod` loads
+  it beside the plugin for the conformance harness. The README gains "Writing a mod
+  against the plugin".
 - 2026-09-17: admin flags (issue #71, plugin 0.8.0, manifest revision 6). `vyshka.flags`
   (player, `warning`) sets any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, and
   `ignoredByAi` on an identity, online or not, and leaves the ones it does not name alone.
@@ -148,7 +183,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.24 (2026-09-17). The document's header carries the draft number and date; each
+Draft 0.25 (2026-09-18). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

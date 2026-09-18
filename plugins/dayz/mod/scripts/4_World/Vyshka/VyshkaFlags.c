@@ -284,11 +284,11 @@ class VyshkaFlags
 	{
 		if (Loading().Contains(id))
 			return;
-		VyshkaStore store = VyshkaPlugin.Store();
+		VyshkaStoreClient store = VyshkaPlugin.StoreClient();
 		if (!store)
 			return;
 		Loading().Set(id, true);
-		store.Get(VyshkaActionRegistry.KV_NAMESPACE, Key(id), new VyshkaFlagsLookup(id));
+		store.Get(VyshkaRegistry.KV_NAMESPACE, Key(id), new VyshkaFlagsLookup(id));
 	}
 
 	// OnLookup is the store's answer to Lookup.
@@ -469,14 +469,14 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 
 	void Start()
 	{
-		VyshkaStore store = VyshkaPlugin.Store();
+		VyshkaStoreClient store = VyshkaPlugin.StoreClient();
 		if (!store)
 		{
 			Fail("the plugin is not connected to a hub, so the flags cannot be stored");
 			return;
 		}
 		m_Phase = PHASE_READ;
-		store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
+		store.Get(VyshkaRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
 	}
 
 	override void OnStore(VyshkaStoreResult result)
@@ -486,7 +486,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 			Fail("the flags could not be stored: " + result.m_Error);
 			return;
 		}
-		VyshkaStore store = VyshkaPlugin.Store();
+		VyshkaStoreClient store = VyshkaPlugin.StoreClient();
 		if (!store)
 		{
 			Fail("the plugin stopped before the flags were stored");
@@ -535,7 +535,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 			m_WroteOnce = true;
 			// The revision read guards the write: "0" for a key that did not
 			// exist means "only if it still does not".
-			store.Set(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), next.ToJson(), result.m_RevisionText, this, m_DeadlineMs);
+			store.Set(VyshkaRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), next.ToJson(), result.m_RevisionText, this, m_DeadlineMs);
 			return;
 		}
 		if (m_Phase == PHASE_WRITE)
@@ -549,7 +549,7 @@ class VyshkaFlagsChange : VyshkaStoreCallback
 					return;
 				}
 				m_Phase = PHASE_READ;
-				store.Get(VyshkaActionRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
+				store.Get(VyshkaRegistry.KV_NAMESPACE, VyshkaFlags.Key(m_Id), this, m_DeadlineMs);
 				return;
 			}
 			Finish(result.m_RevisionText);
@@ -647,7 +647,7 @@ class VyshkaFlagsAction : VyshkaAction
 
 		if (referenceKey == "")
 			return VyshkaActionOutcome.Failure("a player-context action needs the player's identity as referenceKey");
-		if (!VyshkaPlugin.Store())
+		if (!VyshkaPlugin.StoreClient())
 			return VyshkaActionOutcome.Failure("the plugin is not connected to a hub, so the flags cannot be stored");
 
 		// The record keys on the plain id. An online player resolves either
@@ -661,7 +661,7 @@ class VyshkaFlagsAction : VyshkaAction
 			id = player.GetIdentity().GetPlainId();
 			name = player.GetIdentity().GetName();
 		}
-		if (!VyshkaStore.ValidName(VyshkaFlags.Key(id), 128))
+		if (!VyshkaStoreClient.ValidName(VyshkaFlags.Key(id), 128))
 			return VyshkaActionOutcome.Failure("player " + referenceKey + " is not online, and the identity is not a plain id the store can key on");
 
 		VyshkaFlagsChange change = new VyshkaFlagsChange(actionId, id, name, named, requested);
