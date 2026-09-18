@@ -127,8 +127,10 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   stored revision plus one and the current epoch second, and a revision not above the one
   the hub reports at session start (`server.manifestRevision`, protocol section 5.3) moves
   to the hub's plus one (a minted revision stays marked pending in the record, across
-  restarts, until the hub acks a publish sent above what it reported, and an equal
-  revision at the hub is a collision until then), so a wiped profile directory or a clock
+  restarts, until a later session reports the number it was published above the hub's
+  earlier one at, which is acceptance where an ack is not; an equal revision at a hub it
+  was not published above is a collision until then, and a publish an earlier boot left
+  in the outbox is published above as well), so a wiped profile directory or a clock
   set back cannot leave the manifest below what the hub holds; the lists are published in
   a fixed order so the mods'
   load order does not change the content. The registry refuses what the hub would reject

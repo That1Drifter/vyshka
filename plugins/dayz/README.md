@@ -582,10 +582,14 @@ changed content takes the larger of the stored revision plus one and the current
 second. The hub reports the revision it holds with every session (`server.manifestRevision`,
 section 5.3), and a plugin whose revision is not above it moves to the hub's plus one, so
 a wiped profile directory or a clock set back cannot leave the manifest stranded below what
-the hub holds. A revision minted by the plugin is marked `pending` in the record until the
-hub is seen to accept it (the publish sent above the hub's reported revision is acked), and
-while it is pending an equal revision at the hub is taken for the collision it may be, not
-for this content, across restarts too. The lists are published in a fixed order (by code or id), so the load order
+the hub holds. A revision minted by the plugin is marked `pending` in the record, with the
+hub revision it was published above, until a later session (a renewal, hourly, or the next
+boot) reports that very number: the hub got there through this publish, so the content is
+accepted and the mark is cleared. An ack alone is not acceptance, since the hub acks a
+manifest it rejected as well. While a revision is pending, an equal number reported by a
+hub it was not published above is taken for the collision it may be and the content goes
+out above it, across restarts too; a record from before the mark existed reads as pending,
+and a `manifest.publish` an earlier boot left in the outbox is published above as well. The lists are published in a fixed order (by code or id), so the load order
 of the mods does not change the content. There is nothing to do when you add or change a
 mod; the next boot publishes. The registry refuses what the hub would reject the whole
 manifest over, with a log line: an action past 500, a context past 100, an event past 500,

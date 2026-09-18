@@ -195,6 +195,29 @@ class VyshkaOutbox
 		return false;
 	}
 
+	// HighestManifestRevision is the largest manifestRevision among the
+	// manifest.publish envelopes still here, 0 when there is none: what an
+	// earlier boot published and the hub has not yet acked, which the hub
+	// will apply before anything appended now (section 9.1), so a revision
+	// minted now has to lie above it.
+	int HighestManifestRevision()
+	{
+		int highest = 0;
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			VyshkaOutboxEntry entry = m_Entries.Get(i);
+			if (entry.m_Type != "manifest.publish")
+				continue;
+			VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
+			if (!body || !body.IsObject())
+				continue;
+			int revision = body.GetInt("manifestRevision", 0);
+			if (revision > highest)
+				highest = revision;
+		}
+		return highest;
+	}
+
 	// RoomInBatch reports whether an envelope carrying no events, appended
 	// now, would ride the next poll: every entry already here rides it, one
 	// envelope slot is left, and the events those entries carry are inside
