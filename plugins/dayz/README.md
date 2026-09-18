@@ -586,7 +586,10 @@ the hub holds. A revision minted by the plugin is marked `pending` in the record
 hub revision it was published above, until a later session (a renewal, hourly, or the next
 boot) reports that very number: the hub got there through this publish, so the content is
 accepted and the mark is cleared. An ack alone is not acceptance, since the hub acks a
-manifest it rejected as well. While a revision is pending, an equal number reported by a
+manifest it rejected as well, and a hub that reported no revision (it holds none, or it
+predates the field) is not known to have stood below, so a publish sent to it leaves no
+mark and the number is accepted only after one more publish above the hub's first report.
+While a revision is pending, an equal number reported by a
 hub it was not published above is taken for the collision it may be and the content goes
 out above it, across restarts too; a record from before the mark existed reads as pending,
 and a `manifest.publish` an earlier boot left in the outbox is published above as well. The lists are published in a fixed order (by code or id), so the load order

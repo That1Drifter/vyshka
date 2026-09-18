@@ -102,7 +102,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	string m_ManifestContent;  // the manifest body without the revision, as this boot declares it
 	bool m_ManifestChanged;    // the revision was minted here (this boot or an earlier one) and no hub has been seen to accept it, so the number is not one the hub is known to hold; kept in the record as "pending"
 	int m_HubRevisionSeen;     // server.manifestRevision from this session's response, -1 when absent
-	int m_PublishedAbove;      // the hub revision reported when the pending revision was published (-1: the hub reported none), or -2 when it has not been published; kept in the record as "above"
+	int m_PublishedAbove;      // the hub revision (1 or more) reported when the pending revision was published, or -2 when it has not been published above a reported one; kept in the record as "above"
 	ref VyshkaEventBuffer m_Events;
 	ref map<string, ref VyshkaPendingDispatch> m_PendingDispatches;   // by actionId
 	// An outcome delivered through Complete while its action's Execute was
@@ -463,12 +463,15 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (m_Outbox.Append("manifest.publish", body))
 		{
 			m_ManifestQueued = true;
-			// A pending revision going out above what the hub reported (or
-			// the hub reported none) is remembered as such, in the record
-			// too, so a later session reporting this number reads as the
-			// hub having got there through this publish
-			// (ReconcileManifestRevision), across a restart as well.
-			if (m_ManifestChanged && m_HubRevisionSeen < m_ManifestRevision)
+			// A pending revision going out above what the hub reported is
+			// remembered as such, in the record too, so a later session
+			// reporting this number reads as the hub having got there
+			// through this publish (ReconcileManifestRevision), across a
+			// restart as well. A hub that reported nothing is not known
+			// to have stood below: it may hold none, or predate the field
+			// and hold anything, so nothing is remembered and the next
+			// equal report is taken for a collision and published above.
+			if (m_ManifestChanged && m_HubRevisionSeen >= 1 && m_HubRevisionSeen < m_ManifestRevision)
 			{
 				m_PublishedAbove = m_HubRevisionSeen;
 				SaveManifestRecord(m_ManifestRevision, m_ManifestContent, true, m_PublishedAbove);
@@ -517,7 +520,12 @@ class VyshkaPlugin : VyshkaResponseSink
 				// A record without the mark (written before it existed) has
 				// no evidence of acceptance either, so it reads as pending.
 				storedPending = root.GetBool("pending", true);
+				// Only a hub revision (section 6: 1 or more) is evidence
+				// of where the hub stood; anything else in the mark reads
+				// as no mark.
 				storedAbove = root.GetInt("above", -2);
+				if (storedAbove < 1)
+					storedAbove = -2;
 				int storedLength = storedContent.Length();
 				int contentLength = content.Length();
 				why = "the record at revision " + stored.ToString() + " holds " + storedLength.ToString() + " bytes of content and this boot declares " + contentLength.ToString();
@@ -561,9 +569,10 @@ class VyshkaPlugin : VyshkaResponseSink
 	// changed anything. pending says the revision was minted here and no
 	// hub has yet been seen to accept it (ReconcileManifestRevision clears
 	// it), so a restart in between keeps treating the number as a guess;
-	// above, when the pending revision has been published, is the hub
-	// revision reported at the time (-1 for none), which is what lets a
-	// later session's report be read as acceptance.
+	// above, when the pending revision has been published above a hub
+	// revision the session reported, is that revision, which is what lets
+	// a later session's report be read as acceptance; a hub that reported
+	// none leaves no mark, since it is not known to have stood below.
 	void SaveManifestRecord(int revision, string content, bool pending, int above)
 	{
 		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
