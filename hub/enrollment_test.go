@@ -106,6 +106,9 @@ type session struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Game string `json:"game"`
+		// A pointer, because absent and zero are different answers: the hub
+		// holds no manifest, or it holds one at some revision (section 5.3).
+		ManifestRevision *int64 `json:"manifestRevision"`
 	} `json:"server"`
 }
 

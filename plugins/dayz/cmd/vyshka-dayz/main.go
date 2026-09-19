@@ -1,8 +1,11 @@
 // Command vyshka-dayz is the developer tool for the DayZ plugin.
 //
-//	vyshka-dayz build   packs plugins/dayz/mod into build/@Vyshka/addons/Vyshka.pbo
-//	vyshka-dayz harness launches a DayZ dedicated server carrying the mod as a
-//	                    candidate for the plugin conformance harness
+//	vyshka-dayz build        packs plugins/dayz/mod into
+//	                         build/@Vyshka/addons/Vyshka.pbo
+//	vyshka-dayz build-sample packs plugins/dayz/sample into
+//	                         build/@VyshkaSample/addons/VyshkaSample.pbo
+//	vyshka-dayz harness      launches a DayZ dedicated server carrying the mod
+//	                         as a candidate for the plugin conformance harness
 //
 // The harness subcommand is what makes `go run ./conformance/plugin -- go run
 // ./plugins/dayz/cmd/vyshka-dayz harness` work: it takes the hub URL and
@@ -10,7 +13,10 @@
 // the plugin's config file under a fresh profile directory, starts the
 // server with -serverMod, mirrors the plugin's log lines to stderr, and
 // stops the server when its own stdin closes, which is how the harness asks
-// a candidate to shut down.
+// a candidate to shut down. Repeat -extra-mod to load further built mods
+// after the plugin's own: they are appended to -serverMod in order, and the
+// plugin's mod stays first, because a mod only sees the VYSHKA define when
+// it loads after the mod that declares it.
 package main
 
 import (
@@ -34,11 +40,17 @@ import (
 )
 
 const (
-	prefix   = "Vyshka"
-	modDir   = "@Vyshka"
-	pboName  = "Vyshka.pbo"
-	gitIgn   = "*\n"
-	usageTxt = "usage: vyshka-dayz build|version|harness [flags]\n"
+	prefix  = "Vyshka"
+	modDir  = "@Vyshka"
+	pboName = "Vyshka.pbo"
+	// The sample mod: a second addon, built the same way, that shows what a
+	// mod can do with the plugin's API. It carries its own prefix and folder
+	// so it can be loaded beside the plugin rather than instead of it.
+	samplePrefix  = "VyshkaSample"
+	sampleModDir  = "@VyshkaSample"
+	samplePboName = "VyshkaSample.pbo"
+	gitIgn        = "*\n"
+	usageTxt      = "usage: vyshka-dayz build|build-sample|version|harness [flags]\n"
 	// versionFile is where the plugin states its own version, relative to
 	// the mod source directory. mod.cpp and the release tag both take it
 	// from there, so the manifest, the launcher, and the tag cannot drift.
@@ -145,6 +157,16 @@ func modCpp(version string) string {
 		"action = \"https://github.com/That1Drifter/vyshka\";\n"
 }
 
+// sampleModCpp describes the sample mod folder. It carries the plugin's
+// version, because it ships with the plugin and is only useful beside it.
+func sampleModCpp(version string) string {
+	return "name = \"VyshkaSample\";\n" +
+		"author = \"Vyshka contributors\";\n" +
+		"version = \"" + version + "\";\n" +
+		"overview = \"The sample mod for the Vyshka plugin's mod surface: it registers an action, a context, an event, and a map marker through the plugin's API. Load it after @Vyshka.\";\n" +
+		"action = \"https://github.com/That1Drifter/vyshka\";\n"
+}
+
 // buildTime is the timestamp every PBO entry carries. SOURCE_DATE_EPOCH
 // wins when set (the reproducible-builds convention); otherwise it is the
 // commit time of the last commit that touched the mod source, which every
@@ -184,6 +206,8 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		err = runBuild(os.Args[2:])
+	case "build-sample":
+		err = runBuildSample(os.Args[2:])
 	case "version":
 		err = runVersion(os.Args[2:])
 	case "harness":
@@ -218,32 +242,92 @@ func runBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	modTime, timeSource := buildTime(*src)
-	addons := filepath.Join(*out, modDir, "addons")
+	return packAddon(addon{
+		src: *src, out: *out, prefix: prefix, modDir: modDir, pboName: pboName,
+		version: version, modCpp: modCpp(version),
+	})
+}
+
+// runBuildSample packs the sample mod the same way `build` packs the plugin,
+// so the two archives are reproducible under the same rules and a release
+// can carry both.
+func runBuildSample(args []string) error {
+	fs := flag.NewFlagSet("build-sample", flag.ContinueOnError)
+	src := fs.String("src", defaultPath("plugins/dayz/sample"), "sample mod source directory (config.cpp plus scripts/)")
+	out := fs.String("out", defaultPath("plugins/dayz/build"), "output directory; the @VyshkaSample folder is created inside it")
+	// The sample states no version of its own: it ships with the plugin and
+	// carries the plugin's number, read from the one place that states it.
+	mod := fs.String("mod", defaultPath("plugins/dayz/mod"), "plugin mod source directory the version is read from")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(*src, "config.cpp")); err != nil {
+		return fmt.Errorf("no config.cpp under %s: %w; -src takes the sample mod source directory (plugins/dayz/sample)", *src, err)
+	}
+	version, err := modVersion(*mod)
+	if err != nil {
+		return err
+	}
+	return packAddon(addon{
+		src: *src, out: *out, prefix: samplePrefix, modDir: sampleModDir, pboName: samplePboName,
+		version: version, modCpp: sampleModCpp(version),
+	})
+}
+
+// addon is one mod to pack: where its source is, where the built folder
+// goes, and what names and mod.cpp it carries.
+type addon struct {
+	src     string
+	out     string
+	prefix  string
+	modDir  string
+	pboName string
+	version string
+	modCpp  string
+}
+
+// packAddon is the packing every build subcommand shares. The archive is a
+// function of the source tree's bytes: fixed timestamps, LF line endings
+// whatever the checkout's, sorted paths. A build of the same commit anywhere
+// produces the same file, so the digest printed is what a downloaded PBO can
+// be checked against.
+func packAddon(a addon) error {
+	modTime, timeSource := buildTime(a.src)
+	addons := filepath.Join(a.out, a.modDir, "addons")
 	if err := os.MkdirAll(addons, 0o755); err != nil {
 		return err
 	}
-	// The archive is a function of the source tree's bytes: fixed
-	// timestamps, LF line endings whatever the checkout's, sorted paths. A
-	// build of the same commit anywhere produces the same file, so the
-	// digest printed below is what a downloaded PBO can be checked against.
 	var archive bytes.Buffer
-	if err := pbo.Pack(&archive, *src, prefix, pbo.Options{ModTime: modTime, NormalizeLineEndings: true}); err != nil {
+	if err := pbo.Pack(&archive, a.src, a.prefix, pbo.Options{ModTime: modTime, NormalizeLineEndings: true}); err != nil {
 		return err
 	}
-	target := filepath.Join(addons, pboName)
+	target := filepath.Join(addons, a.pboName)
 	if err := os.WriteFile(target, archive.Bytes(), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(*out, modDir, "mod.cpp"), []byte(modCpp(version)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(a.out, a.modDir, "mod.cpp"), []byte(a.modCpp), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(*out, ".gitignore"), []byte(gitIgn), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(a.out, ".gitignore"), []byte(gitIgn), 0o644); err != nil {
 		return err
 	}
 	digest := sha256.Sum256(archive.Bytes())
-	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes, plugin %s, timestamps %d from %s)\n", target, archive.Len(), version, modTime, timeSource)
-	fmt.Printf("%x  %s\n", digest, pboName)
+	fmt.Fprintf(os.Stderr, "vyshka-dayz: wrote %s (%d bytes, plugin %s, timestamps %d from %s)\n", target, archive.Len(), a.version, modTime, timeSource)
+	fmt.Printf("%x  %s\n", digest, a.pboName)
+	return nil
+}
+
+// repeatedPath is a flag that may be given more than once, keeping every
+// value in the order the command line gave them.
+type repeatedPath []string
+
+func (p *repeatedPath) String() string { return strings.Join(*p, ";") }
+
+func (p *repeatedPath) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("empty path")
+	}
+	*p = append(*p, value)
 	return nil
 }
 
@@ -265,6 +349,8 @@ func runHarness(args []string) error {
 	token := fs.String("token", os.Getenv("VYSHKA_ENROLLMENT_TOKEN"), "one-time enrollment token (env VYSHKA_ENROLLMENT_TOKEN)")
 	pollTimeout := fs.Int("poll-timeout", 25, "pollTimeoutSeconds the plugin requests")
 	keep := fs.Bool("keep", false, "keep the server running after stdin closes (for manual runs)")
+	var extraMods repeatedPath
+	fs.Var(&extraMods, "extra-mod", "a further built mod directory to load after the plugin's own; repeat for several (for example plugins/dayz/build/@VyshkaSample)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -286,6 +372,29 @@ func runHarness(args []string) error {
 	if _, err := os.Stat(filepath.Join(modAbs, "addons", pboName)); err != nil {
 		return fmt.Errorf("no built mod at %s; run `go run ./plugins/dayz/cmd/vyshka-dayz build` first", modAbs)
 	}
+	// The plugin's own mod leads the list and every extra follows it, in the
+	// order given: a mod sees the VYSHKA define only when it loads after the
+	// mod that declares it, so an extra placed first would compile without
+	// the plugin's API.
+	serverMod := modAbs
+	for _, extra := range extraMods {
+		extraAbs, err := filepath.Abs(extra)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(extraAbs)
+		if err != nil {
+			return fmt.Errorf("no mod directory at %s (-extra-mod): %w", extraAbs, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("-extra-mod %s is not a directory; it takes a built mod folder such as plugins/dayz/build/@VyshkaSample", extraAbs)
+		}
+		if info, err := os.Stat(filepath.Join(extraAbs, "addons")); err != nil || !info.IsDir() {
+			return fmt.Errorf("the mod directory %s carries no addons folder; -extra-mod takes a built mod folder such as plugins/dayz/build/@VyshkaSample (see `vyshka-dayz build-sample`)", extraAbs)
+		}
+		serverMod += ";" + extraAbs
+	}
+
 	profilesAbs, err := filepath.Abs(*profiles)
 	if err != nil {
 		return err
@@ -327,14 +436,14 @@ func runHarness(args []string) error {
 		"-config="+cfgName,
 		"-port="+strconv.Itoa(*port),
 		"-profiles="+profilesAbs,
-		"-serverMod="+modAbs,
+		"-serverMod="+serverMod,
 		"-dologs", "-adminlog", "-freezecheck",
 	)
 	cmd.Dir = *serverDir
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting the server: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "vyshka-dayz: server pid %d, profiles %s, mod %s\n", cmd.Process.Pid, profilesAbs, modAbs)
+	fmt.Fprintf(os.Stderr, "vyshka-dayz: server pid %d, profiles %s, mods %s\n", cmd.Process.Pid, profilesAbs, serverMod)
 
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()

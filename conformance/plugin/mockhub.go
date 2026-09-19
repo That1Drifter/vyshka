@@ -85,6 +85,14 @@ type mockHub struct {
 	// What the plugin has published and reported, decoded for the checks.
 	manifest *manifestInfo
 	actions  map[string]*actionTrack
+	// Context enumeration (spec section 6.2). Every context.entries the
+	// plugin sends is acked like any other envelope and kept here under the
+	// requestId it echoes, so the enumerate stage can await the answer to
+	// its own question; contextReplies counts every reply that arrived,
+	// including one echoing a requestId this hub never asked about, which
+	// section 6.2 has a hub ack and ignore rather than refuse.
+	contextEntries map[string]*inboundEnvelope
+	contextReplies int
 	// Telemetry (spec section 8): validated on arrival, counted for the
 	// telemetry stage. Faults found before that stage has run are held for
 	// it rather than charged to whatever stage the first poll landed in, so
@@ -320,10 +328,18 @@ type manifestAction struct {
 	Params  map[string]any
 }
 
+// manifestContext is one custom context the manifest declares (spec section
+// 6.2), which is what the enumerate stage asks the plugin about.
+type manifestContext struct {
+	ID   string
+	Name string
+}
+
 type manifestInfo struct {
 	Game     string
 	Revision int64
 	Actions  []manifestAction
+	Contexts []manifestContext
 }
 
 type actionTrack struct {
@@ -1273,6 +1289,10 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 				Context string         `json:"context"`
 				Params  map[string]any `json:"params"`
 			} `json:"actions"`
+			Contexts []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"contexts"`
 		}
 		if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 			h.faultLocked("6", "a manifest.publish body could not be decoded as an object")
@@ -1290,6 +1310,9 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 			info.Actions = append(info.Actions, manifestAction{
 				Code: action.Code, Context: action.Context, Params: action.Params,
 			})
+		}
+		for _, context := range body.Contexts {
+			info.Contexts = append(info.Contexts, manifestContext{ID: context.ID, Name: context.Name})
 		}
 		h.manifest = info
 
@@ -1315,6 +1338,25 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 				h.faultLocked("7", "the action.result for %s carried no boolean ok; ok is REQUIRED and decides the terminal state", body.ActionID)
 			}
 			track.results++
+		}
+
+	case "context.entries":
+		// The answer to a context.enumerate (section 6.2). It is kept, not
+		// graded here: the enumerate stage matches it to the question it
+		// asked and grades it against the bounds of that section.
+		h.contextReplies++
+		var body struct {
+			RequestID string `json:"requestId"`
+		}
+		if json.Unmarshal([]byte(envelope.Body), &body) != nil || body.RequestID == "" {
+			h.faultLocked("6.2", "a context.entries body carried no requestId string; the reply echoes the hub's requestId, which is how a hub matches an answer to the question it asked across the poll cycle that separates them")
+			return
+		}
+		if h.contextEntries == nil {
+			h.contextEntries = map[string]*inboundEnvelope{}
+		}
+		if _, seen := h.contextEntries[body.RequestID]; !seen {
+			h.contextEntries[body.RequestID] = envelope
 		}
 
 	case "event.batch":

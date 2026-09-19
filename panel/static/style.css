@@ -419,6 +419,14 @@ tr.row-link:hover td { background: var(--code-bg); }
   background: #6bd1ff;
 }
 
+/* An entity (anything a mod put on the map that is neither a player nor a
+   vehicle) is a diamond in a colour of its own, so all three read apart. */
+.map-marker-entity .map-marker-dot {
+  border-radius: 2px;
+  background: #b48bff;
+  transform: rotate(45deg);
+}
+
 .map-marker:hover .map-marker-dot, .map-marker.highlighted .map-marker-dot, .map-marker:focus-visible .map-marker-dot {
   background: #ff6b6b;
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.45);

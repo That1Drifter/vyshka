@@ -24,6 +24,13 @@
 // Revisions travel as the text the hub wrote: they may exceed the engine's
 // 32-bit int (section 12.1 allows 2^53), and a compare-and-swap with a
 // saturated revision would lose every time.
+//
+// Two classes live here. VyshkaStoreClient is the client itself, one per
+// plugin, which takes a namespace with every call and holds the queue, the
+// transport, and the retries. VyshkaStore is the handle a mod is given
+// (GetVyshka().Store("my-mod")): it is bound to one namespace, so a mod
+// names only its keys, and it answers on the spot when there is no running
+// plugin to carry the call.
 
 class VyshkaStoreResult
 {
@@ -66,7 +73,7 @@ class VyshkaStoreRequest
 	string m_RefusedToken;       // the session token the hub called invalid; the request waits for another
 }
 
-class VyshkaStore : VyshkaResponseSink
+class VyshkaStoreClient : VyshkaResponseSink
 {
 	static const int OP_GET = 1;
 	static const int OP_SET = 2;
@@ -95,7 +102,7 @@ class VyshkaStore : VyshkaResponseSink
 	int m_Failed;
 
 	// Init opens the client's own transport at the kv path of the Plugin
-	// API; namespaces are those the manifest declares (VyshkaActionRegistry).
+	// API; namespaces are those the manifest declares (VyshkaRegistry).
 	bool Init(string hubUrl, array<string> namespaces)
 	{
 		m_Queue = new array<ref VyshkaStoreRequest>;
@@ -491,5 +498,79 @@ class VyshkaStore : VyshkaResponseSink
 			Finish(current.m_Callback, VyshkaStoreResult.Failure("the plugin stopped"));
 		for (int i = 0; i < waiting.Count(); i++)
 			Finish(waiting.Get(i).m_Callback, VyshkaStoreResult.Failure("the plugin stopped"));
+	}
+}
+
+// VyshkaStore is a handle on one key/value namespace, which is how a mod
+// reaches the store: GetVyshka().Store("my-mod") and then keys by name. The
+// namespace must be one the manifest declares (registry.DeclareNamespace),
+// or the client refuses the call before the hub does. A handle is cheap and
+// holds nothing: keep one or make one per call, whichever reads better.
+class VyshkaStore
+{
+	string m_Namespace;
+
+	void VyshkaStore(string namespace)
+	{
+		m_Namespace = namespace;
+	}
+
+	string Namespace()
+	{
+		return m_Namespace;
+	}
+
+	// Get reads one key. deadlineMs is the monotonic time by which the
+	// caller needs an answer; 0 means the client's default. An action that
+	// will complete later passes VyshkaPlugin.CurrentDeadlineMs() less a
+	// margin, so the store answers while the dispatch is still open.
+	void Get(string key, VyshkaStoreCallback callback, int deadlineMs = 0)
+	{
+		VyshkaStoreClient client = VyshkaPlugin.StoreClient();
+		if (!client)
+		{
+			Refuse(callback);
+			return;
+		}
+		client.Get(m_Namespace, key, callback, deadlineMs);
+	}
+
+	// Set writes one key. ifRevision guards the write: "" writes
+	// unconditionally, "0" writes only if the key does not exist, and any
+	// other revision writes only if the current one is exactly it. A
+	// mismatch comes back as m_Mismatch with the current revision, not as a
+	// failure (spec section 12.2).
+	void Set(string key, VyshkaJsonValue value, string ifRevision, VyshkaStoreCallback callback, int deadlineMs = 0)
+	{
+		VyshkaStoreClient client = VyshkaPlugin.StoreClient();
+		if (!client)
+		{
+			Refuse(callback);
+			return;
+		}
+		client.Set(m_Namespace, key, value, ifRevision, callback, deadlineMs);
+	}
+
+	// Delete removes one key; a key already gone is success.
+	void Delete(string key, VyshkaStoreCallback callback, int deadlineMs = 0)
+	{
+		VyshkaStoreClient client = VyshkaPlugin.StoreClient();
+		if (!client)
+		{
+			Refuse(callback);
+			return;
+		}
+		client.Delete(m_Namespace, key, callback, deadlineMs);
+	}
+
+	// Refuse answers at once when there is no running plugin: before the
+	// plugin started, after it stopped, or on a server whose config the
+	// operator has not written yet. The callback runs either way, so a
+	// caller never waits on an answer that cannot come.
+	void Refuse(VyshkaStoreCallback callback)
+	{
+		if (!callback)
+			return;
+		callback.OnStore(VyshkaStoreResult.Failure("the plugin is not connected to a hub, so the store cannot be reached"));
 	}
 }

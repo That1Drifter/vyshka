@@ -236,6 +236,10 @@ type sessionRecord struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Game string `json:"game"`
+		// A pointer, because an absent revision and a zero one are different
+		// answers: a hub holding no manifest reports nothing (spec section
+		// 5.3), and no manifest can be at revision 0.
+		ManifestRevision *int64 `json:"manifestRevision"`
 	} `json:"server"`
 }
 
@@ -638,6 +642,50 @@ var checks = []Check{
 			}
 			return env.expect(ctx, http.MethodGet, "/plugin/v1/session", second.SessionToken,
 				nil, http.StatusOK, nil)
+		},
+	},
+	{
+		ID:      "plugin.session.manifestRevision",
+		Title:   "A session reports the revision of the manifest the hub holds",
+		Section: "5.3",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: session manifest revision",
+				shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			// This session predates any publish, so the hub holds nothing to
+			// report yet.
+			if revision := plugin.Session.Server.ManifestRevision; revision != nil {
+				return fmt.Errorf("server.manifestRevision = %d before any manifest was published; it is absent while the hub holds none (section 5.3)", *revision)
+			}
+
+			const published = 4
+			if _, err := plugin.publishManifest(ctx, manifestBody(published)); err != nil {
+				return err
+			}
+			// Read the manifest back first, so a hub that never stored it fails
+			// here, as the publish fault it is, rather than as a missing field.
+			record, err := env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != published {
+				return fmt.Errorf("the hub holds revision %d, want the published %d", record.Revision, published)
+			}
+
+			session, err := env.startSession(ctx, plugin.Creds, shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if session.Server.ManifestRevision == nil {
+				return fmt.Errorf("the session response carries no server.manifestRevision though the hub holds revision %d; a hub SHOULD report it, because it ignores a publish at an equal or lower revision and has no other way to tell a plugin what floor to clear (section 5.3)", published)
+			}
+			if *session.Server.ManifestRevision != published {
+				return fmt.Errorf("server.manifestRevision = %d, want the %d the hub holds (section 5.3)",
+					*session.Server.ManifestRevision, published)
+			}
+			return nil
 		},
 	},
 	{

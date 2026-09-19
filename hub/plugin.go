@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -185,7 +186,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"pollTimeoutSeconds", session.PollTimeoutSeconds,
 		"protocolVersion", session.ProtocolVersion)
 
-	response := newSessionResponse(session, server)
+	response, err := s.newSessionResponse(r.Context(), session, server)
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
 	response.SessionToken = sessionToken
 	writeJSON(w, http.StatusOK, response)
 }
@@ -198,11 +203,16 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, newSessionResponse(session, server))
+	response, err := s.newSessionResponse(r.Context(), session, server)
+	if err != nil {
+		s.writeInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
-func newSessionResponse(session store.Session, server store.Server) sessionResponse {
-	return sessionResponse{
+func (s *Server) newSessionResponse(ctx context.Context, session store.Session, server store.Server) (sessionResponse, error) {
+	response := sessionResponse{
 		SessionID:          session.ID,
 		ExpiresAt:          session.ExpiresAt,
 		ProtocolVersion:    session.ProtocolVersion,
@@ -212,6 +222,20 @@ func newSessionResponse(session store.Session, server store.Server) sessionRespo
 		Features:           map[string]any{"inlineErrors": true},
 		Server:             newServerIdentity(server),
 	}
+
+	// The revision the hub holds is reported so a plugin can publish above it
+	// (spec section 5.3): a hub holding a manifest MUST report it, so a read
+	// that fails for any reason other than there being no manifest fails the
+	// response rather than answering without what the plugin needs to recover.
+	manifest, err := s.store.Manifest(ctx, server.ID)
+	switch {
+	case err == nil:
+		revision := manifest.Revision
+		response.Server.ManifestRevision = &revision
+	case !errors.Is(err, store.ErrNotFound):
+		return sessionResponse{}, err
+	}
+	return response, nil
 }
 
 // authenticateSession resolves the bearer session token on a Plugin API call.

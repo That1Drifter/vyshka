@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.24 (2026-09-17)
+**Status:** draft 0.25 (2026-09-18)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -566,12 +566,20 @@ POST /plugin/v1/session
   "pollTimeoutSeconds": 25,
   "transports": ["poll"],
   "features": { },
-  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz" }
+  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz", "manifestRevision": 7 }
 }
 ```
 
 - `serverId` and `serverSecret` are REQUIRED. The remaining fields are the plugin's
   requests, and the response is authoritative for all of them.
+- `server.manifestRevision` is the `manifestRevision` of the manifest the hub currently
+  holds for this server (section 6). A hub MUST report it when it holds one and MUST omit
+  it when it holds none: the hub ignores a publish at an equal or lower revision (section
+  6.1) and has no other way to say so. A plugin that derives its revision from its own
+  record rather than counting SHOULD publish above the reported one, so a record lost with
+  a profile directory, or a clock set back, cannot strand its manifest below what the hub
+  holds; a plugin MUST tolerate the field's absence, since a hub predating this draft
+  never sends it.
 - `protocolVersion` is what the plugin speaks; omitted means the current version. A hub MUST
   support the current and previous major version (section 13) and MUST reject anything else
   with `protocol_version_unsupported`.
@@ -710,9 +718,47 @@ contexts:
 { "contexts": [ { "id": "territory", "name": "Territory", "namespace": "example-mod" } ] }
 ```
 
-For each custom context the plugin MUST answer `context.enumerate` requests (hub ->
-plugin) with a list of `{ referenceKey, label, position? }`. The hub SHOULD cache the
-enumeration briefly (default 10 s) to feed UI dropdowns.
+A declared `id` is at most 64 code points and unique within the manifest; `name` and
+`namespace` are display fields like an action's. An action whose `context` names a
+declared id takes that context's `referenceKey` on dispatch (section 7), which the hub
+passes through without interpreting it.
+
+**Enumeration.** A hub that wants to offer a context's members (a UI dropdown, a bot's
+completion) asks the plugin for them. For each custom context it declares, a plugin MUST
+answer a `context.enumerate` request (hub -> plugin) with a `context.entries` reply
+(plugin -> hub):
+
+```json
+{ "type": "context.enumerate",
+  "body": { "requestId": "01J5QN...", "context": "territory" } }
+
+{ "type": "context.entries",
+  "body": { "requestId": "01J5QN...", "context": "territory",
+            "entries": [ { "referenceKey": "north-ridge", "label": "North Ridge",
+                           "position": [4231.5, 300.2, 10620.0] } ] } }
+```
+
+- `requestId` is hub-assigned and opaque, at most 128 code points. The reply echoes it, and
+  `context` with it, so a hub can match the answer to the question across the poll cycle
+  that separates them.
+- `entries` is REQUIRED in the reply. Each entry carries `referenceKey`, a non-empty string
+  of at most 128 code points that the hub hands back verbatim as an action's
+  `referenceKey`, and `label`, a display string of at most 200 code points. `position` is
+  OPTIONAL, with the shape and the meaning it has in section 8.3, and `data` is an OPTIONAL
+  JSON object of mod-specific extras. A reply is bounded as a snapshot is: at most 5000
+  entries and 262144 bytes.
+- A request naming a context the plugin does not declare is answered too, with an empty
+  `entries` and a `reason` string, so the hub learns that it and the manifest disagree
+  instead of waiting. A plugin MUST NOT treat such a request as a fault of the link.
+- Both are ordinary envelopes (section 4): acked like any other and retransmitted while
+  unacked. A reply that arrives twice is harmless, since it changes no state. A reply the
+  plugin cannot queue (its outbound buffer at its bound, section 9.3) is dropped, and a
+  hub that still wants the answer asks again: an enumeration is a read of what is, so a
+  lost reply costs a repeat, never state.
+- The exchange is optional on the hub side. A hub SHOULD cache an enumeration briefly
+  (reference: 10 s) to feed UI dropdowns, and a hub that never sends `context.enumerate`
+  is conformant, so a plugin MUST NOT wait for one. A hub receiving a `context.entries`
+  it did not ask for, or no longer wants, acks and ignores it.
 
 ### 6.3 Declared custom events
 

@@ -1,7 +1,7 @@
 # Roadmap
 
-**As of:** 2026-09-17 (admin flags landed; the invisibility and no-collision trigger was
-sharpened by the spike). Last full review 2026-09-14, at which every proposed item was settled. This document lists
+**As of:** 2026-09-18 (the mod surface and its sample landed; the plugin side of
+`context.enumerate` is in, the hub side stays with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -122,11 +122,19 @@ After the tag, in this order:
    from the server with one client: the character draws and collides on the client, and
    whether a server-side `SetInvisible` reaches other clients needs a second one to see.
    Both stay parked with that trigger.
-9. **Mod surface with a self-contained sample mod** (#72): `class MyAction extends
-   VyshkaAction` from a modded `MissionServer` hook, `#ifdef VYSHKA` guards, `GetVyshka()`,
-   `VyshkaStore("my-mod")`, `VyshkaMapMarker`. The sample declares one custom action, one
-   custom event, and one custom context with two hard-coded entries, and depends on nothing
-   else, because a sample that needs another mod installed cannot be copied.
+9. **Mod surface with a self-contained sample mod** (#72), landed 2026-09-18: a mod
+   loaded after `@Vyshka` overrides the modded `MissionServer`'s `VyshkaRegister` hook to
+   register `VyshkaAction` subclasses, `VyshkaContext` subclasses (the plugin answers the
+   hub's `context.enumerate` for them, protocol draft 0.25 section 6.2), declared events,
+   and key/value namespaces, all inside `#ifdef VYSHKA` guards the plugin's `defines[]`
+   makes true, so the mod loads without the plugin; `GetVyshka()` gives the link state and
+   `Emit`, `VyshkaStore("my-mod")` a namespace-bound store handle, and `VyshkaMapMarker`
+   a map object that rides `state.entities`, which the panel's live map now plots. The
+   manifest revision is derived from the content and persisted, since the mod set changes
+   it. The sample under `plugins/dayz/sample/` declares one action, one event, and one
+   context with two fixed entries, depends on nothing but the game, and was booted with and
+   without the plugin on DayZ 1.29; the plugin conformance suite gained the
+   `context.enumerate` stage.
 10. **Item catalog as the first custom context** (#73): the plugin publishes its class-name
     catalog with display names and per-type stats once per session; the hub gains the
     missing half of protocol section 6.2 (sending `context.enumerate`, caching the answer)
@@ -201,7 +209,7 @@ spec reader is not surprised.
 
 | Item | Section | Status |
 |---|---|---|
-| Custom contexts and `context.enumerate` | 6.2 | Committed (#73). The hub accepts context declarations in the manifest and stores them; it never sends `context.enumerate` and the panel has no dropdown to feed. The item catalog is the customer |
+| Custom contexts and `context.enumerate` | 6.2 | Committed (#73), half done. Draft 0.25 (issue #72) fixed the exchange (`context.enumerate` in, `context.entries` out), the DayZ plugin answers it, and the plugin conformance suite grades the answer; the hub accepts context declarations and stores them but never sends `context.enumerate` (a `context.entries` it receives is acked and ignored, section 4), and the panel has no dropdown to feed. The item catalog is the customer |
 | WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD), no issue yet. Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins are the customer |
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
 | Server-scoped token dimension | 10.1 | Committed as a spec discussion (#81) |

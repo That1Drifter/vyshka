@@ -189,6 +189,71 @@
         }
       },
       "additionalProperties": true
+    },
+    "contextEnumerate": {
+      "type": "object",
+      "title": "context.enumerate body",
+      "description": "Body of the context.enumerate envelope (section 6.2, hub -> plugin): a request for the members of one declared custom context. Optional on the hub side; a plugin answers every one it receives with a context.entries reply.",
+      "required": ["requestId", "context"],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Hub-assigned and opaque; the reply echoes it."
+        },
+        "context": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The declared context id being enumerated."
+        }
+      },
+      "additionalProperties": true
+    },
+    "contextEntries": {
+      "type": "object",
+      "title": "context.entries body",
+      "description": "Body of the context.entries envelope (section 6.2, plugin -> hub): the members of one custom context, answering a context.enumerate. A request for a context the plugin does not declare is answered with an empty list and a reason.",
+      "required": ["requestId", "context", "entries"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "context": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "entries": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": {
+            "type": "object",
+            "required": ["referenceKey", "label"],
+            "properties": {
+              "referenceKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "What the hub hands back verbatim as an action's referenceKey."
+              },
+              "label": { "$ref": "#/$defs/label" },
+              "position": {
+                "oneOf": [
+                  { "type": "array", "minItems": 2, "maxItems": 3, "items": { "type": "number" } },
+                  { "type": "null" }
+                ],
+                "description": "As in section 8.3: two or three finite numbers in the game's own map frame, advisory, for display. Absent and null both read as no position."
+              },
+              "data": {
+                "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],
+                "description": "Mod-specific extras. Absent and null both read as an empty object."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why entries is empty when the request named a context this plugin does not declare."
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

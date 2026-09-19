@@ -2,9 +2,9 @@
 
 The mock hub that answers "is this plugin compliant?" (spec section 14). A candidate plugin
 points at it instead of a real hub, and the harness drives it through its whole lifecycle:
-enrollment, sessions, long-poll, manifest publish, action round-trips, a forced re-delivery,
-a transport outage, a session change with envelopes still unacked, and a schema-invalid
-dispatch. A plugin that passes is compliant, with no reading of hub source required.
+enrollment, sessions, long-poll, manifest publish, context enumeration, action round-trips,
+a forced re-delivery, a transport outage, a session change with envelopes still unacked, and
+a schema-invalid dispatch. A plugin that passes is compliant, with no reading of hub source required.
 
 ## Running it
 
@@ -30,6 +30,7 @@ PASS  enroll.exchange            The plugin exchanges the one-time token for cre
 PASS  session.start              The plugin trades its credentials for a session
 ...
 PASS  manifest.publish           The plugin publishes a manifest declaring at least one action
+PASS  context.enumerate          Every declared context is enumerated on request
 PASS  telemetry.wellFormed       Any events and snapshots the plugin publishes are well formed
 ...
 PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
@@ -37,16 +38,17 @@ PASS  errors.batchRefused        A refused batch is corrected, not answered with
 PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
-15 checks, 0 failed
+16 checks, 0 failed
 ```
 
 A stage can also report `PART`: it passed everything it could assert but says, in a note
 that the JSON report carries too, what it could not grade. That happens when the candidate
 had more than one poll in flight during an error-recovery stage, which makes the pause
 before a retry and the count of resends impossible to attribute (spec section 3.1 asks for
-one poll at a time), and when the candidate published no telemetry inside the telemetry
-stage's window (publishing any is a SHOULD, so a plugin without it is compliant, and there
-was nothing to grade). A `PART` is not a full pass.
+one poll at a time), when the candidate published no telemetry inside the telemetry stage's
+window (publishing any is a SHOULD, so a plugin without it is compliant, and there was
+nothing to grade), and when its manifest declares no custom context, which leaves the
+enumeration stage nothing to ask about. A `PART` is not a full pass.
 
 Exit code is 0 when every check passes, 1 when any check fails, and 2 when the suite could
 not run at all.
@@ -99,6 +101,18 @@ a return whose type, ts or body changed. The reference DayZ plugin waits 30 s be
 retries on a fresh session, which these stages allow for; a candidate that waits longer can
 raise `-check-timeout`.
 
+Context enumeration (spec section 6.2) is graded by asking. For each custom context the
+manifest declares, up to five, the harness sends a `context.enumerate` with a requestId of
+its own and waits `-check-timeout` for the `context.entries` that echoes it: the reply must
+echo the context too, must carry `entries` (an empty array is a legal answer), and every
+entry must stay inside its bounds, a non-empty `referenceKey` of at most 128 code points, a
+`label` of at most 200, an optional `position` of two or three finite numbers, an optional
+object `data`, at most 5000 entries in a reply of at most 256 KiB. The harness then asks
+about `conformance.absent`, a context no manifest declares, which must be answered too, with
+an empty `entries` and a `reason` string, so a hub whose cached manifest has gone stale
+learns that instead of waiting. A candidate declaring no custom context takes a `PART`: there
+was nothing to enumerate.
+
 Telemetry (spec section 8) is graded on arrival rather than by provocation: every
 `event.batch` and `state.*` envelope the candidate sends, in whatever stage it arrives, is
 checked against the bounds a conformant hub enforces (the `{namespace}.{name}` grammar and
@@ -136,6 +150,8 @@ replay explicitly in the report.
 
 `driver/` is a minimal but correct autonomous plugin: it enrolls, keeps a session, polls,
 publishes a one-action manifest and one batch of events plus one `state.players` snapshot,
+enumerates the one custom context it declares (`driver.zone`, two members, one with a
+position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
 outages, renumbers them across session changes, and follows the recovery table of spec
 section 2.3. It asks for inline errors unless started

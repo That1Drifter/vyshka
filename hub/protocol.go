@@ -131,6 +131,11 @@ type serverIdentity struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Game string `json:"game"`
+	// ManifestRevision is the revision of the manifest the hub currently holds
+	// for this server (spec sections 5.3 and 6), absent when it holds none. It
+	// is how a plugin learns the floor its next publish has to clear, since a
+	// publish at an equal or lower revision is ignored.
+	ManifestRevision *int64 `json:"manifestRevision,omitempty"`
 }
 
 func newServerIdentity(server store.Server) serverIdentity {

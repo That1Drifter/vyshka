@@ -3,11 +3,13 @@
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player and vehicle events a feed
-needs and the `state.players` and `state.vehicles` snapshots a live map needs. It ships
-sixteen built-in actions (heal, vitals, stop bleeding, dry, broken legs, bloody hands,
-kick, ban, unban, message, broadcast, teleport, spawn, set time, unstuck, delete destroyed
-vehicles), so an operator can moderate a server, patch a player up, and move things around
-it from the panel or a `curl` against the hub. Protocol: `spec/protocol.md`.
+needs and the `state.players`, `state.vehicles`, and `state.entities` snapshots a live map
+needs. It ships seventeen built-in actions (heal, vitals, stop bleeding, dry, broken legs,
+bloody hands, flags, kick, ban, unban, message, broadcast, teleport, spawn, set time,
+unstuck, delete destroyed vehicles), so an operator can moderate a server, patch a player
+up, and move things around it from the panel or a `curl` against the hub, and a surface
+other server mods build on ("Writing a mod against the plugin" below, with a sample under
+`sample/`). Protocol: `spec/protocol.md`.
 
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
@@ -17,11 +19,12 @@ Clean-room: written from the engine's public script headers and the measurements
 | Path | What it is |
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
-| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the action registry, the event buffer, the ban list, the key/value store client (`VyshkaStore`) |
+| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the registry of actions, contexts, events, and namespaces, the event buffer, the ban list, the key/value store client (`VyshkaStoreClient`) and the namespace-bound handle mods use (`VyshkaStore`), the map markers (`VyshkaMapMarker`), and the mod-facing facade (`GetVyshka()`) |
 | `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
-| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat |
+| `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat, and the `VyshkaRegister` hook a mod overrides to add its own actions |
+| `sample/` | A self-contained sample mod built on the surface below: one action, one event, one context, a map marker, a store counter. Copy it to start your own |
 | `pbo/` | Go package that packs and reads PBO archives |
-| `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `harness` runs a server as a conformance candidate |
+| `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `build-sample` packs the sample, `harness` runs a server as a conformance candidate |
 
 ## Building
 
@@ -47,6 +50,9 @@ Releases carry the `@Vyshka` folder as `vyshka-dayz-plugin_<version>.zip` on the
 release for the `dayz-plugin-v<version>` tag. There is no Steam Workshop item: the mod is
 server-side, clients never load it, so nothing needs a Workshop id to pair against.
 
+`go run ./plugins/dayz/cmd/vyshka-dayz build-sample` packs the sample mod the same way into
+`plugins/dayz/build/@VyshkaSample/`. The sample is source to copy, not a release artifact.
+
 ## Installing on a server
 
 1. Copy `@Vyshka` into the DayZ dedicated server directory.
@@ -65,7 +71,8 @@ server-side, clients never load it, so nothing needs a Workshop id to pair again
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60). `game` is optional
    and defaults to `dayz`. `snapshotIntervalSeconds` is optional (default 10, honored between
-   2 and 600; `0` turns the `state.players` and `state.vehicles` snapshots off).
+   2 and 600; `0` turns the `state.players`, `state.vehicles`, and `state.entities`
+   snapshots off).
    `fpsIntervalSeconds` is optional
    (default 60, honored between 5 and 3600; `0` turns `core.server.fps` samples off).
 4. Start the server with the mod as a server mod:
@@ -96,8 +103,9 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
 identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
-from the latest `state.vehicles` snapshot. The manifest (revision 6, declaring the `vyshka`
-key/value namespace for the admin flags) declares:
+from the latest `state.vehicles` snapshot. The manifest (declaring the `vyshka` key/value
+namespace for the admin flags, plus whatever the mods on the server register; its revision
+is derived from its content, see "Writing a mod against the plugin") declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
@@ -313,8 +321,9 @@ the override is the character's movement, not the vehicle's controls. The action
 
 ## Telemetry
 
-The plugin publishes events (protocol section 8.1) and `state.players` and `state.vehicles`
-snapshots (section 8.3) as soon as it is running; nothing needs configuring. Player identity everywhere is
+The plugin publishes events (protocol section 8.1) and `state.players`, `state.vehicles`,
+and `state.entities` snapshots (section 8.3) as soon as it is running; nothing needs
+configuring. Player identity everywhere is
 `{ "platform": "steam", "id": "<Steam64>" }` (section 8.2), the same id the heal action
 takes as its `referenceKey`.
 
@@ -406,9 +415,26 @@ vehicle and every modded one built on them is in it, one that extends the engine
 `exploded`) and the fluids arrive with the vehicles 2 slice; `vyshka.deletedestroyed` with
 `dryRun` says today which are wrecks.
 
-When a poll has room for only one snapshot (the hub has made the plugin shrink its batch to
-one envelope), the type that went last time waits for the other, so neither is left behind
-for the rest of the session; with room for both, both go on every poll.
+```json
+{ "capturedAt": "2026-09-18T10:00:00Z",
+  "entities": [ { "id": "sample:beacon:nwaf", "kind": "beacon",
+                  "position": [4600.0, 340.0, 10400.0],
+                  "data": { "label": "Northwest Airfield", "landmark": "nwaf" } } ] }
+```
+
+`state.entities` carries the map markers mods place through `VyshkaMapMarker` ("Writing a
+mod against the plugin" below): anything on the map that is not a player or a vehicle. The
+plugin itself places none, so the snapshot is published once at boot (empty, so a marker
+the previous process placed is cleared from the hub, which keeps the latest snapshot
+across a restart), then only while a marker exists, and once more, empty, when the last
+one is removed; a server with no mod that places markers sends one empty snapshot per
+boot and nothing after. `id` is whatever the mod chose (the convention is
+`<namespace>:<thing>`), `kind` its label for the kind of thing, and `data.label` the
+display name the panel shows.
+
+When a poll has room for fewer snapshots than are due (the hub has made the plugin shrink
+its batch), the types take turns: the type that went last time waits for the others, so
+none is left behind for the rest of the session; with room for all, all go on every poll.
 
 No capture is made while the previous snapshot of that type is still unacked, or while the outbox holds
 more than one poll can carry. A snapshot says what *is*, so a stale one waiting behind an
@@ -456,6 +482,130 @@ and a process kill does not: a server killed from the outside leaves no stop eve
 a DayZ map plots `x` against `z`. That is the game's own map frame of section 8.3; the hub
 never interprets it and a map view has to know the game.
 
+## Writing a mod against the plugin
+
+Any server mod loaded after `@Vyshka` can add its own actions, events, contexts, key/value
+namespaces, and map markers, and they arrive at the hub in the same manifest and the same
+telemetry as the plugin's own. The surface is five things, all in Enforce Script and all
+server-side; `sample/` is a complete mod built on them, which builds and loads with nothing
+installed but the game and the plugin, and is meant to be copied.
+
+**Load order and the `VYSHKA` define.** The plugin's `config.cpp` declares `defines[] =
+{ "VYSHKA" }`, which the engine defines for every mod loaded after it. Wrap everything that
+names a Vyshka class in `#ifdef VYSHKA ... #endif`, and your mod compiles and loads on a
+server that does not run the plugin (it registers nothing and says so in the log). Do not
+put `Vyshka` in your `requiredAddons`: that would make the plugin a hard dependency, which
+the guard exists to avoid. The define is only visible to mods loaded after the plugin, so
+the server's mod list must put `@Vyshka` first:
+
+```
+DayZServer_x64.exe ... -serverMod=@Vyshka;@VyshkaSample
+```
+
+**Registration.** The plugin's modded `MissionServer` has a `VyshkaRegister(VyshkaRegistry
+registry)` method it calls once, from `OnInit`, before the link starts, so what you register
+there is in the first manifest the server publishes. Override it, call `super` first:
+
+```c
+#ifdef VYSHKA
+modded class MissionServer
+{
+	override void VyshkaRegister(VyshkaRegistry registry)
+	{
+		super.VyshkaRegister(registry);
+		registry.Register(new SampleBeaconAction());
+		registry.RegisterContext(new SampleLandmarkContext());
+		registry.DeclareEvent("sample.beacon.placed", "Beacon placed", "sample", null);
+		registry.DeclareNamespace("sample");
+	}
+}
+#endif
+```
+
+`Register` takes a `VyshkaAction` subclass: override `Code()` (`<namespace>.<name>`,
+unique on the server), `Name()`, `Context()` (`world`, `player`, `vehicle`, `object`, or a
+context id you registered), `Namespace()`, `Danger()` (`none`, `warning`, `destructive`),
+`ParamsSchema()` (the protocol's schema subset, section 6.1; the hub validates a dispatch
+against it before it reaches the server), and `Execute(actionId, context, referenceKey,
+params)`, which returns `VyshkaActionOutcome.Success(result)`, `.Failure(reason)`, or
+`.Pending()` when the outcome comes later, through `VyshkaPlugin.Complete(actionId,
+outcome)` (a store round trip is the usual reason; bound that work by
+`VyshkaPlugin.CurrentDeadlineMs()`, and the plugin fails the dispatch itself when the
+completion never comes). `RegisterContext` takes a `VyshkaContext` subclass (`Id()`,
+`Name()`, `Namespace()`, and `Enumerate(VyshkaContextList list)`, which fills the list with
+`list.Add(referenceKey, label)` or `list.AddAt(referenceKey, label, position)`); the plugin
+answers the hub's `context.enumerate` requests for it (protocol section 6.2), and an action
+in that context gets one of those reference keys as its `referenceKey`; a context offering
+more than a reply may carry (5000 entries, 256 KiB) is answered with no entries and a
+reason rather than a list that reads as complete. `DeclareEvent`
+declares a custom event type for display and webhook filtering (declaration is advisory;
+an undeclared type is stored too). `DeclareNamespace` names a key/value namespace your mod
+will read and write: the manifest's `kvNamespaces` is the sole source of the plugin's
+store access (section 6.6), so a store call in a namespace nobody declared fails at once.
+
+**`GetVyshka()`** is the global accessor for the link: `Version()`, `LinkState()`
+(`connected`, `degraded`, `buffering`, or `stopped`), `IsRunning()`, `Emit(type, data)` to
+queue a telemetry event (`<namespace>.<name>`, a `VyshkaJsonValue` object or `null`;
+dropped when the plugin is not running), `Store(namespace)` for a store handle, and
+`Mark(...)` for a map marker. Events ride the same buffer and outbox as the plugin's own,
+and the hub keeps them under your namespace, so a webhook can subscribe to `sample.*`.
+
+**`VyshkaStore`** is a handle bound to one key/value namespace (protocol section 12): `new
+VyshkaStore("sample")`, then `Get(key, callback)`, `Set(key, value, ifRevision, callback)`,
+and `Delete(key, callback)`, each taking a `VyshkaStoreCallback` subclass whose `OnStore`
+runs once with the result (`m_Ok`, `m_Found`, `m_Value`, `m_RevisionText`, `m_Mismatch`,
+`m_Error`), and an optional deadline in monotonic milliseconds. The store is the hub's and
+installation-wide: what one server writes, every enrolled server reads, which is what the
+admin flags use it for. Pass `""` as `ifRevision` for an unconditional write, or the
+revision text a get returned to write only if nobody else has since; revisions travel as
+text because they may exceed the engine's 32-bit int.
+
+**`VyshkaMapMarker`** puts something on the panel's live map that is not a player or a
+vehicle: `VyshkaMapMarker.Place(id, kind, label, position, data)` registers or replaces the
+marker with that id (use `<namespace>:<thing>` ids so mods cannot collide), the returned
+marker has `Move(position)`, `SetData(data)`, and `Remove()`, and `VyshkaMapMarker.Find(id)`
+finds one. Markers ride `state.entities` (above), captured with the other snapshots, and
+they live in memory: a restart starts with none, so a mod that wants its markers back
+places them again from its own state. The set is bounded by what one snapshot may carry
+(5000 entries, 256 KiB, section 8.3): a placement, a move, or a data change that would pass
+either is refused with a log line and the marker keeps what it had, so a capture can never
+build a body the hub rejects. `Place` returns `null` when it refused (a marker already on
+the map is then unchanged; `Find` gives it back), and a mod that reports or counts a
+placement checks that before it does. The marker keeps a copy of the `data` it was given,
+so changing the object afterwards changes nothing on the map.
+
+**Manifest revision.** The hub replaces its stored manifest only for a higher revision
+(protocol section 6.1), and which mods are loaded changes the manifest, so the revision is
+not a constant. The plugin keeps `<profiles>/Vyshka/manifest.json` with the last content it
+published and the revision it used: unchanged content republishes at the same revision, and
+changed content takes the larger of the stored revision plus one and the current epoch
+second. The hub reports the revision it holds with every session (`server.manifestRevision`,
+section 5.3), and a plugin whose revision is not above it moves to the hub's plus one, so
+a wiped profile directory or a clock set back cannot leave the manifest stranded below what
+the hub holds. A revision minted by the plugin is marked `pending` in the record, with the
+hub revision it was published above, until a later session (a renewal, hourly, or the next
+boot) reports that very number: the hub got there through this publish, so the content is
+accepted and the mark is cleared. An ack alone is not acceptance, since the hub acks a
+manifest it rejected as well, and a hub that reported no revision (it holds none, or it
+predates the field) is not known to have stood below, so a publish sent to it leaves no
+mark and the number is accepted only after one more publish above the hub's first report.
+While a revision is pending, an equal number reported by a
+hub it was not published above is taken for the collision it may be and the content goes
+out above it, across restarts too; a record from before the mark existed reads as pending,
+and a `manifest.publish` an earlier boot left in the outbox is published above as well. The lists are published in a fixed order (by code or id), so the load order
+of the mods does not change the content. There is nothing to do when you add or change a
+mod; the next boot publishes. The registry refuses what the hub would reject the whole
+manifest over, with a log line: an action past 500, a context past 100, an event past 500,
+a namespace past 100, an event id over 128 characters, a context id over 64.
+
+**What the sample shows.** `sample/` declares the namespace `sample`, a context
+`sample.landmark` with two fixed entries (Green Mountain and the Northwest Airfield), an
+action `sample.beacon` in that context that places a `VyshkaMapMarker` at the landmark,
+emits `sample.beacon.placed`, counts the placement in the store under
+`sample/beacons.<landmark>` with a guarded write, and completes with the count; and its
+`config.cpp` requires only the game's own addons. Its README says how to build and load
+it. Anything in it can be renamed and kept.
+
 ## Conformance
 
 The plugin conformance harness (`conformance/plugin`) can drive a real DayZ server:
@@ -473,6 +623,11 @@ the server's boot time. This needs a local DayZ dedicated server install, so CI 
 it; CI runs the Go tooling's tests and the reference driver instead. With no player on the
 server the telemetry stage grades the start event and the empty snapshots; the player events
 need a client to join, which the staging demo in issue #49 covers.
+
+`-extra-mod <dir>` loads another built mod after `@Vyshka` (repeat it for several), which is
+how the sample is graded: with `-extra-mod plugins/dayz/build/@VyshkaSample` the manifest
+carries the sample's action, event, and context, and the `context.enumerate` stage has a
+context to enumerate. Without a mod that declares one the stage reports `PART`.
 
 ## What the engine imposes
 
@@ -575,4 +730,5 @@ at them.
   expiry regardless.
 - **Integers are 32-bit.** Sequence numbers, acks, and epoch seconds live in script ints.
   Sequence spaces restart with every session, so this is not a practical bound; epoch seconds
-  are for deadline comparisons only.
+  are for deadline comparisons and for seeding the manifest revision, which a script int
+  holds until 2038.

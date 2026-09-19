@@ -9,6 +9,11 @@
 // reaches it), which is exactly the pair a feed wants. The chat event
 // reaches the mission through OnEvent, the same dispatcher the engine's own
 // client and disconnect events use.
+//
+// The mission is also where another mod joins in: it overrides
+// MissionServer.VyshkaRegister to add its own actions, contexts, events and
+// key/value namespaces to the registry this file builds, before the plugin
+// starts with it.
 
 // VyshkaMissionDisconnector kicks through the mission's own logout
 // finalization: InvokeOnDisconnect (the disconnect event), the character
@@ -29,10 +34,56 @@ class VyshkaMissionDisconnector : VyshkaDisconnector
 
 class VyshkaBoot
 {
-	static void Start()
+	// Start brings the plugin up for one mission. The per-mission state is
+	// cleared first, so nothing a mod registers below can be wiped by it;
+	// then the registry is filled, by the plugin's own hook and by every mod
+	// that overrode it, and handed to the plugin, which publishes it as the
+	// first manifest.
+	static void Start(MissionServer mission)
 	{
 		VyshkaModeration.s_Disconnector = new VyshkaMissionDisconnector();
-		VyshkaActionRegistry registry = new VyshkaActionRegistry();
+		VyshkaPlayers.Reset();
+		VyshkaWorld.Reset();
+		VyshkaVehicles.Reset();
+		VyshkaFlags.Reset();
+		VyshkaMapMarkers.Reset();
+		VyshkaBans.Reset();
+		VyshkaBans.Load();
+
+		VyshkaRegistry registry = new VyshkaRegistry();
+		if (mission)
+			mission.VyshkaRegister(registry);
+		else
+			VyshkaLog.Error("the plugin started without a mission, so nothing could register; no action is declared");
+		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());
+	}
+}
+
+modded class MissionServer
+{
+	override void OnInit()
+	{
+		super.OnInit();
+		VyshkaBoot.Start(this);
+	}
+
+	// VyshkaRegister is the hook a mod overrides to add its actions,
+	// contexts, events, and key/value namespaces. It runs once, before the
+	// plugin starts, so everything registered here is in the first manifest
+	// and counts towards the revision derived from it. Call super first, or
+	// the plugin's own actions are lost:
+	//
+	//   modded class MissionServer
+	//   {
+	//       override void VyshkaRegister(VyshkaRegistry registry)
+	//       {
+	//           super.VyshkaRegister(registry);
+	//           registry.DeclareNamespace("my-mod");
+	//           registry.Register(new MyAction());
+	//       }
+	//   }
+	void VyshkaRegister(VyshkaRegistry registry)
+	{
 		registry.Register(new VyshkaHealAction());
 		registry.Register(new VyshkaKickAction());
 		registry.Register(new VyshkaBanAction());
@@ -50,22 +101,6 @@ class VyshkaBoot
 		registry.Register(new VyshkaBrokenLegsAction());
 		registry.Register(new VyshkaBloodyHandsAction());
 		registry.Register(new VyshkaFlagsAction());
-		VyshkaPlayers.Reset();
-		VyshkaWorld.Reset();
-		VyshkaVehicles.Reset();
-		VyshkaFlags.Reset();
-		VyshkaBans.Reset();
-		VyshkaBans.Load();
-		VyshkaPlugin.Start(registry, new VyshkaPlayerSnapshots());
-	}
-}
-
-modded class MissionServer
-{
-	override void OnInit()
-	{
-		super.OnInit();
-		VyshkaBoot.Start();
 	}
 
 	override void OnMissionFinish()

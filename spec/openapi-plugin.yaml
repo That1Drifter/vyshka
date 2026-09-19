@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vyshka Plugin API
-  version: 0.4.0
+  version: 0.5.0
   summary: Game-server-facing API of the Vyshka hub.
   description: |
     The plugin half of the Vyshka protocol. Normative text lives in
@@ -570,6 +570,16 @@ components:
         id: { type: string }
         name: { type: string }
         game: { type: string }
+        manifestRevision:
+          type: integer
+          minimum: 1
+          description: |
+            On a session response (spec section 5.3), the `manifestRevision` of
+            the manifest the hub currently holds for this server, absent when it
+            holds none. A hub holding a manifest MUST report it: a publish at an
+            equal or lower revision is ignored (section 6.1), so a plugin that
+            lost its own record publishes above what is reported here. A plugin
+            tolerates its absence (a hub predating the field).
 
     Session:
       type: object

@@ -896,7 +896,60 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("vehicle datalist = %q", got)
 	}
 
-	// 9d. A world with no tileset still lists the players, with their
+	// 9d. The entities snapshot (issue #72) is the third whole list: what a
+	// mod put on the map that is neither a player nor a vehicle. One beacon
+	// sits at the centre of a raster quadrant and is plotted apart from the
+	// other two marker sets; the second has no position at all, so it is
+	// listed and counted but never plotted.
+	//
+	// It is queued here rather than beside the vehicles because the earlier
+	// steps count the player markers as every marker that is not a vehicle,
+	// which an entity marker would join.
+	plugin.queue("state.entities", map[string]any{
+		"capturedAt": time.Now().UTC().Add(-10 * time.Second).Format("2006-01-02T15:04:05Z"),
+		"entities": []map[string]any{
+			{"id": "sample:beacon:nwaf", "kind": "beacon", "position": []float64{896, 20, 384},
+				"data": map[string]any{"label": "Northwest Airfield", "landmark": "nwaf"}},
+			{"id": "sample:beacon:none", "kind": "beacon", "data": map[string]any{"label": "Nowhere"}},
+		},
+	})
+	entityMarker := func(id string) string { return `.map-marker-entity[data-marker-key='entity:` + id + `']` }
+	entityRow := func(id string) string { return `#entities tr[data-entity-id="` + id + `"]` }
+	run("back to the map for the entities", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map"), nil),
+		chromedp.WaitVisible("#map", chromedp.ByQuery), chromedp.WaitVisible("#entities", chromedp.ByQuery))
+	waitJS("the entities snapshot reached the page",
+		`document.querySelector("#map-status").dataset.entities === "2" && document.querySelector("#map-status").dataset.entitiesPlotted === "1"`)
+	if got := evalString(`String(document.querySelectorAll("#map .map-marker-entity").length) + " " + document.querySelector(` + strconv.Quote(entityMarker("sample:beacon:nwaf")) + `).title`); got != "1 Northwest Airfield (x 896, z 384)" {
+		t.Fatalf("entity markers = %q, want the one beacon with its label", got)
+	}
+	if got := evalString(`document.querySelector(` + strconv.Quote(entityMarker("sample:beacon:none")) + `) ? "plotted" : "none"`); got != "none" {
+		t.Fatalf("the beacon with no position was plotted")
+	}
+	if got := text(entityRow("sample:beacon:nwaf")); !strings.Contains(got, "Northwest Airfield") || !strings.Contains(got, "beacon") {
+		t.Fatalf("the plotted beacon's row = %q, want its label and kind", got)
+	}
+	if got := text(entityRow("sample:beacon:none")); !strings.Contains(got, "Nowhere") || !strings.Contains(got, "beacon") {
+		t.Fatalf("the unplotted beacon's row = %q, want its label and kind", got)
+	}
+	if got := text(entityRow("sample:beacon:nwaf") + " td.position"); got != "x 896, z 384" {
+		t.Fatalf("the plotted beacon's position cell = %q", got)
+	}
+	if got := text(entityRow("sample:beacon:none") + " td.position"); got != "no position" {
+		t.Fatalf("the unplotted beacon's position cell = %q", got)
+	}
+	// The label is the row's first cell, so the data summary beside it
+	// carries what else the snapshot said and not the label again.
+	if got := text(entityRow("sample:beacon:nwaf") + " td.data"); got != "landmark: nwaf" {
+		t.Fatalf("the plotted beacon's data cell = %q", got)
+	}
+	// The entities are counted last in the status line, so the clause about
+	// positions the map cannot plot is the entities' own.
+	if got := text("#map-status"); !strings.Contains(got, "2 entities, captured") ||
+		!strings.Contains(got, "1 without a position the map can plot. Re-read") {
+		t.Fatalf("map status with the entities = %q", got)
+	}
+
+	// 9e. A world with no tileset still lists the players, with their
 	// positions as numbers and a notice in place of the map.
 	run("open the map for a world with no tileset",
 		chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+created.Server.ID+"/map?world=nowhere"), nil),
