@@ -46,6 +46,9 @@ func clampTokenTTL(requestedSeconds int) time.Duration {
 type createTokenRequest struct {
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
+	// Servers is the server binding of spec section 10.1: absent or empty
+	// mints an unbound token.
+	Servers []string `json:"servers"`
 	// ExpiresInSeconds is optional. Absent or zero mints a token that does not
 	// expire on its own, which is what a hub-to-panel credential wants;
 	// negative is a mistake rather than a synonym for either.
@@ -56,9 +59,12 @@ type createTokenRequest struct {
 // no secret and no digest: the secret exists only in the response that mints
 // it, and the digest is not something an operator has any use for.
 type adminTokenView struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Scopes    []string   `json:"scopes"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Scopes []string `json:"scopes"`
+	// Servers is always present, `[]` for an unbound token, so a client never
+	// has to guess what an absent member means (spec section 10.4).
+	Servers   []string   `json:"servers"`
 	CreatedAt time.Time  `json:"createdAt"`
 	CreatedBy string     `json:"createdBy,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt"`
@@ -70,10 +76,15 @@ func newAdminTokenView(stored store.AdminToken) adminTokenView {
 	if scopes == nil {
 		scopes = []string{}
 	}
+	servers := stored.Servers
+	if servers == nil {
+		servers = []string{}
+	}
 	return adminTokenView{
 		ID:        stored.ID,
 		Name:      stored.Name,
 		Scopes:    scopes,
+		Servers:   servers,
 		CreatedAt: stored.CreatedAt,
 		CreatedBy: stored.CreatedBy,
 		ExpiresAt: stored.ExpiresAt,
@@ -112,6 +123,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	servers, ok := s.parseRequestedBinding(w, r, request.Servers, scopes)
+	if !ok {
+		return
+	}
 
 	ttl := time.Duration(0)
 	if request.ExpiresInSeconds > 0 {
@@ -123,6 +138,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Name:      name,
 		TokenHash: token.Hash(secret),
 		Scopes:    scopes,
+		Servers:   servers,
 		CreatedBy: principalFrom(r.Context()).TokenID,
 		TTL:       ttl,
 	})
@@ -134,11 +150,78 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	auditDetail(r, "tokenId", stored.ID)
 	auditDetail(r, "tokenName", stored.Name)
 	auditDetail(r, "scopes", scopes)
-	s.log.Info("admin token minted", "tokenId", stored.ID, "name", stored.Name, "scopes", scopes)
+	auditDetail(r, "servers", servers)
+	s.log.Info("admin token minted", "tokenId", stored.ID, "name", stored.Name, "scopes", scopes, "servers", servers)
 	writeJSON(w, http.StatusCreated, createTokenResponse{
 		Token:  newAdminTokenView(stored),
 		Secret: secret,
 	})
+}
+
+// maxTokenServers bounds a server binding, the same bound a webhook's
+// serverIds carries: a token confined to more than fifty named servers is
+// one the operator meant to leave unbound.
+const maxTokenServers = 50
+
+// parseRequestedBinding validates the server binding a mint asks for (spec
+// section 10.1) and returns it deduplicated in request order; an empty result
+// is an unbound token. It refuses, with `bad_request`, a binding that is
+// oversized, an id outside the identifier alphabet, and a scope the binding
+// cannot carry (`admin`, `webhooks:manage`), and with `not_found` an id that
+// names no server the hub knows, the rule a webhook's serverIds follows: a
+// typo would otherwise become a token that silently grants nothing.
+//
+// The existence check runs against the store one id at a time. A binding is
+// at most fifty ids and a mint is rare, so the round trips are not worth a
+// batch query, and the first unknown id is the answer.
+func (s *Server) parseRequestedBinding(w http.ResponseWriter, r *http.Request, requested, scopes []string) ([]string, bool) {
+	if len(requested) == 0 {
+		return []string{}, true
+	}
+	if len(requested) > maxTokenServers {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"a token is bound to at most "+strconv.Itoa(maxTokenServers)+" servers; leave servers empty for a token that applies to every server")
+		return nil, false
+	}
+	for _, text := range scopes {
+		scope, err := ParseScope(text)
+		if err != nil {
+			continue
+		}
+		if scope.Resource == resourceAdmin || scope.Resource == resourceWebhooks {
+			writeError(w, http.StatusBadRequest, codeBadRequest,
+				"a token bound to servers cannot carry "+text+": that grant has no server dimension (spec section 10.1)")
+			return nil, false
+		}
+	}
+	seen := make(map[string]bool, len(requested))
+	servers := make([]string, 0, len(requested))
+	for _, serverID := range requested {
+		// An id is exact: no wildcard of any spelling, since a pattern in a
+		// binding would be a grammar this draft does not define, and one
+		// that fell through to the lookup would be misreported as an
+		// unknown server.
+		if serverID == "" || len(serverID) > maxScopePattern || strings.Contains(serverID, "*") || !validScopePattern(serverID) {
+			writeError(w, http.StatusBadRequest, codeBadRequest,
+				"servers must be exact server ids: "+truncateUTF8(serverID, 64)+" is not one")
+			return nil, false
+		}
+		if seen[serverID] {
+			continue
+		}
+		switch _, err := s.store.Server(r.Context(), serverID); {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, codeNotFound,
+				"servers names "+serverID+", which is not a server this hub knows")
+			return nil, false
+		case err != nil:
+			s.writeInternalError(w, r, err)
+			return nil, false
+		}
+		seen[serverID] = true
+		servers = append(servers, serverID)
+	}
+	return servers, true
 }
 
 // parseRequestedScopes validates the scopes a mint asks for and returns them in

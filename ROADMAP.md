@@ -1,9 +1,9 @@
 # Roadmap
 
-**As of:** 2026-09-21 (the shapes of #80 and #81 settled in their issues, the ban list
-pull spike measured, and the plugin's string and file defects filed as #108; the mod
-surface and its sample landed 2026-09-18, with the hub side of `context.enumerate`
-staying with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
+**As of:** 2026-09-21 (the server binding of #81 landed as protocol draft 0.26; the shape
+of #80 settled in its issue, its pull spike measured, and the plugin's string and file
+defects filed as #108; the mod surface and its sample landed 2026-09-18, with the hub side
+of `context.enumerate` staying with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -177,13 +177,17 @@ them early:
   `bans:read` and `bans:manage`. The pull is paged because `spikes/dayz-bans-pull-size`
   (2026-09-21) measured the plugin's parser as quadratic on this engine and the file
   reader as fatal on a 64 KiB line (#108 carries the plugin fixes). Lands after #81.
-- **Server-scoped token dimension** (#81, protocol section 10.1): scopes are
-  installation-wide, so a moderator for server A can act on server B. With a few admins of
-  unequal trust that is the narrowing the spec anticipates and forbids a hub from inventing.
-  Shape settled in the issue on 2026-09-21: a token-level `servers` binding that intersects
-  every grant, not a per-scope field; `admin`, `webhooks:manage`, and `bans:manage` refused
-  on a bound token, `kv:rw` allowed with the store stated as installation-wide. Lands first,
-  so #80's scope respects the binding. Role bundles in #64 then have a server term to use.
+- **Server-scoped token dimension** (#81, protocol section 10.1), landed 2026-09-21 as
+  protocol draft 0.26: a token-level `servers` binding that intersects every grant, not a
+  per-scope field, so a moderator for server A no longer acts on server B. `admin` and
+  `webhooks:manage` are refused on a bound token (and `bans:manage` will be, with #80);
+  `kv:rw` is allowed with the store stated as installation-wide. A bound token is refused
+  at the headers on every route naming a server outside the binding, on the action read
+  once the action's server is known, and sees a filtered server list. The hub conformance
+  suite grades it (`admin.tokens.serverBinding`, including a stalled-body probe that a
+  refused token is not left waiting on a body), the panel's mint form has the server picker,
+  and every token minted before the draft stays unbound. Role bundles in #64 now have a
+  server term to use.
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -219,7 +223,7 @@ spec reader is not surprised.
 | Custom contexts and `context.enumerate` | 6.2 | Committed (#73), half done. Draft 0.25 (issue #72) fixed the exchange (`context.enumerate` in, `context.entries` out), the DayZ plugin answers it, and the plugin conformance suite grades the answer; the hub accepts context declarations and stores them but never sends `context.enumerate` (a `context.entries` it receives is acked and ignored, section 4), and the panel has no dropdown to feed. The item catalog is the customer |
 | WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD), no issue yet. Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins are the customer |
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
-| Server-scoped token dimension | 10.1 | Committed as a spec discussion (#81) |
+| Server-scoped token dimension | 10.1 | Shipped 2026-09-21 (#81, draft 0.26): a token-level `servers` binding |
 | Cursor over webhook deliveries | 11.3 | Parked. Trigger: a delivery list exceeds the maximum `limit` in practice. Today the remedies are a wider `limit` and shorter retention |
 | A poll that says "more queued" is answered at once | 3.1 | Committed (#91), post-release. Today a backlog drains at the per-poll event budget per poll cycle (40 events/s at `pollTimeout` 25), because the hub holds a poll it has nothing to answer with even when the plugin cut its batch at the budget. Measured in `spikes/dayz-outbox-crash` |
 | Snapshot diffs after the first full snapshot per session | 8.3 | Parked. Trigger: a real plugin hits the 256 KiB body cap. Unknown-type tolerance makes a diff form a backward-safe addition |

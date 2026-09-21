@@ -20,9 +20,13 @@ var ErrTokenRevoked = errors.New("admin token has been revoked or has expired")
 // AdminToken is one scoped Admin API credential (spec section 10). The secret
 // is not a field: it exists only in the response that mints it.
 type AdminToken struct {
-	ID        string
-	Name      string
-	Scopes    []string
+	ID     string
+	Name   string
+	Scopes []string
+	// Servers is the server binding of spec section 10.1: the ids the token
+	// is confined to. Empty means unbound, which is every token minted before
+	// the binding existed.
+	Servers   []string
 	CreatedAt time.Time
 	// CreatedBy is the id of the token that minted this one, or "" when the
 	// bootstrap credential did. It makes a chain of delegation readable after
@@ -42,12 +46,13 @@ type NewAdminToken struct {
 	Name      string
 	TokenHash string
 	Scopes    []string
+	Servers   []string
 	CreatedBy string
 	// TTL is how long the token lives. Zero means it does not expire on its own.
 	TTL time.Duration
 }
 
-const adminTokenColumns = `id, name, scopes, created_at, created_by, expires_at, revoked_at`
+const adminTokenColumns = `id, name, scopes, servers, created_at, created_by, expires_at, revoked_at`
 
 // CreateAdminToken records a minted token and returns the stored row.
 func (s *Store) CreateAdminToken(ctx context.Context, request NewAdminToken) (AdminToken, error) {
@@ -56,11 +61,22 @@ func (s *Store) CreateAdminToken(ctx context.Context, request NewAdminToken) (Ad
 	if err != nil {
 		return AdminToken{}, fmt.Errorf("encode scopes: %w", err)
 	}
+	// An unbound token is stored as an empty array, never as null: the column
+	// is NOT NULL and a reader must not have to tell the two apart.
+	boundTo := request.Servers
+	if boundTo == nil {
+		boundTo = []string{}
+	}
+	servers, err := json.Marshal(boundTo)
+	if err != nil {
+		return AdminToken{}, fmt.Errorf("encode servers: %w", err)
+	}
 
 	stored := AdminToken{
 		ID:        id.NewAt(now),
 		Name:      request.Name,
 		Scopes:    request.Scopes,
+		Servers:   boundTo,
 		CreatedAt: now.Truncate(time.Millisecond),
 		CreatedBy: request.CreatedBy,
 	}
@@ -72,9 +88,9 @@ func (s *Store) CreateAdminToken(ctx context.Context, request NewAdminToken) (Ad
 	}
 
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO admin_tokens (id, token_hash, name, scopes, created_at, created_by, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		stored.ID, request.TokenHash, stored.Name, string(scopes),
+		`INSERT INTO admin_tokens (id, token_hash, name, scopes, servers, created_at, created_by, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		stored.ID, request.TokenHash, stored.Name, string(scopes), string(servers),
 		formatTime(now), stored.CreatedBy, expiresAt,
 	); err != nil {
 		return AdminToken{}, fmt.Errorf("insert admin token: %w", err)
@@ -196,13 +212,19 @@ func (s *Store) LiveAdminTokens(ctx context.Context) ([]AdminToken, error) {
 
 func scanAdminToken(row rowScanner) (AdminToken, error) {
 	var (
-		stored               AdminToken
-		scopes, createdAt    string
-		expiresAt, revokedAt sql.NullString
+		stored                     AdminToken
+		scopes, servers, createdAt string
+		expiresAt, revokedAt       sql.NullString
 	)
-	if err := row.Scan(&stored.ID, &stored.Name, &scopes, &createdAt,
+	if err := row.Scan(&stored.ID, &stored.Name, &scopes, &servers, &createdAt,
 		&stored.CreatedBy, &expiresAt, &revokedAt); err != nil {
 		return AdminToken{}, err
+	}
+	if err := json.Unmarshal([]byte(servers), &stored.Servers); err != nil {
+		return AdminToken{}, fmt.Errorf("decode servers of token %s: %w", stored.ID, err)
+	}
+	if stored.Servers == nil {
+		stored.Servers = []string{}
 	}
 
 	var err error

@@ -1,0 +1,13 @@
+-- The server binding of an admin token (spec/protocol.md section 10.1, draft
+-- 0.26).
+--
+-- A token may be minted bound to a list of server ids, and every grant it
+-- holds is then read as applying to those servers only. The list is stored as
+-- a JSON array of ids beside the scopes, which are stored the same way; an
+-- empty array is an unbound token, whose grants apply to every server, and
+-- that is what every row minted before this migration is.
+--
+-- The column is only ever read back whole and decoded, never compared or
+-- ordered by, so it needs no collation pin (migration 0015) and plain ALTER
+-- TABLE ... ADD COLUMN with a default is valid on both engines.
+ALTER TABLE admin_tokens ADD COLUMN servers TEXT NOT NULL DEFAULT '[]';

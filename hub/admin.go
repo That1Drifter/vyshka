@@ -97,7 +97,10 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListServers answers with every server record, newest first.
+// handleListServers answers with every server record, newest first. A bound
+// token (spec section 10.1) is answered with the servers in its binding and
+// nothing else, never refused: the caller asked for what it may see, and the
+// filtered list is that token's whole world (section 10.2).
 func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 	servers, err := s.store.ListServers(r.Context())
 	if err != nil {
@@ -105,8 +108,12 @@ func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	caller := principalFrom(r.Context())
 	views := make([]serverView, 0, len(servers))
 	for _, server := range servers {
+		if !caller.boundTo(server.ID) {
+			continue
+		}
 		view, err := s.serverView(r, server)
 		if err != nil {
 			s.writeInternalError(w, r, err)

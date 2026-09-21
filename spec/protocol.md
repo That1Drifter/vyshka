@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.25 (2026-09-18)
+**Status:** draft 0.26 (2026-09-21)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1460,12 +1460,42 @@ Two implications are normative, and neither runs in reverse:
 - **`actions:dispatch:{pattern}` implies `actions:read:{pattern}`.** A token that could start
   a job but never learn what became of it would be unusable on its own.
 
-Scopes are **installation-wide**, not per-server: this grammar narrows by action code, event
-type, and KV namespace, and has no term that names a server. A token holding
-`events:read:example-mod.*` reads that namespace on every server the hub knows. Operators who
-need one credential per server need one hub per server until a future draft adds a server
-dimension; a hub MUST NOT invent one, because a client that assumed a narrowing this document
-does not define would be relying on behavior another hub is free not to have.
+**Server binding.** This grammar narrows by action code, event type, and KV namespace, and
+has no term that names a server. The server dimension belongs to the token, not to a scope:
+a token MAY be minted **bound** to a list of server ids (section 10.4), and every grant it
+holds is then read as applying to those servers only. A token minted with no binding is
+**unbound**: its grants apply to every server the hub knows, which is what every token
+minted under earlier drafts is, so nothing that exists changes meaning. A bound token
+holding `events:read:example-mod.*` reads that namespace on its servers and nothing on the
+others.
+
+The binding is one list for the whole token rather than a fourth field on each scope. A
+per-scope term would have to be defined for the resources that have no server (the key/value
+store, webhooks, token management), and a token that meant different things on different
+servers is two tokens written as one; an operator who needs a moderator with one set of
+powers on server A and another on server B mints two.
+
+A binding names exact server ids, at most 50 of them, duplicates collapsed. A hub MUST refuse
+at mint a binding naming a server it does not know, with `not_found`, the rule a webhook's
+`serverIds` already follows (section 11.2): a typo would otherwise become a token that
+silently grants nothing. This draft defines no way to delete a server record (section 5.1),
+so a binding cannot dangle; a server whose credentials were revoked is still a server the
+binding names, and the token keeps meaning what it meant.
+
+Some grants have no server to bind to, and a hub MUST refuse them on a bound token at mint,
+with `bad_request`: `admin` (token management and enrollment are installation-wide, and a
+bound superuser is a contradiction), `webhooks:manage` (a subscription is a standing export
+the hub delivers on its own, section 11), and any grant a later draft marks
+installation-wide. `kv:rw` is allowed on a bound token and the binding does not narrow it:
+the store is installation-wide by design (section 12), a value written under one server's
+token is the same value on every server, and a bound token needs the store for exactly the
+things (presets, per-identity flags) that are meant to follow a player across servers. That
+is the one place a binding does not mean what its name suggests, and a UI SHOULD say so
+beside the grant.
+
+A hub MUST implement the binding. A hub that stored one and ignored it would hand out a
+credential wider than the operator believes, which is worse than refusing the mint; a hub
+that does not implement bindings MUST refuse a mint that asks for one.
 
 ### 10.2 Enforcement
 
@@ -1483,6 +1513,32 @@ in the request, the check MUST run against that value:
 | `/api/v1/kv/{namespace}/{key}`, `POST .../incr`, `GET /api/v1/kv/{namespace}` | `kv:rw:{the path's namespace}` |
 | `GET /api/v1/kv` | any `kv:rw` grant; the namespaces listed are filtered to those the grants cover (section 12.2) |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
+
+**Bound tokens** (section 10.1) are checked against the server a request concerns, on top of
+the scope:
+
+- A route whose path names a server (`/api/v1/servers/{id}/...`) MUST refuse a bound token
+  whose binding does not include that id, with `forbidden`, at the headers like any other
+  path-carried check, before the request body is read and before the scope's own value
+  check runs.
+- `GET /api/v1/actions/{actionId}` MUST refuse with `forbidden` when the action's server is
+  outside the binding, once the action is looked up and before any of its record is
+  returned, the code included: the binding check runs before the scope check, because a
+  scope refusal names the code it was checked against, and that is part of the record. The
+  id is unguessable (section 2.1), so the lookup discloses nothing the caller did not
+  already have. An idempotency-key retry (section 7) is judged the same way against the
+  action it would return, as it already is against that action's code.
+- `GET /api/v1/servers` MUST answer only the servers in the binding, never `forbidden`: the
+  caller asked for what it may see, and a filtered list is the token's whole world, the
+  rule the narrowed feed of section 10.3 already sets. An empty answer is the honest one
+  for a binding whose servers are all it knows about.
+- Routes that name no server (the key/value store, token management, the audit log,
+  webhooks) are not touched by the binding; of those, a bound token can hold a grant only
+  on the key/value store, and section 10.1 says why that grant stays installation-wide.
+
+A hub serving one trust boundary answers `forbidden` here for the same reason it does
+everywhere else in this section: the id in the path is one the caller already holds, and
+a `404` would only make the refusal harder to debug.
 
 The raw envelope endpoint of section 5.5 requires `admin` because no narrower scope in the
 grammar describes it: it is an unvalidated write channel to the game server, and granting it
@@ -1553,21 +1609,32 @@ debugging a typo must not be sent looking at its scopes.
 
 ```json
 { "name": "panel", "scopes": ["servers:read", "events:read:example-mod.*"],
-  "expiresInSeconds": 2592000 }
+  "servers": ["01J5QK..."], "expiresInSeconds": 2592000 }
 ```
 
 ```json
 { "token": { "id": "01J...", "name": "panel",
              "scopes": ["servers:read", "events:read:example-mod.*"],
+             "servers": ["01J5QK..."],
              "createdAt": "2026-08-16T12:00:00.000Z", "createdBy": "01J...",
              "expiresAt": "2026-09-15T12:00:00.000Z", "revokedAt": null },
   "secret": "vya_..." }
 ```
 
-`scopes` is REQUIRED and MUST NOT be empty. `expiresInSeconds` is OPTIONAL; absent or zero
-mints a token that does not expire on its own, and a hub MAY clamp a very short request up to
-a floor (reference floor: 60 s). The `secret` is returned in this response and MUST NOT be
-retrievable afterwards: a hub stores a digest, not the token.
+`scopes` is REQUIRED and MUST NOT be empty. `servers` is OPTIONAL and is the binding of
+section 10.1: a list of server ids the token is confined to, where absent or empty mints an
+unbound token. A hub MUST validate it before minting: an id it does not know is `not_found`,
+more than 50 ids, an id outside the identifier alphabet, or a scope the binding cannot carry
+(`admin`, `webhooks:manage`) is `bad_request`, and either refusal mints nothing. The record
+carries `servers` on every response that carries the record, `[]` for an unbound token, so
+a client never has to guess which meaning an absent member has. `expiresInSeconds` is
+OPTIONAL; absent or zero mints a token that does not expire on its own, and a hub MAY clamp
+a very short request up to a floor (reference floor: 60 s). The `secret` is returned in this
+response and MUST NOT be retrievable afterwards: a hub stores a digest, not the token.
+
+Minting needs `admin`, and `admin` cannot be bound, so a bound token never mints: the rule
+that a minter cannot grant what it does not hold (section 10.2) has nothing to add for
+bindings in this draft.
 
 `GET /api/v1/tokens` lists token records, newest first, revoked and expired ones included:
 an operator auditing access needs to see what used to exist. No response other than the mint
@@ -1605,7 +1672,8 @@ Each record MUST carry:
 | `payloadDigest` | SHA-256 of the request body; empty when there was none, or when the mutation was refused before its body was read (section 10.2) |
 
 A record MAY also carry a `serverId` and a `detail` object naming what the mutation was: the
-action code and resulting id for a dispatch, the granted scopes for a mint. A hub SHOULD
+action code and resulting id for a dispatch, the granted scopes and the server binding for a
+mint. A hub SHOULD
 record `serverId` for a mutation that names or creates a server even when the route's path
 does not, or the entry an operator most wants in a per-server view, the call that created the
 server, is the one missing from it. `sourceIp` MUST be the peer address of the connection and
@@ -1718,6 +1786,9 @@ MUST also hold grants **covering** what it subscribes to (the coverage rule of s
 The namespace reservation of section 8.1 is what makes this decidable: a filter naming
 only reserved lifecycle types can never match telemetry, so it needs no `events:read`. A
 registration the token's grants do not cover is `forbidden` (403).
+
+A bound token (section 10.1) cannot hold `webhooks:manage` at all: a subscription observes
+whatever its filter matches on its own schedule, and a binding has no way to follow it.
 
 `webhooks:manage` still carries real weight on its own: it aims signed POSTs at any URL
 the hub can reach, including addresses internal to the hub's own network, so operators
@@ -2215,7 +2286,8 @@ to write into such a namespace uses **set** on it directly; no create step exist
   key is looked up, so the difference between `forbidden` and `not_found` cannot probe a
   namespace the plugin was not granted.
 - **Admin tokens** need `kv:rw:{namespace}` (or `admin`), checked against the namespace in
-  the path, likewise before the key is looked up. The verb is `rw`: this draft defines no
+  the path, likewise before the key is looked up. A server binding on the token (section
+  10.1) does not narrow the store: there is no server in a key. The verb is `rw`: this draft defines no
   read-only KV grant, and a hub MUST NOT invent one (section 10.1's closed set). Because
   the namespace is path-carried, a hub following section 10.2's ordering runs this check
   at the headers, so a malformed namespace *outside* the caller's grant MAY answer

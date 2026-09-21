@@ -123,12 +123,15 @@ func TestActionCodeDoesNotExpireTheAction(t *testing.T) {
 	dispatch(t, st, serverID, "action-1", "", 50*time.Millisecond, 10)
 	time.Sleep(80 * time.Millisecond)
 
-	code, err := st.ActionCode(ctx, "action-1")
+	code, owner, err := st.ActionOwner(ctx, "action-1")
 	if err != nil {
-		t.Fatalf("read action code: %v", err)
+		t.Fatalf("read action owner: %v", err)
 	}
 	if code != "test.heal" {
 		t.Errorf("code = %q, want test.heal", code)
+	}
+	if owner != serverID {
+		t.Errorf("server = %q, want %q", owner, serverID)
 	}
 
 	var state string
@@ -151,8 +154,8 @@ func TestActionCodeDoesNotExpireTheAction(t *testing.T) {
 		t.Errorf("state = %q after a full read, want %q", action.State, store.ActionExpired)
 	}
 
-	if _, err := st.ActionCode(ctx, "no-such-action"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("code of an unknown action = %v, want ErrNotFound", err)
+	if _, _, err := st.ActionOwner(ctx, "no-such-action"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("owner of an unknown action = %v, want ErrNotFound", err)
 	}
 }
 

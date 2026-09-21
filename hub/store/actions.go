@@ -207,22 +207,22 @@ func (s *Store) ActionByID(ctx context.Context, actionID string) (Action, error)
 	return action, nil
 }
 
-// ActionCode returns just an action's code, without the lazy expiry ActionByID
-// applies. It exists for authorization: the scope a read needs depends on the
-// code (spec section 10.2), so the code has to be known before the caller has
-// been allowed to touch the row at all. Reading through ActionByID instead
-// would let a token with no grant over this action drive a state change, which
-// is a write, on a route that is not even audited.
-func (s *Store) ActionCode(ctx context.Context, actionID string) (string, error) {
-	var code string
+// ActionOwner returns just an action's code and server id, without the lazy
+// expiry ActionByID applies. It exists for authorization: the scope a read
+// needs depends on the code and the server binding on the server (spec section
+// 10.2), so both have to be known before the caller has been allowed to touch
+// the row at all. Reading through ActionByID instead would let a token with no
+// grant over this action drive a state change, which is a write, on a route
+// that is not even audited.
+func (s *Store) ActionOwner(ctx context.Context, actionID string) (code, serverID string, err error) {
 	switch err := s.db.QueryRowContext(ctx,
-		`SELECT code FROM actions WHERE id = ?`, actionID).Scan(&code); {
+		`SELECT code, server_id FROM actions WHERE id = ?`, actionID).Scan(&code, &serverID); {
 	case errors.Is(err, sql.ErrNoRows):
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	case err != nil:
-		return "", fmt.Errorf("read action code: %w", err)
+		return "", "", fmt.Errorf("read action owner: %w", err)
 	}
-	return code, nil
+	return code, serverID, nil
 }
 
 // ActionByIdempotencyKey returns the action a client-chosen key names, or
