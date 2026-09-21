@@ -16,7 +16,7 @@ read and every append on this engine pays for the whole string, so the plugin's 
 serializer are quadratic (1 000 entries cost 16 s), the file reader faults the process on
 a 64 KiB line, `Substring` caps at 8 191 characters, and the HTTP client passes 32 MiB.
 The pull is paged, the on-disk copy is written one entry per line, and the parser is
-rewritten linear.
+rewritten to read through bounded windows (#108).
 
 ## Layout
 

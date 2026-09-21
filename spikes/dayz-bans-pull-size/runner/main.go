@@ -143,6 +143,7 @@ func run() error {
 	var allLines []string
 	var crashes []crash
 	finished := false
+	var stopped error
 	for boot := 1; boot <= o.maxBoots && !finished; boot++ {
 		bootAt := time.Now()
 		srv, err := startServer(exe, o.serverDir, cfgName, o.port, profile, modAbs)
@@ -177,6 +178,11 @@ func run() error {
 		switch outcome {
 		case "finished":
 			finished = true
+		case "compile-failure", "aborted":
+			// Nothing was measured and nothing will be: stop booting, and
+			// keep the error so the run does not report success with empty
+			// tables.
+			stopped = err
 		case "server-exited", "vm-exception":
 			c := crash{boot: boot, outcome: outcome}
 			if fire := lastFire(lines); fire != nil {
@@ -196,10 +202,11 @@ func run() error {
 					fmt.Printf("runner: skipping the rest of the line series: %v\n", err)
 				}
 			}
-		case "compile-failure", "aborted":
-			finished = true
 		default:
 			// A timeout: let the next boot resume from the progress file.
+		}
+		if stopped != nil {
+			break
 		}
 	}
 
@@ -217,6 +224,9 @@ func run() error {
 	fmt.Print(table)
 	if err := os.WriteFile(filepath.Join(resultsAbs, "table.md"), []byte(table), 0o644); err != nil {
 		return err
+	}
+	if stopped != nil {
+		return stopped
 	}
 	if !finished {
 		return errors.New("the series did not finish")
@@ -515,11 +525,20 @@ func waitSeries(profile string, bootAt time.Time, srv *server, limit time.Durati
 	}
 }
 
+// usedLogs holds the script logs earlier boots were read from, so a boot that
+// starts before its own log exists can never be judged on the previous
+// boot's, which is still being modified within the window below and could
+// carry a VM exception that would end the new boot before it began.
+var usedLogs = map[string]bool{}
+
 func newestLog(profile string, after time.Time) string {
 	matches, _ := filepath.Glob(filepath.Join(profile, "script_*.log"))
 	best := ""
 	var bestAt time.Time
 	for _, m := range matches {
+		if usedLogs[m] {
+			continue
+		}
 		info, err := os.Stat(m)
 		if err != nil || info.ModTime().Before(after.Add(-5*time.Second)) {
 			continue
@@ -527,6 +546,9 @@ func newestLog(profile string, after time.Time) string {
 		if best == "" || info.ModTime().After(bestAt) {
 			best, bestAt = m, info.ModTime()
 		}
+	}
+	if best != "" {
+		usedLogs[best] = true
 	}
 	return best
 }
@@ -656,7 +678,10 @@ func summarize(lines []string, crashes []crash) string {
 		}
 		if v < 0 {
 			// TickCount(prev) is a 32-bit difference; a phase longer than
-			// 2^31 ticks (about 215 s at 10 MHz) wraps negative once.
+			// 2^31 ticks (about 215 s at 10 MHz) wraps negative once. A
+			// phase longer than 2^32 ticks (about 429 s) is reported modulo
+			// that, and this conversion cannot tell; the frame clock `t` on
+			// the same line bounds the whole step and is the check.
 			v += 1 << 32
 		}
 		return fmt.Sprintf("%.1f", v/tpm)

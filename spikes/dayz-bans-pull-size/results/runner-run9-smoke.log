@@ -1,0 +1,48 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 37588
+runner: 19:28:40  step -1 context
+runner: 19:28:50  step 16 fire
+runner: 19:29:06  step 16 index-measured
+runner: 19:29:10  step 17 success
+runner: 19:29:12  step 18 success
+runner: 19:29:16  step 19 success
+runner: 19:29:20  step 20 success
+runner: 19:29:24  step 21 submitted
+runner: 19:29:26  step 21 calib
+runner: 19:29:30  step 21 success
+runner: 19:29:32  step 22 success
+runner: boot 1: the series did not finish within 5m0s
+runner: boot 1 timeout
+runner: boot 2, pid 37976
+runner: 19:33:41  step -1 context
+runner: 19:33:53  step 23 success
+runner: 19:34:09  step 23 calib
+runner: 19:34:13  step 24 alloc-append
+runner: 19:34:15  step 24 calib
+runner: 19:34:17  step 25 fire
+runner: 19:34:19  step 25 member-append
+runner: boot 2 finished
+
+ticks per ms (median slope, fallback 10000): 9999.2
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+| bans-100-pad1m | success | 10 | 1072549 | | | | | | |
+| bans-100-pad256k | success | 123 | 286117 | 100 | 16906.1 | 0.7 | 0.3 | 44.0 | 0.4 |
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|
+| raw-2m | success | 101 | 2097152 | 2097152 |
+| raw-4m | success | 155 | 4194304 | 4194304 |
+| raw-8m | success | 409 | 8388608 | 8388608 |
+| raw-16m | success | 1622 | 16777216 | 16777216 |
+| raw-32m | success | 5689 | 33554432 | 33554432 |

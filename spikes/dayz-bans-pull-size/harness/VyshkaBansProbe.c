@@ -370,8 +370,14 @@ class VyshkaBansProbe
 			return;
 		}
 
-		// If this step takes the process down, the next boot skips it.
-		VyshkaFiles.WriteAll(PROGRESS_PATH, (m_Current + 1).ToString());
+		// If this step takes the process down, the next boot skips it. A
+		// checkpoint that cannot be saved means the step could be run again
+		// on every boot, so the series stops here instead.
+		if (!VyshkaFiles.WriteAll(PROGRESS_PATH, (m_Current + 1).ToString()))
+		{
+			Log(-1, "abort", 0, "reason=progress-unwritable\tstep=" + m_Current);
+			return;
+		}
 
 		VyshkaBansStep step = m_Steps.Get(m_Current);
 		m_StepDone = false;

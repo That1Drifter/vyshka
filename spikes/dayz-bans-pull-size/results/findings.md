@@ -10,9 +10,9 @@ the whole string it touches, so the plugin's JSON parser and serializer are quad
 the input: a 1 000-entry list costs 16 s of frame stall and a 5 000-entry list 6.6
 minutes. The plugin's file reader faults natively on a single line of 64 KiB or more,
 which a few hundred bans reach. `Substring` silently caps its result at 8 191 characters.
-The HTTP client is not a limit at all: 32 MiB arrived intact. The pull must be paged, the
-on-disk copy written one entry per line, and the parser rewritten to read through bounded
-windows before any payload larger than an action dispatch is routine.
+The HTTP client is not a limit through 32 MiB, which arrived intact. The pull must be paged,
+the on-disk copy written one entry per line, and the parser rewritten to read through
+bounded windows before any payload larger than an action dispatch is routine.
 
 ## Environment
 
@@ -30,7 +30,9 @@ Timing is the engine's `TickCount` performance counter, which runs inside one fr
 unit is undocumented; against the frame clock it measured 10 000 ticks per millisecond
 (a 10 MHz counter), which the runner uses to convert. It is a 32-bit value, so a phase
 longer than about 215 s wraps once and is corrected by 2^32 (the 5 000-entry parse and
-the 1 MiB padded parse).
+the 1 MiB padded parse); a phase longer than about 429 s would be reported modulo that
+and the conversion could not tell, so the frame clock on the same line, which bounds the
+whole step, is the check on every corrected value.
 
 ## Runs
 
@@ -60,13 +62,18 @@ the frame stall a player would feel. The stub answers in the planned pull shape 
 | 500 | 120 164 | 75 ms | 3.5 s | 3.6 ms | 0.3 ms | 420 ms | 0.4 ms |
 | 1 000 | 240 414 | 100 ms | 14.6 s | 7.5 ms | 0.3 ms | 1.6 s | 0.5 ms |
 | 2 000 | 481 914 | 101 ms | 57.3 s | 13.7 ms | 0.4 ms | 6.6 s | 0.7 ms |
-| 5 000 | 1 206 414 | 17 ms | 353 s | 34 ms | 0.4 ms | 45.4 s | 0.2 ms |
-| 10 000 | 2 413 914 | 102 ms | not finished after 16 min | | | | |
+| 5 000 | 1 206 414 | 17 ms | 353 s | 34 ms | 0.4 ms | 45.4 s | truncated |
+| 10 000 | 2 413 914 | 102 ms | the step did not finish in 16 min | | | | |
 | 20 000 | 4 838 914 | 161 ms | stopped | | | | |
 
 Parse time grows 4.2x from 500 to 1 000 entries, 3.9x from 1 000 to 2 000, and 6.2x from
 2 000 to 5 000 (2.5x the input; 6.25 expected for a square). The serializer follows the
-same law.
+same law. Two caveats on the 5 000 row: its write field is the last on a log line that
+`Print` cut at 255 characters, so its digits are not known to be complete and the cell
+is left blank; and its parse counter wrapped once, which the runner corrects, with the
+step's frame clock (399 s for parse and serialize together) confirming the value. The
+10 000 row has no checkpoint between parse and serialize, so what it records is that the
+whole measurement did not finish, with the parse the plausible unfinished phase.
 
 ## Series 2: the reader's line limit (run 5)
 
@@ -82,8 +89,9 @@ One line written with `VyshkaFiles.WriteAll` (`FPrint`), read back with
 | 65 536 | yes | **process faulted** inside `FGets` | |
 
 The crash report names `ReadAll` at `vyshkafiles.c:55`, the `FGets` line, with a fault
-address in an unknown module: the engine, not the script VM. The limit sits between 65 521
-and 65 535 bytes, a 64 KiB buffer.
+address in an unknown module: the engine, not the script VM. The first failing length is
+somewhere in 65 521 through 65 536 inclusive, which reads as a 64 KiB buffer; the exact
+value is inferred, not measured.
 
 ## Series 3: raw responses (runs 4 and 5)
 
@@ -111,17 +119,19 @@ time.
 
 **Reads by string length (runs 5 and 8).** 1 000 calls of `string.Get(16)`:
 
-| String | Local | Member | Member via method | By-value parameter | Fresh copy | `Substring(16, 20)` |
+| String | Local | Member | Member via method | By-value parameter | Fresh copy | `Substring` |
 |---|---|---|---|---|---|---|
 | 32 bytes | 0.05 ms | | | | | |
-| 256 KiB | 51 ms | 51 ms | 52 ms | 51 ms | 52 ms | 51 ms |
+| 256 KiB | 51 ms | 51 ms | 52 ms | 51 ms | 52 ms | 51 ms (`Substring(16, 20)`) |
 | 384 KiB | 92 ms | | | | | |
-| 1 MiB, position 16 | 212 ms | | | | | 214 ms |
-| 1 MiB, position 524 288 | 205 ms | | | | | 206 ms |
+| 1 MiB, position 16 | 212 ms | | | | | 214 ms (`Substring(16, 1)`) |
+| 1 MiB, position 524 288 | 205 ms | | | | | 206 ms (`Substring(524288, 1)`) |
 
 The cost is about 0.2 µs per KiB of the string per call, independent of the position and
-of how the string is held. Copying a 256 KiB string into a local cost 61 µs, so the
-per-call cost is not a copy of the string; the engine walks it.
+of how the string is held. Whether the engine scans the string or copies it on each call
+is not something these probes can tell apart: an assignment of the 256 KiB string cost
+61 µs, which is the same order as one read on it, so a per-call copy is consistent with
+every number above. What is established is the cost, not the mechanism.
 
 **Appends (run 8).** Batches of 4 096 sixteen-byte appends to one string: 39 ms while it
 grew to 64 KiB, then 97, 145, 201, and 262 ms for the next four batches; 1 000 appends to
@@ -139,11 +149,12 @@ and a 100-character window near the end returned 100. No error is raised.
 ## Findings
 
 1. **Reading one character of a string costs time proportional to the whole string's
-   length.** `string.Get(i)` and `Substring` walk the string on every call, about 0.2 µs
-   per KiB. A parser that reads an n-byte input one character at a time is therefore
-   O(n²) on this engine, and the plugin's `VyshkaJson.Parse` is exactly that: 184 ms for
-   24 KB, 14.6 s for 240 KB, 353 s for 1.2 MB, and 232 s for a 100-object document whose
-   size comes from one string value. Object allocation is not a factor.
+   length.** `string.Get(i)` and `Substring` pay about 0.2 µs per KiB of the string on
+   every call, whatever the position. A parser that reads an n-byte input one character
+   at a time is therefore O(n²) on this engine, and the plugin's `VyshkaJson.Parse` is
+   exactly that: 184 ms for 24 KB, 14.6 s for 240 KB, 353 s for 1.2 MB, and 232 s for a
+   100-object document whose size comes from one string value. Object allocation is not
+   a factor.
 
 2. **Appending to a string copies it.** `+=` pays for the current length, so the
    serializer, which appends every token to one result string, is O(n²) as well: 45 s for
@@ -159,8 +170,10 @@ and a 100-character window near the end returned 100. No error is raised.
    tokens is whitespace) and every line short.
 
 4. **`Substring` silently returns at most 8 191 characters.** The parser copies each
-   string value out with one `Substring`, so a value longer than that is truncated without
-   error. No current payload carries such a value; a chat line or a mod's event payload
+   unescaped run of a string value out with one `Substring`, so a run longer than that is
+   truncated without error; a value with escapes every few thousand characters is
+   assembled from several runs and can exceed the cap, so the limit is per run, not per
+   value. No current payload carries such a run; a chat line or a mod's event payload
    could.
 
 5. **The HTTP client is not the constraint.** 32 MiB arrived intact in a few seconds.
@@ -179,12 +192,19 @@ and a 100-character window near the end returned 100. No error is raised.
    outage mid-pull leaves the previous list enforced, and `bans.applied` is sent once the
    whole revision is on disk. With a linear parser the page can grow, but paging stays: a
    list of any size must never be one frame's work.
-- **The on-disk copy is written one entry per line**, and `bans.json`, the manifest, and
-   the outbox records get the same treatment as their own fix, since the reader's limit is
-   a crash in production today.
-- **The parser and serializer are rewritten linear** before any payload larger than an
-   action dispatch is routine: the input is cut once into windows of at most 8 191
-   characters (each cut is one walk, so the cutting is O(n²/8191), 36 ms for 1.2 MB) and
-   every character read runs against a window; string values are assembled from window
-   slices; the serializer collects pieces in an array and joins once. That is a plugin
-   slice of its own, filed with the reader fix.
+- **The on-disk copy is written one entry per line**, and `bans.json` and the outbox
+   records, whose large parts are arrays, get the same treatment as their own fix, since
+   the reader's limit is a crash in production today. The manifest record is different:
+   it stores the whole serialized manifest as one JSON string member, and a newline
+   cannot be put inside a JSON string without escaping it, so that file needs a
+   representation change rather than a line-breaking writer.
+- **The parser and serializer are rewritten** before any payload larger than an action
+   dispatch is routine. Cutting the input once into windows of at most 8 191 characters
+   and reading characters from a window divides the quadratic term by 8 191 (about 35 ms
+   of cutting for 1.2 MB, extrapolated, not measured); that is a mitigation large enough
+   for every size the plugin will see, not a linear parser, and a genuinely linear one
+   needs a primitive that does not pay per string length per call, such as reading a
+   file through `ReadFile` into an array. The rewrite covers the serializer's `Quote`
+   loop and per-escape appends as well as the outer append, and replaces the per-run
+   `Substring` that caps at 8 191. That is a plugin slice of its own, filed with the
+   reader fix (#108).
