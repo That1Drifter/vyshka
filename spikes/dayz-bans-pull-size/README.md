@@ -40,7 +40,8 @@ The runner derives `mpmissions/vyshkaBansSpike.chernarusplus` from the stock off
 mission on first use and writes `vyshka_bans_spike_serverDZ.cfg` beside `serverDZ.cfg`.
 The plugin runs with no config and idles; only its classes are used. No game client is
 needed. The full ban list series is not worth repeating past 5 000 entries: the parse is
-quadratic and the 10 000-entry step alone takes about 25 minutes.
+quadratic, and by that law the 10 000-entry step alone would take about 25 minutes (an
+extrapolation; the step was never seen to finish).
 
 The performance counter's unit is undocumented, so every probe line carries it beside the
 frame clock and the runner derives ticks per millisecond from the pairs. The server runs

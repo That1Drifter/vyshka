@@ -1,0 +1,56 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 40104
+runner: 19:42:25  step -1 context
+runner: 19:42:37  step 15 line-written
+runner: boot 1: the server process exited before the probe finished
+runner: boot 1 server-exited
+runner: boot 1 died in step 15 (line-128k)
+runner: boot 2, pid 20988
+runner: 19:42:56  step -1 context
+runner: 19:43:08  step 16 fire
+runner: 19:43:24  step 16 index-measured
+runner: 19:43:26  step 17 success
+runner: 19:43:30  step 18 success
+runner: 19:43:32  step 19 submitted
+runner: 19:43:34  step 19 success
+runner: 19:43:36  step 20 submitted
+runner: 19:43:38  step 20 success
+runner: 19:43:40  step 21 submitted
+runner: 19:43:42  step 21 calib
+runner: 19:43:44  step 21 success
+runner: 19:43:48  step 22 success
+runner: boot 2: the series did not finish within 3m0s
+runner: boot 2 timeout
+runner: boot 3, pid 39984
+runner: 19:45:59  step -1 context
+runner: 19:46:11  step 23 success
+runner: 19:46:27  step 23 measured-more
+runner: 19:46:31  step 24 calib
+runner: 19:46:35  step 25 member-copy
+runner: 19:46:37  step 25 member-append
+runner: boot 3 finished
+
+ticks per ms (median slope, fallback 10000): 9997.8
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+| bans-100-pad1m | success, then **not measured: timeout** | 4 | 1072549 | | | | | | |
+| bans-100-pad256k | success | 32 | 286117 | 100 | 16658.7 | 0.7 | 0.4 | 44.1 | 0.4 |
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+| line-128k | 131072 | true | 0.6 | **server-exited** |  |  |
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|
+| raw-2m | success | 102 | 2097152 | 2097152 |
+| raw-4m | success | 153 | 4194304 | 4194304 |
+| raw-8m | success | 307 | 8388608 | 8388608 |
+| raw-16m | success | 1117 | 16777216 | 16777216 |
+| raw-32m | success | 4188 | 33554432 | 33554432 |

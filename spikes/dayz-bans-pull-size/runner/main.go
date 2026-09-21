@@ -142,9 +142,14 @@ func run() error {
 
 	var allLines []string
 	var crashes []crash
+	unfinished := map[int]string{}
 	finished := false
 	var stopped error
 	for boot := 1; boot <= o.maxBoots && !finished; boot++ {
+		// Every script log that exists before this boot belongs to an
+		// earlier one, however late it appeared; only a log created after
+		// this point can be this boot's.
+		earlier := existingLogs(profile)
 		bootAt := time.Now()
 		srv, err := startServer(exe, o.serverDir, cfgName, o.port, profile, modAbs)
 		if err != nil {
@@ -152,9 +157,9 @@ func run() error {
 		}
 		fmt.Printf("runner: boot %d, pid %d\n", boot, srv.cmd.Process.Pid)
 
-		logPath, outcome, err := waitSeries(profile, bootAt, srv, o.wait)
-		if err != nil {
-			fmt.Printf("runner: boot %d: %v\n", boot, err)
+		logPath, outcome, seriesErr := waitSeries(profile, bootAt, earlier, srv, o.wait)
+		if seriesErr != nil {
+			fmt.Printf("runner: boot %d: %v\n", boot, seriesErr)
 		}
 		fmt.Printf("runner: boot %d %s\n", boot, outcome)
 
@@ -175,14 +180,30 @@ func run() error {
 		allLines = append(allLines, fmt.Sprintf("# boot %d %s %s", boot, bootAt.UTC().Format(time.RFC3339), outcome))
 		allLines = append(allLines, lines...)
 
+		// A boot that ended with a step in flight (a timeout, a crash) left
+		// that step unmeasured, and the next boot skips it; the table must
+		// say so rather than let the step's fetch pass for a measurement.
+		if outcome != "finished" {
+			if fire := lastFire(lines); fire != nil {
+				step, _ := strconv.Atoi(fire.fields["step"])
+				if _, already := unfinished[step]; !already {
+					unfinished[step] = outcome
+				}
+			}
+		}
+
 		switch outcome {
 		case "finished":
 			finished = true
 		case "compile-failure", "aborted":
 			// Nothing was measured and nothing will be: stop booting, and
-			// keep the error so the run does not report success with empty
-			// tables.
-			stopped = err
+			// keep the series error (not the log-reading error, which is nil
+			// when the log was read fine) so the run does not report
+			// success with empty tables.
+			stopped = seriesErr
+			if stopped == nil {
+				stopped = fmt.Errorf("the series stopped: %s", outcome)
+			}
 		case "server-exited", "vm-exception":
 			c := crash{boot: boot, outcome: outcome}
 			if fire := lastFire(lines); fire != nil {
@@ -220,7 +241,7 @@ func run() error {
 	if err := os.WriteFile(filepath.Join(resultsAbs, "crashes.log"), []byte(crashText.String()), 0o644); err != nil {
 		return err
 	}
-	table := summarize(allLines, crashes)
+	table := summarize(allLines, crashes, unfinished)
 	fmt.Print(table)
 	if err := os.WriteFile(filepath.Join(resultsAbs, "table.md"), []byte(table), 0o644); err != nil {
 		return err
@@ -485,14 +506,15 @@ var (
 // finished, aborted, the mission failed to compile, the VM died, the process
 // exited, or the limit passed. It returns the log path and a one-word outcome.
 // A crash is reported as server-exited a few seconds after the process is
-// gone, once the engine has had time to write its report.
-func waitSeries(profile string, bootAt time.Time, srv *server, limit time.Duration) (string, string, error) {
+// gone, once the engine has had time to write its report. Only a log that did
+// not exist before the boot (earlier) can be this boot's.
+func waitSeries(profile string, bootAt time.Time, earlier map[string]bool, srv *server, limit time.Duration) (string, string, error) {
 	deadline := time.Now().Add(limit)
 	logPath := ""
 	lastStep := ""
 	for {
 		if logPath == "" {
-			logPath = newestLog(profile, bootAt)
+			logPath = newestLog(profile, bootAt, earlier)
 		}
 		if logPath != "" {
 			data, _ := os.ReadFile(logPath)
@@ -525,18 +547,25 @@ func waitSeries(profile string, bootAt time.Time, srv *server, limit time.Durati
 	}
 }
 
-// usedLogs holds the script logs earlier boots were read from, so a boot that
-// starts before its own log exists can never be judged on the previous
-// boot's, which is still being modified within the window below and could
-// carry a VM exception that would end the new boot before it began.
-var usedLogs = map[string]bool{}
+// existingLogs lists the script logs in the profile directory. Taken before a
+// boot starts, it is the set of logs that belong to earlier boots, including
+// one an earlier boot wrote late, after its last scan and before it was
+// stopped; newestLog never judges a boot on any of those.
+func existingLogs(profile string) map[string]bool {
+	matches, _ := filepath.Glob(filepath.Join(profile, "script_*.log"))
+	known := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		known[m] = true
+	}
+	return known
+}
 
-func newestLog(profile string, after time.Time) string {
+func newestLog(profile string, after time.Time, earlier map[string]bool) string {
 	matches, _ := filepath.Glob(filepath.Join(profile, "script_*.log"))
 	best := ""
 	var bestAt time.Time
 	for _, m := range matches {
-		if usedLogs[m] {
+		if earlier[m] {
 			continue
 		}
 		info, err := os.Stat(m)
@@ -546,9 +575,6 @@ func newestLog(profile string, after time.Time) string {
 		if best == "" || info.ModTime().After(bestAt) {
 			best, bestAt = m, info.ModTime()
 		}
-	}
-	if best != "" {
-		usedLogs[best] = true
 	}
 	return best
 }
@@ -584,12 +610,19 @@ func probeLines(path string) ([]string, error) {
 	return lines, sc.Err()
 }
 
+// printLimit is where the engine's Print cuts a line, without a marker. A
+// line that long may have lost its tail, so its last field is suspect.
+const printLimit = 255
+
 type probeEvent struct {
 	step   int
 	event  string
 	t      int
 	ticks  int64
 	fields map[string]string
+	// suspect is the last field of a line that reached the Print limit:
+	// its digits may be incomplete, and no number is made from it.
+	suspect string
 }
 
 func parseEvent(line string) (probeEvent, bool) {
@@ -599,12 +632,17 @@ func parseEvent(line string) (probeEvent, bool) {
 	}
 	parts := strings.Split(line[idx:], "\t")
 	ev := probeEvent{fields: map[string]string{}}
+	last := ""
 	for _, p := range parts[1:] {
 		k, v, ok := strings.Cut(p, "=")
 		if !ok {
 			continue
 		}
 		ev.fields[k] = v
+		last = k
+	}
+	if len(strings.TrimRight(line, "\r\n")) >= printLimit {
+		ev.suspect = last
 	}
 	ev.step, _ = strconv.Atoi(ev.fields["step"])
 	ev.event = ev.fields["event"]
@@ -653,7 +691,7 @@ func ticksPerMs(events []probeEvent) float64 {
 	return slopes[len(slopes)/2]
 }
 
-func summarize(lines []string, crashes []crash) string {
+func summarize(lines []string, crashes []crash, unfinished map[int]string) string {
 	var events []probeEvent
 	labels := map[int]string{}
 	kinds := map[int]string{}
@@ -670,8 +708,23 @@ func summarize(lines []string, crashes []crash) string {
 	for _, c := range crashes {
 		crashed[c.step] = c.outcome
 	}
+	for step, outcome := range unfinished {
+		if _, isCrash := crashed[step]; !isCrash {
+			crashed[step] = "not measured: " + outcome
+		}
+	}
 	tpm := ticksPerMs(events)
+	// counterRangeMs is how long a step may take before a phase's 32-bit
+	// counter difference could have wrapped more than once, at which point
+	// no phase on that line can be converted honestly.
+	counterRangeMs := float64(uint64(1)<<32) / tpm
 	ms := func(field string, ev probeEvent) string {
+		if ev.suspect == field {
+			return "truncated"
+		}
+		if float64(ev.t) >= counterRangeMs {
+			return "ambiguous"
+		}
 		v, err := strconv.ParseFloat(ev.fields[field], 64)
 		if err != nil {
 			return ev.fields[field]
@@ -679,9 +732,9 @@ func summarize(lines []string, crashes []crash) string {
 		if v < 0 {
 			// TickCount(prev) is a 32-bit difference; a phase longer than
 			// 2^31 ticks (about 215 s at 10 MHz) wraps negative once. A
-			// phase longer than 2^32 ticks (about 429 s) is reported modulo
-			// that, and this conversion cannot tell; the frame clock `t` on
-			// the same line bounds the whole step and is the check.
+			// phase longer than 2^32 ticks (about 429 s) would be reported
+			// modulo that, which the frame clock check above rules out for
+			// every value that reaches this line.
 			v += 1 << 32
 		}
 		return fmt.Sprintf("%.1f", v/tpm)
@@ -797,7 +850,29 @@ func stepOutcome(events []probeEvent, s int, crashed map[int]string) (outcome, f
 			fetch = strconv.Itoa(e.t)
 		case "measured":
 			m := e
+			if measured != nil {
+				// The second line of a split measurement: merge its fields
+				// and its suspect marker into the first.
+				for k, v := range m.fields {
+					measured.fields[k] = v
+				}
+				if m.suspect != "" {
+					measured.suspect = m.suspect
+				}
+				continue
+			}
 			measured = &m
+		case "measured-more":
+			if measured != nil {
+				for k, v := range e.fields {
+					if k != "step" && k != "event" && k != "t" && k != "ticks" {
+						measured.fields[k] = v
+					}
+				}
+				if e.suspect != "" {
+					measured.suspect = e.suspect
+				}
+			}
 		}
 	}
 	if c, ok := crashed[s]; ok {

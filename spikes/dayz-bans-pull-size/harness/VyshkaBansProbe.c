@@ -199,10 +199,13 @@ class VyshkaBansCallback : RestCallback
 
 		// One statement per phase: the engine's parser does not accept an
 		// expression continued on the next line with a leading operator.
+		// Two lines, because Print cuts a line at 255 characters and one
+		// line of all the phases loses its last field.
 		string line = "phase=all\tok=1\tn=" + list.Count() + "\tentries=" + entries.Count() + "\tfinite=" + finite + "\tskipped=" + skipped;
 		line += "\tparseTicks=" + parseTicks + "\tbuildTicks=" + buildTicks + "\tlookupTicks=" + lookupTicks + "\thits=" + hits;
-		line += "\tserializeTicks=" + serializeTicks + "\ttextLen=" + text.Length() + "\twriteTicks=" + writeTicks + "\twritten=" + written;
 		Emit("measured", line);
+		string more = "serializeTicks=" + serializeTicks + "\ttextLen=" + text.Length() + "\twriteTicks=" + writeTicks + "\twritten=" + written;
+		Emit("measured-more", more);
 	}
 
 	void Settle()
@@ -375,7 +378,7 @@ class VyshkaBansProbe
 		// on every boot, so the series stops here instead.
 		if (!VyshkaFiles.WriteAll(PROGRESS_PATH, (m_Current + 1).ToString()))
 		{
-			Log(-1, "abort", 0, "reason=progress-unwritable\tstep=" + m_Current);
+			Log(-1, "abort", 0, "reason=progress-unwritable\tat=" + m_Current);
 			return;
 		}
 

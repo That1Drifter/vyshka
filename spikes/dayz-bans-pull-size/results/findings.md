@@ -43,12 +43,14 @@ on the next boot through the probe's progress file.
 |---|---|---|
 | 1 | The mission did not compile: an expression continued on the next line with a leading `+` is a syntax error | `runner-run1-compile-fail.log`, `probe-run1-compile-fail.log` |
 | 2 | 100 entries measured; the read-back of the 500-entry file (120 164 bytes, one line) faulted the process natively inside `VyshkaFiles.ReadAll` | `runner-run2-crash.log`, `probe-run2-crash.log`, `run2-crash-report.txt` |
-| 3 | Read-back removed from the ban list series; 100 to 5 000 entries measured; the 10 000-entry parse did not finish inside the 25-minute boot budget; the 20 000-entry step was stopped by hand | `runner-run3-bans.log`, `run3-boot1-script.log`, `run3-boot2-script.log`, `stub-run3-bans.log` |
+| 3 | Read-back removed from the ban list series; 100 to 5 000 entries measured; the 10 000-entry step did not finish inside the 25-minute boot budget; the 20 000-entry step was stopped by hand | `runner-run3-bans.log`, `run3-boot1-script.log`, `run3-boot2-script.log`, `stub-run3-bans.log` |
 | 4 | Line series void: the probe trimmed its test line with `Substring`, which capped it at 8 191 bytes, so every size read back "intact"; raw responses to 32 MiB | `runner-run4-line-raw.log`, `probe-run4-line-raw.log`, `table-run4-line-raw.md` |
 | 5 | Line series with exact lengths: 65 520 read back, 65 536 faulted; the `Substring` cap confirmed; indexing at two positions | `runner-run5-line-index-raw.log`, `probe-run5-line-index-raw.log`, `crashes-run5.log`, `table-run5-line-index-raw.md` |
 | 6 | Padded lists: 100 entries plus a 1 MiB or 256 KiB string value; allocation batches (the append and read numbers were lost to the 255-character `Print` limit) | `runner-run6-alloc-pad.log`, `probe-run6-alloc-pad.log`, `table-run6-alloc-pad.md` |
 | 7 | Did not compile: `local` is a reserved word | `runner-run7-compile-fail.log` |
 | 8 | Allocation, append, and read cost by string length, on a local, a member, a parameter, and a copy | `runner-run8-alloc-member.log`, `probe-run8-alloc-member.log` |
+| 9 | Smoke run of the runner after the review fixes, from the indexing step on: the raw series repeated, the 1 MiB padded step timed out at the shorter boot budget and was skipped on the next boot, the rest finished | `runner-run9-smoke.log` |
+| 10 | Smoke run of the runner after the second review round, from the last line-limit step on: one fault, one timeout, one resume | `runner-run10-smoke.log` |
 
 ## Series 1: ban lists (run 3)
 
@@ -156,9 +158,10 @@ and a 100-character window near the end returned 100. No error is raised.
    100-object document whose size comes from one string value. Object allocation is not
    a factor.
 
-2. **Appending to a string copies it.** `+=` pays for the current length, so the
-   serializer, which appends every token to one result string, is O(n²) as well: 45 s for
-   1.2 MB. The fix is the usual one, collect pieces and join once, or write pieces as they
+2. **Appending to a string pays for its current length.** Whether `+=` copies the string
+   or does something else proportional to it is not determined, as with the reads; what
+   the batches show is the cost growing with the length. The serializer, which appends
+   every token to one result string, is O(n²) as a result: 45 s for 1.2 MB. The fix is the usual one, collect pieces and join once, or write pieces as they
    are produced.
 
 3. **The plugin's file reader faults the process on a line of 64 KiB or more.**
@@ -201,10 +204,12 @@ and a 100-character window near the end returned 100. No error is raised.
 - **The parser and serializer are rewritten** before any payload larger than an action
    dispatch is routine. Cutting the input once into windows of at most 8 191 characters
    and reading characters from a window divides the quadratic term by 8 191 (about 35 ms
-   of cutting for 1.2 MB, extrapolated, not measured); that is a mitigation large enough
-   for every size the plugin will see, not a linear parser, and a genuinely linear one
-   needs a primitive that does not pay per string length per call, such as reading a
-   file through `ReadFile` into an array. The rewrite covers the serializer's `Quote`
+   of cutting for 1.2 MB, extrapolated, not measured; by the same model the 32 MiB body
+   the HTTP client delivered would cost about 27 s to cut). That is a mitigation, not a
+   linear parser, and it is adequate only up to a size that has to be measured with the
+   windowed parser against a frame budget before any document of that size is relied on;
+   a genuinely linear one needs a primitive that does not pay per string length per
+   call, such as reading a file through `ReadFile` into an array. The rewrite covers the serializer's `Quote`
    loop and per-escape appends as well as the outer append, and replaces the per-run
    `Substring` that caps at 8 191. That is a plugin slice of its own, filed with the
    reader fix (#108).
