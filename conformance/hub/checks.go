@@ -3178,8 +3178,12 @@ var checks = []Check{
 			if err != nil {
 				return err
 			}
-			if err := env.expect(ctx, http.MethodPut, "/api/v1/kv/example-mod/binding-probe", keeper.Secret,
-				map[string]any{"value": "reachable"}, http.StatusOK, nil); err != nil {
+			// A key and value this run alone wrote, so a reader's success is
+			// evidence of this write and not of one left by an earlier run.
+			probeKey := "/api/v1/kv/example-mod/binding-probe-" + keeper.Token.ID
+			probeValue := "written by " + keeper.Token.ID
+			if err := env.expect(ctx, http.MethodPut, probeKey, keeper.Secret,
+				map[string]any{"value": probeValue}, http.StatusOK, nil); err != nil {
 				return fmt.Errorf("a bound token's kv:rw write was refused; the binding must not narrow the store: %w", err)
 			}
 			otherKeeper, err := env.mintBoundToken(ctx, "conformance: keeper bound elsewhere", []string{otherID}, "kv:rw:example-mod")
@@ -3196,11 +3200,11 @@ var checks = []Check{
 				var read struct {
 					Value any `json:"value"`
 				}
-				if err := env.expect(ctx, http.MethodGet, "/api/v1/kv/example-mod/binding-probe", reader.bearer, nil, http.StatusOK, &read); err != nil {
+				if err := env.expect(ctx, http.MethodGet, probeKey, reader.bearer, nil, http.StatusOK, &read); err != nil {
 					return fmt.Errorf("%s cannot read what a bound token wrote; the store is installation-wide, not partitioned by binding: %w", reader.who, err)
 				}
-				if read.Value != "reachable" {
-					return fmt.Errorf("%s reads %v where a bound token wrote \"reachable\"; the store is one value per key for the installation", reader.who, read.Value)
+				if read.Value != probeValue {
+					return fmt.Errorf("%s reads %v where a bound token wrote %q; the store is one value per key for the installation", reader.who, read.Value, probeValue)
 				}
 			}
 

@@ -68,13 +68,21 @@ func (e Env) mintBoundToken(ctx context.Context, name string, servers []string, 
 	return minted, nil
 }
 
+// headersOnlyDeadline is how long the headers-only probe waits for the final
+// refusal. A hub that judges the binding at the headers answers in
+// milliseconds; one that first reads the body waits for bytes that never
+// come until its own body-read timeout, and a hub whose timeout is shorter
+// than this would have to be timing out ordinary clients' bodies too.
+const headersOnlyDeadline = 3 * time.Second
+
 // refusedBeforeBody sends a mutation's request line and headers, declaring a
-// body it never sends, and requires the hub's final 403 within the deadline:
-// a hub that judged the binding only after reading the body would sit
-// waiting for bytes that never come (spec section 10.2). The connection is
-// raw so that nothing in an HTTP client library supplies or expects the body.
+// body it never sends, and requires the hub's final 403 with the protocol's
+// forbidden envelope within headersOnlyDeadline (spec section 10.2). The
+// connection is raw so that nothing in an HTTP client library supplies or
+// expects the body, and the request target is built from the same full URL
+// ordinary requests use, so a hub mounted under a path prefix is reached.
 func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string) error {
-	target, err := url.Parse(e.BaseURL)
+	target, err := url.Parse(e.BaseURL + path)
 	if err != nil {
 		return fmt.Errorf("parse the hub URL: %w", err)
 	}
@@ -86,7 +94,7 @@ func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string)
 			host += ":80"
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(headersOnlyDeadline)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
@@ -104,19 +112,28 @@ func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string)
 	_ = conn.SetDeadline(deadline)
 
 	request := fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n",
-		method, path, target.Host, bearer)
+		method, target.RequestURI(), target.Host, bearer)
 	if _, err := io.WriteString(conn, request); err != nil {
 		return fmt.Errorf("send the headers of %s %s: %w", method, path, err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	// An informational response is not the final one; read past it.
+	for err == nil && resp.StatusCode >= 100 && resp.StatusCode < 200 {
+		resp, err = http.ReadResponse(reader, nil)
+	}
 	if err != nil {
-		return fmt.Errorf("%s %s with the body withheld: no final response before the deadline; the refusal must come at the headers (section 10.2): %w", method, path, err)
+		return fmt.Errorf("%s %s with the body withheld: no final response within %s; the refusal must come at the headers (section 10.2): %w", method, path, headersOnlyDeadline, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		return fmt.Errorf("%s %s with the body withheld: status = %d, want 403 at the headers", method, path, resp.StatusCode)
 	}
-	return nil
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return fmt.Errorf("%s %s with the body withheld: read the refusal: %w", method, path, err)
+	}
+	return assertErrorCode(method, path, body, "forbidden")
 }
 
 // containsString walks a decoded JSON value and reports the path of the first
@@ -130,6 +147,10 @@ func containsString(value any, needle, path string) string {
 		}
 	case map[string]any:
 		for k, child := range v {
+			// A member name is a string the client decodes like any other.
+			if strings.Contains(k, needle) {
+				return path + "." + k
+			}
 			if where := containsString(child, needle, path+"."+k); where != "" {
 				return where
 			}
