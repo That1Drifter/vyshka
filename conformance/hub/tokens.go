@@ -17,6 +17,7 @@ type tokenRecord struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	Scopes    []string `json:"scopes"`
+	Servers   []string `json:"servers"`
 	CreatedAt string   `json:"createdAt"`
 	CreatedBy string   `json:"createdBy"`
 	ExpiresAt *string  `json:"expiresAt"`
@@ -42,6 +43,21 @@ func (e Env) mintToken(ctx context.Context, name string, scopes ...string) (mint
 	}
 	if minted.Token.ID == "" {
 		return mintedToken{}, fmt.Errorf("mint %q: response carried no token id", name)
+	}
+	return minted, nil
+}
+
+// mintBoundToken creates a token confined to the given servers (spec section
+// 10.1) with the suite's own credential.
+func (e Env) mintBoundToken(ctx context.Context, name string, servers []string, scopes ...string) (mintedToken, error) {
+	var minted mintedToken
+	err := e.expect(ctx, http.MethodPost, "/api/v1/tokens", e.AdminToken,
+		map[string]any{"name": name, "scopes": scopes, "servers": servers}, http.StatusCreated, &minted)
+	if err != nil {
+		return mintedToken{}, err
+	}
+	if minted.Secret == "" {
+		return mintedToken{}, fmt.Errorf("mint %q: response carried no secret", name)
 	}
 	return minted, nil
 }

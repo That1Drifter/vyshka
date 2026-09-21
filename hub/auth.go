@@ -108,6 +108,23 @@ func (s *Server) adminGate(resource, verb string, pathValue func(*http.Request) 
 				return
 			}
 		}
+		// A bound token (spec section 10.1) is confined to its servers on every
+		// route whose path names one. The id is known at the headers, so the
+		// refusal runs here with the other path-carried checks, before any
+		// body is read (section 10.2). Routes with no server in the path are
+		// not narrowed by the binding; the one route that reaches a server by
+		// another road, the action read, checks inside its handler.
+		if caller.bound() {
+			if serverID := r.PathValue("serverId"); serverID != "" && !caller.boundTo(serverID) {
+				s.hangUp(recorder)
+				writeError(recorder, http.StatusForbidden, codeForbidden,
+					"this token is bound to other servers than "+truncateUTF8(serverID, 64))
+				if mutation {
+					s.recordAudit(r, caller, entry, recorder.status)
+				}
+				return
+			}
+		}
 
 		// Only a caller the gate passed spends hub time on a body, and only
 		// this long. net/http clears the connection's read deadline the
@@ -238,6 +255,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principa
 		}
 		caller.Scopes = append(caller.Scopes, scope)
 	}
+	caller.Servers = stored.Servers
 	return caller, true
 }
 

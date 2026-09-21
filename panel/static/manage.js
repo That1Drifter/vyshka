@@ -535,6 +535,10 @@ export async function viewTokens(app, route, seq) {
     throw err;
   }
   if (stale(seq)) return;
+  // The server list names the binding column and fills the picker; a token
+  // with admin can always read it, so a failure here is a real one.
+  const serverList = await loadServerNames();
+  if (stale(seq)) return;
   clear(app);
   app.append(el('h1', {}, 'Admin API tokens'));
 
@@ -543,7 +547,7 @@ export async function viewTokens(app, route, seq) {
   const tbody = el('tbody', {});
   const table = el('table', { id: 'tokens' },
     el('thead', {}, el('tr', {},
-      el('th', {}, 'Name'), el('th', {}, 'Scopes'), el('th', {}, 'State'),
+      el('th', {}, 'Name'), el('th', {}, 'Scopes'), el('th', {}, 'Servers'), el('th', {}, 'State'),
       el('th', {}, 'Created'), el('th', {}, 'Expires'), el('th', {}, 'Id'), el('th', {}, ''))),
     tbody);
   const empty = el('p', { class: 'notice', id: 'tokens-empty', hidden: true },
@@ -604,6 +608,7 @@ export async function viewTokens(app, route, seq) {
       tbody.append(el('tr', { 'data-token-id': record.id, 'data-token-state': state, class: state === 'live' ? '' : 'dim' },
         el('td', {}, record.name || el('span', { class: 'muted' }, 'unnamed')),
         el('td', {}, scopeBadges(record.scopes)),
+        el('td', {}, serverNames(record.servers, serverList.names)),
         el('td', {}, badge(state, state === 'live' ? 'up' : state)),
         el('td', {}, formatTime(record.createdAt)),
         el('td', {}, record.expiresAt ? formatTime(record.expiresAt) : el('span', { class: 'muted' }, 'never')),
@@ -622,6 +627,8 @@ export async function viewTokens(app, route, seq) {
   const expiry = el('select', { id: 'token-expiry', name: 'expiry' },
     EXPIRY_CHOICES.map((choice) => el('option', { value: choice.value }, choice.label)));
   const customExpiry = numberInput('token-expiry-seconds', { min: '1', placeholder: 'seconds', hidden: true });
+  const binding = serverPicker('token-servers', serverList.servers, serverList.allowed, [],
+    'none ticked mints an unbound token, whose grants apply to every server; ticked servers bind every grant to those servers (protocol section 10.1). A bound token cannot carry admin or webhooks:manage, and a kv:rw grant stays installation-wide');
   const warning = el('p', { class: 'notice danger', id: 'dispatch-warning', hidden: true },
     'This list holds an unnarrowed actions:dispatch, which can dispatch anything any plugin declares, on every server (protocol section 10.1 asks a UI to warn). Narrow it to {namespace}.* unless you mean it.');
   const bundleNote = el('p', { class: 'muted', id: 'bundle-note' },
@@ -694,6 +701,8 @@ export async function viewTokens(app, route, seq) {
     onsubmit: guarded(async (event) => {
       event.preventDefault();
       const request = { name: name.value.trim(), scopes: linesOf(scopes) };
+      const servers = binding.read();
+      if (servers.length > 0) request.servers = servers;
       if (request.name === '') {
         problem.show(new ApiError(0, 'bad_request', 'a name is required'));
         return;
@@ -723,7 +732,8 @@ export async function viewTokens(app, route, seq) {
           secret: minted.secret,
           expiresAt: minted.token.expiresAt,
           note: 'Shown once. The hub stores a digest, so no later call can retrieve it (protocol section 10.4). Scopes: ' +
-            (minted.token.scopes || []).join(', ') + '.',
+            (minted.token.scopes || []).join(', ') + '. Servers: ' +
+            ((minted.token.servers || []).length === 0 ? 'every server (unbound)' : (minted.token.servers || []).map((id) => serverList.names.get(id) || id).join(', ')) + '.',
         };
         if (stale(seq)) {
           // The token is minted and live. Dropping this answer with the
@@ -745,6 +755,7 @@ export async function viewTokens(app, route, seq) {
   bundleNote,
   fieldRow('token-scopes', 'Scopes', scopes, 'one per line, in the grammar of protocol section 10.1'),
   warning,
+  binding.node,
   fieldRow('token-expiry', 'Expires', expiry, 'a hub may clamp a very short lifetime up to its floor'),
   customExpiry,
   el('div', { class: 'actions-row' }, submit));
@@ -759,13 +770,16 @@ export async function viewTokens(app, route, seq) {
 // ---------------------------------------------------------------------------
 // Webhooks
 
-function serverPicker(id, servers, allowed, selected) {
+// serverPicker is the server list as checkboxes, shared by the webhook filter
+// and the token binding; the hint says what an empty pick means for each.
+function serverPicker(id, servers, allowed, selected, hint) {
+  const explain = hint || 'none ticked means every server, now and later; a non-empty list needs servers:read on the registering token (protocol section 11.2)';
   if (!allowed) {
     const area = textArea(id, { placeholder: 'one server id per line, empty for every server' });
     area.value = (selected || []).join('\n');
     return {
       node: fieldRow(id, 'Server ids', area,
-        'this token cannot read the server list (servers:read), so ids are typed; empty means every server'),
+        'this token cannot read the server list (servers:read), so ids are typed; ' + explain),
       read: () => linesOf(area),
     };
   }
@@ -779,7 +793,7 @@ function serverPicker(id, servers, allowed, selected) {
     el('span', { class: 'name' }, 'Servers'),
     el('div', { class: 'checklist' }, boxes.map(({ box, server }) => el('label', { class: 'check' },
       box, ' ', server.name, ' ', el('span', { class: 'mono muted' }, server.id)))),
-    el('span', { class: 'hint' }, 'none ticked means every server, now and later; a non-empty list needs servers:read on the registering token (protocol section 11.2)'));
+    el('span', { class: 'hint' }, explain));
   return { node, read: () => boxes.filter(({ box }) => box.checked).map(({ server }) => server.id) };
 }
 

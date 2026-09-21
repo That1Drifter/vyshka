@@ -234,6 +234,34 @@ type principal struct {
 	TokenID string
 	Name    string
 	Scopes  []Scope
+	// Servers is the server binding of spec section 10.1. Empty means unbound:
+	// every grant applies to every server. Non-empty means every grant applies
+	// to these servers only, whatever the scopes say.
+	Servers []string
+}
+
+// bound reports whether the caller carries a server binding.
+func (p *principal) bound() bool {
+	return len(p.Servers) > 0
+}
+
+// boundTo reports whether the caller may act on a server: an unbound caller
+// may act on any, a bound one only on the servers in its binding. An empty
+// server id is never in a binding, so a route that resolved no server fails
+// closed for a bound caller.
+func (p *principal) boundTo(serverID string) bool {
+	if !p.bound() {
+		return true
+	}
+	if serverID == "" {
+		return false
+	}
+	for _, id := range p.Servers {
+		if id == serverID {
+			return true
+		}
+	}
+	return false
 }
 
 // isAdmin reports whether the caller holds the superuser scope. `admin` implies

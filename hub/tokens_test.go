@@ -20,6 +20,7 @@ type tokenRecord struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	Scopes    []string `json:"scopes"`
+	Servers   []string `json:"servers"`
 	CreatedAt string   `json:"createdAt"`
 	CreatedBy string   `json:"createdBy"`
 	ExpiresAt *string  `json:"expiresAt"`

@@ -368,7 +368,7 @@ func newActionView(action store.Action) actionView {
 // is not audited: a read must not be a write for someone who may not write.
 func (s *Server) handleGetAction(w http.ResponseWriter, r *http.Request) {
 	actionID := r.PathValue("actionId")
-	code, err := s.store.ActionCode(r.Context(), actionID)
+	code, serverID, err := s.store.ActionOwner(r.Context(), actionID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "no such action")
@@ -378,6 +378,15 @@ func (s *Server) handleGetAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireScope(w, r, resourceActions, verbRead, code) {
+		return
+	}
+	// The one route that reaches a server without naming it in the path: a
+	// bound token (spec section 10.1) is refused here, after the lookup and
+	// before any of the record is returned (section 10.2). The id was
+	// unguessable, so the lookup told the caller nothing it did not have.
+	if !principalFrom(r.Context()).boundTo(serverID) {
+		writeError(w, http.StatusForbidden, codeForbidden,
+			"this token is bound to other servers than the one this action belongs to")
 		return
 	}
 

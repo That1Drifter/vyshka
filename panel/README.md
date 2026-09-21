@@ -144,12 +144,16 @@ management views).
   not plotted. Drag or arrow keys pan, wheel and the `+`/`−` buttons zoom (past the
   imagery's native level too), `0` or Fit shows the whole world.
 - **Tokens** at `#/tokens`, over `GET /tokens` (protocol section 10.4): name, one badge per
-  scope, state, created, expires, and id, with revoked and expired rows dimmed and badged,
-  because the audit log points at records that no longer work. The mint form takes a name, a
-  role bundle, a scope list, and an expiry (never, 1, 7, 30, or 90 days, or custom seconds).
-  Revoking asks for a second click on the row before it sends `DELETE /tokens/{id}`. The
-  whole view needs `admin`, and a refusal is one notice naming that scope rather than one
-  per call that failed.
+  scope, the servers the token is bound to (or "every server" for an unbound one), state,
+  created, expires, and id, with revoked and expired rows dimmed and badged, because the
+  audit log points at records that no longer work. The mint form takes a name, a role
+  bundle, a scope list, a server picker, and an expiry (never, 1, 7, 30, or 90 days, or
+  custom seconds). The picker is the server binding of protocol section 10.1: nothing
+  ticked mints an unbound token, and ticked servers confine every grant to them; the hub
+  refuses `admin` and `webhooks:manage` on a bound token and does not narrow `kv:rw`, which
+  the picker's hint says. Revoking asks for a second click on the row before it sends
+  `DELETE /tokens/{id}`. The whole view needs `admin`, and a refusal is one notice naming
+  that scope rather than one per call that failed.
 - **Role bundles** are a panel convenience and no part of the protocol: they only fill the
   scope list, which stays editable, and the panel sends exactly what is shown. **Owner** is
   `admin`. **Moderator** is `servers:read`, `events:read`, and one

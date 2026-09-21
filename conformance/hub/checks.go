@@ -3010,6 +3010,148 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "admin.tokens.serverBinding",
+		Title:   "A token bound to a server holds its grants there and nothing on another server",
+		Section: "10.1",
+		Run: func(ctx context.Context, env Env) error {
+			mine, err := env.newFakePlugin(ctx, "conformance: bound to me", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := mine.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			other, err := env.newFakePlugin(ctx, "conformance: bound elsewhere", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			if _, err := other.publishManifest(ctx, manifestBody(1)); err != nil {
+				return err
+			}
+			mineID, otherID := mine.Server.Server.ID, other.Server.Server.ID
+
+			minted, err := env.mintBoundToken(ctx, "conformance: moderator of one", []string{mineID},
+				"servers:read", "events:read", "actions:dispatch:example-mod.*")
+			if err != nil {
+				return err
+			}
+			if len(minted.Token.Servers) != 1 || minted.Token.Servers[0] != mineID {
+				return fmt.Errorf("the minted record carries servers %v, want [%s] (section 10.4)", minted.Token.Servers, mineID)
+			}
+
+			// The list is filtered to the binding, never refused.
+			var listed struct {
+				Servers []struct {
+					ID string `json:"id"`
+				} `json:"servers"`
+			}
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/servers", minted.Secret, nil, http.StatusOK, &listed); err != nil {
+				return fmt.Errorf("listing servers as a bound token: %w", err)
+			}
+			for _, server := range listed.Servers {
+				if server.ID != mineID {
+					return fmt.Errorf("a bound token's server list carries %s, which is outside its binding (section 10.2)", server.ID)
+				}
+			}
+			if len(listed.Servers) != 1 {
+				return fmt.Errorf("a bound token's server list has %d entries, want its one server", len(listed.Servers))
+			}
+
+			// Its own server answers.
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/servers/"+mineID, minted.Secret, nil, http.StatusOK, nil); err != nil {
+				return fmt.Errorf("reading the bound server: %w", err)
+			}
+			var accepted struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, "/api/v1/servers/"+mineID+"/actions", minted.Secret,
+				map[string]any{"code": "example-mod.heal", "params": map[string]any{"amount": 25}},
+				http.StatusAccepted, &accepted); err != nil {
+				return fmt.Errorf("dispatching on the bound server: %w", err)
+			}
+			if err := env.expect(ctx, http.MethodGet, "/api/v1/actions/"+accepted.ActionID, minted.Secret, nil, http.StatusOK, nil); err != nil {
+				return fmt.Errorf("reading back its own action: %w", err)
+			}
+
+			// The other server is refused on every route that names it.
+			for _, one := range []struct {
+				method string
+				path   string
+				body   any
+				why    string
+			}{
+				{http.MethodGet, "/api/v1/servers/" + otherID, nil, "reading a server outside the binding"},
+				{http.MethodGet, "/api/v1/servers/" + otherID + "/manifest", nil, "reading a manifest outside the binding"},
+				{http.MethodGet, "/api/v1/servers/" + otherID + "/events", nil, "reading telemetry outside the binding"},
+				{http.MethodPost, "/api/v1/servers/" + otherID + "/actions",
+					map[string]any{"code": "example-mod.heal"}, "dispatching outside the binding"},
+			} {
+				if err := env.refused(ctx, one.method, one.path, minted.Secret, one.body, one.why); err != nil {
+					return err
+				}
+			}
+
+			// An action reached by its own id is judged by the server it
+			// belongs to.
+			var theirs struct {
+				ActionID string `json:"actionId"`
+			}
+			if err := env.expect(ctx, http.MethodPost, "/api/v1/servers/"+otherID+"/actions", env.AdminToken,
+				map[string]any{"code": "example-mod.heal", "params": map[string]any{"amount": 25}},
+				http.StatusAccepted, &theirs); err != nil {
+				return fmt.Errorf("the suite's own dispatch on the other server: %w", err)
+			}
+			if err := env.refused(ctx, http.MethodGet, "/api/v1/actions/"+theirs.ActionID, minted.Secret, nil,
+				"reading an action of a server outside the binding"); err != nil {
+				return err
+			}
+
+			// What a binding cannot be is refused at mint, and nothing is
+			// stored (section 10.4).
+			before, err := env.listTokens(ctx)
+			if err != nil {
+				return err
+			}
+			for _, one := range []struct {
+				body       map[string]any
+				wantStatus int
+				wantCode   string
+				why        string
+			}{
+				{map[string]any{"name": "c", "scopes": []string{"servers:read"}, "servers": []string{"01J00000000000000000000000"}},
+					http.StatusNotFound, "not_found", "a binding naming an unknown server"},
+				{map[string]any{"name": "c", "scopes": []string{"admin"}, "servers": []string{mineID}},
+					http.StatusBadRequest, "bad_request", "admin on a bound token"},
+				{map[string]any{"name": "c", "scopes": []string{"servers:read", "webhooks:manage"}, "servers": []string{mineID}},
+					http.StatusBadRequest, "bad_request", "webhooks:manage on a bound token"},
+			} {
+				if err := env.expectError(ctx, http.MethodPost, "/api/v1/tokens", env.AdminToken, one.body, one.wantStatus, one.wantCode); err != nil {
+					return fmt.Errorf("%s: %w", one.why, err)
+				}
+			}
+			after, err := env.listTokens(ctx)
+			if err != nil {
+				return err
+			}
+			if len(after) != len(before) {
+				return fmt.Errorf("a refused mint stored a token: %d records before, %d after", len(before), len(after))
+			}
+
+			// An unbound token says so with an empty list, not an absent member.
+			unbound, err := env.mintToken(ctx, "conformance: unbound", "servers:read")
+			if err != nil {
+				return err
+			}
+			if unbound.Token.Servers == nil {
+				return fmt.Errorf("an unbound token's record omits servers; section 10.4 wants [] so a client never has to guess")
+			}
+			if len(unbound.Token.Servers) != 0 {
+				return fmt.Errorf("an unbound token's record carries servers %v, want []", unbound.Token.Servers)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "admin.tokens.idempotencyKeyIsNotAnOracle",
 		Title:   "Replaying an idempotency key cannot return an action the token could not dispatch",
 		Section: "10.2",

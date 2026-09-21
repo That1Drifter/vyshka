@@ -592,6 +592,18 @@ paths:
                   description: |
                     Grants, in the closed grammar of spec section 10.1. A scope
                     the hub does not define is refused here rather than stored.
+                servers:
+                  type: array
+                  maxItems: 50
+                  items: { type: string }
+                  description: |
+                    The server binding of spec section 10.1: exact server ids
+                    the token is confined to. Absent or empty mints an unbound
+                    token whose grants apply to every server. An id the hub
+                    does not know is `not_found`; a scope the binding cannot
+                    carry (`admin`, `webhooks:manage`) is `bad_request`. The
+                    binding does not narrow `kv:rw`, since the store has no
+                    server dimension.
                 expiresInSeconds:
                   type: integer
                   minimum: 0
@@ -602,6 +614,7 @@ paths:
             example:
               name: panel
               scopes: ["servers:read", "events:read:example-mod.*"]
+              servers: ["01J5QK0Z1YQ6R1M6M9K3XJ8B2C"]
               expiresInSeconds: 2592000
       responses:
         "201":
@@ -619,6 +632,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: A `servers` entry names no server this hub knows (spec section 10.4).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/tokens/{tokenId}:
     delete:
@@ -1212,7 +1230,7 @@ components:
     AdminTokenRecord:
       type: object
       description: An Admin API credential as the API reports it. Never carries the secret.
-      required: [id, name, scopes, createdAt, expiresAt, revokedAt]
+      required: [id, name, scopes, servers, createdAt, expiresAt, revokedAt]
       properties:
         id: { type: string }
         name:
@@ -1221,6 +1239,13 @@ components:
         scopes:
           type: array
           items: { $ref: "#/components/schemas/Scope" }
+        servers:
+          type: array
+          items: { type: string }
+          description: |
+            The server binding (spec section 10.1). Empty for an unbound
+            token, whose grants apply to every server; always present, so a
+            client never has to guess what an absent member means.
         createdAt: { type: string, format: date-time }
         createdBy:
           type: string
