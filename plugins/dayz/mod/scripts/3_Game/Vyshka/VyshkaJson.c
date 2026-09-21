@@ -56,6 +56,7 @@ class VyshkaTextCursor
 {
 	static const int OUTER = 8191;
 	static const int INNER = 256;
+	static const int SLICE_GROUP = 4096;
 
 	protected string m_Source;                 // string mode
 	protected ref array<string> m_Segments;    // segment mode: the source is these, concatenated verbatim
@@ -133,10 +134,14 @@ class VyshkaTextCursor
 	// Slice copies length characters from start, whatever windows they lie
 	// in; a slice past the end is cut at the end. Each piece copied is at
 	// most INNER long, so no Substring is ever asked for more than it can
-	// return, and a run longer than the cap is assembled whole.
+	// return, and a run longer than the cap is assembled whole: in groups
+	// of SLICE_GROUP joined once, so a long slice costs its length rather
+	// than its square.
 	string Slice(int start, int length)
 	{
 		string result = "";
+		int resultLength = 0;
+		array<string> groups = null;
 		int end = start + length;
 		if (end > m_Length)
 			end = m_Length;
@@ -155,9 +160,22 @@ class VyshkaTextCursor
 				result += m_Inner;
 			else
 				result += m_Inner.Substring(pos - m_InnerStart, take);
+			resultLength += take;
 			pos += take;
+			if (resultLength >= SLICE_GROUP && pos < end)
+			{
+				if (!groups)
+					groups = new array<string>;
+				groups.Insert(result);
+				result = "";
+				resultLength = 0;
+			}
 		}
-		return result;
+		if (!groups)
+			return result;
+		if (resultLength > 0)
+			groups.Insert(result);
+		return VyshkaJsonWriter.JoinPieces(groups);
 	}
 
 	// Seek moves the inner piece (and the outer window when needed) over
@@ -223,17 +241,31 @@ class VyshkaTextCursor
 // whitespace, so the text stays valid for any reader, and no line is longer
 // than its longest token, which is what a file read back through the
 // engine's line reader needs (VyshkaFiles.LINE_MAX). The longest line is
-// tracked so a writer can refuse a file that would not read back.
+// tracked so a writer can refuse a file that would not read back, and so
+// is the deepest nesting, since the parser reads no deeper than
+// VyshkaJson.MAX_DEPTH.
+//
+// A file writer may also ask for long strings to be chunked: a string
+// value of LONG_STRING_MIN characters or more then goes out as an object
+// with the one member LONG_STRING_KEY holding an array of pieces, one per
+// line, and the file reader folds it back (VyshkaJsonValue.Unchunk). A
+// JSON string cannot be broken across lines any other way, and without
+// this a legal result carrying one long string could not be persisted.
 class VyshkaJsonWriter
 {
 	static const int CHUNK = 4096;
 	static const int JOIN_GROUP = 16;
+	static const string LONG_STRING_KEY = "$vyshka.longString";
+	static const int LONG_STRING_MIN = 16384;
+	static const int LONG_STRING_PIECE = 4096;
 
 	protected ref array<string> m_Chunks;
 	protected string m_Buffer;
 	protected int m_BufferLength;
 	protected bool m_Lines;
+	protected bool m_ChunkStrings;
 	protected int m_Depth;
+	protected int m_MaxDepth;
 	protected int m_LineLength;
 	protected int m_LongestLine;
 	protected int m_Length;
@@ -244,10 +276,60 @@ class VyshkaJsonWriter
 		m_Buffer = "";
 		m_BufferLength = 0;
 		m_Lines = lines;
+		m_ChunkStrings = false;
 		m_Depth = 0;
+		m_MaxDepth = 0;
 		m_LineLength = 0;
 		m_LongestLine = 0;
 		m_Length = 0;
+	}
+
+	// ChunkStrings turns long-string chunking on (file writers only).
+	void ChunkStrings(bool on)
+	{
+		m_ChunkStrings = on;
+	}
+
+	// ChunksString says whether a string of the given length goes out in
+	// pieces under this writer.
+	bool ChunksString(int length)
+	{
+		return m_ChunkStrings && length >= LONG_STRING_MIN;
+	}
+
+	// WriteChunked writes a long string as the chunk object.
+	void WriteChunked(string text)
+	{
+		Open("{");
+		Newline();
+		VyshkaJson.QuoteTo(this, LONG_STRING_KEY);
+		Append(":");
+		Open("[");
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(text);
+		int length = cursor.Length();
+		int pos = 0;
+		int pieces = 0;
+		while (pos < length)
+		{
+			int take = LONG_STRING_PIECE;
+			if (pos + take > length)
+				take = length - pos;
+			if (pieces > 0)
+				Append(",");
+			Newline();
+			VyshkaJson.QuoteTo(this, cursor.Slice(pos, take));
+			pos += take;
+			pieces++;
+		}
+		Close("]", pieces > 0);
+		Close("}", true);
+	}
+
+	// MaxDepth is the deepest container nesting written so far, the root
+	// container counting as one.
+	int MaxDepth()
+	{
+		return m_MaxDepth;
 	}
 
 	// Append adds one piece, which must carry no newline of its own (Quote
@@ -273,6 +355,8 @@ class VyshkaJsonWriter
 	{
 		Append(bracket);
 		m_Depth++;
+		if (m_Depth > m_MaxDepth)
+			m_MaxDepth = m_Depth;
 	}
 
 	// Close ends one: the depth comes back, and in lines mode the bracket
@@ -595,6 +679,76 @@ class VyshkaJsonValue : Managed
 		return v.m_Bool;
 	}
 
+	// Depth is the container nesting of this value: 0 for a scalar, 1 for
+	// an empty or flat container, one more per level inside.
+	int Depth()
+	{
+		if (m_Kind != VyshkaJsonKind.ARRAY_VALUE && m_Kind != VyshkaJsonKind.OBJECT_VALUE)
+			return 0;
+		int deepest = 0;
+		if (m_Kind == VyshkaJsonKind.ARRAY_VALUE)
+		{
+			for (int i = 0; i < m_Items.Count(); i++)
+			{
+				int itemDepth = m_Items.Get(i).Depth();
+				if (itemDepth > deepest)
+					deepest = itemDepth;
+			}
+		}
+		else
+		{
+			for (int k = 0; k < m_Values.Count(); k++)
+			{
+				int valueDepth = m_Values.Get(k).Depth();
+				if (valueDepth > deepest)
+					deepest = valueDepth;
+			}
+		}
+		return deepest + 1;
+	}
+
+	// Unchunk folds the chunk objects a file writer produced for long
+	// strings (VyshkaJsonWriter.WriteChunked) back into string values,
+	// throughout the tree, and returns the value to use in place of the
+	// one given (the same object unless it was itself a chunk object).
+	static VyshkaJsonValue Unchunk(VyshkaJsonValue value)
+	{
+		if (!value)
+			return null;
+		if (value.m_Kind == VyshkaJsonKind.ARRAY_VALUE)
+		{
+			for (int i = 0; i < value.m_Items.Count(); i++)
+				value.m_Items.Set(i, Unchunk(value.m_Items.Get(i)));
+			return value;
+		}
+		if (value.m_Kind != VyshkaJsonKind.OBJECT_VALUE)
+			return value;
+		if (value.m_Keys.Count() == 1 && value.m_Keys.Get(0) == VyshkaJsonWriter.LONG_STRING_KEY)
+		{
+			VyshkaJsonValue pieces = value.m_Values.Get(0);
+			if (pieces && pieces.m_Kind == VyshkaJsonKind.ARRAY_VALUE)
+			{
+				array<string> texts = new array<string>;
+				bool allStrings = true;
+				for (int p = 0; p < pieces.m_Items.Count(); p++)
+				{
+					VyshkaJsonValue piece = pieces.m_Items.Get(p);
+					if (!piece || piece.m_Kind != VyshkaJsonKind.STRING_VALUE)
+					{
+						allStrings = false;
+						break;
+					}
+					texts.Insert(piece.m_Text);
+				}
+				if (allStrings)
+					return NewString(VyshkaJsonWriter.JoinPieces(texts));
+			}
+		}
+		for (int k = 0; k < value.m_Values.Count(); k++)
+			value.m_Values.Set(k, Unchunk(value.m_Values.Get(k)));
+		return value;
+	}
+
 	// ---- serialization ----
 
 	// Serialize is the compact text: what goes on the wire.
@@ -631,7 +785,10 @@ class VyshkaJsonValue : Managed
 				writer.Append(m_Text);
 				break;
 			case VyshkaJsonKind.STRING_VALUE:
-				VyshkaJson.QuoteTo(writer, m_Text);
+				if (writer.ChunksString(m_Text.Length()))
+					writer.WriteChunked(m_Text);
+				else
+					VyshkaJson.QuoteTo(writer, m_Text);
 				break;
 			case VyshkaJsonKind.ARRAY_VALUE:
 				writer.Open("[");

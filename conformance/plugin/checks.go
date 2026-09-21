@@ -445,6 +445,21 @@ var stages = []Stage{
 	largeParamsStage,
 }
 
+// paddingKey is a member name the action's schema does not declare, so the
+// padding never displaces a declared parameter and the dispatch stays
+// schema-valid: largeParamsKey, or the first numbered variant of it that
+// is free.
+func paddingKey(schema map[string]any) string {
+	properties, _ := schema["properties"].(map[string]any)
+	key := largeParamsKey
+	for n := 2; ; n++ {
+		if _, declared := properties[key]; !declared {
+			return key
+		}
+		key = fmt.Sprintf("%s%d", largeParamsKey, n)
+	}
+}
+
 // largeParamsStage dispatches the action with its usual params plus one
 // string member of largeParamsBytes the schema does not name, which a
 // receiver ignores (section 2.1), and expects the ordinary lifecycle
@@ -463,7 +478,7 @@ var largeParamsStage = Stage{
 	Run: func(h *harness) error {
 		hub := h.hub
 		params := synthesizeParams(h.action.Params)
-		params[largeParamsKey] = strings.Repeat("0123456789abcdef", largeParamsBytes/16)
+		params[paddingKey(h.action.Params)] = strings.Repeat("0123456789abcdef", largeParamsBytes/16)
 		large := hub.queueDispatch(actionLarge, h.action, params, h.checkTimeout)
 		err := hub.await(h.checkTimeout, "the plugin to ack the large dispatch", func() bool {
 			return large.acked

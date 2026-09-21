@@ -141,13 +141,21 @@ class VyshkaOutbox
 			rejectedPath = rejectedBase + "-" + collision.ToString() + ".json";
 		}
 		// The body is kept serialized; it is read back into a tree here, on
-		// this rare path, so the record can be written across lines.
+		// this rare path, so the record can be written across lines. A body
+		// the parser will not read back (nested past its depth) is kept as
+		// the text it went out as, so nothing the hub refused is lost.
 		VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
-		if (!body)
-			body = VyshkaJsonValue.NewObject();
+		VyshkaJsonValue envelope;
+		if (body)
+			envelope = entry.RecordJson(body);
+		else
+		{
+			envelope = entry.RecordJson(VyshkaJsonValue.NewObject());
+			envelope.Set("bodyText", VyshkaJsonValue.NewString(entry.m_Body));
+		}
 		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
 		record.Set("rejected", VyshkaJsonValue.NewString(reason));
-		record.Set("envelope", entry.RecordJson(body));
+		record.Set("envelope", envelope);
 		if (!VyshkaFiles.WriteJson(rejectedPath, record))
 			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Serialize());
 		if (!DeleteFile(entry.Path()))

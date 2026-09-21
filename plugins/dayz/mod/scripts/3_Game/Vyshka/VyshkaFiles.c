@@ -21,11 +21,13 @@
 // it from script (measured in spikes/dayz-bans-pull-size on DayZ 1.29;
 // issue #108). Every JSON file the plugin writes therefore goes through
 // WriteJson, which puts each array element and object member on a line of
-// its own and refuses a document with a line over LINE_MAX rather than
-// write what the next boot could not read; and every JSON file is read
-// through ReadJson, which parses the lines as they come instead of joining
-// them into one string first (an append per line onto a growing string
-// would cost the square of the file).
+// its own, breaks a long string value into pieces on lines of their own,
+// and refuses a document that would still carry a line over LINE_MAX (or
+// nest deeper than the parser reads) rather than write what the next boot
+// could not read; and every JSON file is read through ReadJson, which
+// parses the lines as they come instead of joining them into one string
+// first (an append per line onto a growing string would cost the square
+// of the file) and folds the pieces back.
 
 class VyshkaFiles
 {
@@ -136,19 +138,28 @@ class VyshkaFiles
 
 	// WriteJson writes a JSON document with every array element and object
 	// member on a line of its own (VyshkaJsonValue.SerializeLines), chunk
-	// by chunk, never as one string. It refuses, with an error in the log
-	// and the file left as it was, a document any line of which would pass
-	// LINE_MAX: the only way a line gets that long is a single string value
-	// of that length, and a file that faults the next boot is worse than a
-	// record not kept.
+	// by chunk, never as one string, and with every long string value
+	// broken into pieces on lines of their own (VyshkaJsonWriter.WriteChunked;
+	// ReadJson folds them back). It refuses, with an error in the log and
+	// the file left as it was, a document any line of which would still
+	// pass LINE_MAX (only a key or a number token of that length can), or
+	// one nested deeper than the parser reads, since a file that faults or
+	// fails the next boot is worse than a record not kept.
 	static bool WriteJson(string path, VyshkaJsonValue value)
 	{
 		VyshkaJsonWriter writer = new VyshkaJsonWriter(true);
+		writer.ChunkStrings(true);
 		value.WriteTo(writer);
 		int longest = writer.LongestLine();
 		if (longest > LINE_MAX)
 		{
 			VyshkaLog.Error("not writing " + path + ": a line of it would be " + longest.ToString() + " bytes, and the engine's file reader faults the server on a line over " + LINE_MAX.ToString());
+			return false;
+		}
+		int depth = writer.MaxDepth();
+		if (depth > VyshkaJson.MAX_DEPTH)
+		{
+			VyshkaLog.Error("not writing " + path + ": it nests " + depth.ToString() + " levels deep and the plugin reads no deeper than " + VyshkaJson.MAX_DEPTH.ToString());
 			return false;
 		}
 		FileHandle handle = OpenFile(path, FileMode.WRITE);
@@ -197,7 +208,8 @@ class VyshkaFiles
 		array<string> segments;
 		if (!ReadSegments(path, segments))
 			return null;
-		return VyshkaJson.ParseSegments(segments);
+		VyshkaJsonValue root = VyshkaJson.ParseSegments(segments);
+		return VyshkaJsonValue.Unchunk(root);
 	}
 }
 

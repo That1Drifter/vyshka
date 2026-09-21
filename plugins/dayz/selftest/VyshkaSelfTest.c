@@ -70,7 +70,7 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 8;
+	static const int PLAN = 9;
 	static const int SETTLE_MS = 3000;
 	// The performance counter runs at 10 MHz (measured against the frame
 	// clock in the spike).
@@ -114,7 +114,8 @@ class VyshkaSelfTest
 		CheckManifest();
 		CheckManifestLegacy();
 		CheckOutbox();
-		CheckOversizedLine();
+		CheckLongValue();
+		CheckRefused();
 		CheckLongString();
 		CheckEscapes();
 		CheckSpeed();
@@ -335,21 +336,57 @@ class VyshkaSelfTest
 			DeleteFile(stored.Path());
 	}
 
-	// ---- files.oversizedLine: a document with a single string past the
-	// reader's limit is refused, not written ----
-	void CheckOversizedLine()
+	// ---- files.longValue: a document whose one string value is past the
+	// reader's limit is written in pieces and read back whole ----
+	void CheckLongValue()
 	{
 		if (FileExist(OVERSIZED_PATH))
 			DeleteFile(OVERSIZED_PATH);
+		string value = Repeat("0123456789", 7000);
 		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
-		document.Set("note", VyshkaJsonValue.NewString(Repeat("0123456789", 7000)));
+		document.Set("note", VyshkaJsonValue.NewString(value));
+		document.Set("after", VyshkaJsonValue.NewInt(1));
 		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
-		bool exists = FileExist(OVERSIZED_PATH);
-		bool ok = !written && !exists;
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		bool equal = back && back.IsObject() && back.GetString("note", "") == value && back.GetInt("after", 0) == 1;
+		bool ok = written && equal;
 		string detail = "written=" + written;
-		detail += "\texists=" + exists;
-		Report("files.oversizedLine", ok, detail);
-		if (exists)
+		detail += "\tequal=" + equal;
+		Report("files.longValue", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+	}
+
+	// ---- files.refused: a document that would still carry a line past the
+	// reader's limit (a key of that length), and one nested deeper than the
+	// parser reads, are refused, not written ----
+	void CheckRefused()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		VyshkaJsonValue longKey = VyshkaJsonValue.NewObject();
+		longKey.Set(Repeat("0123456789", 7000), VyshkaJsonValue.NewInt(1));
+		bool keyWritten = VyshkaFiles.WriteJson(OVERSIZED_PATH, longKey);
+		bool keyExists = FileExist(OVERSIZED_PATH);
+		VyshkaJsonValue deep = VyshkaJsonValue.NewArray();
+		VyshkaJsonValue root = deep;
+		for (int i = 0; i < 70; i++)
+		{
+			VyshkaJsonValue inner = VyshkaJsonValue.NewArray();
+			deep.Add(inner);
+			deep = inner;
+		}
+		int depth = root.Depth();
+		bool deepWritten = VyshkaFiles.WriteJson(OVERSIZED_PATH, root);
+		bool deepExists = FileExist(OVERSIZED_PATH);
+		bool ok = !keyWritten && !keyExists && !deepWritten && !deepExists && depth == 71;
+		string detail = "keyWritten=" + keyWritten;
+		detail += "\tkeyExists=" + keyExists;
+		detail += "\tdeepWritten=" + deepWritten;
+		detail += "\tdeepExists=" + deepExists;
+		detail += "\tdepth=" + depth;
+		Report("files.refused", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
 			DeleteFile(OVERSIZED_PATH);
 	}
 

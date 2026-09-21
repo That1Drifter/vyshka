@@ -40,6 +40,12 @@ type selfTestReport struct {
 	Plan     int
 	Results  []selfTestResult
 	Finished bool
+	// When the plan line and the finished line were seen, by this clock:
+	// the probe's own timings come from the engine's 32-bit counter, which
+	// a phase of about 430 s wraps to a small reading, so the whole run is
+	// bounded from outside as well.
+	PlanAt     time.Time
+	FinishedAt time.Time
 }
 
 // consume reads one script-log line and records the probe line in it, if
@@ -53,6 +59,7 @@ func (r *selfTestReport) consume(line string) bool {
 	switch {
 	case strings.HasPrefix(fields[0], "plan="):
 		r.Plan, _ = strconv.Atoi(strings.TrimPrefix(fields[0], "plan="))
+		r.PlanAt = time.Now()
 	case strings.HasPrefix(fields[0], "check="):
 		result := selfTestResult{Check: strings.TrimPrefix(fields[0], "check=")}
 		if len(fields) > 1 {
@@ -64,12 +71,14 @@ func (r *selfTestReport) consume(line string) bool {
 		r.Results = append(r.Results, result)
 	case fields[0] == "finished":
 		r.Finished = true
+		r.FinishedAt = time.Now()
 	}
 	return r.Finished
 }
 
-// verdict is nil when every planned check ran and passed.
-func (r *selfTestReport) verdict() error {
+// verdict is nil when every planned check ran and passed, and the run from
+// the plan line to the finished line stayed inside budget (0 for no bound).
+func (r *selfTestReport) verdict(budget time.Duration) error {
 	var failed []string
 	for _, result := range r.Results {
 		if !result.Passed {
@@ -83,6 +92,8 @@ func (r *selfTestReport) verdict() error {
 		return fmt.Errorf("the probe did not report finishing; %d of %d planned check(s) reported", len(r.Results), r.Plan)
 	case r.Plan == 0 || len(r.Results) != r.Plan:
 		return fmt.Errorf("the probe planned %d check(s) and reported %d", r.Plan, len(r.Results))
+	case budget > 0 && !r.PlanAt.IsZero() && r.FinishedAt.Sub(r.PlanAt) > budget:
+		return fmt.Errorf("the checks took %s from the plan line to the finished line, over the %s budget; a phase long enough to wrap the engine's counter reads as fast in its own report, so the run is bounded here as well", r.FinishedAt.Sub(r.PlanAt).Round(time.Second), budget)
 	}
 	return nil
 }
@@ -144,6 +155,7 @@ func runSelfTest(args []string) error {
 	probePath := fs.String("probe", defaultPath("plugins/dayz/selftest/VyshkaSelfTest.c"), "the self-test script appended to the mission's init.c")
 	port := fs.Int("port", 2402, "game port for the server")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long the boot and the checks may take together")
+	checkBudget := fs.Duration("check-budget", 4*time.Minute, "how long the checks themselves may take, from the probe's plan line to its finished line; 0 for no bound")
 	keep := fs.Bool("keep", false, "keep the server running after the checks (for a look at the profile directory)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -197,6 +209,16 @@ func runSelfTest(args []string) error {
 	}
 	defer os.Remove(cfgPath)
 
+	// The logs already there are a previous run's; the follower must not
+	// grade one of those, which a run started within a minute of the last
+	// could otherwise pick up before the new server has created its own.
+	earlier := map[string]bool{}
+	if matches, _ := filepath.Glob(filepath.Join(profilesAbs, "script_*.log")); matches != nil {
+		for _, m := range matches {
+			earlier[m] = true
+		}
+	}
+
 	// No -freezecheck: the checks hold the main thread on purpose, and the
 	// stall is part of what they measure.
 	logStart := time.Now()
@@ -216,7 +238,7 @@ func runSelfTest(args []string) error {
 	go func() { exited <- cmd.Wait() }()
 
 	report := &selfTestReport{}
-	outcome := followSelfTest(profilesAbs, logStart, report, exited, *timeout)
+	outcome := followSelfTest(profilesAbs, logStart, earlier, report, exited, *timeout)
 
 	if *keep {
 		fmt.Fprintln(os.Stderr, "vyshka-dayz: leaving the server running (-keep)")
@@ -242,15 +264,16 @@ func runSelfTest(args []string) error {
 	if outcome != nil {
 		return outcome
 	}
-	return report.verdict()
+	return report.verdict(*checkBudget)
 }
 
 var errServerExited = fmt.Errorf("the server exited")
 
-// followSelfTest reads the newest script log the server writes until the
-// probe reports finishing, the server exits, or the timeout passes. Every
-// probe line and every plugin log line is mirrored to stderr as it lands.
-func followSelfTest(profiles string, since time.Time, report *selfTestReport, exited <-chan error, timeout time.Duration) error {
+// followSelfTest reads the script log the server writes (the newest one
+// that was not there before the launch) until the probe reports finishing,
+// the server exits, or the timeout passes. Every probe line and every
+// plugin log line is mirrored to stderr as it lands.
+func followSelfTest(profiles string, since time.Time, earlier map[string]bool, report *selfTestReport, exited <-chan error, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var file *os.File
 	var reader *bufio.Reader
@@ -294,6 +317,9 @@ func followSelfTest(profiles string, since time.Time, report *selfTestReport, ex
 			matches, _ := filepath.Glob(filepath.Join(profiles, "script_*.log"))
 			sort.Strings(matches)
 			for i := len(matches) - 1; i >= 0; i-- {
+				if earlier[matches[i]] {
+					continue
+				}
 				info, err := os.Stat(matches[i])
 				if err != nil || info.ModTime().Before(since.Add(-time.Minute)) {
 					continue

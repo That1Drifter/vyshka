@@ -131,6 +131,14 @@ class VyshkaRegistry
 	static const int EVENT_ID_MAX = 128;
 	static const int LABEL_MAX = 200;
 	static const int NAMESPACE_MAX = 64;
+	static const int CODE_MAX = 128;
+
+	// How deep an action's declaration (its params schema, mostly) may
+	// nest. The manifest record wraps the manifest in a few containers and
+	// the plugin's parser reads 64 deep (VyshkaJson.MAX_DEPTH), so a
+	// declaration past this would make the record unreadable on the next
+	// boot and mint a new revision every time.
+	static const int DECLARATION_DEPTH_MAX = 32;
 
 	// The manifest's count bounds, the reference hub's own (hub/manifest.go):
 	// a manifest over any of them is rejected whole, which would take every
@@ -169,6 +177,19 @@ class VyshkaRegistry
 		if (m_Actions.Count() >= ACTIONS_MAX)
 		{
 			VyshkaLog.Warn("action " + action.Code() + " was not registered: the manifest already declares " + ACTIONS_MAX.ToString() + " actions, the most a hub accepts (spec section 6)");
+			return;
+		}
+		string code = action.Code();
+		if (code.LengthUtf8() > CODE_MAX)
+		{
+			VyshkaLog.Warn("action " + code + " has a code longer than " + CODE_MAX.ToString() + " characters (spec section 6.1) and was not registered");
+			return;
+		}
+		VyshkaJsonValue declaration = action.Declaration();
+		int depth = declaration.Depth();
+		if (depth > DECLARATION_DEPTH_MAX)
+		{
+			VyshkaLog.Warn("action " + code + " declares a params schema nested " + depth.ToString() + " levels deep, more than the " + DECLARATION_DEPTH_MAX.ToString() + " the manifest record can keep, and was not registered");
 			return;
 		}
 		m_Actions.Insert(action);

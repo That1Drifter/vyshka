@@ -845,6 +845,41 @@ func TestLargeParamsStagePassesWhenTheDispatchIsAckedAndAnswered(t *testing.T) {
 	}
 }
 
+func TestLargeParamsStageKeepsADeclaredPaddingProperty(t *testing.T) {
+	h, p, stageHarness := largeParamsHub(t)
+	// An action that happens to declare the padding's name as a required
+	// integer: the padding has to go under another name, and the declared
+	// property has to keep its synthesized value.
+	stageHarness.action.Params = map[string]any{
+		"type":     "object",
+		"required": []any{largeParamsKey},
+		"properties": map[string]any{
+			largeParamsKey: map[string]any{"type": "integer", "minimum": 7, "maximum": 7},
+		},
+	}
+	var got map[string]any
+	responder := startDispatchResponder(p, 2, func(actionID string, params json.RawMessage) []map[string]any {
+		_ = json.Unmarshal(params, &got)
+		return []map[string]any{
+			{"type": "action.ack", "body": map[string]any{"actionId": actionID}},
+			{"type": "action.result", "body": map[string]any{"actionId": actionID, "ok": true}},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runLargeParamsStage(t, stageHarness)
+	if !result.Passed {
+		t.Fatalf("the stage did not pass: %+v; faults:\n%s", result, faultMessages(h))
+	}
+	if _, ok := got[largeParamsKey].(float64); !ok {
+		t.Fatalf("the declared property was displaced: %v", got[largeParamsKey])
+	}
+	padding, ok := got[largeParamsKey+"2"].(string)
+	if !ok || len(padding) < largeParamsBytes {
+		t.Fatalf("the padding did not go under the next free name: %d bytes under %q", len(padding), largeParamsKey+"2")
+	}
+}
+
 func TestLargeParamsStageFailsWhenTheDispatchIsAckedButNeverAnswered(t *testing.T) {
 	_, p, stageHarness := largeParamsHub(t)
 	stageHarness.checkTimeout = 500 * time.Millisecond

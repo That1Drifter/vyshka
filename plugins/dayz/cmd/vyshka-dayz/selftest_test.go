@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The self-test report is graded from the probe's lines alone, so what
@@ -32,7 +33,7 @@ func TestSelfTestReportPassesWhenEveryPlannedCheckPassed(t *testing.T) {
 	if !finished {
 		t.Fatal("the finished line was not recognized")
 	}
-	if err := report.verdict(); err != nil {
+	if err := report.verdict(4 * time.Minute); err != nil {
 		t.Fatalf("a clean run was graded as failed: %v", err)
 	}
 	if len(report.Results) != 2 || report.Results[1].Detail != "bytes=1206414 parseMs=900" {
@@ -48,7 +49,7 @@ func TestSelfTestReportNamesAFailedCheck(t *testing.T) {
 		"VYSHKA_SELFTEST\tcheck=json.longString\tresult=FAIL\tlength=8191\tequal=0",
 		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=1",
 	)
-	err := report.verdict()
+	err := report.verdict(0)
 	if err == nil || !strings.Contains(err.Error(), "json.longString") {
 		t.Fatalf("the failed check was not named: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestSelfTestReportFailsWhenTheProbeNeverFinished(t *testing.T) {
 	if finished {
 		t.Fatal("finished without the finished line")
 	}
-	err := report.verdict()
+	err := report.verdict(0)
 	if err == nil || !strings.Contains(err.Error(), "did not report finishing") || !strings.Contains(err.Error(), "1 of 3") {
 		t.Fatalf("the unfinished probe was not named: %v", err)
 	}
@@ -76,9 +77,28 @@ func TestSelfTestReportFailsWhenThePlanDoesNotAddUp(t *testing.T) {
 		"VYSHKA_SELFTEST\tcheck=files.bans\tresult=PASS\tentries=400",
 		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=0",
 	)
-	err := report.verdict()
+	err := report.verdict(0)
 	if err == nil || !strings.Contains(err.Error(), "planned 3") {
 		t.Fatalf("the short plan was not named: %v", err)
+	}
+}
+
+func TestSelfTestReportFailsWhenTheRunOutlivesItsBudget(t *testing.T) {
+	report := &selfTestReport{}
+	feed(report,
+		"VYSHKA_SELFTEST\tplan=1",
+		"VYSHKA_SELFTEST\tcheck=json.speed\tresult=PASS\tparseMs=503",
+		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=0",
+	)
+	// The probe's own reading says 503 ms; the clock outside says the
+	// checks took seven minutes, which is what a wrapped counter looks like.
+	report.PlanAt = report.FinishedAt.Add(-7 * time.Minute)
+	err := report.verdict(4 * time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "over the 4m0s budget") {
+		t.Fatalf("the overlong run was not named: %v", err)
+	}
+	if err := report.verdict(0); err != nil {
+		t.Fatalf("an unbounded verdict failed: %v", err)
 	}
 }
 

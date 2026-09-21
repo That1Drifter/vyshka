@@ -76,6 +76,11 @@ class VyshkaPlugin : VyshkaResponseSink
 	// A context.enumerate requestId is hub-assigned and opaque, at most this
 	// many code points (spec section 6.2); the reply echoes it.
 	static const int REQUEST_ID_MAX = 128;
+	// An actionId is hub-assigned and opaque (section 7); the reference hub
+	// mints 26-character ids. One past this is not executed or remembered:
+	// the executed log keeps each on a line, and the engine reads by the
+	// line (VyshkaFiles.LINE_MAX).
+	static const int ACTION_ID_MAX = 256;
 	// A context.entries body is bounded as a snapshot body is (section 6.2):
 	// 256 KiB, past which a hub refuses it whole.
 	static const int CONTEXT_REPLY_MAX_BYTES = 262144;
@@ -1472,6 +1477,14 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (actionId == "")
 		{
 			VyshkaLog.Warn("ignoring an action.dispatch without an actionId");
+			return;
+		}
+		// The id is opaque, but it is persisted (MarkExecuted) and the
+		// executed log is read by the line, so one past ACTION_ID_MAX is a
+		// body this plugin cannot use: acked and ignored like any other.
+		if (actionId.Length() > ACTION_ID_MAX)
+		{
+			VyshkaLog.Warn("ignoring an action.dispatch whose actionId is " + actionId.Length().ToString() + " characters long, over the " + ACTION_ID_MAX.ToString() + " this plugin keeps");
 			return;
 		}
 		if (m_Executed.Contains(actionId))

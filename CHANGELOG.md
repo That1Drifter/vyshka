@@ -136,19 +136,21 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   square of their input on this engine (353 s to parse 1.2 MB); and `Substring` cut any
   string value past 8 191 characters without a word. Every JSON file the plugin writes
   now goes through `VyshkaFiles.WriteJson`, one array element and one object member per
-  line, chunk by chunk, and is refused with an error rather than written when a single
-  string would still make a line over 60 000 bytes; every JSON file is read as lines and
-  parsed in place. The manifest record keeps its content as the manifest object rather
+  line, chunk by chunk, with a long string value broken into pieces on lines of their
+  own, and is refused with an error rather than written when a key would still make a
+  line over 60 000 bytes or the document nests deeper than the parser reads; every JSON
+  file is read as lines and parsed in place, the pieces folded back. The manifest record keeps its content as the manifest object rather
   than one JSON string (a record plugin 0.8.0 wrote is still read), and the outbox takes
   the body tree it persists. The parser reads through `VyshkaTextCursor`, which cuts the
   input once into windows and every character read from a 256-character piece, and
   assembles string values from pieces of what `Substring` can return, so no value is cut;
   the serializer collects pieces in `VyshkaJsonWriter` and joins once, and `Quote` reads
   the same way. Measured on DayZ 1.29 by the new self-test: the 5 000-entry pull shape
-  (1.1 MB) parses in 439 ms and serializes in 577 ms where the first parser took 353 s
+  (1.1 MB) parses in 441 ms and serializes in 582 ms where the first parser took 353 s
   and 45 s. `vyshka-dayz selftest` runs `selftest/VyshkaSelfTest.c` on a local server:
   a 400-entry ban list, a 250 KB manifest record, and an 84 KB outbox record written and
-  read back whole, an oversized string refused, a 100 000-character value and a
+  read back whole, a 70 000-character value written in pieces and read back, an
+  oversized key and an over-deep document refused, a 100 000-character value and a
   56 000-character one dense with escapes parsed whole, and the 1.1 MB document timed;
   the negative control (the ban list written as one line, as 0.8.0 wrote it) faults the
   server, which the tool reports as the failure it is.
