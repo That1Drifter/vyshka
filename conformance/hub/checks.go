@@ -3126,17 +3126,14 @@ var checks = []Check{
 			}
 			// Decoded, not searched raw: an escaped spelling of the code in
 			// the JSON text is the same disclosure to the client that
-			// decodes it.
-			var refusal struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			}
+			// decodes it, and a code in `details` is as much a disclosure
+			// as one in `message`, so every string in the refusal is read.
+			var refusal any
 			if err := json.Unmarshal(body, &refusal); err != nil {
 				return fmt.Errorf("decode the refusal of a foreign action: %w (body %s)", err, truncate(body))
 			}
-			if strings.Contains(refusal.Error.Message, "example-mod.heal") {
-				return fmt.Errorf("the refusal of a foreign action names its code, which is part of the record the binding withholds (section 10.2): %q", refusal.Error.Message)
+			if where := containsString(refusal, "example-mod.heal", "$"); where != "" {
+				return fmt.Errorf("the refusal of a foreign action names its code at %s, which is part of the record the binding withholds (section 10.2): %s", where, truncate(body))
 			}
 
 			// The refused dispatch on the other server was recorded as a
@@ -3148,7 +3145,7 @@ var checks = []Check{
 			}
 			refusedDispatches := 0
 			for _, record := range audited.Records {
-				if record.Method != http.MethodPost || !strings.Contains(record.Path, otherID) {
+				if record.Method != http.MethodPost || record.Path != "/api/v1/servers/"+otherID+"/actions" {
 					continue
 				}
 				refusedDispatches++
@@ -3162,9 +3159,21 @@ var checks = []Check{
 			if refusedDispatches != 1 {
 				return fmt.Errorf("the audit log holds %d refused dispatches on the other server for the bound token, want 1", refusedDispatches)
 			}
+			// An empty digest says the body was not digested; the refusal
+			// arriving while the body is withheld says it was not read at
+			// all. A separate token keeps this probe out of the count above.
+			probe, err := env.mintBoundToken(ctx, "conformance: headers-only probe", []string{mineID}, "actions:dispatch:example-mod.*")
+			if err != nil {
+				return err
+			}
+			if err := env.refusedBeforeBody(ctx, http.MethodPost, "/api/v1/servers/"+otherID+"/actions", probe.Secret); err != nil {
+				return err
+			}
 
 			// The store has no server in a key: a bound token's kv:rw grant
-			// reaches it (sections 10.1 and 12.3).
+			// reaches it, and what it writes is the one installation-wide
+			// value, read back the same by a token bound to the other server
+			// and by the suite's own credential (sections 10.1 and 12.3).
 			keeper, err := env.mintBoundToken(ctx, "conformance: bound keeper", []string{mineID}, "kv:rw:example-mod")
 			if err != nil {
 				return err
@@ -3172,6 +3181,27 @@ var checks = []Check{
 			if err := env.expect(ctx, http.MethodPut, "/api/v1/kv/example-mod/binding-probe", keeper.Secret,
 				map[string]any{"value": "reachable"}, http.StatusOK, nil); err != nil {
 				return fmt.Errorf("a bound token's kv:rw write was refused; the binding must not narrow the store: %w", err)
+			}
+			otherKeeper, err := env.mintBoundToken(ctx, "conformance: keeper bound elsewhere", []string{otherID}, "kv:rw:example-mod")
+			if err != nil {
+				return err
+			}
+			for _, reader := range []struct {
+				bearer string
+				who    string
+			}{
+				{otherKeeper.Secret, "a token bound to the other server"},
+				{env.AdminToken, "the suite's own credential"},
+			} {
+				var read struct {
+					Value any `json:"value"`
+				}
+				if err := env.expect(ctx, http.MethodGet, "/api/v1/kv/example-mod/binding-probe", reader.bearer, nil, http.StatusOK, &read); err != nil {
+					return fmt.Errorf("%s cannot read what a bound token wrote; the store is installation-wide, not partitioned by binding: %w", reader.who, err)
+				}
+				if read.Value != "reachable" {
+					return fmt.Errorf("%s reads %v where a bound token wrote \"reachable\"; the store is one value per key for the installation", reader.who, read.Value)
+				}
 			}
 
 			// What a binding cannot be is refused at mint, and nothing is
@@ -3209,6 +3239,30 @@ var checks = []Check{
 				return fmt.Errorf("a refused mint stored a token: %d records before, %d after", len(before), len(after))
 			}
 
+			// The bound is 50 inclusive: a binding of exactly 50 real servers
+			// mints, and the same 50 plus one is refused for its size, not
+			// for the one that does not exist.
+			fifty := []string{mineID, otherID}
+			for len(fifty) < 50 {
+				extra, err := env.newServer(ctx, fmt.Sprintf("conformance: binding filler %d", len(fifty)))
+				if err != nil {
+					return err
+				}
+				fifty = append(fifty, extra.Server.ID)
+			}
+			wide, err := env.mintBoundToken(ctx, "conformance: bound to fifty", fifty, "servers:read")
+			if err != nil {
+				return fmt.Errorf("a binding of exactly 50 servers was refused; the bound is inclusive (section 10.1): %w", err)
+			}
+			if len(wide.Token.Servers) != 50 {
+				return fmt.Errorf("a binding of 50 servers is stored as %d entries", len(wide.Token.Servers))
+			}
+			if err := env.expectError(ctx, http.MethodPost, "/api/v1/tokens", env.AdminToken,
+				map[string]any{"name": "c", "scopes": []string{"servers:read"}, "servers": append(append([]string{}, fifty...), "01J00000000000000000000000")},
+				http.StatusBadRequest, "bad_request"); err != nil {
+				return fmt.Errorf("a binding of 51 servers, 50 of them real: %w", err)
+			}
+
 			// Duplicates collapse, the listing carries the binding, and an
 			// unbound token says so with an empty list, not an absent member.
 			twice, err := env.mintBoundToken(ctx, "conformance: bound twice", []string{mineID, mineID}, "servers:read")
@@ -3232,7 +3286,7 @@ var checks = []Check{
 			if err != nil {
 				return err
 			}
-			seenBound, seenUnbound := false, false
+			seenBound, seenUnbound, seenTwice := false, false, false
 			for _, record := range listed2 {
 				switch record.ID {
 				case minted.Token.ID:
@@ -3245,9 +3299,14 @@ var checks = []Check{
 					if record.Servers == nil || len(record.Servers) != 0 {
 						return fmt.Errorf("the listing reports servers %v for the unbound token, want []", record.Servers)
 					}
+				case twice.Token.ID:
+					seenTwice = true
+					if len(record.Servers) != 1 || record.Servers[0] != mineID {
+						return fmt.Errorf("the listing reports servers %v for the token bound to one server twice, want [%s]: the duplicate collapsed in the mint response and not in the store", record.Servers, mineID)
+					}
 				}
 			}
-			if !seenBound || !seenUnbound {
+			if !seenBound || !seenUnbound || !seenTwice {
 				return fmt.Errorf("the token listing is missing a token this stage minted")
 			}
 			return nil
