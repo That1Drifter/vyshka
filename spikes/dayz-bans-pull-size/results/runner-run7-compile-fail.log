@@ -1,0 +1,21 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 18364
+runner: boot 1: the mission did not compile; see the script log
+runner: boot 1 compile-failure
+
+ticks per ms (median slope, fallback 10000): 10000.0
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|

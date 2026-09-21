@@ -1,0 +1,7 @@
+18:23:02.462 >> GET /bans?n=100 n=100 bytes=23964 written=23964 err=<nil> took=0s
+18:23:05.712 >> GET /bans?n=500 n=500 bytes=120164 written=120164 err=<nil> took=504µs
+18:23:12.719 >> GET /bans?n=1000 n=1000 bytes=240414 written=240414 err=<nil> took=503.5µs
+18:23:32.070 >> GET /bans?n=2000 n=2000 bytes=481914 written=481914 err=<nil> took=1.1781ms
+18:24:39.115 >> GET /bans?n=5000 n=5000 bytes=1206414 written=1206414 err=<nil> took=3.6716ms
+18:31:20.929 >> GET /bans?n=10000 n=10000 bytes=2413914 written=2413914 err=<nil> took=2.6256ms
+18:48:04.545 >> GET /bans?n=20000 n=20000 bytes=4838914 written=4838914 err=<nil> took=5.6678ms

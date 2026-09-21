@@ -1,0 +1,5 @@
+ SCRIPT    (E): @"$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c,301": Expected ',' or ')', not a 'skipped'
+ SCRIPT    (E): @"$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c,301": Invalid statement 'skipped'
+ SCRIPT    (E): @"$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c,146": Syntax error
+ SCRIPT    (E): @"$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c,147": Unexpected scope
+ SCRIPT    (E): Can't compile mission init script'!

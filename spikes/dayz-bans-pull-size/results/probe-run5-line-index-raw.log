@@ -1,0 +1,43 @@
+# boot 1 2026-09-21T19:03:26Z server-exited
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=120125915	resumeAt=8	steps=22
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=120126249	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=8	event=fire	t=0	ticks=241386097	label=line-16k	kind=line	path=	size=16384
+SCRIPT       : VYSHKA_BPROBE	step=8	event=line-written	t=6	ticks=241449681	len=16384	written=true	writeTicks=3810
+SCRIPT       : VYSHKA_BPROBE	step=8	event=line-read	t=14	ticks=241525808	len=16384	read=true	intact=1	readTicks=75538
+SCRIPT       : VYSHKA_BPROBE	step=9	event=fire	t=0	ticks=273883881	label=line-32k	kind=line	path=	size=32768
+SCRIPT       : VYSHKA_BPROBE	step=9	event=line-written	t=18	ticks=274066661	len=32768	written=true	writeTicks=4651
+SCRIPT       : VYSHKA_BPROBE	step=9	event=line-read	t=25	ticks=274133130	len=32768	read=true	intact=1	readTicks=65674
+SCRIPT       : VYSHKA_BPROBE	step=10	event=fire	t=0	ticks=306385901	label=line-48k	kind=line	path=	size=49152
+SCRIPT       : VYSHKA_BPROBE	step=10	event=line-written	t=39	ticks=306773341	len=49152	written=true	writeTicks=3205
+SCRIPT       : VYSHKA_BPROBE	step=10	event=line-read	t=46	ticks=306850141	len=49152	read=true	intact=1	readTicks=75623
+SCRIPT       : VYSHKA_BPROBE	step=11	event=fire	t=0	ticks=338884970	label=line-65520	kind=line	path=	size=65520
+SCRIPT       : VYSHKA_BPROBE	step=11	event=line-written	t=73	ticks=339612781	len=65520	written=true	writeTicks=5435
+SCRIPT       : VYSHKA_BPROBE	step=11	event=line-read	t=81	ticks=339694188	len=65520	read=true	intact=1	readTicks=79665
+SCRIPT       : VYSHKA_BPROBE	step=12	event=fire	t=0	ticks=371384774	label=line-65536	kind=line	path=	size=65536
+SCRIPT       : VYSHKA_BPROBE	step=12	event=line-written	t=86	ticks=372243701	len=65536	written=true	writeTicks=4219
+# boot 2 2026-09-21T19:04:14Z finished
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=114716633	resumeAt=16	steps=22
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=114716955	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=16	event=fire	t=0	ticks=226494928	label=index-1m	kind=index	path=	size=1048576
+SCRIPT       : VYSHKA_BPROBE	step=16	event=index-measured	t=15864	ticks=385139834	len=1048576	sub8191=8191	sub8192=8191	sub100k=8191	subTail100=100	at0=16	get0Ticks=2119894	sub0Ticks=2137360	sink0=2000	at1=524288	get1Ticks=2047960	sub1Ticks=2059317	sink1=
+SCRIPT       : VYSHKA_BPROBE	step=17	event=fire	t=0	ticks=415154123	label=raw-2m	kind=raw	path=big?n=2097152	size=0
+SCRIPT       : VYSHKA_BPROBE	step=17	event=submitted	t=0	ticks=415155058	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=17	event=success	t=102	ticks=416174995	size=2097152	len=2097152
+SCRIPT       : VYSHKA_BPROBE	step=18	event=fire	t=0	ticks=447654864	label=raw-4m	kind=raw	path=big?n=4194304	size=0
+SCRIPT       : VYSHKA_BPROBE	step=18	event=submitted	t=0	ticks=447655825	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=18	event=success	t=153	ticks=449186956	size=4194304	len=4194304
+SCRIPT       : VYSHKA_BPROBE	step=19	event=fire	t=0	ticks=480156472	label=raw-8m	kind=raw	path=big?n=8388608	size=0
+SCRIPT       : VYSHKA_BPROBE	step=19	event=submitted	t=0	ticks=480157471	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=19	event=success	t=309	ticks=483246202	size=8388608	len=8388608
+SCRIPT       : VYSHKA_BPROBE	step=20	event=fire	t=0	ticks=515156261	label=raw-16m	kind=raw	path=big?n=16777216	size=0
+SCRIPT       : VYSHKA_BPROBE	step=20	event=submitted	t=0	ticks=515157214	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=20	event=calib	t=1000	ticks=525151220	
+SCRIPT       : VYSHKA_BPROBE	step=20	event=success	t=1123	ticks=526383233	size=16777216	len=16777216
+SCRIPT       : VYSHKA_BPROBE	step=21	event=fire	t=0	ticks=557654768	label=raw-32m	kind=raw	path=big?n=33554432	size=0
+SCRIPT       : VYSHKA_BPROBE	step=21	event=submitted	t=0	ticks=557655705	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=21	event=calib	t=1000	ticks=567650453	
+SCRIPT       : VYSHKA_BPROBE	step=21	event=calib	t=2000	ticks=577650916	
+SCRIPT       : VYSHKA_BPROBE	step=21	event=calib	t=3000	ticks=587650631	
+SCRIPT       : VYSHKA_BPROBE	step=21	event=success	t=3996	ticks=597618848	size=33554432	len=33554432
+SCRIPT       : VYSHKA_BPROBE	step=21	event=calib	t=4000	ticks=597653323	
+SCRIPT       : VYSHKA_BPROBE	step=-1	event=finished	t=0	ticks=627653575	steps=22

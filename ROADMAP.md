@@ -1,7 +1,9 @@
 # Roadmap
 
-**As of:** 2026-09-18 (the mod surface and its sample landed; the plugin side of
-`context.enumerate` is in, the hub side stays with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
+**As of:** 2026-09-21 (the shapes of #80 and #81 settled in their issues, the ban list
+pull spike measured, and the plugin's string and file defects filed as #108; the mod
+surface and its sample landed 2026-09-18, with the hub side of `context.enumerate`
+staying with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -168,15 +170,20 @@ After the tag, in this order:
 Two protocol discussions run alongside, because both change the spec and the persona needs
 them early:
 
-- **Installation-wide ban list** (#80): hub-managed, pushed to every enrolled server, with
-  the per-server `vyshka.ban` staying the primitive. Needs a sync action or a new envelope
-  type; the shape is settled in the issue before any slice.
+- **Installation-wide ban list** (#80): hub-managed, with the per-server `vyshka.ban`
+  staying the primitive. Shape settled in the issue on 2026-09-21: a hub-owned list with
+  its own revision, a `bans.changed` notification, a paged pull over plain HTTP, a
+  `bans.applied` report, a `capabilities` manifest member, and the closed-set scopes
+  `bans:read` and `bans:manage`. The pull is paged because `spikes/dayz-bans-pull-size`
+  (2026-09-21) measured the plugin's parser as quadratic on this engine and the file
+  reader as fatal on a 64 KiB line (#108 carries the plugin fixes). Lands after #81.
 - **Server-scoped token dimension** (#81, protocol section 10.1): scopes are
   installation-wide, so a moderator for server A can act on server B. With a few admins of
   unequal trust that is the narrowing the spec anticipates and forbids a hub from inventing.
-  The issue settles the term and whether scopes also narrow by action-code prefix; the
-  implementation follows after the release. Role bundles in #64 will then have a server
-  term to use.
+  Shape settled in the issue on 2026-09-21: a token-level `servers` binding that intersects
+  every grant, not a per-scope field; `admin`, `webhooks:manage`, and `bans:manage` refused
+  on a bound token, `kv:rw` allowed with the store stated as installation-wide. Lands first,
+  so #80's scope respects the binding. Role bundles in #64 then have a server term to use.
 
 ## Horizon 2: operations, as promised in the design notes
 

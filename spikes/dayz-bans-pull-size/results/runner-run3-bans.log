@@ -1,0 +1,18 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 22708
+runner: 18:22:51  step -1 context
+runner: 18:23:03  step 0 measured
+runner: 18:23:07  step 1 success
+runner: 18:23:11  step 1 calib
+runner: 18:23:13  step 2 success
+runner: 18:23:29  step 2 measured
+runner: 18:23:33  step 3 success
+runner: 18:24:37  step 3 calib
+runner: 18:24:39  step 4 success
+runner: 18:31:19  step 4 measured
+runner: 18:31:21  step 5 success
+runner: boot 1: the series did not finish within 25m0s
+runner: boot 1 timeout
+runner: boot 2, pid 16908
+runner: 18:47:54  step -1 context
+runner: 18:48:06  step 6 success

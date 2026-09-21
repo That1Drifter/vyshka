@@ -1,0 +1,24 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 36288
+runner: 19:14:36  step -1 context
+runner: 19:14:48  step 24 alloc-get
+runner: 19:14:52  step 25 member-get
+runner: 19:14:54  step 25 member-append
+runner: boot 1 finished
+
+ticks per ms (median slope, fallback 10000): 9999.4
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|
