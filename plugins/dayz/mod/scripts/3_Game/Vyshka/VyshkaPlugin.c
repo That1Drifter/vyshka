@@ -76,11 +76,13 @@ class VyshkaPlugin : VyshkaResponseSink
 	// A context.enumerate requestId is hub-assigned and opaque, at most this
 	// many code points (spec section 6.2); the reply echoes it.
 	static const int REQUEST_ID_MAX = 128;
-	// An actionId is hub-assigned and opaque (section 7); the reference hub
-	// mints 26-character ids. One past this is not executed or remembered:
-	// the executed log keeps each on a line, and the engine reads by the
-	// line (VyshkaFiles.LINE_MAX).
-	static const int ACTION_ID_MAX = 256;
+	// An actionId is hub-assigned and opaque with no length in the protocol
+	// (section 7); the reference hub mints 26-character ids. The executed
+	// log keeps each on a line and the engine reads by the line
+	// (VyshkaFiles.LINE_MAX), and a byte escapes to at most six in the
+	// quoted form, so an id of up to this many bytes is always safe to
+	// keep; one past it is not executed or remembered.
+	static const int ACTION_ID_MAX = 8192;
 	// A context.entries body is bounded as a snapshot body is (section 6.2):
 	// 256 KiB, past which a hub refuses it whole.
 	static const int CONTEXT_REPLY_MAX_BYTES = 262144;
@@ -1484,7 +1486,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		// body this plugin cannot use: acked and ignored like any other.
 		if (actionId.Length() > ACTION_ID_MAX)
 		{
-			VyshkaLog.Warn("ignoring an action.dispatch whose actionId is " + actionId.Length().ToString() + " characters long, over the " + ACTION_ID_MAX.ToString() + " this plugin keeps");
+			VyshkaLog.Warn("ignoring an action.dispatch whose actionId is " + actionId.Length().ToString() + " bytes long, over the " + ACTION_ID_MAX.ToString() + " this plugin keeps");
 			return;
 		}
 		if (m_Executed.Contains(actionId))
@@ -1741,9 +1743,9 @@ class VyshkaPlugin : VyshkaResponseSink
 	// each id JSON-quoted. Called only at boot.
 	void RewriteExecuted()
 	{
-		string content = "";
+		array<string> lines = new array<string>;
 		for (int i = 0; i < m_ExecutedOrder.Count(); i++)
-			content += VyshkaJson.Quote(m_ExecutedOrder.Get(i)) + "\n";
-		VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, content);
+			lines.Insert(VyshkaJson.Quote(m_ExecutedOrder.Get(i)) + "\n");
+		VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, VyshkaJsonWriter.JoinPieces(lines));
 	}
 }

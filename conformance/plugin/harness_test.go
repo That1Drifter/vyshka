@@ -880,6 +880,25 @@ func TestLargeParamsStageKeepsADeclaredPaddingProperty(t *testing.T) {
 	}
 }
 
+func TestLargeParamsStageIsUngradedWhenTheSchemaAdmitsNoMember(t *testing.T) {
+	for _, schema := range []map[string]any{
+		{"type": "object", "enum": []any{map[string]any{largeParamsKey: 7}}},
+		{"type": "object", "properties": map[string]any{"amount": map[string]any{"type": "integer"}}, "additionalProperties": false},
+	} {
+		h, _, stageHarness := largeParamsHub(t)
+		stageHarness.action.Params = schema
+		stageHarness.checkTimeout = 500 * time.Millisecond
+		result := runLargeParamsStage(t, stageHarness)
+		if !result.Passed || result.Note == "" || !strings.Contains(result.Note, "no member can be added") {
+			t.Fatalf("a schema that admits no member was not reported ungraded: %+v; faults:\n%s", result, faultMessages(h))
+		}
+		if len(h.outbound) != 0 {
+			t.Fatalf("a dispatch was queued although nothing could be graded")
+		}
+		h.Close()
+	}
+}
+
 func TestLargeParamsStageFailsWhenTheDispatchIsAckedButNeverAnswered(t *testing.T) {
 	_, p, stageHarness := largeParamsHub(t)
 	stageHarness.checkTimeout = 500 * time.Millisecond

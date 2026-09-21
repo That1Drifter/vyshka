@@ -133,12 +133,12 @@ class VyshkaRegistry
 	static const int NAMESPACE_MAX = 64;
 	static const int CODE_MAX = 128;
 
-	// How deep an action's declaration (its params schema, mostly) may
-	// nest. The manifest record wraps the manifest in a few containers and
-	// the plugin's parser reads 64 deep (VyshkaJson.MAX_DEPTH), so a
-	// declaration past this would make the record unreadable on the next
-	// boot and mint a new revision every time.
-	static const int DECLARATION_DEPTH_MAX = 32;
+	// How deep an action's declaration (its params schema, mostly) or an
+	// event's payload schema may nest. The manifest record wraps the
+	// manifest in a few containers and the plugin reads a file 40 deep
+	// (VyshkaJson.FILE_MAX_DEPTH), so a declaration past this would make
+	// the record unwritable and mint a new revision every boot.
+	static const int DECLARATION_DEPTH_MAX = 24;
 
 	// The manifest's count bounds, the reference hub's own (hub/manifest.go):
 	// a manifest over any of them is rejected whole, which would take every
@@ -294,6 +294,15 @@ class VyshkaRegistry
 		{
 			VyshkaLog.Warn("event " + id + " was not declared: the manifest already declares " + EVENTS_MAX.ToString() + " events, the most a hub accepts (spec section 6.3)");
 			return;
+		}
+		if (payloadSchema)
+		{
+			int depth = payloadSchema.Depth();
+			if (depth > DECLARATION_DEPTH_MAX)
+			{
+				VyshkaLog.Warn("event " + id + " declares a payload schema nested " + depth.ToString() + " levels deep, more than the " + DECLARATION_DEPTH_MAX.ToString() + " the manifest record can keep, and was not declared");
+				return;
+			}
 		}
 		VyshkaJsonValue declaration = VyshkaJsonValue.NewObject();
 		declaration.Set("id", VyshkaJsonValue.NewString(id));

@@ -40,12 +40,13 @@ type selfTestReport struct {
 	Plan     int
 	Results  []selfTestResult
 	Finished bool
-	// When the plan line and the finished line were seen, by this clock:
-	// the probe's own timings come from the engine's 32-bit counter, which
-	// a phase of about 430 s wraps to a small reading, so the whole run is
-	// bounded from outside as well.
-	PlanAt     time.Time
-	FinishedAt time.Time
+	// WallMs is how long the checks took by the engine's frame clock, as
+	// the probe reports on its finished line: each check runs in a frame
+	// of its own, so the clock advances between them, where the probe's
+	// per-phase timings come from a 32-bit counter that a phase of about
+	// 430 s wraps to a small reading. A negative value means the probe did
+	// not report it.
+	WallMs int
 }
 
 // consume reads one script-log line and records the probe line in it, if
@@ -59,7 +60,6 @@ func (r *selfTestReport) consume(line string) bool {
 	switch {
 	case strings.HasPrefix(fields[0], "plan="):
 		r.Plan, _ = strconv.Atoi(strings.TrimPrefix(fields[0], "plan="))
-		r.PlanAt = time.Now()
 	case strings.HasPrefix(fields[0], "check="):
 		result := selfTestResult{Check: strings.TrimPrefix(fields[0], "check=")}
 		if len(fields) > 1 {
@@ -71,13 +71,18 @@ func (r *selfTestReport) consume(line string) bool {
 		r.Results = append(r.Results, result)
 	case fields[0] == "finished":
 		r.Finished = true
-		r.FinishedAt = time.Now()
+		r.WallMs = -1
+		for _, field := range fields[1:] {
+			if strings.HasPrefix(field, "wallMs=") {
+				r.WallMs, _ = strconv.Atoi(strings.TrimPrefix(field, "wallMs="))
+			}
+		}
 	}
 	return r.Finished
 }
 
-// verdict is nil when every planned check ran and passed, and the run from
-// the plan line to the finished line stayed inside budget (0 for no bound).
+// verdict is nil when every planned check ran and passed, and the checks
+// took no longer than budget by the engine's frame clock (0 for no bound).
 func (r *selfTestReport) verdict(budget time.Duration) error {
 	var failed []string
 	for _, result := range r.Results {
@@ -92,8 +97,10 @@ func (r *selfTestReport) verdict(budget time.Duration) error {
 		return fmt.Errorf("the probe did not report finishing; %d of %d planned check(s) reported", len(r.Results), r.Plan)
 	case r.Plan == 0 || len(r.Results) != r.Plan:
 		return fmt.Errorf("the probe planned %d check(s) and reported %d", r.Plan, len(r.Results))
-	case budget > 0 && !r.PlanAt.IsZero() && r.FinishedAt.Sub(r.PlanAt) > budget:
-		return fmt.Errorf("the checks took %s from the plan line to the finished line, over the %s budget; a phase long enough to wrap the engine's counter reads as fast in its own report, so the run is bounded here as well", r.FinishedAt.Sub(r.PlanAt).Round(time.Second), budget)
+	case budget > 0 && r.WallMs < 0:
+		return fmt.Errorf("the probe did not report how long the checks took (wallMs on the finished line), so the run cannot be bounded")
+	case budget > 0 && time.Duration(r.WallMs)*time.Millisecond > budget:
+		return fmt.Errorf("the checks took %s by the engine's frame clock, over the %s budget; a phase long enough to wrap the engine's counter reads as fast in its own report, so the run is bounded here as well", (time.Duration(r.WallMs) * time.Millisecond).Round(time.Second), budget)
 	}
 	return nil
 }
@@ -155,7 +162,7 @@ func runSelfTest(args []string) error {
 	probePath := fs.String("probe", defaultPath("plugins/dayz/selftest/VyshkaSelfTest.c"), "the self-test script appended to the mission's init.c")
 	port := fs.Int("port", 2402, "game port for the server")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long the boot and the checks may take together")
-	checkBudget := fs.Duration("check-budget", 4*time.Minute, "how long the checks themselves may take, from the probe's plan line to its finished line; 0 for no bound")
+	checkBudget := fs.Duration("check-budget", 4*time.Minute, "how long the checks themselves may take by the engine's frame clock, as the probe reports; 0 for no bound")
 	keep := fs.Bool("keep", false, "keep the server running after the checks (for a look at the profile directory)")
 	if err := fs.Parse(args); err != nil {
 		return err

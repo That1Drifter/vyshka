@@ -251,13 +251,60 @@ class VyshkaTextCursor
 // line, and the file reader folds it back (VyshkaJsonValue.Unchunk). A
 // JSON string cannot be broken across lines any other way, and without
 // this a legal result carrying one long string could not be persisted.
+// The threshold is what keeps a line under VyshkaFiles.LINE_MAX whatever
+// the string holds: a character escapes to at most six bytes, so a value
+// under the threshold is under 49 152 bytes quoted, and so is a piece.
+// So that a genuine document can never be mistaken for the marker, a key
+// beginning with KEY_PREFIX is written with one more "$" in front of it
+// and read back without (EscapeKey, UnescapeKey); the marker itself is
+// written only by WriteChunked.
 class VyshkaJsonWriter
 {
 	static const int CHUNK = 4096;
 	static const int JOIN_GROUP = 16;
+	static const string KEY_PREFIX = "$vyshka.";
 	static const string LONG_STRING_KEY = "$vyshka.longString";
-	static const int LONG_STRING_MIN = 16384;
+	static const int LONG_STRING_MIN = 8192;
 	static const int LONG_STRING_PIECE = 4096;
+
+	// EscapeKey is the file form of an object key: one more "$" in front
+	// of a key that is one or more "$" followed by "vyshka.", so that on
+	// disk a key with exactly one "$" is the marker and nothing else, and
+	// every escaped key comes back as it was.
+	static string EscapeKey(string key)
+	{
+		if (DollarsBeforePrefix(key) >= 1)
+			return "$" + key;
+		return key;
+	}
+
+	// UnescapeKey undoes EscapeKey: a key of two or more "$" followed by
+	// "vyshka." loses one.
+	static string UnescapeKey(string key)
+	{
+		if (DollarsBeforePrefix(key) >= 2)
+			return key.Substring(1, key.Length() - 1);
+		return key;
+	}
+
+	// DollarsBeforePrefix counts the leading "$" of a key whose rest begins
+	// with "vyshka."; 0 for any other key.
+	static int DollarsBeforePrefix(string key)
+	{
+		int length = key.Length();
+		int dollars = 0;
+		while (dollars < length && key.Get(dollars) == "$")
+			dollars++;
+		if (dollars == 0)
+			return 0;
+		string rest = KEY_PREFIX.Substring(1, KEY_PREFIX.Length() - 1);   // "vyshka."
+		int restLength = rest.Length();
+		if (length - dollars < restLength)
+			return 0;
+		if (key.Substring(dollars, restLength) != rest)
+			return 0;
+		return dollars;
+	}
 
 	protected ref array<string> m_Chunks;
 	protected string m_Buffer;
@@ -290,6 +337,13 @@ class VyshkaJsonWriter
 		m_ChunkStrings = on;
 	}
 
+	// ChunksStrings says whether this writer chunks long strings and
+	// escapes reserved keys (a file writer).
+	bool ChunksStrings()
+	{
+		return m_ChunkStrings;
+	}
+
 	// ChunksString says whether a string of the given length goes out in
 	// pieces under this writer.
 	bool ChunksString(int length)
@@ -297,7 +351,10 @@ class VyshkaJsonWriter
 		return m_ChunkStrings && length >= LONG_STRING_MIN;
 	}
 
-	// WriteChunked writes a long string as the chunk object.
+	// WriteChunked writes a long string as the chunk object. A piece ends
+	// on a character boundary: a UTF-8 sequence is never split between two
+	// pieces, so each piece is text a strict reader accepts, and the
+	// bytes joined are the original.
 	void WriteChunked(string text)
 	{
 		Open("{");
@@ -314,6 +371,17 @@ class VyshkaJsonWriter
 			int take = LONG_STRING_PIECE;
 			if (pos + take > length)
 				take = length - pos;
+			// Back off while the byte after the cut continues a sequence
+			// (10xxxxxx); a run of continuation bytes longer than a
+			// sequence can be is not UTF-8, and is cut where it stands.
+			int backed = 0;
+			while (pos + take < length && backed < 3 && IsContinuationByte(cursor.CharAt(pos + take)))
+			{
+				take--;
+				backed++;
+			}
+			if (take <= 0)
+				take = LONG_STRING_PIECE;
 			if (pieces > 0)
 				Append(",");
 			Newline();
@@ -323,6 +391,16 @@ class VyshkaJsonWriter
 		}
 		Close("]", pieces > 0);
 		Close("}", true);
+	}
+
+	// IsContinuationByte says whether a one-byte string is a UTF-8
+	// continuation byte (0x80 to 0xBF).
+	static bool IsContinuationByte(string c)
+	{
+		int code = c.ToAscii();
+		if (code < 0)
+			code += 256;
+		return code >= 128 && code < 192;
 	}
 
 	// MaxDepth is the deepest container nesting written so far, the root
@@ -708,9 +786,10 @@ class VyshkaJsonValue : Managed
 	}
 
 	// Unchunk folds the chunk objects a file writer produced for long
-	// strings (VyshkaJsonWriter.WriteChunked) back into string values,
-	// throughout the tree, and returns the value to use in place of the
-	// one given (the same object unless it was itself a chunk object).
+	// strings (VyshkaJsonWriter.WriteChunked) back into string values and
+	// restores the keys the writer escaped, throughout the tree, and
+	// returns the value to use in place of the one given (the same object
+	// unless it was itself a chunk object).
 	static VyshkaJsonValue Unchunk(VyshkaJsonValue value)
 	{
 		if (!value)
@@ -745,7 +824,13 @@ class VyshkaJsonValue : Managed
 			}
 		}
 		for (int k = 0; k < value.m_Values.Count(); k++)
+		{
+			string key = value.m_Keys.Get(k);
+			string plain = VyshkaJsonWriter.UnescapeKey(key);
+			if (plain != key)
+				value.m_Keys.Set(k, plain);
 			value.m_Values.Set(k, Unchunk(value.m_Values.Get(k)));
+		}
 		return value;
 	}
 
@@ -810,7 +895,10 @@ class VyshkaJsonValue : Managed
 					if (k > 0)
 						writer.Append(",");
 					writer.Newline();
-					VyshkaJson.QuoteTo(writer, m_Keys.Get(k));
+					string key = m_Keys.Get(k);
+					if (writer.ChunksStrings())
+						key = VyshkaJsonWriter.EscapeKey(key);
+					VyshkaJson.QuoteTo(writer, key);
 					writer.Append(":");
 					m_Values.Get(k).WriteTo(writer);
 				}
@@ -829,9 +917,21 @@ class VyshkaJson
 	protected int m_Pos;
 	protected int m_Length;
 	protected int m_Depth;
+	protected int m_MaxDepth;
 	protected bool m_Failed;
 
-	static const int MAX_DEPTH = 64;
+	// How deep a document from the wire may nest. A file the plugin wrote
+	// may nest FILE_MAX_DEPTH: whatever the wire allowed, plus the record
+	// around it (an outbox record, a rejected record's two levels) and the
+	// two levels a chunked string adds, so anything the plugin could parse
+	// can be persisted and read back. Both sit well inside what the script
+	// VM allows the parser's recursion: on DayZ 1.29 the parser read 56
+	// nested arrays and the VM threw a stack overflow exception at 64
+	// (measured by the self-test's json.depth check with these bounds
+	// raised for the run, from a shallow call stack; the plugin's own
+	// callers stand a few frames deeper).
+	static const int MAX_DEPTH = 32;
+	static const int FILE_MAX_DEPTH = 40;
 	// How much decoded text ParseString gathers before setting it aside as
 	// a piece; an append past this pays for the piece, not the value.
 	static const int PIECE_LENGTH = 4096;
@@ -839,25 +939,26 @@ class VyshkaJson
 	static VyshkaJsonValue Parse(string input)
 	{
 		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(input);
-		return ParseCursor(cursor);
+		return ParseCursor(cursor, MAX_DEPTH);
 	}
 
 	// ParseSegments parses the segments as one text, concatenated verbatim
 	// (VyshkaTextCursor.OfSegments): the lines of a file, each with its
-	// newline, as VyshkaFiles.ReadSegments returns them.
+	// newline, as VyshkaFiles.ReadSegments returns them, to the file depth.
 	static VyshkaJsonValue ParseSegments(array<string> segments)
 	{
 		VyshkaTextCursor cursor = VyshkaTextCursor.OfSegments(segments);
-		return ParseCursor(cursor);
+		return ParseCursor(cursor, FILE_MAX_DEPTH);
 	}
 
-	static VyshkaJsonValue ParseCursor(VyshkaTextCursor cursor)
+	static VyshkaJsonValue ParseCursor(VyshkaTextCursor cursor, int maxDepth)
 	{
 		VyshkaJson parser = new VyshkaJson();
 		parser.m_Cursor = cursor;
 		parser.m_Pos = 0;
 		parser.m_Length = cursor.Length();
 		parser.m_Depth = 0;
+		parser.m_MaxDepth = maxDepth;
 		parser.m_Failed = false;
 
 		parser.SkipWhitespace();
@@ -1035,7 +1136,7 @@ class VyshkaJson
 
 	protected VyshkaJsonValue ParseObject()
 	{
-		if (m_Depth >= MAX_DEPTH)
+		if (m_Depth >= m_MaxDepth)
 		{
 			m_Failed = true;
 			return null;
@@ -1100,7 +1201,7 @@ class VyshkaJson
 
 	protected VyshkaJsonValue ParseArray()
 	{
-		if (m_Depth >= MAX_DEPTH)
+		if (m_Depth >= m_MaxDepth)
 		{
 			m_Failed = true;
 			return null;

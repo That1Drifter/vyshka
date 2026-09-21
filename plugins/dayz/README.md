@@ -651,11 +651,18 @@ and grades the lines the script prints, one per check, the way the conformance s
 report: a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
 limit as one line); a document with a single 70 KB string value written in pieces and
-read back whole; one with a 70 KB key, and one nested 71 deep, refused rather than
-written; a
+read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than
+written; a genuine document shaped like the writer's long-string marker, a value of
+10 001 control characters (60 KB once escaped), a value of 8 192 two-byte characters (cut
+into pieces on character boundaries), and a record nested as deep as the wire allows with
+a long string at the bottom, each written and read back equal; the depth the parser reads
+measured against the script VM (56 nested arrays parse, 64 overflow its stack); a
 100 000-character string value and a 56 000-character one dense with escapes parsed whole;
 and the 5 000-entry pull shape of issue #80 (1.1 MB) serialized, parsed, written, and read
-inside a 30 s budget each, with the milliseconds in the report. A check that faults the
+inside a 30 s budget each, with the milliseconds in the report, and the whole run inside
+four minutes by the engine's frame clock (each check runs in a frame of its own, so the
+clock advances between them, where a phase of about 430 s would wrap the performance
+counter the phases are timed with to a small reading). A check that faults the
 process ends the run, which the tool reports as a failure with the engine's crash log,
 since that is the failure the file checks exist to catch. Run it after any change to
 `VyshkaJson.c` or `VyshkaFiles.c`; it needs the same local server install as the harness,
@@ -714,7 +721,7 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   the first parser took 353 s and 45 s), and every JSON file it writes goes out one array
   element and one object member per line, a long string value in pieces on lines of
   their own, refused with an error rather than written when a key would still make a
-  line over 60 000 bytes or the document nests deeper than 64 levels. `selftest` (above)
+  line over 60 000 bytes or the document nests deeper than 40 levels (the script VM overflows its stack at about 64 levels of the parser's recursion). `selftest` (above)
   proves each of those on a local server. Reading a large body is still not free (about
   0.4 µs a byte on this engine), which is why the pull of #80 is paged.
 

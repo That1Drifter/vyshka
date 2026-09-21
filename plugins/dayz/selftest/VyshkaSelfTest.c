@@ -18,7 +18,7 @@
 // Line format (tab separated, under the 255 characters Print keeps):
 //   VYSHKA_SELFTEST<TAB>plan=<n>
 //   VYSHKA_SELFTEST<TAB>check=<id><TAB>result=PASS|FAIL<TAB><detail>
-//   VYSHKA_SELFTEST<TAB>finished<TAB>passed=<n><TAB>failed=<n>
+//   VYSHKA_SELFTEST<TAB>finished<TAB>passed=<n><TAB>failed=<n><TAB>wallMs=<frame clock ms>
 
 class VyshkaSelfTestAction : VyshkaAction
 {
@@ -70,8 +70,13 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 9;
+	static const int PLAN = 14;
 	static const int SETTLE_MS = 3000;
+	// The gap between checks: each runs in a frame of its own, so the
+	// engine's frame clock advances between them and the finished line
+	// can say how long the checks took by a clock the performance counter's
+	// wrap cannot fool.
+	static const int GAP_MS = 50;
 	// The performance counter runs at 10 MHz (measured against the frame
 	// clock in the spike).
 	static const int TICKS_PER_MS = 10000;
@@ -90,6 +95,8 @@ class VyshkaSelfTest
 
 	int m_Passed;
 	int m_Failed;
+	int m_Step;
+	int m_PlanTime;   // the frame clock when the plan line went out
 
 	static void Run()
 	{
@@ -109,19 +116,243 @@ class VyshkaSelfTest
 	void Start()
 	{
 		VyshkaFiles.EnsureLayout();
+		m_Step = 0;
+		m_PlanTime = GetGame().GetTime();
 		Print(TAG + "\tplan=" + PLAN);
-		CheckBans();
-		CheckManifest();
-		CheckManifestLegacy();
-		CheckOutbox();
-		CheckLongValue();
-		CheckRefused();
-		CheckLongString();
-		CheckEscapes();
-		CheckSpeed();
+		Next();
+	}
+
+	// Next runs one check per frame, in a fixed order, and ends with the
+	// finished line carrying the frame clock's reading of the whole.
+	void Next()
+	{
+		int step = m_Step;
+		m_Step++;
+		if (step == 0)
+			CheckBans();
+		else if (step == 1)
+			CheckManifest();
+		else if (step == 2)
+			CheckManifestLegacy();
+		else if (step == 3)
+			CheckOutbox();
+		else if (step == 4)
+			CheckLongValue();
+		else if (step == 5)
+			CheckRefused();
+		else if (step == 6)
+			CheckMarkerLiteral();
+		else if (step == 7)
+			CheckEscapedValue();
+		else if (step == 8)
+			CheckUtf8Pieces();
+		else if (step == 9)
+			CheckDepth();
+		else if (step == 10)
+			CheckDeepLongValue();
+		else if (step == 11)
+			CheckLongString();
+		else if (step == 12)
+			CheckEscapes();
+		else if (step == 13)
+			CheckSpeed();
+		if (m_Step < PLAN)
+		{
+			GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Next, GAP_MS, false);
+			return;
+		}
+		int wallMs = GetGame().GetTime() - m_PlanTime;
 		string passed = m_Passed.ToString();
 		string failed = m_Failed.ToString();
-		Print(TAG + "\tfinished\tpassed=" + passed + "\tfailed=" + failed);
+		string wall = wallMs.ToString();
+		Print(TAG + "\tfinished\tpassed=" + passed + "\tfailed=" + failed + "\twallMs=" + wall);
+	}
+
+	// ---- files.markerLiteral: a genuine document that looks like the file
+	// writer's long-string marker, or carries keys in its reserved prefix,
+	// reads back as itself ----
+	void CheckMarkerLiteral()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		VyshkaJsonValue marker = VyshkaJsonValue.NewObject();
+		VyshkaJsonValue pieces = VyshkaJsonValue.NewArray();
+		pieces.Add(VyshkaJsonValue.NewString("a"));
+		pieces.Add(VyshkaJsonValue.NewString("b"));
+		marker.Set(VyshkaJsonWriter.LONG_STRING_KEY, pieces);
+		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
+		document.Set("result", marker);
+		document.Set("$vyshka.other", VyshkaJsonValue.NewInt(1));
+		document.Set("$$vyshka.longString", VyshkaJsonValue.NewInt(2));
+		document.Set("plain", VyshkaJsonValue.NewString("x"));
+		string compact = document.Serialize();
+		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		bool equal = back && back.Serialize() == compact;
+		bool shape = false;
+		if (back && back.IsObject())
+		{
+			VyshkaJsonValue result = back.Get("result");
+			shape = result && result.IsObject() && result.Count() == 1 && result.KeyAt(0) == VyshkaJsonWriter.LONG_STRING_KEY && back.GetInt("$vyshka.other", 0) == 1 && back.GetInt("$$vyshka.longString", 0) == 2;
+		}
+		bool ok = written && equal && shape;
+		string detail = "written=" + written;
+		detail += "\tequal=" + equal;
+		detail += "\tshape=" + shape;
+		Report("files.markerLiteral", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+	}
+
+	// ---- files.escapedValue: a value short in characters but long once
+	// escaped (10 001 control characters, six bytes each quoted) is written
+	// in pieces and read back equal ----
+	void CheckEscapedValue()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		int code = 1;
+		string one = code.AsciiToString();
+		string value = Repeat(one, 10001);
+		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
+		document.Set("v", VyshkaJsonValue.NewString(value));
+		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		bool equal = back && back.IsObject() && back.GetString("v", "") == value;
+		bool ok = written && equal;
+		string detail = "length=" + value.Length();
+		detail += "\twritten=" + written;
+		detail += "\tequal=" + equal;
+		Report("files.escapedValue", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+	}
+
+	// ---- files.utf8Pieces: a long value of two-byte characters is cut into
+	// pieces on character boundaries, and reads back equal ----
+	void CheckUtf8Pieces()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		string value = "a" + Repeat(VyshkaJson.EncodeUtf8(233), 8192);
+		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
+		document.Set("v", VyshkaJsonValue.NewString(value));
+		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
+		// Every piece line ends with a quote (and maybe a comma); the byte
+		// before that quote must not be the lead byte of a sequence whose
+		// rest went to the next piece.
+		bool whole = true;
+		int pieceLines = 0;
+		array<string> lines;
+		if (VyshkaFiles.ReadSegments(OVERSIZED_PATH, lines))
+		{
+			for (int i = 0; i < lines.Count(); i++)
+			{
+				string line = lines.Get(i);
+				int length = line.Length();
+				int quoteAt = length - 2;
+				if (quoteAt >= 1 && line.Get(quoteAt) == ",")
+					quoteAt--;
+				if (quoteAt < 1 || line.Get(quoteAt) != "\"" || line.Get(0) != "\t")
+					continue;
+				string last = line.Get(quoteAt - 1);
+				int lastCode = last.ToAscii();
+				if (lastCode < 0)
+					lastCode += 256;
+				if (lastCode >= 192)
+					whole = false;
+				pieceLines++;
+			}
+		}
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		bool equal = back && back.IsObject() && back.GetString("v", "") == value;
+		bool ok = written && equal && whole && pieceLines >= 4;
+		string detail = "bytes=" + value.Length();
+		detail += "\twritten=" + written;
+		detail += "\tequal=" + equal;
+		detail += "\twhole=" + whole;
+		detail += "\tpieceLines=" + pieceLines;
+		Report("files.utf8Pieces", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+	}
+
+	// ---- json.depth: how deep the parser reads on this engine, measured
+	// against nested arrays, from the wire and from a file; the deepest
+	// that parses must reach the documented bounds ----
+	void CheckDepth()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		int wireMax = 0;
+		int fileMax = 0;
+		int wireFirstFailed = 0;
+		int fileFirstFailed = 0;
+		for (int depth = 8; depth <= 96; depth += 8)
+		{
+			string text = Repeat("[", depth) + Repeat("]", depth);
+			VyshkaJsonValue wire = VyshkaJson.Parse(text);
+			if (wire && wire.Depth() == depth)
+				wireMax = depth;
+			else if (wireFirstFailed == 0)
+				wireFirstFailed = depth;
+			array<string> segments = new array<string>;
+			segments.Insert(text + "\n");
+			VyshkaJsonValue file = VyshkaJson.ParseSegments(segments);
+			if (file && file.Depth() == depth)
+				fileMax = depth;
+			else if (fileFirstFailed == 0)
+				fileFirstFailed = depth;
+		}
+		bool ok = wireMax >= VyshkaJson.MAX_DEPTH && fileMax >= VyshkaJson.FILE_MAX_DEPTH;
+		string detail = "wireMax=" + wireMax;
+		detail += "\twireFirstFailed=" + wireFirstFailed;
+		detail += "\tfileMax=" + fileMax;
+		detail += "\tfileFirstFailed=" + fileFirstFailed;
+		detail += "\tmaxDepth=" + VyshkaJson.MAX_DEPTH;
+		detail += "\tfileMaxDepth=" + VyshkaJson.FILE_MAX_DEPTH;
+		Report("json.depth", ok, detail);
+	}
+
+	// ---- files.deepLongValue: a record as deep as the wire parser allows,
+	// with a long string at the bottom (which the pieces nest two deeper),
+	// is written and read back equal ----
+	void CheckDeepLongValue()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		VyshkaJsonValue body = VyshkaJsonValue.NewArray();
+		VyshkaJsonValue deep = body;
+		for (int i = 2; i < VyshkaJson.MAX_DEPTH; i++)
+		{
+			VyshkaJsonValue inner = VyshkaJsonValue.NewArray();
+			deep.Add(inner);
+			deep = inner;
+		}
+		deep.Add(VyshkaJsonValue.NewString(Repeat("0123456789", 900)));
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("body", body);
+		int depth = record.Depth();
+		string compact = record.Serialize();
+		// The wire parser reads the compact form back too: what a hub
+		// would send at the depth bound.
+		VyshkaJsonValue wire = VyshkaJson.Parse(compact);
+		bool wireEqual = wire && wire.Serialize() == compact;
+		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, record);
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		int backDepth = -1;
+		if (back)
+			backDepth = back.Depth();
+		bool equal = back && back.Serialize() == compact;
+		bool ok = written && equal && wireEqual && depth == VyshkaJson.MAX_DEPTH;
+		string detail = "depth=" + depth;
+		detail += "\twireEqual=" + wireEqual;
+		detail += "\twritten=" + written;
+		detail += "\tbackDepth=" + backDepth;
+		detail += "\tequal=" + equal;
+		Report("files.deepLongValue", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
 	}
 
 	void Report(string check, bool ok, string detail)
@@ -370,7 +601,7 @@ class VyshkaSelfTest
 		bool keyExists = FileExist(OVERSIZED_PATH);
 		VyshkaJsonValue deep = VyshkaJsonValue.NewArray();
 		VyshkaJsonValue root = deep;
-		for (int i = 0; i < 70; i++)
+		for (int i = 0; i < 80; i++)
 		{
 			VyshkaJsonValue inner = VyshkaJsonValue.NewArray();
 			deep.Add(inner);
@@ -379,7 +610,7 @@ class VyshkaSelfTest
 		int depth = root.Depth();
 		bool deepWritten = VyshkaFiles.WriteJson(OVERSIZED_PATH, root);
 		bool deepExists = FileExist(OVERSIZED_PATH);
-		bool ok = !keyWritten && !keyExists && !deepWritten && !deepExists && depth == 71;
+		bool ok = !keyWritten && !keyExists && !deepWritten && !deepExists && depth == 81;
 		string detail = "keyWritten=" + keyWritten;
 		detail += "\tkeyExists=" + keyExists;
 		detail += "\tdeepWritten=" + deepWritten;

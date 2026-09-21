@@ -157,9 +157,9 @@ class VyshkaFiles
 			return false;
 		}
 		int depth = writer.MaxDepth();
-		if (depth > VyshkaJson.MAX_DEPTH)
+		if (depth > VyshkaJson.FILE_MAX_DEPTH)
 		{
-			VyshkaLog.Error("not writing " + path + ": it nests " + depth.ToString() + " levels deep and the plugin reads no deeper than " + VyshkaJson.MAX_DEPTH.ToString());
+			VyshkaLog.Error("not writing " + path + ": it nests " + depth.ToString() + " levels deep and the plugin reads a file no deeper than " + VyshkaJson.FILE_MAX_DEPTH.ToString());
 			return false;
 		}
 		FileHandle handle = OpenFile(path, FileMode.WRITE);

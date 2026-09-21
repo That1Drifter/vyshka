@@ -28,7 +28,7 @@ func TestSelfTestReportPassesWhenEveryPlannedCheckPassed(t *testing.T) {
 		"[Vyshka] ERROR no usable config; the plugin is idle",
 		"VYSHKA_SELFTEST\tcheck=files.bans\tresult=PASS\tentries=400\tsaveMs=12",
 		"VYSHKA_SELFTEST\tcheck=json.speed\tresult=PASS\tbytes=1206414\tparseMs=900",
-		"VYSHKA_SELFTEST\tfinished\tpassed=2\tfailed=0",
+		"VYSHKA_SELFTEST\tfinished\tpassed=2\tfailed=0\twallMs=1500",
 	)
 	if !finished {
 		t.Fatal("the finished line was not recognized")
@@ -88,17 +88,27 @@ func TestSelfTestReportFailsWhenTheRunOutlivesItsBudget(t *testing.T) {
 	feed(report,
 		"VYSHKA_SELFTEST\tplan=1",
 		"VYSHKA_SELFTEST\tcheck=json.speed\tresult=PASS\tparseMs=503",
-		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=0",
+		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=0\twallMs=420000",
 	)
-	// The probe's own reading says 503 ms; the clock outside says the
-	// checks took seven minutes, which is what a wrapped counter looks like.
-	report.PlanAt = report.FinishedAt.Add(-7 * time.Minute)
+	// The phase's own reading says 503 ms; the frame clock says the checks
+	// took seven minutes, which is what a wrapped counter looks like.
 	err := report.verdict(4 * time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "over the 4m0s budget") {
 		t.Fatalf("the overlong run was not named: %v", err)
 	}
 	if err := report.verdict(0); err != nil {
 		t.Fatalf("an unbounded verdict failed: %v", err)
+	}
+
+	// A finished line without the wall reading cannot be bounded at all.
+	report = &selfTestReport{}
+	feed(report,
+		"VYSHKA_SELFTEST\tplan=1",
+		"VYSHKA_SELFTEST\tcheck=json.speed\tresult=PASS\tparseMs=503",
+		"VYSHKA_SELFTEST\tfinished\tpassed=1\tfailed=0",
+	)
+	if err := report.verdict(4 * time.Minute); err == nil || !strings.Contains(err.Error(), "did not report how long") {
+		t.Fatalf("the missing wall reading was not named: %v", err)
 	}
 }
 

@@ -156,10 +156,27 @@ class VyshkaOutbox
 		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
 		record.Set("rejected", VyshkaJsonValue.NewString(reason));
 		record.Set("envelope", envelope);
-		if (!VyshkaFiles.WriteJson(rejectedPath, record))
-			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Serialize());
-		if (!DeleteFile(entry.Path()))
-			VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		// The original record is deleted only once a copy of it exists
+		// under rejected/: the rejected record with the hub's reason, or,
+		// when that cannot be written (a record at the file writer's depth
+		// bound, whose wrapper takes it past), the record file copied as it
+		// is. With neither, the record stays where it is and the next boot
+		// tries again; a refused envelope is set aside, never dropped
+		// (section 9.3).
+		bool setAside = VyshkaFiles.WriteJson(rejectedPath, record);
+		if (!setAside)
+		{
+			setAside = CopyFile(entry.Path(), rejectedPath);
+			if (setAside)
+				VyshkaLog.Warn("outbox: could not write the rejected record for " + entry.m_Id + "; its outbox record was copied to " + rejectedPath + " as it was, without the hub's reason");
+		}
+		if (setAside)
+		{
+			if (!DeleteFile(entry.Path()))
+				VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		}
+		else
+			VyshkaLog.Error("outbox: could not set aside the refused envelope " + entry.m_Id + " under " + VyshkaFiles.REJECTED_DIR + "; its record stays at " + entry.Path() + " and the next boot will try to send it again");
 		m_Entries.RemoveOrdered(index);
 		m_Rejected++;
 

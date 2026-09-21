@@ -138,7 +138,9 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   now goes through `VyshkaFiles.WriteJson`, one array element and one object member per
   line, chunk by chunk, with a long string value broken into pieces on lines of their
   own, and is refused with an error rather than written when a key would still make a
-  line over 60 000 bytes or the document nests deeper than the parser reads; every JSON
+  line over 60 000 bytes or the document nests deeper than the parser reads (32 levels from
+  the wire, 40 from a file: the script VM overflows its stack at about 64 levels of the
+  parser's recursion, measured); every JSON
   file is read as lines and parsed in place, the pieces folded back. The manifest record keeps its content as the manifest object rather
   than one JSON string (a record plugin 0.8.0 wrote is still read), and the outbox takes
   the body tree it persists. The parser reads through `VyshkaTextCursor`, which cuts the
@@ -150,8 +152,12 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   and 45 s. `vyshka-dayz selftest` runs `selftest/VyshkaSelfTest.c` on a local server:
   a 400-entry ban list, a 250 KB manifest record, and an 84 KB outbox record written and
   read back whole, a 70 000-character value written in pieces and read back, an
-  oversized key and an over-deep document refused, a 100 000-character value and a
-  56 000-character one dense with escapes parsed whole, and the 1.1 MB document timed;
+  oversized key and an over-deep document refused, a document shaped like the writer's
+  long-string marker, an escape-heavy value, a two-byte-character value cut on character
+  boundaries, and a record as deep as the wire allows each written and read back equal,
+  the parser's depth measured against the script VM, a
+  100 000-character value and a 56 000-character one dense with escapes parsed whole, and
+  the 1.1 MB document timed, the whole run bounded by the engine's frame clock;
   the negative control (the ban list written as one line, as 0.8.0 wrote it) faults the
   server, which the tool reports as the failure it is.
 

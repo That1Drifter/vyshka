@@ -445,6 +445,23 @@ var stages = []Stage{
 	largeParamsStage,
 }
 
+// paddingRefused says why the schema admits no added member, or "" when it
+// does: an enum or const at the top level fixes the object whole, and
+// additionalProperties set to false forbids anything the properties do not
+// name.
+func paddingRefused(schema map[string]any) string {
+	if _, fixed := schema["enum"]; fixed {
+		return "fixes the params object with an enum"
+	}
+	if _, fixed := schema["const"]; fixed {
+		return "fixes the params object with a const"
+	}
+	if closed, ok := schema["additionalProperties"].(bool); ok && !closed {
+		return "forbids members its properties do not name"
+	}
+	return ""
+}
+
 // paddingKey is a member name the action's schema does not declare, so the
 // padding never displaces a declared parameter and the dispatch stays
 // schema-valid: largeParamsKey, or the first numbered variant of it that
@@ -477,7 +494,18 @@ var largeParamsStage = Stage{
 	Section: "7",
 	Run: func(h *harness) error {
 		hub := h.hub
-		params := synthesizeParams(h.action.Params)
+		// A schema that fixes the whole params object (an enum of objects,
+		// or one that forbids members it does not name) admits no padding:
+		// a member added to it makes the dispatch schema-invalid, and a
+		// plugin that ignores an invalid dispatch would fail here for
+		// conforming. There is nothing to grade then.
+		if reason := paddingRefused(h.action.Params); reason != "" {
+			return ungraded{reason: "the action's params schema " + reason + ", so no member can be added for the large dispatch; a candidate whose first declared action takes an open object gets this stage graded"}
+		}
+		params := map[string]any{}
+		for key, value := range synthesizeParams(h.action.Params) {
+			params[key] = value
+		}
 		params[paddingKey(h.action.Params)] = strings.Repeat("0123456789abcdef", largeParamsBytes/16)
 		large := hub.queueDispatch(actionLarge, h.action, params, h.checkTimeout)
 		err := hub.await(h.checkTimeout, "the plugin to ack the large dispatch", func() bool {

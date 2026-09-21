@@ -127,7 +127,7 @@ class VyshkaClock
 	// it cannot read; callers treat that as "no deadline known".
 	static bool ParseRfc3339(string text, out int epoch)
 	{
-		if (text.Length() < 20 || text.Length() > 64)
+		if (text.Length() < 20)
 			return false;
 		int year = ReadInt(text, 0, 4);
 		int month = ReadInt(text, 5, 2);
