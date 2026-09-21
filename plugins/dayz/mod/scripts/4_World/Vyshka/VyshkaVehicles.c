@@ -242,7 +242,7 @@ class VyshkaVehicles
 	}
 
 	// Capture builds the state.vehicles body: every vehicle alive right now.
-	static string Capture()
+	static VyshkaJsonValue Capture()
 	{
 		array<Transport> live = Live();
 		VyshkaJsonValue vehicles = VyshkaJsonValue.NewArray();
@@ -260,7 +260,7 @@ class VyshkaVehicles
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
 		body.Set("vehicles", vehicles);
-		return body.Serialize();
+		return body;
 	}
 
 	// ---- events ----

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -54,6 +55,19 @@ const (
 	actionRenumber  = "conformance-act-renumber"
 	actionInvalid   = "conformance-act-invalid"
 	actionRecovery  = "conformance-act-recovery"
+	actionLarge     = "conformance-act-large"
+
+	// The large dispatch (dispatch.largeParams): its params carry this many
+	// bytes in one string member the schema does not name. A hub forwards
+	// params as an operator gave them, inside its request-body cap (the
+	// reference hub's is 1 MiB), so a plugin has to read a body of this
+	// order inside the deadline the dispatch names. The size is chosen to
+	// separate a parser whose cost is linear in the body (well under a
+	// second at this size on the slowest engine measured) from one whose
+	// cost is quadratic (about a minute on the same engine, past any
+	// deadline a harness would wait for).
+	largeParamsBytes = 512 << 10
+	largeParamsKey   = "conformancePadding"
 )
 
 var stages = []Stage{
@@ -427,6 +441,44 @@ var stages = []Stage{
 			}
 			return nil
 		},
+	},
+	largeParamsStage,
+}
+
+// largeParamsStage dispatches the action with its usual params plus one
+// string member of largeParamsBytes the schema does not name, which a
+// receiver ignores (section 2.1), and expects the ordinary lifecycle
+// inside the ordinary deadline: the envelope acked, an action.result of
+// either outcome, and the plugin still polling. What it grades is the
+// plugin's reading of a large body: a parser whose cost grows with the
+// square of the input stalls the game server for the poll cycle and
+// misses the action's expiresAt (the reference DayZ plugin's first parser
+// did, issue #108), and a plugin that cuts a long string value short
+// without a word would answer as if nothing were wrong, which only the
+// plugin's own tests can see, so this stage does not try.
+var largeParamsStage = Stage{
+	ID:      "dispatch.largeParams",
+	Title:   "A dispatch carrying large params is acked and answered inside its deadline",
+	Section: "7",
+	Run: func(h *harness) error {
+		hub := h.hub
+		params := synthesizeParams(h.action.Params)
+		params[largeParamsKey] = strings.Repeat("0123456789abcdef", largeParamsBytes/16)
+		large := hub.queueDispatch(actionLarge, h.action, params, h.checkTimeout)
+		err := hub.await(h.checkTimeout, "the plugin to ack the large dispatch", func() bool {
+			return large.acked
+		})
+		if err != nil {
+			return fmt.Errorf("%w; the dispatch carried %d KiB of params in one string member the schema does not name, which a hub may forward and a receiver ignores (section 2.1), and the envelope has to be acked like any other (section 7): a plugin that reads a body this size in time proportional to its square holds the poll cycle for the parse and never gets here inside the deadline (issue #108)", err, largeParamsBytes>>10)
+		}
+		err = hub.await(h.resultBudget(), "an action.result for the large dispatch", func() bool {
+			track := hub.actions[actionLarge]
+			return track != nil && track.results >= 1
+		})
+		if err != nil {
+			return fmt.Errorf("%w; the plugin MUST answer a dispatch it took with action.result, whatever the outcome (section 7); one that parsed the body past the dispatch's expiresAt discards the action instead, so the deadline is the bound on the parse", err)
+		}
+		return h.awaitMorePolls(1, "after the large dispatch")
 	},
 }
 

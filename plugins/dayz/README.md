@@ -23,8 +23,9 @@ Clean-room: written from the engine's public script headers and the measurements
 | `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat, and the `VyshkaRegister` hook a mod overrides to add its own actions |
 | `sample/` | A self-contained sample mod built on the surface below: one action, one event, one context, a map marker, a store counter. Copy it to start your own |
+| `selftest/` | The engine-limit self-test: a script appended to a mission's `init.c` that runs the plugin's file and JSON classes past the engine's limits inside a real server (see "Conformance") |
 | `pbo/` | Go package that packs and reads PBO archives |
-| `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `build-sample` packs the sample, `harness` runs a server as a conformance candidate |
+| `cmd/vyshka-dayz/` | Developer tool: `build` packs the mod, `build-sample` packs the sample, `harness` runs a server as a conformance candidate, `selftest` runs a server on the self-test and grades it |
 
 ## Building
 
@@ -160,7 +161,10 @@ the attempt (`core.player.connect`) and the refusal (`core.player.kick` with `ca
 in order; the ban is looked up again at that moment, so one lifted or expired in between is
 no ban. Expired entries are dropped when the list is loaded, when the identity is next
 looked up, and before a result counts `activeBans`. The list is independent of the engine's
-and BattlEye's own ban lists and an operator can edit it while the server is down: a `null`
+and BattlEye's own ban lists and an operator can edit it while the server is down, keeping
+it as the plugin writes it, one entry and one member per line: the engine's file reader
+takes the server down on a single line of 64 KiB or more, which a list of a few hundred
+entries reaches if a tool minifies it to one line (see "What the engine imposes"). A `null`
 or absent `expiresAt` is permanent, a timestamp is honored whatever it says (one in the past
 lifts the ban), one that does not parse is treated as permanent so a typo cannot lift a ban,
 and every text member is cut to the same bounds a dispatch gets. A file that does not parse
@@ -577,7 +581,10 @@ so changing the object afterwards changes nothing on the map.
 **Manifest revision.** The hub replaces its stored manifest only for a higher revision
 (protocol section 6.1), and which mods are loaded changes the manifest, so the revision is
 not a constant. The plugin keeps `<profiles>/Vyshka/manifest.json` with the last content it
-published and the revision it used: unchanged content republishes at the same revision, and
+published (as the manifest object itself, one member per line, since a record holding it as
+one string ran past the engine's line reader at a few hundred actions; a record written by
+plugin 0.8.0 that way is still read) and the revision it used: unchanged content
+republishes at the same revision, and
 changed content takes the larger of the stored revision plus one and the current epoch
 second. The hub reports the revision it holds with every session (`server.manifestRevision`,
 section 5.3), and a plugin whose revision is not above it moves to the hub's plus one, so
@@ -629,6 +636,29 @@ how the sample is graded: with `-extra-mod plugins/dayz/build/@VyshkaSample` the
 carries the sample's action, event, and context, and the `context.enumerate` stage has a
 context to enumerate. Without a mod that declares one the stage reports `PART`.
 
+The harness grades the plugin from the wire. What it cannot see is the plugin's own file
+and JSON handling against the engine's limits (the next section), so that half has a
+self-test of its own:
+
+```
+go run ./plugins/dayz/cmd/vyshka-dayz build
+go run ./plugins/dayz/cmd/vyshka-dayz selftest
+```
+
+`selftest` derives a mission whose `init.c` carries `selftest/VyshkaSelfTest.c`, boots a
+server on it under `plugins/dayz/build/selftest-profile` with the plugin idle (no config),
+and grades the lines the script prints, one per check, the way the conformance suites
+report: a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
+84 KB written and read back whole through the plugin's classes (each past the reader's old
+limit as one line); a document with a single 70 KB string refused rather than written; a
+100 000-character string value and a 56 000-character one dense with escapes parsed whole;
+and the 5 000-entry pull shape of issue #80 (1.1 MB) serialized, parsed, written, and read
+inside a 30 s budget each, with the milliseconds in the report. A check that faults the
+process ends the run, which the tool reports as a failure with the engine's crash log,
+since that is the failure the file checks exist to catch. Run it after any change to
+`VyshkaJson.c` or `VyshkaFiles.c`; it needs the same local server install as the harness,
+so CI does not run it.
+
 ## What the engine imposes
 
 The live-player heal acceptance demo passed on 2026-09-05; [issue #14](https://github.com/That1Drifter/vyshka/issues/14)
@@ -671,6 +701,19 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   store client's get then set finished in under 300 ms under a held 25 s poll (measured on
   DayZ 1.29 during the admin flags run). One request in flight per context is the plugin's
   own rule, so a store call never waits behind a poll.
+- **Strings cost their length, files are read by the line.** `string.Get(i)` and
+  `Substring` pay about 0.2 µs per KiB of the string they read from on every call,
+  whatever the index; `+=` pays for the string's current length; `Substring` returns at
+  most 8 191 characters, silently; and the engine's line reader faults the process, with
+  nothing script can catch, on a line of 65 536 bytes or more (`spikes/dayz-bans-pull-size`,
+  issue #108). So the plugin's parser reads its input through windows cut once and never
+  copies a value with one `Substring`, its serializer collects pieces and joins once (the
+  5 000-entry pull shape of #80, 1.1 MB, parses in 439 ms and serializes in 577 ms where
+  the first parser took 353 s and 45 s), and every JSON file it writes goes out one array
+  element and one object member per line, refused with an error rather than written when
+  a single string value would still make a line over 60 000 bytes. `selftest` (above)
+  proves each of those on a local server. Reading a large body is still not free (about
+  0.4 µs a byte on this engine), which is why the pull of #80 is paged.
 
 ## Errors and recovery
 

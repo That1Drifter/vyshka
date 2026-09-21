@@ -12,6 +12,19 @@
 // Numbers are kept as their original text beside the parsed value, so a
 // value the plugin never touches is re-emitted exactly. Strings are byte
 // strings in UTF-8, which is what the engine's string type holds.
+//
+// What the engine charges for strings shapes everything below (measured in
+// spikes/dayz-bans-pull-size on DayZ 1.29, 2026-09-21; issue #108):
+// string.Get(i) and Substring cost time proportional to the length of the
+// string they read from, whatever the index, about 0.2 us per KiB per call;
+// += pays for the string's current length; and Substring returns at most
+// 8 191 characters, silently. A parser that reads an n-byte input one
+// character at a time, and a serializer that appends every token to one
+// result, are therefore quadratic in n (184 ms for 24 KB, 353 s for
+// 1.2 MB, as the plugin's first parser was). So the parser reads through a
+// VyshkaTextCursor, which cuts the input once into windows and reads every
+// character from a small one, and the serializer collects pieces in a
+// VyshkaJsonWriter and joins them once.
 
 enum VyshkaJsonKind
 {
@@ -21,6 +34,335 @@ enum VyshkaJsonKind
 	STRING_VALUE,
 	ARRAY_VALUE,
 	OBJECT_VALUE
+}
+
+// VyshkaTextCursor reads characters and slices out of a large string, or
+// out of a list of segments (a file's lines), at a cost that does not grow
+// with the whole. The source is cut into outer windows of at most OUTER
+// characters (the most one Substring returns), each outer window into inner
+// pieces of INNER, and every read is a Get on the inner piece. Cutting an
+// outer window costs one Substring on the whole source, and there are
+// n / OUTER of them, which is the residual quadratic term: about 35 ms for
+// 1.2 MB, about 27 s for the 32 MiB the HTTP client delivered in the spike,
+// so a document of the latter size is still not one to parse in a frame. In
+// segment mode there is no such term: an outer window is a segment, and the
+// segments are the lines a file reader produced, each bounded by the
+// reader's own limit.
+//
+// Reads run forward with occasional short backtracks (the parser looking
+// past an escape), so the cursor keeps one window of each level and moves
+// it when a read falls outside; a read far behind simply cuts again.
+class VyshkaTextCursor
+{
+	static const int OUTER = 8191;
+	static const int INNER = 256;
+
+	protected string m_Source;                 // string mode
+	protected ref array<string> m_Segments;    // segment mode: the source is these, concatenated verbatim
+	protected ref array<int> m_SegmentStarts;  // offset of each segment in the whole
+	protected int m_Length;
+	protected string m_Outer;
+	protected int m_OuterStart;
+	protected int m_OuterEnd;
+	protected string m_Inner;
+	protected int m_InnerStart;
+	protected int m_InnerEnd;
+	protected int m_SegmentIndex;
+
+	static VyshkaTextCursor OfString(string source)
+	{
+		VyshkaTextCursor cursor = new VyshkaTextCursor();
+		cursor.m_Source = source;
+		cursor.m_Length = source.Length();
+		return cursor;
+	}
+
+	// OfSegments reads the segments as one text, joined by nothing: a file
+	// reader that wants its lines separated hands them over with the
+	// newline on each.
+	static VyshkaTextCursor OfSegments(array<string> segments)
+	{
+		VyshkaTextCursor cursor = new VyshkaTextCursor();
+		cursor.m_Segments = segments;
+		cursor.m_SegmentStarts = new array<int>;
+		int total = 0;
+		for (int i = 0; i < segments.Count(); i++)
+		{
+			cursor.m_SegmentStarts.Insert(total);
+			string segment = segments.Get(i);
+			total += segment.Length();
+		}
+		cursor.m_Length = total;
+		return cursor;
+	}
+
+	void VyshkaTextCursor()
+	{
+		m_Length = 0;
+		m_OuterStart = 0;
+		m_OuterEnd = 0;
+		m_InnerStart = 0;
+		m_InnerEnd = 0;
+		m_SegmentIndex = 0;
+	}
+
+	int Length()
+	{
+		return m_Length;
+	}
+
+	// CharAt is the character at pos, or "" past either end.
+	string CharAt(int pos)
+	{
+		if (pos < m_InnerStart || pos >= m_InnerEnd)
+		{
+			if (!Seek(pos))
+				return "";
+		}
+		return m_Inner.Get(pos - m_InnerStart);
+	}
+
+	// WindowEnd is where the inner piece the last read came from ends, so a
+	// caller copying runs can cut them at a piece boundary and never ask for
+	// a slice that spans two.
+	int WindowEnd()
+	{
+		return m_InnerEnd;
+	}
+
+	// Slice copies length characters from start, whatever windows they lie
+	// in; a slice past the end is cut at the end. Each piece copied is at
+	// most INNER long, so no Substring is ever asked for more than it can
+	// return, and a run longer than the cap is assembled whole.
+	string Slice(int start, int length)
+	{
+		string result = "";
+		int end = start + length;
+		if (end > m_Length)
+			end = m_Length;
+		int pos = start;
+		while (pos < end)
+		{
+			if (pos < m_InnerStart || pos >= m_InnerEnd)
+			{
+				if (!Seek(pos))
+					break;
+			}
+			int take = m_InnerEnd - pos;
+			if (pos + take > end)
+				take = end - pos;
+			if (pos == m_InnerStart && take == m_InnerEnd - m_InnerStart)
+				result += m_Inner;
+			else
+				result += m_Inner.Substring(pos - m_InnerStart, take);
+			pos += take;
+		}
+		return result;
+	}
+
+	// Seek moves the inner piece (and the outer window when needed) over
+	// pos; false when pos is outside the text.
+	protected bool Seek(int pos)
+	{
+		if (pos < 0 || pos >= m_Length)
+			return false;
+		if (pos < m_OuterStart || pos >= m_OuterEnd)
+			SeekOuter(pos);
+		int offset = pos - m_OuterStart;
+		int innerStart = m_OuterStart + (offset / INNER) * INNER;
+		int innerEnd = innerStart + INNER;
+		if (innerEnd > m_OuterEnd)
+			innerEnd = m_OuterEnd;
+		if (innerStart == m_OuterStart && innerEnd == m_OuterEnd)
+			m_Inner = m_Outer;
+		else
+			m_Inner = m_Outer.Substring(innerStart - m_OuterStart, innerEnd - innerStart);
+		m_InnerStart = innerStart;
+		m_InnerEnd = innerEnd;
+		return true;
+	}
+
+	protected void SeekOuter(int pos)
+	{
+		if (!m_Segments)
+		{
+			int start = (pos / OUTER) * OUTER;
+			int end = start + OUTER;
+			if (end > m_Length)
+				end = m_Length;
+			if (start == 0 && end == m_Length)
+				m_Outer = m_Source;
+			else
+				m_Outer = m_Source.Substring(start, end - start);
+			m_OuterStart = start;
+			m_OuterEnd = end;
+			return;
+		}
+		int count = m_Segments.Count();
+		while (m_SegmentIndex > 0 && pos < m_SegmentStarts.Get(m_SegmentIndex))
+			m_SegmentIndex--;
+		while (m_SegmentIndex + 1 < count && pos >= m_SegmentStarts.Get(m_SegmentIndex + 1))
+			m_SegmentIndex++;
+		m_Outer = m_Segments.Get(m_SegmentIndex);
+		m_OuterStart = m_SegmentStarts.Get(m_SegmentIndex);
+		if (m_SegmentIndex + 1 < count)
+			m_OuterEnd = m_SegmentStarts.Get(m_SegmentIndex + 1);
+		else
+			m_OuterEnd = m_Length;
+	}
+}
+
+// VyshkaJsonWriter collects the pieces of a serialization and joins them
+// once: appends go to a small buffer, the buffer is set aside as a chunk
+// when it passes CHUNK, and Join assembles the chunks in two levels so no
+// append ever pays for the whole result. WriteFile hands the chunks to the
+// file one by one and never assembles them at all.
+//
+// In lines mode every array element and object member starts a line of its
+// own, indented one tab per depth. A newline between JSON tokens is
+// whitespace, so the text stays valid for any reader, and no line is longer
+// than its longest token, which is what a file read back through the
+// engine's line reader needs (VyshkaFiles.LINE_MAX). The longest line is
+// tracked so a writer can refuse a file that would not read back.
+class VyshkaJsonWriter
+{
+	static const int CHUNK = 4096;
+	static const int JOIN_GROUP = 16;
+
+	protected ref array<string> m_Chunks;
+	protected string m_Buffer;
+	protected int m_BufferLength;
+	protected bool m_Lines;
+	protected int m_Depth;
+	protected int m_LineLength;
+	protected int m_LongestLine;
+	protected int m_Length;
+
+	void VyshkaJsonWriter(bool lines)
+	{
+		m_Chunks = new array<string>;
+		m_Buffer = "";
+		m_BufferLength = 0;
+		m_Lines = lines;
+		m_Depth = 0;
+		m_LineLength = 0;
+		m_LongestLine = 0;
+		m_Length = 0;
+	}
+
+	// Append adds one piece, which must carry no newline of its own (Quote
+	// escapes them; number and literal text has none).
+	void Append(string piece)
+	{
+		int length = piece.Length();
+		m_Buffer += piece;
+		m_BufferLength += length;
+		m_Length += length;
+		m_LineLength += length;
+		if (m_BufferLength >= CHUNK)
+		{
+			m_Chunks.Insert(m_Buffer);
+			m_Buffer = "";
+			m_BufferLength = 0;
+		}
+	}
+
+	// Open starts an array or object: the bracket, and in lines mode one
+	// level of depth for the elements.
+	void Open(string bracket)
+	{
+		Append(bracket);
+		m_Depth++;
+	}
+
+	// Close ends one: the depth comes back, and in lines mode the bracket
+	// sits on a line of its own when anything was written inside.
+	void Close(string bracket, bool hadElements)
+	{
+		m_Depth--;
+		if (hadElements)
+			Newline();
+		Append(bracket);
+	}
+
+	// Newline ends the current line in lines mode and indents the next; a
+	// compact writer ignores it.
+	void Newline()
+	{
+		if (!m_Lines)
+			return;
+		if (m_LineLength > m_LongestLine)
+			m_LongestLine = m_LineLength;
+		string lead = "\n";
+		for (int i = 0; i < m_Depth; i++)
+			lead += "\t";
+		Append(lead);
+		m_LineLength = m_Depth;
+	}
+
+	int Length()
+	{
+		return m_Length;
+	}
+
+	// LongestLine is the length of the longest line written so far, the
+	// current one included.
+	int LongestLine()
+	{
+		if (m_LineLength > m_LongestLine)
+			return m_LineLength;
+		return m_LongestLine;
+	}
+
+	// Join returns everything written as one string.
+	string Join()
+	{
+		array<string> pieces = new array<string>;
+		for (int i = 0; i < m_Chunks.Count(); i++)
+			pieces.Insert(m_Chunks.Get(i));
+		if (m_BufferLength > 0)
+			pieces.Insert(m_Buffer);
+		return JoinPieces(pieces);
+	}
+
+	// JoinPieces concatenates pieces in two levels: groups of JOIN_GROUP
+	// first, then the groups. With pieces of a few KiB, each append pays for
+	// a group's worth, or for the growing result once per group, rather
+	// than for the whole result once per piece.
+	static string JoinPieces(array<string> pieces)
+	{
+		int count = pieces.Count();
+		if (count == 0)
+			return "";
+		if (count == 1)
+			return pieces.Get(0);
+		array<string> groups = new array<string>;
+		int at = 0;
+		while (at < count)
+		{
+			string group = "";
+			int stop = at + JOIN_GROUP;
+			if (stop > count)
+				stop = count;
+			for (int i = at; i < stop; i++)
+				group += pieces.Get(i);
+			groups.Insert(group);
+			at = stop;
+		}
+		string result = "";
+		for (int g = 0; g < groups.Count(); g++)
+			result += groups.Get(g);
+		return result;
+	}
+
+	// WriteFile prints every chunk to an open file, in order.
+	void WriteFile(FileHandle handle)
+	{
+		for (int i = 0; i < m_Chunks.Count(); i++)
+			FPrint(handle, m_Chunks.Get(i));
+		if (m_BufferLength > 0)
+			FPrint(handle, m_Buffer);
+	}
 }
 
 class VyshkaJsonValue : Managed
@@ -255,53 +597,67 @@ class VyshkaJsonValue : Managed
 
 	// ---- serialization ----
 
+	// Serialize is the compact text: what goes on the wire.
 	string Serialize()
 	{
-		string result = "";
-		WriteTo(result);
-		return result;
+		VyshkaJsonWriter writer = new VyshkaJsonWriter(false);
+		WriteTo(writer);
+		return writer.Join();
 	}
 
-	void WriteTo(inout string result)
+	// SerializeLines is the same document with every element and member on
+	// a line of its own: what goes in a file (VyshkaFiles.WriteJson).
+	string SerializeLines()
+	{
+		VyshkaJsonWriter writer = new VyshkaJsonWriter(true);
+		WriteTo(writer);
+		return writer.Join();
+	}
+
+	void WriteTo(VyshkaJsonWriter writer)
 	{
 		switch (m_Kind)
 		{
 			case VyshkaJsonKind.NULL_VALUE:
-				result += "null";
+				writer.Append("null");
 				break;
 			case VyshkaJsonKind.BOOL_VALUE:
 				if (m_Bool)
-					result += "true";
+					writer.Append("true");
 				else
-					result += "false";
+					writer.Append("false");
 				break;
 			case VyshkaJsonKind.NUMBER_VALUE:
-				result += m_Text;
+				writer.Append(m_Text);
 				break;
 			case VyshkaJsonKind.STRING_VALUE:
-				result += VyshkaJson.Quote(m_Text);
+				VyshkaJson.QuoteTo(writer, m_Text);
 				break;
 			case VyshkaJsonKind.ARRAY_VALUE:
-				result += "[";
-				for (int i = 0; i < m_Items.Count(); i++)
+				writer.Open("[");
+				int itemCount = m_Items.Count();
+				for (int i = 0; i < itemCount; i++)
 				{
 					if (i > 0)
-						result += ",";
-					m_Items.Get(i).WriteTo(result);
+						writer.Append(",");
+					writer.Newline();
+					m_Items.Get(i).WriteTo(writer);
 				}
-				result += "]";
+				writer.Close("]", itemCount > 0);
 				break;
 			case VyshkaJsonKind.OBJECT_VALUE:
-				result += "{";
-				for (int k = 0; k < m_Keys.Count(); k++)
+				writer.Open("{");
+				int keyCount = m_Keys.Count();
+				for (int k = 0; k < keyCount; k++)
 				{
 					if (k > 0)
-						result += ",";
-					result += VyshkaJson.Quote(m_Keys.Get(k));
-					result += ":";
-					m_Values.Get(k).WriteTo(result);
+						writer.Append(",");
+					writer.Newline();
+					VyshkaJson.QuoteTo(writer, m_Keys.Get(k));
+					writer.Append(":");
+					m_Values.Get(k).WriteTo(writer);
 				}
-				result += "}";
+				writer.Close("}", keyCount > 0);
 				break;
 		}
 	}
@@ -312,20 +668,38 @@ class VyshkaJsonValue : Managed
 // transport failure to retry, not a reason to crash the game server.
 class VyshkaJson
 {
-	protected string m_Input;
+	protected ref VyshkaTextCursor m_Cursor;
 	protected int m_Pos;
 	protected int m_Length;
 	protected int m_Depth;
 	protected bool m_Failed;
 
 	static const int MAX_DEPTH = 64;
+	// How much decoded text ParseString gathers before setting it aside as
+	// a piece; an append past this pays for the piece, not the value.
+	static const int PIECE_LENGTH = 4096;
 
 	static VyshkaJsonValue Parse(string input)
 	{
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(input);
+		return ParseCursor(cursor);
+	}
+
+	// ParseSegments parses the segments as one text, concatenated verbatim
+	// (VyshkaTextCursor.OfSegments): the lines of a file, each with its
+	// newline, as VyshkaFiles.ReadSegments returns them.
+	static VyshkaJsonValue ParseSegments(array<string> segments)
+	{
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfSegments(segments);
+		return ParseCursor(cursor);
+	}
+
+	static VyshkaJsonValue ParseCursor(VyshkaTextCursor cursor)
+	{
 		VyshkaJson parser = new VyshkaJson();
-		parser.m_Input = input;
+		parser.m_Cursor = cursor;
 		parser.m_Pos = 0;
-		parser.m_Length = input.Length();
+		parser.m_Length = cursor.Length();
 		parser.m_Depth = 0;
 		parser.m_Failed = false;
 
@@ -343,51 +717,67 @@ class VyshkaJson
 	// untouched (the engine's strings are UTF-8 already).
 	static string Quote(string text)
 	{
-		string result = "\"";
-		int length = text.Length();
+		VyshkaJsonWriter writer = new VyshkaJsonWriter(false);
+		QuoteTo(writer, text);
+		return writer.Join();
+	}
+
+	// QuoteTo writes the quoted form of text to a writer. The text is read
+	// through a cursor, so a long value costs what its length is, and the
+	// runs between escapes are copied out one cursor piece at a time, so no
+	// run is cut at what Substring can return.
+	static void QuoteTo(VyshkaJsonWriter writer, string text)
+	{
+		writer.Append("\"");
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(text);
+		int length = cursor.Length();
 		int runStart = 0;
 		for (int i = 0; i < length; i++)
 		{
-			string c = text.Get(i);
-			string escaped = "";
-			// The engine's script parser cannot scan a literal that combines
-			// a backslash escape with a second escape, so the backslash is
-			// built from its byte value rather than written as "\\".
-			if (c == "\"")
-				escaped = Backslash() + "\"";
-			else if (c == Backslash())
-				escaped = Backslash() + Backslash();
-			else
-			{
-				int code = c.ToAscii();
-				if (code >= 0 && code < 32)
-				{
-					if (code == 10)
-						escaped = Backslash() + "n";
-					else if (code == 13)
-						escaped = Backslash() + "r";
-					else if (code == 9)
-						escaped = Backslash() + "t";
-					else if (code == 8)
-						escaped = Backslash() + "b";
-					else if (code == 12)
-						escaped = Backslash() + "f";
-					else
-						escaped = Backslash() + "u00" + HexByte(code);
-				}
-			}
+			string c = cursor.CharAt(i);
+			string escaped = Escape(c);
 			if (escaped != "")
 			{
 				if (i > runStart)
-					result += text.Substring(runStart, i - runStart);
-				result += escaped;
+					writer.Append(cursor.Slice(runStart, i - runStart));
+				writer.Append(escaped);
+				runStart = i + 1;
+			}
+			else if (i + 1 == cursor.WindowEnd())
+			{
+				writer.Append(cursor.Slice(runStart, i + 1 - runStart));
 				runStart = i + 1;
 			}
 		}
 		if (length > runStart)
-			result += text.Substring(runStart, length - runStart);
-		result += "\"";
-		return result;
+			writer.Append(cursor.Slice(runStart, length - runStart));
+		writer.Append("\"");
+	}
+
+	// Escape is the escape sequence for one character, or "" when it needs
+	// none. The engine's script parser cannot scan a literal that combines
+	// a backslash escape with a second escape, so the backslash is built
+	// from its byte value rather than written as "\\".
+	static string Escape(string c)
+	{
+		if (c == "\"")
+			return Backslash() + "\"";
+		if (c == Backslash())
+			return Backslash() + Backslash();
+		int code = c.ToAscii();
+		if (code < 0 || code >= 32)
+			return "";
+		if (code == 10)
+			return Backslash() + "n";
+		if (code == 13)
+			return Backslash() + "r";
+		if (code == 9)
+			return Backslash() + "t";
+		if (code == 8)
+			return Backslash() + "b";
+		if (code == 12)
+			return Backslash() + "f";
+		return Backslash() + "u00" + HexByte(code);
 	}
 
 	// Backslash is the one-byte string "\", built from its byte value.
@@ -409,16 +799,14 @@ class VyshkaJson
 
 	protected string Peek()
 	{
-		if (m_Pos >= m_Length)
-			return "";
-		return m_Input.Get(m_Pos);
+		return m_Cursor.CharAt(m_Pos);
 	}
 
 	protected void SkipWhitespace()
 	{
 		while (m_Pos < m_Length)
 		{
-			string c = m_Input.Get(m_Pos);
+			string c = m_Cursor.CharAt(m_Pos);
 			if (c == " " || c == "\t" || c == "\n" || c == "\r")
 				m_Pos++;
 			else
@@ -431,7 +819,7 @@ class VyshkaJson
 		int length = literal.Length();
 		if (m_Pos + length > m_Length)
 			return false;
-		if (m_Input.Substring(m_Pos, length) != literal)
+		if (m_Cursor.Slice(m_Pos, length) != literal)
 			return false;
 		m_Pos += length;
 		return true;
@@ -600,29 +988,52 @@ class VyshkaJson
 	}
 
 	// ParseString decodes a quoted string starting at the opening quote.
+	// The unescaped runs are copied out through the cursor, which assembles
+	// a run of any length from pieces Substring can return whole; the first
+	// parser copied each run with one Substring and so cut any run past
+	// 8 191 characters without a word (issue #108). The decoded text is
+	// gathered in pieces of a few KiB and joined once, so a long value
+	// dense with escapes costs its length rather than its square.
 	protected bool ParseString(out string text)
 	{
 		m_Pos++; // opening quote
 		text = "";
+		array<string> pieces = new array<string>;
+		int textLength = 0;
 		int runStart = m_Pos;
 		while (m_Pos < m_Length)
 		{
-			string c = m_Input.Get(m_Pos);
+			string c = m_Cursor.CharAt(m_Pos);
 			if (c == "\"")
 			{
 				if (m_Pos > runStart)
-					text += m_Input.Substring(runStart, m_Pos - runStart);
+					text += m_Cursor.Slice(runStart, m_Pos - runStart);
 				m_Pos++;
+				if (pieces.Count() > 0)
+				{
+					pieces.Insert(text);
+					text = VyshkaJsonWriter.JoinPieces(pieces);
+				}
 				return true;
+			}
+			if (textLength >= PIECE_LENGTH)
+			{
+				pieces.Insert(text);
+				text = "";
+				textLength = 0;
 			}
 			if (c == "\\")
 			{
 				if (m_Pos > runStart)
-					text += m_Input.Substring(runStart, m_Pos - runStart);
+				{
+					text += m_Cursor.Slice(runStart, m_Pos - runStart);
+					textLength += m_Pos - runStart;
+				}
+				textLength++;
 				m_Pos++;
 				if (m_Pos >= m_Length)
 					return false;
-				string e = m_Input.Get(m_Pos);
+				string e = m_Cursor.CharAt(m_Pos);
 				m_Pos++;
 				if (e == "\"")
 					text += "\"";
@@ -656,7 +1067,7 @@ class VyshkaJson
 					if (codePoint >= 0xD800 && codePoint <= 0xDBFF)
 					{
 						int lowSurrogate = -1;
-						if (m_Pos + 1 < m_Length && m_Input.Get(m_Pos) == "\\" && m_Input.Get(m_Pos + 1) == "u")
+						if (m_Pos + 1 < m_Length && m_Cursor.CharAt(m_Pos) == "\\" && m_Cursor.CharAt(m_Pos + 1) == "u")
 						{
 							int save = m_Pos;
 							m_Pos += 2;
@@ -694,7 +1105,7 @@ class VyshkaJson
 		value = 0;
 		for (int i = 0; i < 4; i++)
 		{
-			int digit = HexDigit(m_Input.Get(m_Pos + i));
+			int digit = HexDigit(m_Cursor.CharAt(m_Pos + i));
 			if (digit < 0)
 				return false;
 			value = value * 16 + digit;
@@ -832,7 +1243,7 @@ class VyshkaJson
 
 		VyshkaJsonValue v = new VyshkaJsonValue();
 		v.m_Kind = VyshkaJsonKind.NUMBER_VALUE;
-		v.m_Text = m_Input.Substring(start, m_Pos - start);
+		v.m_Text = m_Cursor.Slice(start, m_Pos - start);
 		v.m_IsInteger = isInteger && !overflow;
 		v.m_Number = v.m_Text.ToFloat();
 		if (overflow)

@@ -380,7 +380,7 @@ class VyshkaRegistry
 		// Every list is published in a fixed order (by code or id) rather than
 		// the order of registration, so two boots that load the same mods in
 		// a different order produce the same content and so the same
-		// revision (ManifestContent, VyshkaPlugin.ResolveManifestRevision).
+		// revision (VyshkaPlugin.ResolveManifestRevision).
 		VyshkaJsonValue actions = VyshkaJsonValue.NewArray();
 		array<string> actionCodes = new array<string>;
 		array<ref VyshkaJsonValue> actionDeclarations = new array<ref VyshkaJsonValue>;
@@ -423,19 +423,10 @@ class VyshkaRegistry
 	// revision is the plugin's (VyshkaPlugin.ResolveManifestRevision): the
 	// hub ignores a manifest whose revision is not above the one it stored
 	// (section 6.1).
-	string ManifestBody(string game, string pluginName, string pluginVersion, int revision)
+	VyshkaJsonValue ManifestBody(string game, string pluginName, string pluginVersion, int revision)
 	{
 		VyshkaJsonValue body = Manifest(game, pluginName, pluginVersion);
 		body.Set("manifestRevision", VyshkaJsonValue.NewInt(revision));
-		return body.Serialize();
-	}
-
-	// ManifestContent is the same body without the revision: what the plugin
-	// compares against the content it published last, to tell a boot that
-	// changed nothing from one that did.
-	string ManifestContent(string game, string pluginName, string pluginVersion)
-	{
-		VyshkaJsonValue body = Manifest(game, pluginName, pluginVersion);
-		return body.Serialize();
+		return body;
 	}
 }

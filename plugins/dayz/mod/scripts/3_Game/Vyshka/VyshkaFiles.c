@@ -14,7 +14,18 @@
 //                                      (section 2.3); never sent again
 //   $profile:Vyshka/bans.json          the plugin's ban list (VyshkaBans); operator-editable
 //   $profile:Vyshka/manifest.json      the manifest revision last published and the content
-//                                      it went with (VyshkaPlugin.ResolveManifestRevision)
+//                                      it went with (VyshkaManifestRecord)
+//
+// The engine reads files a line at a time (FGets), and a line of 65 536
+// bytes or more faults the process inside the engine, with no way to catch
+// it from script (measured in spikes/dayz-bans-pull-size on DayZ 1.29;
+// issue #108). Every JSON file the plugin writes therefore goes through
+// WriteJson, which puts each array element and object member on a line of
+// its own and refuses a document with a line over LINE_MAX rather than
+// write what the next boot could not read; and every JSON file is read
+// through ReadJson, which parses the lines as they come instead of joining
+// them into one string first (an append per line onto a growing string
+// would cost the square of the file).
 
 class VyshkaFiles
 {
@@ -26,6 +37,16 @@ class VyshkaFiles
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 	static const string BANS_PATH = "$profile:Vyshka/bans.json";
 	static const string MANIFEST_PATH = "$profile:Vyshka/manifest.json";
+
+	// The longest line a file written here may carry. The engine's reader
+	// returned a 65 520-byte line intact and faulted on 65 536; the margin
+	// below that covers the newline and whatever the reader counts that the
+	// measurement could not see.
+	static const int LINE_MAX = 60000;
+
+	// Lines are gathered in groups while a file is read, so no append pays
+	// for more than a group.
+	static const int READ_GROUP_BYTES = 8192;
 
 	// EnsureLayout creates the directories, one level at a time, because
 	// MakeDirectory creates only the last path segment. The files directly
@@ -41,7 +62,28 @@ class VyshkaFiles
 			MakeDirectory(REJECTED_DIR);
 	}
 
-	// ReadAll returns the whole file as one string, lines joined with "\n".
+	// ReadSegments returns the file's lines, each with a newline appended,
+	// so concatenated they are the file's text with its line breaks; false
+	// when the file is missing or cannot be opened. A JSON reader parses
+	// them in place (VyshkaJson.ParseSegments) rather than joining them.
+	static bool ReadSegments(string path, out array<string> segments)
+	{
+		segments = new array<string>;
+		if (!FileExist(path))
+			return false;
+		FileHandle handle = OpenFile(path, FileMode.READ);
+		if (handle == 0)
+			return false;
+		string line;
+		while (FGets(handle, line) >= 0)
+			segments.Insert(line + "\n");
+		CloseFile(handle);
+		return true;
+	}
+
+	// ReadAll returns the whole file as one string, lines joined with "\n"
+	// and no newline after the last. The lines are joined in groups, so a
+	// file of many short lines costs its length rather than its square.
 	static bool ReadAll(string path, out string content)
 	{
 		content = "";
@@ -50,25 +92,69 @@ class VyshkaFiles
 		FileHandle handle = OpenFile(path, FileMode.READ);
 		if (handle == 0)
 			return false;
+		array<string> groups = new array<string>;
+		string group = "";
+		int groupLength = 0;
 		string line;
 		bool first = true;
 		while (FGets(handle, line) >= 0)
 		{
 			if (!first)
-				content += "\n";
-			content += line;
+			{
+				group += "\n";
+				groupLength++;
+			}
 			first = false;
+			group += line;
+			groupLength += line.Length();
+			if (groupLength >= READ_GROUP_BYTES)
+			{
+				groups.Insert(group);
+				group = "";
+				groupLength = 0;
+			}
 		}
 		CloseFile(handle);
+		if (groupLength > 0)
+			groups.Insert(group);
+		content = VyshkaJsonWriter.JoinPieces(groups);
 		return true;
 	}
 
+	// WriteAll writes one string as the file's whole content. The caller
+	// keeps every line of it under LINE_MAX, or the file cannot be read
+	// back; a JSON document goes through WriteJson, which sees to that.
 	static bool WriteAll(string path, string content)
 	{
 		FileHandle handle = OpenFile(path, FileMode.WRITE);
 		if (handle == 0)
 			return false;
 		FPrint(handle, content);
+		CloseFile(handle);
+		return true;
+	}
+
+	// WriteJson writes a JSON document with every array element and object
+	// member on a line of its own (VyshkaJsonValue.SerializeLines), chunk
+	// by chunk, never as one string. It refuses, with an error in the log
+	// and the file left as it was, a document any line of which would pass
+	// LINE_MAX: the only way a line gets that long is a single string value
+	// of that length, and a file that faults the next boot is worse than a
+	// record not kept.
+	static bool WriteJson(string path, VyshkaJsonValue value)
+	{
+		VyshkaJsonWriter writer = new VyshkaJsonWriter(true);
+		value.WriteTo(writer);
+		int longest = writer.LongestLine();
+		if (longest > LINE_MAX)
+		{
+			VyshkaLog.Error("not writing " + path + ": a line of it would be " + longest.ToString() + " bytes, and the engine's file reader faults the server on a line over " + LINE_MAX.ToString());
+			return false;
+		}
+		FileHandle handle = OpenFile(path, FileMode.WRITE);
+		if (handle == 0)
+			return false;
+		writer.WriteFile(handle);
 		CloseFile(handle);
 		return true;
 	}
@@ -108,10 +194,10 @@ class VyshkaFiles
 	// ReadJson parses a file's content; null when missing or malformed.
 	static VyshkaJsonValue ReadJson(string path)
 	{
-		string content;
-		if (!ReadAll(path, content))
+		array<string> segments;
+		if (!ReadSegments(path, segments))
 			return null;
-		return VyshkaJson.Parse(content);
+		return VyshkaJson.ParseSegments(segments);
 	}
 }
 
@@ -207,12 +293,82 @@ class VyshkaCredentials
 		root.Set("serverId", VyshkaJsonValue.NewString(m_ServerId));
 		root.Set("serverSecret", VyshkaJsonValue.NewString(m_ServerSecret));
 		root.Set("enrolledWithToken", VyshkaJsonValue.NewString(m_EnrolledWithToken));
-		return VyshkaFiles.WriteAll(VyshkaFiles.CREDENTIALS_PATH, root.Serialize());
+		return VyshkaFiles.WriteJson(VyshkaFiles.CREDENTIALS_PATH, root);
 	}
 
 	static void Delete()
 	{
 		if (FileExist(VyshkaFiles.CREDENTIALS_PATH))
 			DeleteFile(VyshkaFiles.CREDENTIALS_PATH);
+	}
+}
+
+// VyshkaManifestRecord is $profile:Vyshka/manifest.json: the revision the
+// plugin last published and the manifest content it went with, so the next
+// boot can tell whether it changed anything (VyshkaPlugin.ResolveManifestRevision),
+// with the marks that say whether a hub was seen to accept the revision.
+//
+// The content is kept as the manifest object itself, so its arrays break
+// across lines like everything else the plugin writes. Plugin 0.8.0 kept
+// it as one JSON string, which no line writer can break (a newline inside
+// a JSON string is escaped), so a manifest of a few hundred actions ran
+// past the reader's limit as a single token (issue #108); such a record is
+// still read, and the next save replaces it.
+class VyshkaManifestRecord
+{
+	int m_Revision;
+	bool m_Pending;     // minted here and no hub yet seen to accept it
+	int m_Above;        // the hub revision the pending one was published above, or -2 for no mark
+	string m_Content;   // the content as it serializes compact, which is what a boot compares
+
+	// Load reads the record; null, with problem saying why, when there is
+	// none that can be used.
+	static VyshkaManifestRecord Load(out string problem)
+	{
+		problem = "";
+		if (!FileExist(VyshkaFiles.MANIFEST_PATH))
+		{
+			problem = "no " + VyshkaFiles.MANIFEST_PATH + " yet";
+			return null;
+		}
+		VyshkaJsonValue root = VyshkaFiles.ReadJson(VyshkaFiles.MANIFEST_PATH);
+		if (!root || !root.IsObject())
+		{
+			problem = VyshkaFiles.MANIFEST_PATH + " did not parse as a JSON object";
+			return null;
+		}
+		VyshkaManifestRecord record = new VyshkaManifestRecord();
+		record.m_Revision = root.GetInt("revision", 0);
+		// A record without the mark (written before it existed) has no
+		// evidence of acceptance either, so it reads as pending.
+		record.m_Pending = root.GetBool("pending", true);
+		// Only a hub revision (section 6: 1 or more) is evidence of where
+		// the hub stood; anything else in the mark reads as no mark.
+		record.m_Above = root.GetInt("above", -2);
+		if (record.m_Above < 1)
+			record.m_Above = -2;
+		VyshkaJsonValue content = root.Get("content");
+		if (content && content.IsObject())
+			record.m_Content = content.Serialize();
+		else if (content && content.IsString())
+			record.m_Content = content.m_Text;
+		else
+		{
+			problem = VyshkaFiles.MANIFEST_PATH + " carries no content";
+			return null;
+		}
+		return record;
+	}
+
+	// Save writes the record; false when it could not be written.
+	static bool Save(int revision, VyshkaJsonValue content, bool pending, int above)
+	{
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("revision", VyshkaJsonValue.NewInt(revision));
+		record.Set("pending", VyshkaJsonValue.NewBool(pending));
+		if (pending && above != -2)
+			record.Set("above", VyshkaJsonValue.NewInt(above));
+		record.Set("content", content);
+		return VyshkaFiles.WriteJson(VyshkaFiles.MANIFEST_PATH, record);
 	}
 }

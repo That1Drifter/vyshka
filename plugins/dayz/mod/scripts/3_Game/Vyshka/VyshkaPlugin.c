@@ -99,7 +99,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaStoreClient m_Store;
 	ref VyshkaRegistry m_Actions;
 	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision, ReconcileManifestRevision)
-	string m_ManifestContent;  // the manifest body without the revision, as this boot declares it
+	ref VyshkaJsonValue m_ManifestJson;   // the manifest body without the revision, as this boot declares it
+	string m_ManifestContent;  // the same, serialized compact: what is compared with the record's
 	bool m_ManifestChanged;    // the revision was minted here (this boot or an earlier one) and no hub has been seen to accept it, so the number is not one the hub is known to hold; kept in the record as "pending"
 	int m_HubRevisionSeen;     // server.manifestRevision from this session's response, -1 when absent
 	int m_PublishedAbove;      // the hub revision (1 or more) reported when the pending revision was published, or -2 when it has not been published above a reported one; kept in the record as "above"
@@ -109,9 +110,9 @@ class VyshkaPlugin : VyshkaResponseSink
 	// still running (a store refusal answered on the spot, before the
 	// dispatch could be recorded as pending): kept until Execute returns.
 	ref map<string, ref VyshkaActionOutcome> m_EarlyOutcomes;
-	// Serialized action.result bodies the outbox could not hold when they
-	// were ready, appended in order as room frees (AppendHeldResults).
-	ref array<string> m_HeldResults;
+	// The action.result bodies the outbox could not hold when they were
+	// ready, appended in order as room frees (AppendHeldResults).
+	ref array<ref VyshkaJsonValue> m_HeldResults;
 	ref VyshkaSnapshotSource m_Snapshots;
 	bool m_SnapshotsOn;        // a source is wired and the configured interval is not 0
 	ref array<ref VyshkaSnapshotChannel> m_SnapshotChannels;   // one per state.* type
@@ -244,7 +245,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Events = new VyshkaEventBuffer();
 		m_PendingDispatches = new map<string, ref VyshkaPendingDispatch>;
 		m_EarlyOutcomes = new map<string, ref VyshkaActionOutcome>;
-		m_HeldResults = new array<string>;
+		m_HeldResults = new array<ref VyshkaJsonValue>;
 		m_SnapshotChannels = new array<ref VyshkaSnapshotChannel>;
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
@@ -297,7 +298,8 @@ class VyshkaPlugin : VyshkaResponseSink
 		// The revision the manifest publishes is derived from what the
 		// registry holds, so a boot that changed nothing republishes the
 		// same revision and the hub keeps what it has (spec section 6.1).
-		m_ManifestContent = m_Actions.ManifestContent(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION);
+		m_ManifestJson = m_Actions.Manifest(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION);
+		m_ManifestContent = m_ManifestJson.Serialize();
 		m_ManifestRevision = ResolveManifestRevision(m_ManifestContent);
 
 		m_Running = true;
@@ -435,7 +437,7 @@ class VyshkaPlugin : VyshkaResponseSink
 			int count = m_Events.Count();
 			if (count > VyshkaEventBuffer.FLUSH_COUNT)
 				count = VyshkaEventBuffer.FLUSH_COUNT;
-			string body = m_Events.TakeBatch();
+			VyshkaJsonValue body = m_Events.TakeBatch();
 			// The slots held for pending results (HandleDispatch) are not
 			// the events' to take: a batch that would eat into them is
 			// dropped, and counted, as one the outbox could not hold.
@@ -459,7 +461,7 @@ class VyshkaPlugin : VyshkaResponseSink
 			return;
 		if (!m_Outbox.HasRoom(1 + ReservedResults()))
 			return;
-		string body = m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION, m_ManifestRevision);
+		VyshkaJsonValue body = m_Actions.ManifestBody(m_Config.m_Game, PLUGIN_NAME, PLUGIN_VERSION, m_ManifestRevision);
 		if (m_Outbox.Append("manifest.publish", body))
 		{
 			m_ManifestQueued = true;
@@ -474,7 +476,7 @@ class VyshkaPlugin : VyshkaResponseSink
 			if (m_ManifestChanged && m_HubRevisionSeen >= 1 && m_HubRevisionSeen < m_ManifestRevision)
 			{
 				m_PublishedAbove = m_HubRevisionSeen;
-				SaveManifestRecord(m_ManifestRevision, m_ManifestContent, true, m_PublishedAbove);
+				SaveManifestRecord(m_ManifestRevision, true, m_PublishedAbove);
 			}
 		}
 	}
@@ -500,38 +502,21 @@ class VyshkaPlugin : VyshkaResponseSink
 		string storedContent = "";
 		bool storedPending = false;
 		int storedAbove = -2;
-		string raw;
-		string why = "no " + VyshkaFiles.MANIFEST_PATH + " yet";
-		if (VyshkaFiles.ReadAll(VyshkaFiles.MANIFEST_PATH, raw))
+		string why;
+		// The record is read as lines and parsed in place (VyshkaFiles.ReadJson);
+		// it is not read into one string and scrubbed of newlines first: with
+		// a Replace of the newline here, the string read back measured 0
+		// bytes on every boot on DayZ 1.29 (2026-09-18, issue #72).
+		VyshkaManifestRecord record = VyshkaManifestRecord.Load(why);
+		if (record)
 		{
-			// The file is one line of JSON with no newline of its own, read
-			// back whole the way the outbox's records are (an 8 KiB record
-			// restores intact on every boot). It is not scrubbed of newlines
-			// first: with a `raw.Replace("\n", "")` here, the string read
-			// back measured 0 bytes on every boot on DayZ 1.29 (2026-09-18,
-			// issue #72), and without it the same file reads back whole and
-			// the stored revision is republished.
-			int rawLength = raw.Length();
-			VyshkaJsonValue root = VyshkaJson.Parse(raw);
-			if (root && root.IsObject())
-			{
-				stored = root.GetInt("revision", 0);
-				storedContent = root.GetString("content", "");
-				// A record without the mark (written before it existed) has
-				// no evidence of acceptance either, so it reads as pending.
-				storedPending = root.GetBool("pending", true);
-				// Only a hub revision (section 6: 1 or more) is evidence
-				// of where the hub stood; anything else in the mark reads
-				// as no mark.
-				storedAbove = root.GetInt("above", -2);
-				if (storedAbove < 1)
-					storedAbove = -2;
-				int storedLength = storedContent.Length();
-				int contentLength = content.Length();
-				why = "the record at revision " + stored.ToString() + " holds " + storedLength.ToString() + " bytes of content and this boot declares " + contentLength.ToString();
-			}
-			else
-				why = VyshkaFiles.MANIFEST_PATH + " (" + rawLength.ToString() + " bytes) did not parse as a JSON object";
+			stored = record.m_Revision;
+			storedContent = record.m_Content;
+			storedPending = record.m_Pending;
+			storedAbove = record.m_Above;
+			int storedLength = storedContent.Length();
+			int contentLength = content.Length();
+			why = "the record at revision " + stored.ToString() + " holds " + storedLength.ToString() + " bytes of content and this boot declares " + contentLength.ToString();
 		}
 		// A manifest.publish an earlier boot left in the outbox goes to the
 		// hub before anything this boot appends, and the hub applies it
@@ -559,30 +544,24 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (now > revision)
 			revision = now;
 		m_PublishedAbove = -2;
-		SaveManifestRecord(revision, content, true, -2);
+		SaveManifestRecord(revision, true, -2);
 		VyshkaLog.Info("publishing manifest revision " + revision.ToString() + ": " + why);
 		return revision;
 	}
 
-	// SaveManifestRecord writes the revision and the content it goes with
-	// to VyshkaFiles.MANIFEST_PATH, so the next boot can tell whether it
-	// changed anything. pending says the revision was minted here and no
-	// hub has yet been seen to accept it (ReconcileManifestRevision clears
-	// it), so a restart in between keeps treating the number as a guess;
-	// above, when the pending revision has been published above a hub
-	// revision the session reported, is that revision, which is what lets
-	// a later session's report be read as acceptance; a hub that reported
-	// none leaves no mark, since it is not known to have stood below.
-	void SaveManifestRecord(int revision, string content, bool pending, int above)
+	// SaveManifestRecord writes the revision and the content this boot
+	// declares (m_ManifestJson) to VyshkaFiles.MANIFEST_PATH, so the next
+	// boot can tell whether it changed anything. pending says the revision
+	// was minted here and no hub has yet been seen to accept it
+	// (ReconcileManifestRevision clears it), so a restart in between keeps
+	// treating the number as a guess; above, when the pending revision has
+	// been published above a hub revision the session reported, is that
+	// revision, which is what lets a later session's report be read as
+	// acceptance; a hub that reported none leaves no mark, since it is not
+	// known to have stood below.
+	void SaveManifestRecord(int revision, bool pending, int above)
 	{
-		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
-		record.Set("revision", VyshkaJsonValue.NewInt(revision));
-		record.Set("pending", VyshkaJsonValue.NewBool(pending));
-		if (pending && above != -2)
-			record.Set("above", VyshkaJsonValue.NewInt(above));
-		record.Set("content", VyshkaJsonValue.NewString(content));
-		string text = record.Serialize();
-		if (!VyshkaFiles.WriteAll(VyshkaFiles.MANIFEST_PATH, text))
+		if (!VyshkaManifestRecord.Save(revision, m_ManifestJson, pending, above))
 			VyshkaLog.Warn("could not write " + VyshkaFiles.MANIFEST_PATH + "; every boot will publish a new manifest revision, even one that changed nothing");
 	}
 
@@ -637,7 +616,7 @@ class VyshkaPlugin : VyshkaResponseSink
 				int above = m_PublishedAbove;
 				m_ManifestChanged = false;
 				m_PublishedAbove = -2;
-				SaveManifestRecord(m_ManifestRevision, m_ManifestContent, false, -2);
+				SaveManifestRecord(m_ManifestRevision, false, -2);
 				VyshkaLog.Info("the hub holds manifest revision " + hubRevision.ToString() + ", the one published above its earlier " + above.ToString() + "; accepted");
 				return;
 			}
@@ -652,7 +631,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_ManifestRevision = revision;
 		m_ManifestChanged = true;
 		m_PublishedAbove = -2;
-		SaveManifestRecord(revision, m_ManifestContent, true, -2);
+		SaveManifestRecord(revision, true, -2);
 		// A publish already queued this process carries the old number; the
 		// corrected body has to go out as well.
 		m_ManifestQueued = false;
@@ -732,14 +711,14 @@ class VyshkaPlugin : VyshkaResponseSink
 		int now = VyshkaClock.MonotonicMs();
 		if (channel.m_LastMs != 0 && now - channel.m_LastMs < m_Config.m_SnapshotIntervalSeconds * 1000)
 			return false;
-		string body = "";
+		VyshkaJsonValue body = null;
 		if (channel.m_Type == SNAPSHOT_PLAYERS)
 			body = m_Snapshots.CapturePlayers();
 		else if (channel.m_Type == SNAPSHOT_VEHICLES)
 			body = m_Snapshots.CaptureVehicles();
 		else if (channel.m_Type == SNAPSHOT_ENTITIES)
 			body = m_Snapshots.CaptureEntities();
-		if (body == "")
+		if (!body)
 			return false;
 		if (!m_Outbox.Append(channel.m_Type, body))
 		{
@@ -1427,9 +1406,8 @@ class VyshkaPlugin : VyshkaResponseSink
 			VyshkaLog.Warn("the entries of context " + contextId + " serialize to " + answerBytes.ToString() + " bytes, over the " + CONTEXT_REPLY_MAX_BYTES.ToString() + " a reply may carry (spec section 6.2); answering with none");
 			answer.Set("entries", VyshkaJsonValue.NewArray());
 			answer.Set("reason", VyshkaJsonValue.NewString("the members of context " + contextId + " do not fit in one reply"));
-			answerBody = answer.Serialize();
 		}
-		if (!m_Outbox.Append("context.entries", answerBody))
+		if (!m_Outbox.Append("context.entries", answer))
 			VyshkaLog.Warn("the outbox could not hold the entries of context " + contextId + " for request " + requestId + "; a hub that still wants them will ask again");
 	}
 
@@ -1508,7 +1486,8 @@ class VyshkaPlugin : VyshkaResponseSink
 		}
 		MarkExecuted(actionId);
 
-		string ackBody = "{\"actionId\":" + VyshkaJson.Quote(actionId) + "}";
+		VyshkaJsonValue ackBody = VyshkaJsonValue.NewObject();
+		ackBody.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		m_Outbox.Append("action.ack", ackBody);
 
 		string code = body.GetString("code", "");
@@ -1594,10 +1573,9 @@ class VyshkaPlugin : VyshkaResponseSink
 		// refuse it, the result is kept and appended as soon as an ack frees
 		// room (AppendHeldResults) rather than lost: the executed-id dedup
 		// means a re-delivery could never produce it again.
-		string resultBody = result.Serialize();
-		if (!m_Outbox.Append("action.result", resultBody))
+		if (!m_Outbox.Append("action.result", result))
 		{
-			m_HeldResults.Insert(resultBody);
+			m_HeldResults.Insert(result);
 			VyshkaLog.Warn("the outbox could not hold the result of action " + actionId + " (" + code + "); holding it until room frees");
 		}
 
