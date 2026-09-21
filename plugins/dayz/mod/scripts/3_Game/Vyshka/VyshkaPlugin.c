@@ -1697,15 +1697,34 @@ class VyshkaPlugin : VyshkaResponseSink
 	// its length, is remembered across a restart on a line the engine's
 	// reader can read. Two ids sharing a fingerprint and a length would be
 	// taken for one another; with a 32-bit fingerprint over a few hundred
-	// remembered ids that is not a case worth a byte of the log. The key
-	// starts with a control character no id from a hub could carry as its
-	// first byte in practice, and the hub's own ids are 26 characters.
+	// remembered ids that is not a case worth a byte of the log. A key
+	// starts with one byte of value 1 followed by "fp:"; an id that itself
+	// starts with that byte is kept with one more in front, so no id, of
+	// any length or content, can read as another's key.
 	static string ExecutedKey(string actionId)
 	{
 		if (actionId.Length() <= ACTION_ID_MAX)
+		{
+			if (actionId.Length() > 0 && actionId.Get(0) == KeyMarker())
+				return KeyMarker() + actionId;
 			return actionId;
+		}
+		return KeyMarker() + "fp:" + VyshkaIds.Fingerprint(actionId) + ":" + actionId.Length().ToString();
+	}
+
+	// IsExecutedKey says whether a log line already holds a key in the form
+	// ExecutedKey produces (one marker byte, or a marker-escaped id), as
+	// opposed to a bare id a plugin before the key wrote, which LoadExecuted
+	// turns into its key.
+	static bool IsExecutedKey(string line)
+	{
+		return line.Length() > 0 && line.Get(0) == KeyMarker();
+	}
+
+	static string KeyMarker()
+	{
 		int marker = 1;
-		return marker.AsciiToString() + "fp:" + VyshkaIds.Fingerprint(actionId) + ":" + actionId.Length().ToString();
+		return marker.AsciiToString();
 	}
 
 	// LoadExecuted repopulates the LRU from disk on boot, keeping the most
@@ -1737,10 +1756,16 @@ class VyshkaPlugin : VyshkaResponseSink
 			string id = line;
 			if (parsed && parsed.IsString())
 				id = parsed.m_Text;
-			if (!m_Executed.Contains(id))
+			// A record from before the key form is a bare id, which is
+			// turned into the key the lookups use; one already in the key
+			// form (a fingerprint, or a marker-escaped id) is kept as it is.
+			string key = id;
+			if (!IsExecutedKey(id))
+				key = ExecutedKey(id);
+			if (!m_Executed.Contains(key))
 			{
-				m_Executed.Set(id, true);
-				m_ExecutedOrder.Insert(id);
+				m_Executed.Set(key, true);
+				m_ExecutedOrder.Insert(key);
 			}
 		}
 		if (lines.Count() > 2 * EXECUTED_LRU_CAPACITY)

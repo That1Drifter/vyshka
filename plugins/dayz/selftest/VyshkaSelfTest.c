@@ -196,11 +196,21 @@ class VyshkaSelfTest
 		bool stable = longKey == longKeyAgain;
 		bool distinct = longKey != otherKey;
 		bool shortEnough = longKey.Length() < 32;
+		// An id equal to a long id's key, and an id starting with the
+		// marker byte, get keys of their own; a key read back from the log
+		// is recognized as one, a bare id is not.
+		string impostorKey = VyshkaPlugin.ExecutedKey(longKey);
+		string markedId = VyshkaPlugin.KeyMarker() + "abc";
+		string markedKey = VyshkaPlugin.ExecutedKey(markedId);
+		bool unambiguous = impostorKey != longKey && markedKey != markedId && VyshkaPlugin.ExecutedKey(markedKey) != markedKey;
+		bool recognized = VyshkaPlugin.IsExecutedKey(longKey) && VyshkaPlugin.IsExecutedKey(markedKey) && !VyshkaPlugin.IsExecutedKey(shortId) && !VyshkaPlugin.IsExecutedKey(longId);
 		string fingerprint = VyshkaIds.Fingerprint("");
-		bool ok = same && stable && distinct && shortEnough && fingerprint == "811c9dc5";
+		bool ok = same && stable && distinct && shortEnough && unambiguous && recognized && fingerprint == "811c9dc5";
 		string detail = "same=" + same;
 		detail += "\tstable=" + stable;
 		detail += "\tdistinct=" + distinct;
+		detail += "\tunambiguous=" + unambiguous;
+		detail += "\trecognized=" + recognized;
 		detail += "\tkeyLength=" + longKey.Length();
 		detail += "\temptyFingerprint=" + fingerprint;
 		Report("ids.executedKey", ok, detail);
