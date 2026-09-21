@@ -1,0 +1,14 @@
+# boot 1 2026-09-21T19:07:14Z finished
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=124927365	resumeAt=22	steps=25
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=124927759	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=22	event=fire	t=0	ticks=240675099	label=alloc	kind=alloc	path=	size=0
+SCRIPT       : VYSHKA_BPROBE	step=22	event=alloc-measured	t=1261	ticks=253281553		obj0Ticks=75872	obj1Ticks=56839	obj2Ticks=48876	obj3Ticks=36564	obj4Ticks=38945	obj5Ticks=37078	objAfterClearTicks=52891	entry0Ticks=21750	entry1Ticks=21207	entry2Ticks=2121
+SCRIPT       : VYSHKA_BPROBE	step=23	event=fire	t=0	ticks=283284628	label=bans-100-pad1m	kind=bans	path=bans?n=100&pad=1048576	size=100
+SCRIPT       : VYSHKA_BPROBE	step=23	event=submitted	t=0	ticks=283285668	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=23	event=success	t=101	ticks=284292127	size=1072549	len=1072549
+SCRIPT       : VYSHKA_BPROBE	step=23	event=measured	t=232519	ticks=-1686494331	phase=all	ok=1	n=100	entries=100	finite=25	skipped=0	parseTicks=-1971241919	buildTicks=6885	lookupTicks=2968	hits=500	serializeTicks=436789	textLen=32164	writeTicks=4135	writte
+SCRIPT       : VYSHKA_BPROBE	step=24	event=fire	t=0	ticks=-1656492774	label=bans-100-pad256k	kind=bans	path=bans?n=100&pad=262144	size=100
+SCRIPT       : VYSHKA_BPROBE	step=24	event=submitted	t=0	ticks=-1656491818	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=24	event=success	t=100	ticks=-1655493224	size=286117	len=286117
+SCRIPT       : VYSHKA_BPROBE	step=24	event=measured	t=16711	ticks=-1489385190	phase=all	ok=1	n=100	entries=100	finite=25	skipped=0	parseTicks=165654328	buildTicks=7403	lookupTicks=3230	hits=500	serializeTicks=437904	textLen=32164	writeTicks=3532	written=t
+SCRIPT       : VYSHKA_BPROBE	step=-1	event=finished	t=0	ticks=-1459381592	steps=25

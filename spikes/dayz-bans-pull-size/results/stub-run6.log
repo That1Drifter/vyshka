@@ -1,0 +1,2 @@
+19:07:42.856 >> GET /bans?n=100&pad=1048576 n=100 bytes=1072549 written=1072549 err=<nil> took=1.0102ms
+19:11:38.362 >> GET /bans?n=100&pad=262144 n=100 bytes=286117 written=286117 err=<nil> took=0s

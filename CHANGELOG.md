@@ -108,6 +108,19 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-21: `spikes/dayz-bans-pull-size` (issue #80): what an installation ban list
+  pull costs the server, measured before the pull was designed. A mission `init.c` probe
+  fetches synthetic lists from a Go stub and runs the pull's work through the plugin's
+  own classes, timed with the engine's performance counter; it persists its progress so
+  a step that faults the process is skipped on the next boot, and the runner reboots
+  the server until the series is done. Findings: every single-character read and every
+  append on this engine costs time proportional to the whole string, so the plugin's
+  JSON parser and serializer are quadratic (1 000 entries cost 16 s of frame stall,
+  5 000 cost 6.6 minutes); the file reader faults the process on a line of 64 KiB or
+  more, which `bans.json` reaches at about 300 local bans; `Substring` silently caps
+  its result at 8 191 characters; the HTTP client passes 32 MiB. The pull of #80 is
+  therefore paged and its on-disk copy written one entry per line; the plugin defects
+  are issue #108. Six engine facts went to the DayZ knowledge base.
 - 2026-09-18: the mod surface (issue #72, plugin 0.8.0). A server mod loaded after
   `@Vyshka` overrides the modded `MissionServer`'s new `VyshkaRegister(VyshkaRegistry)`
   hook, which the plugin calls once before the link starts, to register `VyshkaAction`

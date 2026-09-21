@@ -1,0 +1,52 @@
+runner: stub on 127.0.0.1:8096
+runner: boot 1, pid 32196
+runner: 19:01:04  step -1 context
+runner: 19:01:16  step 8 line-read
+runner: 19:01:20  step 9 line-read
+runner: 19:01:22  step 10 line-written
+runner: 19:01:24  step 10 line-read
+runner: 19:01:26  step 11 line-read
+runner: 19:01:30  step 12 line-read
+runner: 19:01:32  step 13 line-read
+runner: 19:01:36  step 14 line-read
+runner: 19:01:40  step 15 line-read
+runner: 19:01:42  step 16 success
+runner: 19:01:46  step 17 success
+runner: 19:01:48  step 18 submitted
+runner: 19:01:50  step 18 success
+runner: 19:01:52  step 19 submitted
+runner: 19:01:54  step 19 success
+runner: 19:01:56  step 20 submitted
+runner: 19:01:58  step 20 calib
+runner: 19:02:02  step 20 success
+runner: boot 1 finished
+
+ticks per ms (median slope, fallback 10000): 9999.6
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+| line-32k | 32768 | true | 0.4 | true (8191 bytes) | 1 | 6.5 |
+| line-48k | 49152 | true | 0.4 | true (8191 bytes) | 1 | 1.4 |
+| line-65535 | 65535 | true | 0.3 | true (8191 bytes) | 1 | 2.2 |
+| line-65536 | 65536 | true | 0.4 | true (8191 bytes) | 1 | 2.6 |
+| line-65537 | 65537 | true | 0.4 | true (8191 bytes) | 1 | 1.3 |
+| line-80k | 81920 | true | 0.3 | true (8191 bytes) | 1 | 1.1 |
+| line-96k | 98304 | true | 0.3 | true (8191 bytes) | 1 | 1.4 |
+| line-128k | 131072 | true | 0.3 | true (8191 bytes) | 1 | 1.1 |
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|
+| raw-2m | success | 97 | 2097152 | 2097152 |
+| raw-4m | success | 150 | 4194304 | 4194304 |
+| raw-8m | success | 304 | 8388608 | 8388608 |
+| raw-16m | success | 1114 | 16777216 | 16777216 |
+| raw-32m | success | 6086 | 33554432 | 33554432 |

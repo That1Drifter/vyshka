@@ -1,0 +1,5 @@
+19:04:55.569 >> GET /big?n=2097152 n=2097152 written=2097152 err=<nil> took=11.5528ms
+19:04:58.861 >> GET /big?n=4194304 n=4194304 written=4194304 err=<nil> took=53.8648ms
+19:05:02.289 >> GET /big?n=8388608 n=8388608 written=8388608 err=<nil> took=231.1919ms
+19:05:06.537 >> GET /big?n=16777216 n=16777216 written=16777216 err=<nil> took=961.6799ms
+19:05:13.648 >> GET /big?n=33554432 n=33554432 written=33554432 err=<nil> took=3.8408841s

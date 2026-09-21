@@ -1,0 +1,9 @@
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=118572673	api=1
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=118573077	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=0	event=fire	t=0	ticks=243381783	label=bans-100	path=bans?n=100
+SCRIPT       : VYSHKA_BPROBE	step=0	event=submitted	t=0	ticks=243382749	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=0	event=success	t=88	ticks=244266535	size=23964	len=23964
+SCRIPT       : VYSHKA_BPROBE	step=0	event=measured	t=401	ticks=247397813	phase=all	ok=1	n=100	entries=100	finite=25	skipped=0	parseTicks=1469298	buildTicks=6110	lookupTicks=3020	hits=500	serializeTicks=189564	textLen=23964	writeTicks=3831	written=true	rea
+SCRIPT       : VYSHKA_BPROBE	step=1	event=fire	t=0	ticks=277400368	label=bans-500	path=bans?n=500
+SCRIPT       : VYSHKA_BPROBE	step=1	event=submitted	t=0	ticks=277401247	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=1	event=success	t=2	ticks=277421948	size=120164	len=120164

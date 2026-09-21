@@ -1,0 +1,190 @@
+# Ban list pull size on DayZ: measurements
+
+Answers what the pull of issue #80 could not be designed around without measuring: what a
+list of N entries costs the server's main thread once it has arrived, whether the plugin
+can keep a copy on disk and read it back, and where the engine's HTTP client stops above
+the 1 MiB the earlier spike reached.
+
+**Short answers:** on this engine every single-character read and every append pays for
+the whole string it touches, so the plugin's JSON parser and serializer are quadratic in
+the input: a 1 000-entry list costs 16 s of frame stall and a 5 000-entry list 6.6
+minutes. The plugin's file reader faults natively on a single line of 64 KiB or more,
+which a few hundred bans reach. `Substring` silently caps its result at 8 191 characters.
+The HTTP client is not a limit at all: 32 MiB arrived intact. The pull must be paged, the
+on-disk copy written one entry per line, and the parser rewritten to read through bounded
+windows before any payload larger than an action dispatch is routine.
+
+## Environment
+
+| Item | Value |
+|---|---|
+| Game build | DayZ 1.29 server binary `DayZServer_x64.exe` (1.29.163709) |
+| Mod | `@Vyshka` built from `main` at 1073891 (plugin 0.8.x, protocol draft 0.25), no config, idle |
+| Host OS | Windows 11 Pro 26100 |
+| Stub | `runner/main.go`, `127.0.0.1:8096`, plain HTTP over loopback |
+| Harness | `harness/VyshkaBansProbe.c` in the `init.c` of a mission derived from `dayzOffline.chernarusplus` |
+| Server flags | `-dologs -adminlog`, no `-freezecheck` (the stall is the number) |
+| Date | 2026-09-21 |
+
+Timing is the engine's `TickCount` performance counter, which runs inside one frame. Its
+unit is undocumented; against the frame clock it measured 10 000 ticks per millisecond
+(a 10 MHz counter), which the runner uses to convert. It is a 32-bit value, so a phase
+longer than about 215 s wraps once and is corrected by 2^32 (the 5 000-entry parse and
+the 1 MiB padded parse).
+
+## Runs
+
+Each run is one invocation of the runner; a step that faults the process is resumed past
+on the next boot through the probe's progress file.
+
+| Run | What happened | Logs |
+|---|---|---|
+| 1 | The mission did not compile: an expression continued on the next line with a leading `+` is a syntax error | `runner-run1-compile-fail.log`, `probe-run1-compile-fail.log` |
+| 2 | 100 entries measured; the read-back of the 500-entry file (120 164 bytes, one line) faulted the process natively inside `VyshkaFiles.ReadAll` | `runner-run2-crash.log`, `probe-run2-crash.log`, `run2-crash-report.txt` |
+| 3 | Read-back removed from the ban list series; 100 to 5 000 entries measured; the 10 000-entry parse did not finish inside the 25-minute boot budget; the 20 000-entry step was stopped by hand | `runner-run3-bans.log`, `run3-boot1-script.log`, `run3-boot2-script.log`, `stub-run3-bans.log` |
+| 4 | Line series void: the probe trimmed its test line with `Substring`, which capped it at 8 191 bytes, so every size read back "intact"; raw responses to 32 MiB | `runner-run4-line-raw.log`, `probe-run4-line-raw.log`, `table-run4-line-raw.md` |
+| 5 | Line series with exact lengths: 65 520 read back, 65 536 faulted; the `Substring` cap confirmed; indexing at two positions | `runner-run5-line-index-raw.log`, `probe-run5-line-index-raw.log`, `crashes-run5.log`, `table-run5-line-index-raw.md` |
+| 6 | Padded lists: 100 entries plus a 1 MiB or 256 KiB string value; allocation batches (the append and read numbers were lost to the 255-character `Print` limit) | `runner-run6-alloc-pad.log`, `probe-run6-alloc-pad.log`, `table-run6-alloc-pad.md` |
+| 7 | Did not compile: `local` is a reserved word | `runner-run7-compile-fail.log` |
+| 8 | Allocation, append, and read cost by string length, on a local, a member, a parameter, and a copy | `runner-run8-alloc-member.log`, `probe-run8-alloc-member.log` |
+
+## Series 1: ban lists (run 3)
+
+Every phase runs synchronously on the main thread, so the parse and serialize columns are
+the frame stall a player would feel. The stub answers in the planned pull shape (about
+240 bytes per entry: identity object, name, reason, timestamps, ban id).
+
+| Entries | Body bytes | Fetch (frames) | Parse | Build map | 1 000 lookups | Serialize | Write |
+|---|---|---|---|---|---|---|---|
+| 100 | 23 964 | 20 ms | 184 ms | 0.6 ms | 0.3 ms | 20 ms | 0.4 ms |
+| 500 | 120 164 | 75 ms | 3.5 s | 3.6 ms | 0.3 ms | 420 ms | 0.4 ms |
+| 1 000 | 240 414 | 100 ms | 14.6 s | 7.5 ms | 0.3 ms | 1.6 s | 0.5 ms |
+| 2 000 | 481 914 | 101 ms | 57.3 s | 13.7 ms | 0.4 ms | 6.6 s | 0.7 ms |
+| 5 000 | 1 206 414 | 17 ms | 353 s | 34 ms | 0.4 ms | 45.4 s | 0.2 ms |
+| 10 000 | 2 413 914 | 102 ms | not finished after 16 min | | | | |
+| 20 000 | 4 838 914 | 161 ms | stopped | | | | |
+
+Parse time grows 4.2x from 500 to 1 000 entries, 3.9x from 1 000 to 2 000, and 6.2x from
+2 000 to 5 000 (2.5x the input; 6.25 expected for a square). The serializer follows the
+same law.
+
+## Series 2: the reader's line limit (run 5)
+
+One line written with `VyshkaFiles.WriteAll` (`FPrint`), read back with
+`VyshkaFiles.ReadAll` (an `FGets` loop).
+
+| Line bytes | Written | Read back | Intact |
+|---|---|---|---|
+| 16 384 | yes | 16 384 | yes |
+| 32 768 | yes | 32 768 | yes |
+| 49 152 | yes | 49 152 | yes |
+| 65 520 | yes | 65 520 | yes |
+| 65 536 | yes | **process faulted** inside `FGets` | |
+
+The crash report names `ReadAll` at `vyshkafiles.c:55`, the `FGets` line, with a fault
+address in an unknown module: the engine, not the script VM. The limit sits between 65 521
+and 65 535 bytes, a 64 KiB buffer.
+
+## Series 3: raw responses (runs 4 and 5)
+
+| Body bytes | Arrived | String length | Time |
+|---|---|---|---|
+| 2 097 152 | yes | 2 097 152 | 97 ms |
+| 4 194 304 | yes | 4 194 304 | 150 ms |
+| 8 388 608 | yes | 8 388 608 | 304 ms |
+| 16 777 216 | yes | 16 777 216 | 1.1 s |
+| 33 554 432 | yes | 33 554 432 | 4 to 6 s |
+
+## Series 4: where the cost is (runs 5, 6, and 8)
+
+**Padded lists (run 6).** The same 100 entries with one extra string member of the given
+size, so the object count is fixed and only the byte count moves:
+
+| Pad | Body bytes | Parse | Serialize (pad truncated to 8 191) |
+|---|---|---|---|
+| none | 23 964 | 184 ms | 20 ms |
+| 256 KiB | 286 117 | 16.6 s | 44 ms |
+| 1 MiB | 1 072 549 | 232 s | 44 ms |
+
+Parse time tracks the byte count, not the object count, and 4x the bytes cost 14x the
+time.
+
+**Reads by string length (runs 5 and 8).** 1 000 calls of `string.Get(16)`:
+
+| String | Local | Member | Member via method | By-value parameter | Fresh copy | `Substring(16, 20)` |
+|---|---|---|---|---|---|---|
+| 32 bytes | 0.05 ms | | | | | |
+| 256 KiB | 51 ms | 51 ms | 52 ms | 51 ms | 52 ms | 51 ms |
+| 384 KiB | 92 ms | | | | | |
+| 1 MiB, position 16 | 212 ms | | | | | 214 ms |
+| 1 MiB, position 524 288 | 205 ms | | | | | 206 ms |
+
+The cost is about 0.2 µs per KiB of the string per call, independent of the position and
+of how the string is held. Copying a 256 KiB string into a local cost 61 µs, so the
+per-call cost is not a copy of the string; the engine walks it.
+
+**Appends (run 8).** Batches of 4 096 sixteen-byte appends to one string: 39 ms while it
+grew to 64 KiB, then 97, 145, 201, and 262 ms for the next four batches; 1 000 appends to
+a 256 KiB string cost 57 ms through an `out string` parameter and 58 ms on a local. Each
+append pays for the string's current length.
+
+**Allocation (run 8).** Six batches of 10 000 `VyshkaJsonValue.NewObject()` kept alive:
+7.4, 5.6, 5.5, 5.4, 4.0, and 4.6 ms; 6.7 ms after releasing them all. Six batches of
+10 000 plain `VyshkaBanEntry`: 2.2 to 2.3 ms each. Constant.
+
+**`Substring` cap (run 5).** On a 1 MiB string, `Substring(0, 8191)` returned 8 191
+characters, `Substring(0, 8192)` returned 8 191, `Substring(0, 100000)` returned 8 191,
+and a 100-character window near the end returned 100. No error is raised.
+
+## Findings
+
+1. **Reading one character of a string costs time proportional to the whole string's
+   length.** `string.Get(i)` and `Substring` walk the string on every call, about 0.2 µs
+   per KiB. A parser that reads an n-byte input one character at a time is therefore
+   O(n²) on this engine, and the plugin's `VyshkaJson.Parse` is exactly that: 184 ms for
+   24 KB, 14.6 s for 240 KB, 353 s for 1.2 MB, and 232 s for a 100-object document whose
+   size comes from one string value. Object allocation is not a factor.
+
+2. **Appending to a string copies it.** `+=` pays for the current length, so the
+   serializer, which appends every token to one result string, is O(n²) as well: 45 s for
+   1.2 MB. The fix is the usual one, collect pieces and join once, or write pieces as they
+   are produced.
+
+3. **The plugin's file reader faults the process on a line of 64 KiB or more.**
+   `VyshkaFiles.ReadAll` is an `FGets` loop and `WriteAll` writes its content as one line.
+   This is a production defect today: `bans.json` is one line and grows by about 200 bytes
+   per ban, so a server with roughly 300 local bans crashes at the next boot when the list
+   loads; the manifest and an outbox record holding a large event batch can cross the same
+   line. Writing one array element per line keeps the file valid (a newline between JSON
+   tokens is whitespace) and every line short.
+
+4. **`Substring` silently returns at most 8 191 characters.** The parser copies each
+   string value out with one `Substring`, so a value longer than that is truncated without
+   error. No current payload carries such a value; a chat line or a mod's event payload
+   could.
+
+5. **The HTTP client is not the constraint.** 32 MiB arrived intact in a few seconds.
+
+6. **Engine facts recorded in the DayZ KB:** the two syntax rules (`local` reserved, no
+   leading operator on a continuation line), the 255-character `Print` limit, the 10 MHz
+   `TickCount`, and the five performance facts above.
+
+## Consequences for issue #80
+
+- **The pull is paged, from the first draft.** A page of 100 entries costs 184 ms of
+   parse and 20 ms of serialize on the parser as it stands, a visible hitch at 20 frames
+   per second; a page of 50 costs a quarter of that, since the cost is quadratic in the
+   page. `GET /plugin/v1/bans` takes a cursor and a `limit`, the plugin fetches one page
+   per poll cycle and applies the list only once the last page has arrived, so a hub
+   outage mid-pull leaves the previous list enforced, and `bans.applied` is sent once the
+   whole revision is on disk. With a linear parser the page can grow, but paging stays: a
+   list of any size must never be one frame's work.
+- **The on-disk copy is written one entry per line**, and `bans.json`, the manifest, and
+   the outbox records get the same treatment as their own fix, since the reader's limit is
+   a crash in production today.
+- **The parser and serializer are rewritten linear** before any payload larger than an
+   action dispatch is routine: the input is cut once into windows of at most 8 191
+   characters (each cut is one walk, so the cutting is O(n²/8191), 36 ms for 1.2 MB) and
+   every character read runs against a window; string values are assembled from window
+   slices; the serializer collects pieces in an array and joins once. That is a plugin
+   slice of its own, filed with the reader fix.

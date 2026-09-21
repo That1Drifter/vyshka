@@ -1,0 +1,18 @@
+Fault address:  F3E0C5B3 00:F3E0C5B3 Unknown module
+file:     vyshkaBansSpike
+world:    chernarusplus
+Prev. code bytes: 62 B1 7F 28 7F 4C 09 F8 62 B1 7F 28 6F 4C 0A F9
+Fault code bytes: 62 B1 7F 28 7F 4C 09 F9 62 B1 7F 28 6F 4C 0A FA
+Script:
+-------------------------------------------------------
+
+Class:      'VyshkaBansCallback'
+Function: 'ReadAll'
+Stack trace:
+Vyshka/scripts/3_Game/vyshka\vyshkafiles.c:55 Function ReadAll
+Vyshka/scripts/3_Game/vyshka\vyshkafiles.c:112 Function ReadJson
+$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c:291 Function Measure
+$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c:187 Function OnSuccess
+-------------------------------------------------------
+=======================================================
+note: Minidump has been generated into the file C:\WorkDrive\Vyshka\spikes\dayz-bans-pull-size\results\profile\DayZServer_x64_2026-09-21_13-16-29.mdmp

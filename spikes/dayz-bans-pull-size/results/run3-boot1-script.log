@@ -1,0 +1,38 @@
+---------------------------------------------
+Log C:\WorkDrive\Vyshka\spikes\dayz-bans-pull-size\results\profile\script_2026-09-21_13-22-40.log started at 21.09. 13:22:40
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECON
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+SCRIPT       : Module: Game; loaded 431x files; 1438x classes; used 4007/33554 kB (11%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_
+SCRIPT       : ... Backlit Effects Enabled
+SCRIPT       : Module: World; loaded 2130x files; 5652x classes; used 8776/33554 kB (26%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWOR
+ SCRIPT       : Module: Mission; loaded 210x files; 445x classes; used 3001/33554 kB (8%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWOR
+ SCRIPT       : Module: $CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c; loaded 1x files; 8x classes; used 44/1048 kB (4%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vys
+ SCRIPT       : [Vyshka] ERROR: no usable config at $profile:Vyshka/config.json; it needs at least {"hubUrl": "...", "enrollmentToken": "..."}. The plugin is idle.
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=116671451	resumeAt=0	steps=21
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=116671792	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=0	event=fire	t=0	ticks=232626361	label=bans-100	kind=bans	path=bans?n=100	size=100
+SCRIPT       : VYSHKA_BPROBE	step=0	event=submitted	t=0	ticks=232627355	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=0	event=success	t=20	ticks=232822890	size=23964	len=23964
+SCRIPT       : VYSHKA_BPROBE	step=0	event=measured	t=224	ticks=234868375	phase=all	ok=1	n=100	entries=100	finite=25	skipped=0	parseTicks=1836515	buildTicks=6038	lookupTicks=3083	hits=500	serializeTicks=195056	textLen=23964	writeTicks=4161	written=true
+SCRIPT       : VYSHKA_BPROBE	step=1	event=fire	t=0	ticks=265124956	label=bans-500	kind=bans	path=bans?n=500	size=500
+SCRIPT       : VYSHKA_BPROBE	step=1	event=submitted	t=0	ticks=265125976	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=1	event=success	t=75	ticks=265871798	size=120164	len=120164
+SCRIPT       : VYSHKA_BPROBE	step=1	event=measured	t=4005	ticks=305177227	phase=all	ok=1	n=500	entries=500	finite=125	skipped=0	parseTicks=35056410	buildTicks=36113	lookupTicks=2931	hits=500	serializeTicks=4204066	textLen=120164	writeTicks=4340	written=tr
+SCRIPT       : VYSHKA_BPROBE	step=1	event=calib	t=4007	ticks=305198069	
+SCRIPT       : VYSHKA_BPROBE	step=2	event=fire	t=0	ticks=335194670	label=bans-1000	kind=bans	path=bans?n=1000	size=1000
+SCRIPT       : VYSHKA_BPROBE	step=2	event=submitted	t=0	ticks=335195729	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=2	event=success	t=100	ticks=336193827	size=240414	len=240414
+SCRIPT       : VYSHKA_BPROBE	step=2	event=measured	t=16327	ticks=498461551	phase=all	ok=1	n=1000	entries=1000	finite=250	skipped=0	parseTicks=145828442	buildTicks=75450	lookupTicks=2876	hits=500	serializeTicks=16353461	textLen=240414	writeTicks=5432	writt
+SCRIPT       : VYSHKA_BPROBE	step=3	event=fire	t=0	ticks=528494661	label=bans-2000	kind=bans	path=bans?n=2000	size=2000
+SCRIPT       : VYSHKA_BPROBE	step=3	event=submitted	t=0	ticks=528495708	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=3	event=success	t=101	ticks=529500475	size=481914	len=481914
+SCRIPT       : VYSHKA_BPROBE	step=3	event=measured	t=64054	ticks=1169038863	phase=all	ok=1	n=2000	entries=2000	finite=500	skipped=0	parseTicks=573422895	buildTicks=137281	lookupTicks=3540	hits=500	serializeTicks=65964093	textLen=481914	writeTicks=7219	wri
+SCRIPT       : VYSHKA_BPROBE	step=3	event=calib	t=64067	ticks=1169164340	
+SCRIPT       : VYSHKA_BPROBE	step=4	event=fire	t=0	ticks=1199137622	label=bans-5000	kind=bans	path=bans?n=5000	size=5000
+SCRIPT       : VYSHKA_BPROBE	step=4	event=submitted	t=0	ticks=1199138763	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=4	event=success	t=17	ticks=1199306433	size=1206414	len=1206414
+SCRIPT       : VYSHKA_BPROBE	step=4	event=measured	t=398804	ticks=892205753	phase=all	ok=1	n=5000	entries=5000	finite=1250	skipped=0	parseTicks=-761270586	buildTicks=340391	lookupTicks=3599	hits=500	serializeTicks=453803892	textLen=1206414	writeTicks=1531
+SCRIPT       : VYSHKA_BPROBE	step=5	event=fire	t=0	ticks=922358639	label=bans-10000	kind=bans	path=bans?n=10000	size=10000
+SCRIPT       : VYSHKA_BPROBE	step=5	event=submitted	t=0	ticks=922359646	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=5	event=success	t=102	ticks=923374584	size=2413914	len=2413914

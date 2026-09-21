@@ -1,0 +1,16 @@
+---------------------------------------------
+Log C:\WorkDrive\Vyshka\spikes\dayz-bans-pull-size\results\profile\script_2026-09-21_13-47-43.log started at 21.09. 13:47:43
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_RECON
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+SCRIPT       : Module: Game; loaded 431x files; 1438x classes; used 4007/33554 kB (11%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWORK_
+SCRIPT       : ... Backlit Effects Enabled
+SCRIPT       : Module: World; loaded 2130x files; 5652x classes; used 8775/33554 kB (26%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWOR
+ SCRIPT       : Module: Mission; loaded 210x files; 445x classes; used 3001/33554 kB (8%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vyshka,VYSHKA,DayZ,FEATURE_CURSOR,FEATURE_NETWOR
+ SCRIPT       : Module: $CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c; loaded 1x files; 8x classes; used 44/1048 kB (4%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_WINDOWS,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,Vys
+ SCRIPT       : [Vyshka] ERROR: no usable config at $profile:Vyshka/config.json; it needs at least {"hubUrl": "...", "enrollmentToken": "..."}. The plugin is idle.
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=116158859	resumeAt=6	steps=21
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=116159138	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=6	event=fire	t=0	ticks=224833592	label=bans-20000	kind=bans	path=bans?n=20000	size=20000
+SCRIPT       : VYSHKA_BPROBE	step=6	event=submitted	t=0	ticks=224834426	rc=1
+SCRIPT       : VYSHKA_BPROBE	step=6	event=success	t=161	ticks=226441581	size=4838914	len=4838914

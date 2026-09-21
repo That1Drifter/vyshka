@@ -1,0 +1,20 @@
+boot 1: server-exited during step 12 (line-65536)
+DayZServer_x64_2026-09-21_14-03-26.RPT
+Fault address:  F3E0C5A3 00:F3E0C5A3 Unknown module
+file:     vyshkaBansSpike
+world:    chernarusplus
+Prev. code bytes: 02 00 4D 03 DA 41 FF E3 62 B1 7F 28 6F 4C 0A F8
+Fault code bytes: 62 B1 7F 28 7F 4C 09 F8 62 B1 7F 28 6F 4C 0A F9
+Script:
+-------------------------------------------------------
+
+Class:      'VyshkaBansProbe'
+Function: 'ReadAll'
+Stack trace:
+Vyshka/scripts/3_Game/vyshka\vyshkafiles.c:55 Function ReadAll
+$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c:506 Function MeasureLine
+$CurrentDir:mpmissions\vyshkaBansSpike.chernarusplus\init.c:470 Function Next
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+-------------------------------------------------------
+=======================================================
+

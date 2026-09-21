@@ -1,0 +1,10 @@
+runner: stub on 127.0.0.1:8096
+runner: deriving vyshkaBansSpike.chernarusplus from dayzOffline.chernarusplus
+runner: server pid 23296 booting
+runner: the mission did not compile; see the script log
+runner: series compile-failure
+
+ticks per ms (median slope): 0.000
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms | read back ms | reread entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|

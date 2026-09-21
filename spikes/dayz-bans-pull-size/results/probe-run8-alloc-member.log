@@ -1,0 +1,13 @@
+# boot 1 2026-09-21T19:14:24Z finished
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=boot	t=0	ticks=117054830	resumeAt=24	steps=26
+ SCRIPT       : VYSHKA_BPROBE	step=-1	event=context	t=0	ticks=117055163	ctx=1
+SCRIPT       : VYSHKA_BPROBE	step=24	event=fire	t=0	ticks=226214552	label=alloc	kind=alloc	path=	size=0
+SCRIPT       : VYSHKA_BPROBE	step=24	event=alloc-objects	t=67	ticks=226886721		obj0Ticks=74093	obj1Ticks=55536	obj2Ticks=55293	obj3Ticks=54044	obj4Ticks=40215	obj5Ticks=46050	objAfterClearTicks=67148
+SCRIPT       : VYSHKA_BPROBE	step=24	event=alloc-entries	t=91	ticks=227128196		entry0Ticks=22371	entry1Ticks=22247	entry2Ticks=22579	entry3Ticks=22464	entry4Ticks=23246	entry5Ticks=23243
+SCRIPT       : VYSHKA_BPROBE	step=24	event=alloc-append	t=1167	ticks=237883890		append0Ticks=386398	len0=65536	append1Ticks=974661	len1=131072	append2Ticks=1447984	len2=196608	append3Ticks=2005958	len3=262144	append4Ticks=2616651	len4=327680	append5Ticks=
+SCRIPT       : VYSHKA_BPROBE	step=24	event=alloc-get	t=1259	ticks=238802155		getShortTicks=481	getLongTicks=916844	sink=2000
+SCRIPT       : VYSHKA_BPROBE	step=25	event=fire	t=0	ticks=268804266	label=member	kind=member	path=	size=262144
+SCRIPT       : VYSHKA_BPROBE	step=25	event=member-get	t=1106	ticks=279861000	len=262144	localGetTicks=511266	memberGetTicks=512773	memberMethodGetTicks=518752	paramGetTicks=513428
+SCRIPT       : VYSHKA_BPROBE	step=25	event=member-copy	t=1209	ticks=280896672		memberSubstringTicks=514039	copyTicks=610	copiedLocalGetTicks=520145
+SCRIPT       : VYSHKA_BPROBE	step=25	event=member-append	t=1324	ticks=282043456		appendOutTicks=569607	appendLocalTicks=575361	sink=25000
+SCRIPT       : VYSHKA_BPROBE	step=-1	event=finished	t=0	ticks=312045345	steps=26
