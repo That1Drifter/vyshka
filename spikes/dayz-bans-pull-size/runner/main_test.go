@@ -91,4 +91,39 @@ func TestCompletedNeedsTheClosingRecords(t *testing.T) {
 	if completed([]string{rawFire}, 17) || !completed([]string{rawFire, rawDone}, 17) {
 		t.Error("a raw step is completed by its fetch verdict and nothing less")
 	}
+
+	// The decision the runner takes at a boot's end goes through
+	// leftInFlight, so the connection between the predicate and the table
+	// is what is tested here, not the predicate alone.
+	if step, inFlight := leftInFlight([]string{fire, success}); !inFlight || step != 23 {
+		t.Errorf("a boot that ended after the fetch of step 23: leftInFlight = (%d, %v), want (23, true)", step, inFlight)
+	}
+	if _, inFlight := leftInFlight([]string{fire, success, measured, more}); inFlight {
+		t.Error("a boot that ended in the gap after a complete measurement reports the step in flight")
+	}
+	if _, inFlight := leftInFlight([]string{fire, success, measured, more, abort}); inFlight {
+		t.Error("a boot that aborted on the next step's checkpoint reports the completed step in flight")
+	}
+	if _, inFlight := leftInFlight(nil); inFlight {
+		t.Error("a boot with no fire line reports a step in flight")
+	}
+}
+
+// The ten-second calibration bound holds even for a counter ten times faster
+// than the measured one, whose full cycle is 43 s: the 60 s parse interval
+// that would fit under a 100 s bound and corrupt the fit is excluded.
+func TestCalibrationBoundHoldsForAFasterCounter(t *testing.T) {
+	mk := func(step int, event string, tms int, ticks int64) probeEvent {
+		return probeEvent{step: step, event: event, t: tms, ticks: ticks, fields: map[string]string{}}
+	}
+	events := []probeEvent{
+		mk(1, "fire", 0, 200000000),
+		mk(1, "success", 100, 210000000),
+		mk(1, "measured", 61100, 2015032704),
+		mk(1, "measured-more", 61101, 2015132704),
+	}
+	got := ticksPerMs(events)
+	if got < 99900 || got > 100100 {
+		t.Errorf("ticks per ms = %.1f, want about 100000 from the 100 ms fetch alone", got)
+	}
 }

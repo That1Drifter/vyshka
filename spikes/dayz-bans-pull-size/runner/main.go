@@ -186,9 +186,8 @@ func run() error {
 		// step whose completion records are all there finished before the
 		// boot ended, whatever ended it, and is not marked.
 		if outcome != "finished" {
-			if fire := lastFire(lines); fire != nil {
-				step, _ := strconv.Atoi(fire.fields["step"])
-				if _, already := unfinished[step]; !already && !completed(lines, step) {
+			if step, inFlight := leftInFlight(lines); inFlight {
+				if _, already := unfinished[step]; !already {
 					unfinished[step] = outcome
 				}
 			}
@@ -671,12 +670,13 @@ func lastFire(lines []string) *probeEvent {
 }
 
 // calibrationMaxMs bounds the intervals the fit may use: the counter is a
-// signed 32-bit value at about 10 MHz, so any interval over 2^31 ticks
-// (about 215 s) can have wrapped and still read as increasing, and one that
-// did would drag the median toward a fraction of the true unit. Well under
-// that bound, no interval can wrap whatever the exact frequency turns out
-// to be within an order of magnitude of the expected one.
-const calibrationMaxMs = 100000
+// signed 32-bit value, so an interval over 2^31 ticks can have wrapped and
+// still read as increasing, and one that did would drag the median toward a
+// fraction of the true unit. At the measured 10 MHz that is about 215 s; at
+// 100 MHz, ten times faster, a full cycle is 43 s. Ten seconds is safe up to
+// 200 MHz, and every fetch interval (20 ms to 6 s in every run) fits under
+// it, so the fit never lacks samples.
+const calibrationMaxMs = 10000
 
 // ticksPerMs fits the counter against the frame clock: within one step, t
 // is frame milliseconds since the fire and ticks is the counter, so the
@@ -706,6 +706,19 @@ func ticksPerMs(events []probeEvent) float64 {
 	}
 	sort.Float64s(slopes)
 	return slopes[len(slopes)/2]
+}
+
+// leftInFlight is the decision the runner takes at the end of a boot that
+// did not finish: the last step fired, when its lines lack the records that
+// end it, was left in flight and must be reported as not measured. A boot
+// with no fire line left nothing in flight.
+func leftInFlight(lines []string) (int, bool) {
+	fire := lastFire(lines)
+	if fire == nil {
+		return 0, false
+	}
+	step, _ := strconv.Atoi(fire.fields["step"])
+	return step, !completed(lines, step)
 }
 
 // completed reports whether a step's lines carry the records that end it:
