@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,19 +70,25 @@ func (e Env) mintBoundToken(ctx context.Context, name string, servers []string, 
 	return minted, nil
 }
 
-// headersOnlyDeadline is how long the headers-only probe waits for the final
+// headersOnlyDeadline is how long the stalled-body probe waits for the final
 // refusal. A hub that judges the binding at the headers answers in
-// milliseconds; one that first reads the body waits for bytes that never
-// come until its own body-read timeout, and a hub whose timeout is shorter
-// than this would have to be timing out ordinary clients' bodies too.
+// milliseconds; one that first waits for the body waits for bytes that never
+// come until its own body-read timeout.
 const headersOnlyDeadline = 3 * time.Second
 
 // refusedBeforeBody sends a mutation's request line and headers, declaring a
 // body it never sends, and requires the hub's final 403 with the protocol's
-// forbidden envelope within headersOnlyDeadline (spec section 10.2). The
-// connection is raw so that nothing in an HTTP client library supplies or
-// expects the body, and the request target is built from the same full URL
-// ordinary requests use, so a hub mounted under a path prefix is reached.
+// forbidden envelope within headersOnlyDeadline. It is a bounded stalled-body
+// check: it proves the refusal does not wait on the body for longer than the
+// deadline, which is what section 10.2 asks for from the caller's side (a
+// refused token must not occupy the connection delivering a payload nothing
+// will use). It cannot, from outside, tell a hub that never reads the body
+// from one that gives up reading it within the deadline and then refuses;
+// the audit assertion beside it (an empty payload digest on the refusal)
+// covers what was digested, not what was read. The connection is raw so that
+// nothing in an HTTP client library supplies or expects the body, and the
+// request target is built from the same full URL ordinary requests use, so a
+// hub mounted under a path prefix is reached.
 func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string) error {
 	target, err := url.Parse(e.BaseURL + path)
 	if err != nil {
@@ -123,7 +131,7 @@ func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string)
 		resp, err = http.ReadResponse(reader, nil)
 	}
 	if err != nil {
-		return fmt.Errorf("%s %s with the body withheld: no final response within %s; the refusal must come at the headers (section 10.2): %w", method, path, headersOnlyDeadline, err)
+		return fmt.Errorf("%s %s with the body withheld: no final response within %s; a token the binding refuses must not be left occupying the connection waiting for a body (section 10.2): %w", method, path, headersOnlyDeadline, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -134,6 +142,15 @@ func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string)
 		return fmt.Errorf("%s %s with the body withheld: read the refusal: %w", method, path, err)
 	}
 	return assertErrorCode(method, path, body, "forbidden")
+}
+
+// keySuffix turns any identifier into 16 hexadecimal characters that fit the
+// key/value key alphabet of spec section 12.1, whatever alphabet the hub's
+// own ids use, so a probe key built from a token id is a valid key on every
+// hub.
+func keySuffix(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:8])
 }
 
 // containsString walks a decoded JSON value and reports the path of the first

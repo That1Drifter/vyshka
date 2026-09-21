@@ -3160,8 +3160,9 @@ var checks = []Check{
 				return fmt.Errorf("the audit log holds %d refused dispatches on the other server for the bound token, want 1", refusedDispatches)
 			}
 			// An empty digest says the body was not digested; the refusal
-			// arriving while the body is withheld says it was not read at
-			// all. A separate token keeps this probe out of the count above.
+			// arriving while the body is withheld says the refused token was
+			// not left occupying the connection waiting for it. A separate
+			// token keeps this probe out of the count above.
 			probe, err := env.mintBoundToken(ctx, "conformance: headers-only probe", []string{mineID}, "actions:dispatch:example-mod.*")
 			if err != nil {
 				return err
@@ -3180,7 +3181,9 @@ var checks = []Check{
 			}
 			// A key and value this run alone wrote, so a reader's success is
 			// evidence of this write and not of one left by an earlier run.
-			probeKey := "/api/v1/kv/example-mod/binding-probe-" + keeper.Token.ID
+			// The key takes a hexadecimal digest of the token id rather than
+			// the id itself, which a hub may spell outside the key alphabet.
+			probeKey := "/api/v1/kv/example-mod/binding-probe-" + keySuffix(keeper.Token.ID)
 			probeValue := "written by " + keeper.Token.ID
 			if err := env.expect(ctx, http.MethodPut, probeKey, keeper.Secret,
 				map[string]any{"value": probeValue}, http.StatusOK, nil); err != nil {
