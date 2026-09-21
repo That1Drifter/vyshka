@@ -62,6 +62,17 @@ func (e Env) mintBoundToken(ctx context.Context, name string, servers []string, 
 	return minted, nil
 }
 
+// syntheticServerIDs makes n distinct well-formed ids that name no server,
+// for the oversized-binding refusal: the size check must come before any
+// lookup could answer not_found.
+func syntheticServerIDs(n int) []string {
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		ids = append(ids, fmt.Sprintf("01J000000000000000000%05d", i))
+	}
+	return ids
+}
+
 func (e Env) listTokens(ctx context.Context) ([]tokenRecord, error) {
 	var listed struct {
 		Tokens []tokenRecord `json:"tokens"`
