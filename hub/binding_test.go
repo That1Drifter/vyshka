@@ -89,6 +89,7 @@ func TestBoundTokenIsConfinedToItsServers(t *testing.T) {
 		{http.MethodGet, "/api/v1/servers/" + otherID + "/manifest", nil},
 		{http.MethodGet, "/api/v1/servers/" + otherID + "/events", nil},
 		{http.MethodGet, "/api/v1/servers/" + otherID + "/state/players", nil},
+		{http.MethodGet, "/api/v1/servers/" + otherID + "/state/players/history", nil},
 		{http.MethodPost, "/api/v1/servers/" + otherID + "/actions", map[string]any{"code": "example-mod.heal"}},
 	} {
 		if got := errorCode(t, server, one.method, one.path, secret, one.body, http.StatusForbidden); got != "forbidden" {
@@ -97,7 +98,9 @@ func TestBoundTokenIsConfinedToItsServers(t *testing.T) {
 	}
 
 	// An action on the other server is reached by its own id, not by a path
-	// naming the server; it is refused all the same, after the lookup.
+	// naming the server; it is refused all the same, after the lookup, and
+	// before the scope check, so a code the token does not hold is not
+	// named in the refusal: it is part of the record.
 	var theirs struct {
 		ActionID string `json:"actionId"`
 	}
@@ -107,6 +110,22 @@ func TestBoundTokenIsConfinedToItsServers(t *testing.T) {
 	}
 	if got := errorCode(t, server, http.MethodGet, "/api/v1/actions/"+theirs.ActionID, secret, nil, http.StatusForbidden); got != "forbidden" {
 		t.Errorf("reading an action of the other server: error code = %q, want forbidden", got)
+	}
+	narrowSecret, _ := mintBoundToken(t, server, "reader of another code on mine", []string{mineID}, "actions:read:example-mod.revive")
+	var refusal struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if status := call(t, server, http.MethodGet, "/api/v1/actions/"+theirs.ActionID, narrowSecret, nil, &refusal); status != http.StatusForbidden {
+		t.Fatalf("reading a foreign action with a code outside the grant: status = %d, want 403", status)
+	}
+	if refusal.Error.Code != "forbidden" {
+		t.Errorf("error code = %q, want forbidden", refusal.Error.Code)
+	}
+	if strings.Contains(refusal.Error.Message, "example-mod.heal") {
+		t.Errorf("the refusal names the foreign action's code: %q", refusal.Error.Message)
 	}
 	// A made-up id is still not found: the binding check runs after the
 	// lookup, and an unguessable id discloses nothing.
@@ -184,6 +203,7 @@ func TestBindingIsValidatedAtMint(t *testing.T) {
 		{"admin on a bound token", map[string]any{"name": "t", "scopes": []string{"admin"}, "servers": []string{serverID}}, http.StatusBadRequest, "bad_request"},
 		{"webhooks:manage on a bound token", map[string]any{"name": "t", "scopes": []string{"servers:read", "webhooks:manage"}, "servers": []string{serverID}}, http.StatusBadRequest, "bad_request"},
 		{"a pattern where an id belongs", map[string]any{"name": "t", "scopes": []string{"servers:read"}, "servers": []string{"*"}}, http.StatusBadRequest, "bad_request"},
+		{"a namespace wildcard where an id belongs", map[string]any{"name": "t", "scopes": []string{"servers:read"}, "servers": []string{"example.*"}}, http.StatusBadRequest, "bad_request"},
 		{"an empty id", map[string]any{"name": "t", "scopes": []string{"servers:read"}, "servers": []string{""}}, http.StatusBadRequest, "bad_request"},
 		{"too many ids", map[string]any{"name": "t", "scopes": []string{"servers:read"}, "servers": manyIDs(51)}, http.StatusBadRequest, "bad_request"},
 	} {

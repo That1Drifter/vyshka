@@ -197,7 +197,11 @@ func (s *Server) parseRequestedBinding(w http.ResponseWriter, r *http.Request, r
 	seen := make(map[string]bool, len(requested))
 	servers := make([]string, 0, len(requested))
 	for _, serverID := range requested {
-		if serverID == "" || len(serverID) > maxScopePattern || !validScopePattern(serverID) || serverID == "*" {
+		// An id is exact: no wildcard of any spelling, since a pattern in a
+		// binding would be a grammar this draft does not define, and one
+		// that fell through to the lookup would be misreported as an
+		// unknown server.
+		if serverID == "" || len(serverID) > maxScopePattern || strings.Contains(serverID, "*") || !validScopePattern(serverID) {
 			writeError(w, http.StatusBadRequest, codeBadRequest,
 				"servers must be exact server ids: "+truncateUTF8(serverID, 64)+" is not one")
 			return nil, false

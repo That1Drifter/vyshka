@@ -19,6 +19,21 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-21: admin tokens can be bound to servers (issue #81, protocol draft 0.26,
+  sections 10.1, 10.2, 10.4): `POST /api/v1/tokens` takes an optional `servers` list of
+  server ids, and every grant a bound token holds applies to those servers only; an
+  unbound token (absent or empty list, which is every token minted before this) keeps
+  its installation-wide meaning. The hub refuses a bound token with `forbidden` at the
+  headers on every route whose path names a server outside the binding, on
+  `GET /api/v1/actions/{id}` once the action's server is known, and answers
+  `GET /api/v1/servers` filtered to the binding rather than refused. `admin` and
+  `webhooks:manage` cannot be on a bound token (`bad_request` at mint); `kv:rw` can, and
+  the binding does not narrow the store. An unknown server id at mint is `not_found`,
+  the rule a webhook's `serverIds` already follows; nothing is minted on refusal. The
+  token record carries `servers` on every response, `[]` when unbound, and the mint's
+  audit detail records the binding beside the scopes. Migration 0019 adds the column.
+  The hub conformance suite gains `admin.tokens.serverBinding`; the panel's mint form
+  gains a server picker and the token table a Servers column.
 - 2026-09-18: the `context.enumerate` exchange is specified (issue #72, protocol draft
   0.25, section 6.2): the hub asks `{ requestId, context }` and the plugin answers
   `context.entries` with `{ requestId, context, entries: [ { referenceKey, label,

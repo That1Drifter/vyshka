@@ -377,16 +377,18 @@ func (s *Server) handleGetAction(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, r, err)
 		return
 	}
-	if !s.requireScope(w, r, resourceActions, verbRead, code) {
-		return
-	}
 	// The one route that reaches a server without naming it in the path: a
 	// bound token (spec section 10.1) is refused here, after the lookup and
-	// before any of the record is returned (section 10.2). The id was
+	// before any of the record is returned (section 10.2), and before the
+	// scope check, whose refusal names the action's code: a code is part of
+	// the record, and a token bound elsewhere may not learn it. The id was
 	// unguessable, so the lookup told the caller nothing it did not have.
 	if !principalFrom(r.Context()).boundTo(serverID) {
 		writeError(w, http.StatusForbidden, codeForbidden,
 			"this token is bound to other servers than the one this action belongs to")
+		return
+	}
+	if !s.requireScope(w, r, resourceActions, verbRead, code) {
 		return
 	}
 

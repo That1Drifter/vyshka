@@ -1523,9 +1523,11 @@ the scope:
   check runs.
 - `GET /api/v1/actions/{actionId}` MUST refuse with `forbidden` when the action's server is
   outside the binding, once the action is looked up and before any of its record is
-  returned. The id is unguessable (section 2.1), so the lookup discloses nothing the caller
-  did not already have. An idempotency-key retry (section 7) is judged the same way against
-  the action it would return, as it already is against that action's code.
+  returned, the code included: the binding check runs before the scope check, because a
+  scope refusal names the code it was checked against, and that is part of the record. The
+  id is unguessable (section 2.1), so the lookup discloses nothing the caller did not
+  already have. An idempotency-key retry (section 7) is judged the same way against the
+  action it would return, as it already is against that action's code.
 - `GET /api/v1/servers` MUST answer only the servers in the binding, never `forbidden`: the
   caller asked for what it may see, and a filtered list is the token's whole world, the
   rule the narrowed feed of section 10.3 already sets. An empty answer is the honest one

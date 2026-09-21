@@ -3083,6 +3083,8 @@ var checks = []Check{
 				{http.MethodGet, "/api/v1/servers/" + otherID, nil, "reading a server outside the binding"},
 				{http.MethodGet, "/api/v1/servers/" + otherID + "/manifest", nil, "reading a manifest outside the binding"},
 				{http.MethodGet, "/api/v1/servers/" + otherID + "/events", nil, "reading telemetry outside the binding"},
+				{http.MethodGet, "/api/v1/servers/" + otherID + "/state/players", nil, "reading a snapshot outside the binding"},
+				{http.MethodGet, "/api/v1/servers/" + otherID + "/state/players/history", nil, "reading snapshot history outside the binding"},
 				{http.MethodPost, "/api/v1/servers/" + otherID + "/actions",
 					map[string]any{"code": "example-mod.heal"}, "dispatching outside the binding"},
 			} {
@@ -3092,7 +3094,9 @@ var checks = []Check{
 			}
 
 			// An action reached by its own id is judged by the server it
-			// belongs to.
+			// belongs to, before any of its record is returned: the refusal
+			// must not name a code the token does not hold, since the code
+			// is part of the record (section 10.2).
 			var theirs struct {
 				ActionID string `json:"actionId"`
 			}
@@ -3104,6 +3108,24 @@ var checks = []Check{
 			if err := env.refused(ctx, http.MethodGet, "/api/v1/actions/"+theirs.ActionID, minted.Secret, nil,
 				"reading an action of a server outside the binding"); err != nil {
 				return err
+			}
+			narrow, err := env.mintBoundToken(ctx, "conformance: another code on one server", []string{mineID},
+				"actions:read:example-mod.revive")
+			if err != nil {
+				return err
+			}
+			resp, body, err := env.do(ctx, http.MethodGet, "/api/v1/actions/"+theirs.ActionID, narrow.Secret, nil)
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				return fmt.Errorf("reading a foreign action whose code the token does not hold: status = %d, want 403", resp.StatusCode)
+			}
+			if err := assertErrorCode(http.MethodGet, "/api/v1/actions/"+theirs.ActionID, body, "forbidden"); err != nil {
+				return err
+			}
+			if strings.Contains(string(body), "example-mod.heal") {
+				return fmt.Errorf("the refusal of a foreign action names its code, which is part of the record the binding withholds (section 10.2): %s", truncate(body))
 			}
 
 			// What a binding cannot be is refused at mint, and nothing is

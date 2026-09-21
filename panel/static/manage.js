@@ -630,7 +630,7 @@ export async function viewTokens(app, route, seq) {
   const binding = serverPicker('token-servers', serverList.servers, serverList.allowed, [],
     'none ticked mints an unbound token, whose grants apply to every server; ticked servers bind every grant to those servers (protocol section 10.1). A bound token cannot carry admin or webhooks:manage, and a kv:rw grant stays installation-wide');
   const warning = el('p', { class: 'notice danger', id: 'dispatch-warning', hidden: true },
-    'This list holds an unnarrowed actions:dispatch, which can dispatch anything any plugin declares, on every server (protocol section 10.1 asks a UI to warn). Narrow it to {namespace}.* unless you mean it.');
+    'This list holds an unnarrowed actions:dispatch, which can dispatch anything any plugin declares, on every server the token reaches (every server unless the picker below binds it; protocol section 10.1 asks a UI to warn). Narrow it to {namespace}.* unless you mean it.');
   const bundleNote = el('p', { class: 'muted', id: 'bundle-note' },
     'A bundle fills the scopes below; they stay editable, and the panel sends exactly what is there.');
   const submit = el('button', { type: 'submit', class: 'primary', id: 'mint-token-submit' }, 'Mint token');
