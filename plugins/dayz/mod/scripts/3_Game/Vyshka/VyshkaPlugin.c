@@ -81,7 +81,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	// log keeps each on a line and the engine reads by the line
 	// (VyshkaFiles.LINE_MAX), and a byte escapes to at most six in the
 	// quoted form, so an id of up to this many bytes is always safe to
-	// keep; one past it is not executed or remembered.
+	// keep on disk; a longer one is executed and remembered in memory
+	// only, so its dedup does not survive a restart (MarkExecuted).
 	static const int ACTION_ID_MAX = 8192;
 	// A context.entries body is bounded as a snapshot body is (section 6.2):
 	// 256 KiB, past which a hub refuses it whole.
@@ -1481,14 +1482,6 @@ class VyshkaPlugin : VyshkaResponseSink
 			VyshkaLog.Warn("ignoring an action.dispatch without an actionId");
 			return;
 		}
-		// The id is opaque, but it is persisted (MarkExecuted) and the
-		// executed log is read by the line, so one past ACTION_ID_MAX is a
-		// body this plugin cannot use: acked and ignored like any other.
-		if (actionId.Length() > ACTION_ID_MAX)
-		{
-			VyshkaLog.Warn("ignoring an action.dispatch whose actionId is " + actionId.Length().ToString() + " bytes long, over the " + ACTION_ID_MAX.ToString() + " this plugin keeps");
-			return;
-		}
 		if (m_Executed.Contains(actionId))
 		{
 			// At-least-once delivery makes repeats ordinary. The hub treats a
@@ -1694,6 +1687,11 @@ class VyshkaPlugin : VyshkaResponseSink
 		// truncated, so a crash cannot leave it half-rewritten; it is compacted
 		// only at boot. A failed append is surfaced because it widens the
 		// re-execution window the engine's lack of fsync already leaves open.
+		if (actionId.Length() > ACTION_ID_MAX)
+		{
+			VyshkaLog.Warn("action " + actionId.Length().ToString() + " bytes of actionId long, over the " + ACTION_ID_MAX.ToString() + " the executed log keeps on a line; it is executed, and a re-delivery after a restart could execute it again");
+			return;
+		}
 		if (!VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, VyshkaJson.Quote(actionId)))
 			VyshkaLog.Warn("could not persist executed action id " + actionId + "; a crash before its dispatch is acked could re-execute it");
 	}

@@ -652,7 +652,8 @@ report: a ban list of 400 entries, a manifest record of 250 KB, and an outbox re
 84 KB written and read back whole through the plugin's classes (each past the reader's old
 limit as one line); a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than
-written; a genuine document shaped like the writer's long-string marker, a value of
+written; a genuine document shaped like the writer's long-string marker (and a one-line
+file as 0.8.0 wrote them, carrying the marks as literals), a value of
 10 001 control characters (60 KB once escaped), a value of 8 192 two-byte characters (cut
 into pieces on character boundaries), and a record nested as deep as the wire allows with
 a long string at the bottom, each written and read back equal; the depth the parser reads
@@ -723,7 +724,14 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   their own, refused with an error rather than written when a key would still make a
   line over 60 000 bytes or the document nests deeper than 40 levels (the script VM overflows its stack at about 64 levels of the parser's recursion). `selftest` (above)
   proves each of those on a local server. Reading a large body is still not free (about
-  0.4 µs a byte on this engine), which is why the pull of #80 is paged.
+  0.4 µs a byte on this engine), which is why the pull of #80 is paged. Three bounds
+  follow from the file layer and are logged when met, never silent: a document nested
+  deeper than 40 levels (a result a mod built more than 38 deep) is sent but not
+  persisted, so a restart before the hub's ack loses it; an `actionId` over 8 192 bytes
+  is executed but remembered in memory only, so a re-delivery after a restart could run
+  it again; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at
+  the upgrade as unreadable. The parser's depth bound is 32 on the wire because the
+  script VM overflows its stack at about 64 levels of the parser's recursion.
 
 ## Errors and recovery
 

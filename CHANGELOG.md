@@ -153,13 +153,17 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   a 400-entry ban list, a 250 KB manifest record, and an 84 KB outbox record written and
   read back whole, a 70 000-character value written in pieces and read back, an
   oversized key and an over-deep document refused, a document shaped like the writer's
-  long-string marker, an escape-heavy value, a two-byte-character value cut on character
+  long-string marker, a one-line 0.8.0 file carrying the marks as literals, an
+  escape-heavy value, a two-byte-character value cut on character
   boundaries, and a record as deep as the wire allows each written and read back equal,
   the parser's depth measured against the script VM, a
   100 000-character value and a 56 000-character one dense with escapes parsed whole, and
   the 1.1 MB document timed, the whole run bounded by the engine's frame clock;
   the negative control (the ban list written as one line, as 0.8.0 wrote it) faults the
-  server, which the tool reports as the failure it is.
+  server, which the tool reports as the failure it is. Three bounds are logged, never
+  silent: a document nested deeper than 40 levels is sent but not persisted, an
+  `actionId` over 8 192 bytes is executed but not remembered across a restart, and an
+  outbox record plugin 0.8.0 left nested deeper than 40 is discarded at the upgrade.
 
 #### Added
 

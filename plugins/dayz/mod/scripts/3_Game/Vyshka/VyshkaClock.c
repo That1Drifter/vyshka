@@ -146,8 +146,12 @@ class VyshkaClock
 		int pos = 19;
 		if (pos < text.Length() && text.Get(pos) == ".")
 		{
+			// The fraction is read through a cursor: a digit read pays
+			// for the string it reads from, and a hub's timestamp is not
+			// this plugin's to bound.
+			VyshkaTextCursor fraction = VyshkaTextCursor.OfString(text);
 			pos++;
-			while (pos < text.Length() && VyshkaJson.IsDigit(text.Get(pos)))
+			while (pos < text.Length() && VyshkaJson.IsDigit(fraction.CharAt(pos)))
 				pos++;
 		}
 		if (pos >= text.Length())

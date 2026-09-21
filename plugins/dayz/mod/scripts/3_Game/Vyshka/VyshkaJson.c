@@ -266,6 +266,11 @@ class VyshkaJsonWriter
 	static const string LONG_STRING_KEY = "$vyshka.longString";
 	static const int LONG_STRING_MIN = 8192;
 	static const int LONG_STRING_PIECE = 4096;
+	// A key longer than this goes on a line of its own, its value on the
+	// next: quoted, a key of at most LONG_STRING_MIN characters and a value
+	// under the chunk threshold each fit a line, and only together could
+	// they pass it.
+	static const int LONG_KEY_ALONE = 1024;
 
 	// EscapeKey is the file form of an object key: one more "$" in front
 	// of a key that is one or more "$" followed by "vyshka.", so that on
@@ -279,29 +284,35 @@ class VyshkaJsonWriter
 	}
 
 	// UnescapeKey undoes EscapeKey: a key of two or more "$" followed by
-	// "vyshka." loses one.
+	// "vyshka." loses one. The rest is copied through a cursor, since one
+	// Substring returns at most 8 191 characters.
 	static string UnescapeKey(string key)
 	{
 		if (DollarsBeforePrefix(key) >= 2)
-			return key.Substring(1, key.Length() - 1);
+		{
+			VyshkaTextCursor cursor = VyshkaTextCursor.OfString(key);
+			return cursor.Slice(1, key.Length() - 1);
+		}
 		return key;
 	}
 
 	// DollarsBeforePrefix counts the leading "$" of a key whose rest begins
-	// with "vyshka."; 0 for any other key.
+	// with "vyshka."; 0 for any other key. The key is read through a cursor
+	// so a long key costs its length, not its square.
 	static int DollarsBeforePrefix(string key)
 	{
 		int length = key.Length();
-		int dollars = 0;
-		while (dollars < length && key.Get(dollars) == "$")
-			dollars++;
-		if (dollars == 0)
+		if (length < 2 || key.Get(0) != "$")
 			return 0;
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(key);
+		int dollars = 0;
+		while (dollars < length && cursor.CharAt(dollars) == "$")
+			dollars++;
 		string rest = KEY_PREFIX.Substring(1, KEY_PREFIX.Length() - 1);   // "vyshka."
 		int restLength = rest.Length();
 		if (length - dollars < restLength)
 			return 0;
-		if (key.Substring(dollars, restLength) != rest)
+		if (cursor.Slice(dollars, restLength) != rest)
 			return 0;
 		return dollars;
 	}
@@ -900,6 +911,12 @@ class VyshkaJsonValue : Managed
 						key = VyshkaJsonWriter.EscapeKey(key);
 					VyshkaJson.QuoteTo(writer, key);
 					writer.Append(":");
+					// A long key takes its line alone, so that with a value
+					// under the chunk threshold beside it the line still
+					// stays under the reader's limit; whitespace after the
+					// colon is JSON's own.
+					if (writer.ChunksStrings() && key.Length() > VyshkaJsonWriter.LONG_KEY_ALONE)
+						writer.Newline();
 					m_Values.Get(k).WriteTo(writer);
 				}
 				writer.Close("}", keyCount > 0);

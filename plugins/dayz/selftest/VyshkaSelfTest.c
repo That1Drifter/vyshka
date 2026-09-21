@@ -70,7 +70,7 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 14;
+	static const int PLAN = 15;
 	static const int SETTLE_MS = 3000;
 	// The gap between checks: each runs in a frame of its own, so the
 	// engine's frame clock advances between them and the finished line
@@ -143,24 +143,33 @@ class VyshkaSelfTest
 		else if (step == 6)
 			CheckMarkerLiteral();
 		else if (step == 7)
-			CheckEscapedValue();
+			CheckLegacyLiteral();
 		else if (step == 8)
-			CheckUtf8Pieces();
+			CheckEscapedValue();
 		else if (step == 9)
-			CheckDepth();
+			CheckUtf8Pieces();
 		else if (step == 10)
-			CheckDeepLongValue();
+			CheckDepth();
 		else if (step == 11)
-			CheckLongString();
+			CheckDeepLongValue();
 		else if (step == 12)
-			CheckEscapes();
+			CheckLongString();
 		else if (step == 13)
+			CheckEscapes();
+		else if (step == 14)
 			CheckSpeed();
 		if (m_Step < PLAN)
 		{
 			GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Next, GAP_MS, false);
 			return;
 		}
+		// The finished line goes out a frame later, so the frame clock has
+		// moved past the last check as well.
+		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Finish, GAP_MS, false);
+	}
+
+	void Finish()
+	{
 		int wallMs = GetGame().GetTime() - m_PlanTime;
 		string passed = m_Passed.ToString();
 		string failed = m_Failed.ToString();
@@ -185,6 +194,11 @@ class VyshkaSelfTest
 		document.Set("$vyshka.other", VyshkaJsonValue.NewInt(1));
 		document.Set("$$vyshka.longString", VyshkaJsonValue.NewInt(2));
 		document.Set("plain", VyshkaJsonValue.NewString("x"));
+		// Two reserved-prefix keys past what one Substring returns, alike
+		// but for their last character.
+		string longKey = "$vyshka." + Repeat("a", 8183);
+		document.Set(longKey + "x", VyshkaJsonValue.NewInt(3));
+		document.Set(longKey + "y", VyshkaJsonValue.NewInt(4));
 		string compact = document.Serialize();
 		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
 		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
@@ -204,6 +218,36 @@ class VyshkaSelfTest
 			DeleteFile(OVERSIZED_PATH);
 	}
 
+	// ---- files.legacyLiteral: a one-line file as plugin 0.8.0 wrote them,
+	// carrying keys and an object that look like the writer's marks, reads
+	// back as it is ----
+	void CheckLegacyLiteral()
+	{
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+		VyshkaJsonValue marker = VyshkaJsonValue.NewObject();
+		VyshkaJsonValue pieces = VyshkaJsonValue.NewArray();
+		pieces.Add(VyshkaJsonValue.NewString("a"));
+		pieces.Add(VyshkaJsonValue.NewString("b"));
+		marker.Set(VyshkaJsonWriter.LONG_STRING_KEY, pieces);
+		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
+		result.Set("$$vyshka.x", VyshkaJsonValue.NewInt(7));
+		result.Set("$vyshka.x", VyshkaJsonValue.NewInt(8));
+		result.Set("shape", marker);
+		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
+		document.Set("result", result);
+		string compact = document.Serialize();
+		bool written = VyshkaFiles.WriteAll(OVERSIZED_PATH, compact);
+		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
+		bool equal = back && back.Serialize() == compact;
+		bool ok = written && equal;
+		string detail = "written=" + written;
+		detail += "\tequal=" + equal;
+		Report("files.legacyLiteral", ok, detail);
+		if (FileExist(OVERSIZED_PATH))
+			DeleteFile(OVERSIZED_PATH);
+	}
+
 	// ---- files.escapedValue: a value short in characters but long once
 	// escaped (10 001 control characters, six bytes each quoted) is written
 	// in pieces and read back equal ----
@@ -214,11 +258,17 @@ class VyshkaSelfTest
 		int code = 1;
 		string one = code.AsciiToString();
 		string value = Repeat(one, 10001);
+		// And a member whose key and value each fit a line but together
+		// would not: an 11 000-character key with a value of 8 191 control
+		// characters, 60 153 bytes compact.
+		string longKey = Repeat("k", 11000);
+		string shortValue = Repeat(one, 8191);
 		VyshkaJsonValue document = VyshkaJsonValue.NewObject();
 		document.Set("v", VyshkaJsonValue.NewString(value));
+		document.Set(longKey, VyshkaJsonValue.NewString(shortValue));
 		bool written = VyshkaFiles.WriteJson(OVERSIZED_PATH, document);
 		VyshkaJsonValue back = VyshkaFiles.ReadJson(OVERSIZED_PATH);
-		bool equal = back && back.IsObject() && back.GetString("v", "") == value;
+		bool equal = back && back.IsObject() && back.GetString("v", "") == value && back.GetString(longKey, "") == shortValue;
 		bool ok = written && equal;
 		string detail = "length=" + value.Length();
 		detail += "\twritten=" + written;

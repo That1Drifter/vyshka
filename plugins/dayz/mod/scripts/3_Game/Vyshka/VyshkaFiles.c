@@ -209,7 +209,14 @@ class VyshkaFiles
 		if (!ReadSegments(path, segments))
 			return null;
 		VyshkaJsonValue root = VyshkaJson.ParseSegments(segments);
-		return VyshkaJsonValue.Unchunk(root);
+		// Only a file this writer produced carries chunked strings and
+		// escaped keys, and such a file with anything in it spans lines;
+		// a file plugin 0.8.0 wrote is one line, and reads as it is, so a
+		// key or an object of its own that happens to look like the
+		// writer's marks is left alone.
+		if (segments.Count() > 1)
+			return VyshkaJsonValue.Unchunk(root);
+		return root;
 	}
 }
 

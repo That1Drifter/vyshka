@@ -29,6 +29,7 @@ class VyshkaOutboxEntry
 	string m_Body;   // serialized JSON object, re-emitted verbatim
 	int m_Seq;       // in the current session's space; 0 until numbered
 	int m_Events;    // events carried, for an event.batch; 0 otherwise
+	int m_ManifestRevision;   // the revision a manifest.publish carries; 0 otherwise
 
 	string Path()
 	{
@@ -246,14 +247,8 @@ class VyshkaOutbox
 		for (int i = 0; i < m_Entries.Count(); i++)
 		{
 			VyshkaOutboxEntry entry = m_Entries.Get(i);
-			if (entry.m_Type != "manifest.publish")
-				continue;
-			VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
-			if (!body || !body.IsObject())
-				continue;
-			int revision = body.GetInt("manifestRevision", 0);
-			if (revision > highest)
-				highest = revision;
+			if (entry.m_ManifestRevision > highest)
+				highest = entry.m_ManifestRevision;
 		}
 		return highest;
 	}
@@ -343,6 +338,11 @@ class VyshkaOutbox
 		{
 			entry.m_Body = body.Serialize();
 			VyshkaJsonValue events = body.Get("events");
+			// The revision is read here, from the tree the file gave, so
+			// the outbox never parses a body again with a tighter bound
+			// than the file's (VyshkaJson.MAX_DEPTH against FILE_MAX_DEPTH).
+			if (entry.m_Type == "manifest.publish")
+				entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
 			if (entry.m_Type == "event.batch" && events && events.IsArray())
 				entry.m_Events = events.Count();
 		}
@@ -409,6 +409,8 @@ class VyshkaOutbox
 			entry.m_Body = "{}";
 		}
 		entry.m_Events = events;
+		if (envelopeType == "manifest.publish")
+			entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
 		m_NextSeq++;
 		entry.m_Seq = m_NextSeq;
 
