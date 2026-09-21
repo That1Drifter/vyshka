@@ -725,11 +725,11 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   line over 60 000 bytes or the document nests deeper than 40 levels (the script VM overflows its stack at about 64 levels of the parser's recursion). `selftest` (above)
   proves each of those on a local server. Reading a large body is still not free (about
   0.4 µs a byte on this engine), which is why the pull of #80 is paged. Three bounds
-  follow from the file layer and are logged when met, never silent: a document nested
+  follow from the file layer and are logged when met (the fingerprint apart), never silent: a document nested
   deeper than 40 levels (a result a mod built more than 38 deep) is sent but not
   persisted, so a restart before the hub's ack loses it; an `actionId` over 8 192 bytes
-  is executed but remembered in memory only, so a re-delivery after a restart could run
-  it again; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at
+  is remembered by a 32-bit fingerprint of its bytes and its length rather than as it
+  is, so two such ids alike in both would be taken for one; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at
   the upgrade as unreadable. The parser's depth bound is 32 on the wire because the
   script VM overflows its stack at about 64 levels of the parser's recursion.
 

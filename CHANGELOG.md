@@ -162,7 +162,7 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   the negative control (the ban list written as one line, as 0.8.0 wrote it) faults the
   server, which the tool reports as the failure it is. Three bounds are logged, never
   silent: a document nested deeper than 40 levels is sent but not persisted, an
-  `actionId` over 8 192 bytes is executed but not remembered across a restart, and an
+  `actionId` over 8 192 bytes is remembered by a fingerprint and its length, and an
   outbox record plugin 0.8.0 left nested deeper than 40 is discarded at the upgrade.
 
 #### Added

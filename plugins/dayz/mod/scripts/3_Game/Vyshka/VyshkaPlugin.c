@@ -80,9 +80,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	// (section 7); the reference hub mints 26-character ids. The executed
 	// log keeps each on a line and the engine reads by the line
 	// (VyshkaFiles.LINE_MAX), and a byte escapes to at most six in the
-	// quoted form, so an id of up to this many bytes is always safe to
-	// keep on disk; a longer one is executed and remembered in memory
-	// only, so its dedup does not survive a restart (MarkExecuted).
+	// quoted form, so an id of up to this many bytes is kept as it is; a
+	// longer one is kept as a fingerprint with its length (ExecutedKey).
 	static const int ACTION_ID_MAX = 8192;
 	// A context.entries body is bounded as a snapshot body is (section 6.2):
 	// 256 KiB, past which a hub refuses it whole.
@@ -1482,7 +1481,7 @@ class VyshkaPlugin : VyshkaResponseSink
 			VyshkaLog.Warn("ignoring an action.dispatch without an actionId");
 			return;
 		}
-		if (m_Executed.Contains(actionId))
+		if (m_Executed.Contains(ExecutedKey(actionId)))
 		{
 			// At-least-once delivery makes repeats ordinary. The hub treats a
 			// repeated ack or result as a no-op, and a black-box observer
@@ -1672,28 +1671,41 @@ class VyshkaPlugin : VyshkaResponseSink
 	// reloaded plugin would execute it a second time (section 9.2).
 	void MarkExecuted(string actionId)
 	{
+		string key = ExecutedKey(actionId);
 		while (m_ExecutedOrder.Count() >= EXECUTED_LRU_CAPACITY)
 		{
 			string oldest = m_ExecutedOrder.Get(0);
 			m_ExecutedOrder.RemoveOrdered(0);
 			m_Executed.Remove(oldest);
 		}
-		m_Executed.Set(actionId, true);
-		m_ExecutedOrder.Insert(actionId);
+		m_Executed.Set(key, true);
+		m_ExecutedOrder.Insert(key);
 
-		// The id is JSON-quoted so an opaque id containing a newline stays one
+		// The key is JSON-quoted so an opaque id containing a newline stays one
 		// record; a raw write would split it and let a later restart re-execute
 		// the action (section 9.2). The log is append-only at runtime, never
 		// truncated, so a crash cannot leave it half-rewritten; it is compacted
 		// only at boot. A failed append is surfaced because it widens the
 		// re-execution window the engine's lack of fsync already leaves open.
-		if (actionId.Length() > ACTION_ID_MAX)
-		{
-			VyshkaLog.Warn("action " + actionId.Length().ToString() + " bytes of actionId long, over the " + ACTION_ID_MAX.ToString() + " the executed log keeps on a line; it is executed, and a re-delivery after a restart could execute it again");
-			return;
-		}
-		if (!VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, VyshkaJson.Quote(actionId)))
-			VyshkaLog.Warn("could not persist executed action id " + actionId + "; a crash before its dispatch is acked could re-execute it");
+		if (!VyshkaFiles.AppendLine(VyshkaFiles.EXECUTED_PATH, VyshkaJson.Quote(key)))
+			VyshkaLog.Warn("could not persist executed action id " + key + "; a crash before its dispatch is acked could re-execute it");
+	}
+
+	// ExecutedKey is what the executed-id LRU and log hold for an actionId:
+	// the id itself up to ACTION_ID_MAX bytes, and past that a short key made
+	// of a fingerprint of its bytes and its length, so that any id, whatever
+	// its length, is remembered across a restart on a line the engine's
+	// reader can read. Two ids sharing a fingerprint and a length would be
+	// taken for one another; with a 32-bit fingerprint over a few hundred
+	// remembered ids that is not a case worth a byte of the log. The key
+	// starts with a control character no id from a hub could carry as its
+	// first byte in practice, and the hub's own ids are 26 characters.
+	static string ExecutedKey(string actionId)
+	{
+		if (actionId.Length() <= ACTION_ID_MAX)
+			return actionId;
+		int marker = 1;
+		return marker.AsciiToString() + "fp:" + VyshkaIds.Fingerprint(actionId) + ":" + actionId.Length().ToString();
 	}
 
 	// LoadExecuted repopulates the LRU from disk on boot, keeping the most

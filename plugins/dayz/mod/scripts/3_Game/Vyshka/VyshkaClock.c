@@ -256,4 +256,40 @@ class VyshkaIds
 			result += digits.Get(Math.RandomInt(0, 16));
 		return result;
 	}
+
+	// Fingerprint is eight hex digits over the bytes of a string, read
+	// through a cursor so a long string costs its length: the FNV-1a
+	// recurrence on the engine's 32-bit int, whose overflow is whatever the
+	// engine's is, which is all a fingerprint compared on one engine needs
+	// to be, the same for the same bytes on every boot.
+	static string Fingerprint(string text)
+	{
+		int hash = -2128831035;   // 0x811C9DC5, the FNV offset basis, as the signed 32-bit int
+		VyshkaTextCursor cursor = VyshkaTextCursor.OfString(text);
+		int length = cursor.Length();
+		for (int i = 0; i < length; i++)
+		{
+			string c = cursor.CharAt(i);
+			int code = c.ToAscii();
+			if (code < 0)
+				code += 256;
+			hash = hash ^ code;
+			hash = hash * 16777619;
+		}
+		return HexInt(hash);
+	}
+
+	// HexInt renders all 32 bits of an int as eight hex digits, sign bits
+	// included.
+	static string HexInt(int value)
+	{
+		string digits = "0123456789abcdef";
+		string result = "";
+		for (int shift = 28; shift >= 0; shift -= 4)
+		{
+			int nibble = (value >> shift) & 15;
+			result += digits.Get(nibble);
+		}
+		return result;
+	}
 }

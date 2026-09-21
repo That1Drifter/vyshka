@@ -70,7 +70,7 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 15;
+	static const int PLAN = 16;
 	static const int SETTLE_MS = 3000;
 	// The gap between checks: each runs in a frame of its own, so the
 	// engine's frame clock advances between them and the finished line
@@ -158,6 +158,8 @@ class VyshkaSelfTest
 			CheckEscapes();
 		else if (step == 14)
 			CheckSpeed();
+		else if (step == 15)
+			CheckExecutedKey();
 		if (m_Step < PLAN)
 		{
 			GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Next, GAP_MS, false);
@@ -175,6 +177,33 @@ class VyshkaSelfTest
 		string failed = m_Failed.ToString();
 		string wall = wallMs.ToString();
 		Print(TAG + "\tfinished\tpassed=" + passed + "\tfailed=" + failed + "\twallMs=" + wall);
+	}
+
+	// ---- ids.executedKey: what the executed-id log keeps for an actionId
+	// past the line the reader can read: a fingerprint key that is the
+	// same on every call, differs for ids that differ in one byte, and is
+	// short; a shorter id is kept as it is ----
+	void CheckExecutedKey()
+	{
+		string shortId = "01K5SELFTESTACTIONID000001";
+		string longId = Repeat("0123456789abcdef", 600);   // 9 600 bytes
+		string other = Repeat("0123456789abcdef", 599) + "0123456789abcdeX";
+		string shortKey = VyshkaPlugin.ExecutedKey(shortId);
+		string longKey = VyshkaPlugin.ExecutedKey(longId);
+		string longKeyAgain = VyshkaPlugin.ExecutedKey(longId);
+		string otherKey = VyshkaPlugin.ExecutedKey(other);
+		bool same = shortKey == shortId;
+		bool stable = longKey == longKeyAgain;
+		bool distinct = longKey != otherKey;
+		bool shortEnough = longKey.Length() < 32;
+		string fingerprint = VyshkaIds.Fingerprint("");
+		bool ok = same && stable && distinct && shortEnough && fingerprint == "811c9dc5";
+		string detail = "same=" + same;
+		detail += "\tstable=" + stable;
+		detail += "\tdistinct=" + distinct;
+		detail += "\tkeyLength=" + longKey.Length();
+		detail += "\temptyFingerprint=" + fingerprint;
+		Report("ids.executedKey", ok, detail);
 	}
 
 	// ---- files.markerLiteral: a genuine document that looks like the file
