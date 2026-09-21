@@ -184,8 +184,8 @@ them early:
   `kv:rw` is allowed with the store stated as installation-wide. A bound token is refused
   at the headers on every route naming a server outside the binding, on the action read
   once the action's server is known, and sees a filtered server list. The hub conformance
-  suite grades it (`admin.tokens.serverBinding`, including a headers-only probe that
-  proves the refusal comes before the body), the panel's mint form has the server picker,
+  suite grades it (`admin.tokens.serverBinding`, including a stalled-body probe that a
+  refused token is not left waiting on a body), the panel's mint form has the server picker,
   and every token minted before the draft stays unbound. Role bundles in #64 now have a
   server term to use.
 
