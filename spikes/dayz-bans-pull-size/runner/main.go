@@ -182,11 +182,13 @@ func run() error {
 
 		// A boot that ended with a step in flight (a timeout, a crash) left
 		// that step unmeasured, and the next boot skips it; the table must
-		// say so rather than let the step's fetch pass for a measurement.
+		// say so rather than let the step's fetch pass for a measurement. A
+		// step whose completion records are all there finished before the
+		// boot ended, whatever ended it, and is not marked.
 		if outcome != "finished" {
 			if fire := lastFire(lines); fire != nil {
 				step, _ := strconv.Atoi(fire.fields["step"])
-				if _, already := unfinished[step]; !already {
+				if _, already := unfinished[step]; !already && !completed(lines, step) {
 					unfinished[step] = outcome
 				}
 			}
@@ -641,8 +643,14 @@ func parseEvent(line string) (probeEvent, bool) {
 		ev.fields[k] = v
 		last = k
 	}
+	// Only the final physical token can have lost digits. When the cut fell
+	// inside the next field's name (the tail has no "="), the last field
+	// with a value ended at a tab and is complete.
 	if len(strings.TrimRight(line, "\r\n")) >= printLimit {
-		ev.suspect = last
+		tail := parts[len(parts)-1]
+		if k, _, ok := strings.Cut(tail, "="); ok && k == last {
+			ev.suspect = last
+		}
 	}
 	ev.step, _ = strconv.Atoi(ev.fields["step"])
 	ev.event = ev.fields["event"]
@@ -662,12 +670,20 @@ func lastFire(lines []string) *probeEvent {
 	return last
 }
 
+// calibrationMaxMs bounds the intervals the fit may use: the counter is a
+// signed 32-bit value at about 10 MHz, so any interval over 2^31 ticks
+// (about 215 s) can have wrapped and still read as increasing, and one that
+// did would drag the median toward a fraction of the true unit. Well under
+// that bound, no interval can wrap whatever the exact frequency turns out
+// to be within an order of magnitude of the expected one.
+const calibrationMaxMs = 100000
+
 // ticksPerMs fits the counter against the frame clock: within one step, t
 // is frame milliseconds since the fire and ticks is the counter, so the
-// slope of ticks over t is the unit. The median over pairs at least 50 ms
-// apart is taken; pairs across a wrap of the 32-bit counter are dropped.
-// Run 2 measured about 10 000 ticks per millisecond (a 10 MHz counter),
-// which is the fallback when no pair qualifies.
+// slope of ticks over t is the unit. The median over pairs between 50 ms and
+// calibrationMaxMs apart is taken. Run 2 measured about 10 000 ticks per
+// millisecond (a 10 MHz counter), which is the fallback when no pair
+// qualifies.
 func ticksPerMs(events []probeEvent) float64 {
 	byStep := map[int][]probeEvent{}
 	for _, e := range events {
@@ -679,8 +695,9 @@ func ticksPerMs(events []probeEvent) float64 {
 	for _, evs := range byStep {
 		first := evs[0]
 		for _, e := range evs[1:] {
-			if e.t-first.t >= 50 && e.ticks > first.ticks {
-				slopes = append(slopes, float64(e.ticks-first.ticks)/float64(e.t-first.t))
+			span := e.t - first.t
+			if span >= 50 && span <= calibrationMaxMs && e.ticks > first.ticks {
+				slopes = append(slopes, float64(e.ticks-first.ticks)/float64(span))
 			}
 		}
 	}
@@ -689,6 +706,46 @@ func ticksPerMs(events []probeEvent) float64 {
 	}
 	sort.Float64s(slopes)
 	return slopes[len(slopes)/2]
+}
+
+// completed reports whether a step's lines carry the records that end it:
+// the fetch verdict for a raw step, the write and read for a line step, the
+// two measurement lines for a ban list step (or one that reports a failed
+// parse), and the final line of the diagnostic steps. A step that lacks
+// them at a boot's end was left in flight.
+func completed(lines []string, step int) bool {
+	kind := ""
+	have := map[string]bool{}
+	parseFailed := false
+	for _, l := range lines {
+		e, ok := parseEvent(l)
+		if !ok || e.step != step {
+			continue
+		}
+		if e.event == "fire" {
+			kind = e.fields["kind"]
+		}
+		have[e.event] = true
+		if e.event == "measured" && e.fields["ok"] == "0" {
+			parseFailed = true
+		}
+	}
+	verdict := have["success"] || have["error"] || have["timeout"] || have["budget-expired"]
+	switch kind {
+	case "bans":
+		return (have["measured"] && have["measured-more"]) || parseFailed || (verdict && !have["success"])
+	case "line":
+		return have["line-read"]
+	case "index":
+		return have["index-measured"]
+	case "alloc":
+		return have["alloc-get"]
+	case "member":
+		return have["member-append"]
+	case "raw":
+		return verdict
+	}
+	return false
 }
 
 func summarize(lines []string, crashes []crash, unfinished map[int]string) string {
