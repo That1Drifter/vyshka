@@ -56,6 +56,15 @@ func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
 			"items": map[string]any{"type": "string", "not": blocked}},
 		"untypedBound":    {"enum": []any{float64(0), float64(2)}, "minimum": float64(1)},
 		"untypedRequired": {"enum": []any{map[string]any{}, map[string]any{"x": float64(1)}}, "required": []any{"x"}},
+		// Round four's cases: a generated key the schema declares, an
+		// exclusion list past the finest sampled point, and an untyped
+		// schema whose object branch is impossible.
+		"declaredGeneratedKey": {"type": "object", "properties": map[string]any{"conformance-1": map[string]any{"type": "string"}},
+			"not": map[string]any{"enum": []any{map[string]any{}}}},
+		"denseExclusion": {"type": "number", "minimum": float64(0), "maximum": float64(1), "not": map[string]any{"enum": everyFraction(4096)}},
+		"impossibleObject": {"type": "object", "required": []any{"v"}, "properties": map[string]any{
+			"v": map[string]any{"required": []any{"x"}, "properties": map[string]any{
+				"x": map[string]any{"enum": []any{nil}, "not": map[string]any{"enum": []any{nil}}}}}}},
 	} {
 		value := synthesizeValue(schema)
 		encoded, _ := json.Marshal(value)
@@ -65,6 +74,15 @@ func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
 			t.Errorf("%s: synthesized %s, which the schema refuses", name, encoded)
 		}
 	}
+}
+
+// everyFraction lists k/denominator for every k from 0 to denominator.
+func everyFraction(denominator int) []any {
+	members := make([]any, 0, denominator+1)
+	for k := 0; k <= denominator; k++ {
+		members = append(members, float64(k)/float64(denominator))
+	}
+	return members
 }
 
 // Keywords apply without a declared type, as a hub applies them, so these

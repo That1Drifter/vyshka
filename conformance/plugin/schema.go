@@ -66,13 +66,27 @@ func synthesizeValue(schema map[string]any) any {
 			out[key] = synthesizeValue(property)
 		}
 		// An object the schema excludes gets an undeclared member more at a
-		// time (the subset has no additionalProperties, so any is allowed).
-		for extra := 1; !satisfies(schema, out) && extra <= exclusionCount(schema)+1; extra++ {
-			grown := map[string]any{"conformance-" + strconv.Itoa(extra): true}
-			for key, member := range out {
-				grown[key] = member
+		// time (the subset has no additionalProperties, so any is allowed);
+		// a name the schema declares is passed over.
+		for extra := 1; !satisfies(schema, out) && extra <= exclusionCount(schema)+len(properties)+1; extra++ {
+			key := "conformance-" + strconv.Itoa(extra)
+			if _, declared := properties[key]; declared {
+				continue
+			}
+			grown := map[string]any{key: true}
+			for existing, member := range out {
+				grown[existing] = member
 			}
 			out = grown
+		}
+		// A schema with no type admits any kind of value its keywords do
+		// not refuse, so when no object will do, another kind may.
+		if _, typed := schema["type"]; !typed && !satisfies(schema, out) {
+			for _, other := range []any{1.0, "conformance", true, nil, []any{}} {
+				if satisfies(schema, other) {
+					return other
+				}
+			}
 		}
 		return out
 	case "array":
@@ -132,18 +146,32 @@ func synthesizeNumber(schema map[string]any, schemaType string) any {
 	return value
 }
 
-// steppedNumber moves a synthesized number past the values the schema's
-// `not` excludes, one whole step at a time, upward first and then downward,
-// never across the schema's bounds. The first candidate is returned when
-// every step in reach is excluded too.
+// steppedNumber finds a number the whole schema admits, starting from the
+// synthesized one: the start, the bounds, ever finer points between them,
+// then whole steps up and down. The first candidate is returned when nothing
+// in reach is admitted.
 func steppedNumber(schema map[string]any, first any) any {
-	integer := false
-	if _, ok := first.(int64); ok {
-		integer = true
-	}
-	var candidates []float64
+	_, integer := first.(int64)
 	start, _ := normalize(first).(float64)
-	candidates = append(candidates, start)
+	found := first
+	// try reports whether a candidate satisfies the schema, keeping it.
+	try := func(candidate float64) bool {
+		if integer {
+			candidate = math.Ceil(candidate)
+		}
+		if !satisfies(schema, candidate) {
+			return false
+		}
+		if integer {
+			found = int64(candidate)
+		} else {
+			found = candidate
+		}
+		return true
+	}
+	if try(start) {
+		return found
+	}
 	// The bounds and points between them, so a narrow or fractional range
 	// that excludes its only whole step still yields a value inside it.
 	low, hasLow := asFloat(schema["minimum"])
@@ -154,30 +182,25 @@ func steppedNumber(schema map[string]any, first any) any {
 	if exclusive, ok := asFloat(schema["exclusiveMaximum"]); ok && (!hasHigh || exclusive <= high) {
 		high, hasHigh = exclusive, true
 	}
+	excludedCount := exclusionCount(schema)
 	if hasLow && hasHigh {
-		// The bounds, then ever finer points between them: every new
-		// denominator adds points no earlier one had, so the search reaches
-		// past any finite list of excluded values inside a real range.
-		candidates = append(candidates, low, high)
-		for denominator := 2; denominator <= 1<<12 && denominator <= 4*(exclusionCount(schema)+2); denominator *= 2 {
+		if try(low) || try(high) {
+			return found
+		}
+		// Ever finer points between the bounds: a denominator of 2^k adds
+		// 2^(k-1) points no earlier one had, so once that passes the length
+		// of the exclusion list, one of them is free.
+		for denominator := 2; denominator <= 4*(excludedCount+2); denominator *= 2 {
 			for numerator := 1; numerator < denominator; numerator += 2 {
-				candidates = append(candidates, low+(high-low)*float64(numerator)/float64(denominator))
+				if try(low + (high-low)*float64(numerator)/float64(denominator)) {
+					return found
+				}
 			}
 		}
 	}
-	reach := exclusionCount(schema) + 1
-	for step := 1; step <= reach; step++ {
-		candidates = append(candidates, start+float64(step), start-float64(step))
-	}
-	for _, candidate := range candidates {
-		if integer {
-			candidate = math.Ceil(candidate)
-		}
-		if satisfies(schema, candidate) {
-			if integer {
-				return int64(candidate)
-			}
-			return candidate
+	for step := 1; step <= excludedCount+1; step++ {
+		if try(start+float64(step)) || try(start-float64(step)) {
+			return found
 		}
 	}
 	return first
