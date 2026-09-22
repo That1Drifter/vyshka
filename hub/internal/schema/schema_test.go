@@ -30,6 +30,66 @@ func TestCompileAcceptsTheSubset(t *testing.T) {
 	}`)
 }
 
+func TestCompileContextAnnotation(t *testing.T) {
+	compiled := mustCompile(t, `{
+		"type": "object",
+		"properties": {
+			"item":   { "type": "string", "context": "dayz.items" },
+			"parts":  { "type": "array", "items": { "type": "string", "context": ["dayz.parts", "dayz.items"] } },
+			"plain":  { "type": "string" }
+		}
+	}`)
+	refs := compiled.ContextRefs()
+	want := []ContextRef{
+		{Path: "properties.item.context", ID: "dayz.items"},
+		{Path: "properties.parts.items.context", ID: "dayz.parts"},
+		{Path: "properties.parts.items.context", ID: "dayz.items"},
+	}
+	if len(refs) != len(want) {
+		t.Fatalf("ContextRefs() = %+v, want %+v", refs, want)
+	}
+	for i := range want {
+		if refs[i] != want[i] {
+			t.Errorf("ContextRefs()[%d] = %+v, want %+v", i, refs[i], want[i])
+		}
+	}
+
+	// A null annotation is no annotation (section 6.4), whatever the type.
+	if nulled := mustCompile(t, `{"type": "integer", "context": null}`); len(nulled.ContextRefs()) != 0 {
+		t.Errorf("a null context annotation produced refs %+v", nulled.ContextRefs())
+	}
+
+	// The annotation never constrains the value: anything the type admits
+	// is accepted, listed or not (section 6.1).
+	if faults := compiled.Validate(json.RawMessage(`{"item": "NotInAnyCatalog", "parts": ["x"]}`)); len(faults) > 0 {
+		t.Errorf("a value outside the enumeration was refused: %v", faults)
+	}
+
+	long := strings.Repeat("c", 65)
+	rejected := map[string]string{
+		"nonString":  `{"type": "integer", "context": "dayz.items"}`,
+		"untyped":    `{"context": "dayz.items"}`,
+		"emptyArray": `{"type": "string", "context": []}`,
+		"emptyId":    `{"type": "string", "context": ""}`,
+		"number":     `{"type": "string", "context": 7}`,
+		"mixed":      `{"type": "string", "context": ["dayz.items", 3]}`,
+		"duplicate":  `{"type": "string", "context": ["dayz.items", "dayz.items"]}`,
+		"tooLong":    `{"type": "string", "context": "` + long + `"}`,
+		"tooMany":    `{"type": "string", "context": ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q"]}`,
+	}
+	for name, raw := range rejected {
+		t.Run(name, func(t *testing.T) {
+			_, faults := Compile(json.RawMessage(raw))
+			if len(faults) == 0 {
+				t.Fatalf("Compile(%s) accepted a malformed context annotation", raw)
+			}
+			if !strings.Contains(faults[0].Path, "context") {
+				t.Fatalf("fault %q does not point at the annotation", faults[0])
+			}
+		})
+	}
+}
+
 func TestCompileRejectsKeywordsOutsideTheSubset(t *testing.T) {
 	cases := []struct {
 		name   string

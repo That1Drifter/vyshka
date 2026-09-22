@@ -49,6 +49,7 @@ class VyshkaBoot
 		VyshkaMapMarkers.Reset();
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
+		VyshkaCatalog.Reset();
 
 		VyshkaRegistry registry = new VyshkaRegistry();
 		if (mission)
@@ -101,6 +102,9 @@ modded class MissionServer
 		registry.Register(new VyshkaBrokenLegsAction());
 		registry.Register(new VyshkaBloodyHandsAction());
 		registry.Register(new VyshkaFlagsAction());
+		// The item catalog: one custom context per item type (spec section
+		// 6.2), which the spawn action's className draws on.
+		VyshkaCatalog.RegisterContexts(registry);
 	}
 
 	override void OnMissionFinish()

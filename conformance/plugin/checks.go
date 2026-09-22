@@ -146,6 +146,14 @@ var stages = []Stage{
 			// refuse, so a candidate learns here rather than from the first
 			// real hub it meets.
 			seenCodes := map[string]bool{}
+			declared := make(map[string]bool, len(manifest.Contexts))
+			for index, context := range manifest.Contexts {
+				switch context.ID {
+				case "world", "player", "vehicle", "object":
+					return fmt.Errorf("a hub would reject this manifest: contexts[%d].id names the built-in context %q, which a manifest cannot declare as its own (section 6.2)", index, context.ID)
+				}
+				declared[context.ID] = true
+			}
 			for index, action := range manifest.Actions {
 				if action.Code == "" {
 					return fmt.Errorf("manifest action %d carries no code (section 6.1)", index)
@@ -155,7 +163,7 @@ var stages = []Stage{
 				}
 				seenCodes[action.Code] = true
 				if action.Params != nil {
-					if err := validateSubset(action.Params, fmt.Sprintf("actions[%d].params", index)); err != nil {
+					if err := validateSubset(action.Params, fmt.Sprintf("actions[%d].params", index), declared); err != nil {
 						return fmt.Errorf("a hub would reject this manifest: %w", err)
 					}
 				}

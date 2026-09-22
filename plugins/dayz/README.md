@@ -123,7 +123,7 @@ is derived from its content, see "Writing a mod against the plugin") declares:
 | `vyshka.message` | player | none | `message` (required), `title`, `seconds` (1 to 60, default 10), `style` (`notification`, the default, or `chat`) | `name`, `style` |
 | `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
 | `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
-| `vyshka.spawn` | player | warning | `className` (required) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
+| `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
@@ -486,6 +486,35 @@ and a process kill does not: a server killed from the outside leaves no stop eve
 a DayZ map plots `x` against `z`. That is the game's own map frame of section 8.3; the hub
 never interprets it and a map view has to know the game.
 
+## Item catalog
+
+The manifest declares eight custom contexts (protocol section 6.2), one per item type,
+namespace `vyshka`: `dayz.items.firearms`, `dayz.items.optics`, `dayz.items.ammo`,
+`dayz.items.magazines`, `dayz.items.edibles`, `dayz.items.clothing`, `dayz.items.gear`
+(every other item: tools, medical, base building, vehicle parts), and `dayz.vehicles`. Each
+enumerates the public classes (`scope = 2`) of `CfgVehicles`, `CfgWeapons`, and
+`CfgMagazines` whose inheritance path reaches that type's base (`Weapon_Base`,
+`ItemOptics`, `Ammunition_Base`, `Magazine_Base`, `Edible_Base`, `Clothing_Base`,
+`Inventory_Base` or `ItemBase`, `CarScript` or `BoatScript`), the first match on the path
+deciding. An entry's `referenceKey` is the class name (what `vyshka.spawn` takes as
+`className`), its `label` the display name the client would show (the config's
+`displayName` through the server's string table; the class name when there is none or it
+does not translate), and its `data` carries `type` and what the type is declared with:
+`weight` (grams) for all; `ammo` (the first `chamberableFrom`) and `magazines` (how many
+fit) for a firearm; `count` and `ammo` for a magazine or an ammunition pile; `energy` and
+`water` for a food (the `Raw` stage's when the food has stages); `slot`, `cargo` (slots),
+and `heatIsolation` for a garment; `zoomMin` and `zoomMax` for an optic; `fuel` (litres)
+and `crew` (seats) for a vehicle.
+
+The spawn action's `className` names all eight in its params schema (the `context`
+annotation, section 6.1), which is how the panel's spawn form suggests them; a mod's own
+action can name any of them the same way. The catalog is built once per session, on the
+first enumeration, from the config the server booted with: about 2050 classes on a stock
+1.29 server, sorted in 30 ms, the largest type (clothing, 786 entries) 107 KiB
+(`spikes/dayz-item-catalog`). A modded server that grows a type past what one reply may
+carry (5000 entries, 256 KiB) gets that context answered with no entries and a reason, never
+a cut list.
+
 ## Writing a mod against the plugin
 
 Any server mod loaded after `@Vyshka` can add its own actions, events, contexts, key/value
@@ -541,7 +570,11 @@ completion never comes). `RegisterContext` takes a `VyshkaContext` subclass (`Id
 answers the hub's `context.enumerate` requests for it (protocol section 6.2), and an action
 in that context gets one of those reference keys as its `referenceKey`; a context offering
 more than a reply may carry (5000 entries, 256 KiB) is answered with no entries and a
-reason rather than a list that reads as complete. `DeclareEvent`
+reason rather than a list that reads as complete. A string param whose values are a
+context's members says so with the `context` annotation in `ParamsSchema()` (`"context":
+"my-mod.zone"`, or an array of ids, section 6.1): the hub rejects the manifest when the id
+is not declared, a panel offers that context's entries for the field, and the plugin's own
+item catalog contexts (above) can be named by any mod's action. `DeclareEvent`
 declares a custom event type for display and webhook filtering (declaration is advisory;
 an undeclared type is stored too). `DeclareNamespace` names a key/value namespace your mod
 will read and write: the manifest's `kvNamespaces` is the sole source of the plugin's

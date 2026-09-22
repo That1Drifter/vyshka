@@ -1,0 +1,29 @@
+plan=9
+tree=CfgVehicles	children=5369	public=2200	sorted=1814	ms=11
+tree=CfgWeapons	children=191	public=115	sorted=115	ms=0
+tree=CfgMagazines	children=126	public=121	sorted=121	ms=0
+type=firearm	count=115	bytes=14066	buildMs=1	serializeMs=13	untranslated=15	dropped=0
+sample=firearm	[{"referenceKey":"PVCBow","label":"PVCBow","data":{"type":"firearm","weight":550,"ammo":"Ammo_ArrowComposite","magazines":0}},{"referenceKey":"QuickieBow","label":"QuickieBow","data":{"type":"firearm"
+sample=firearm	[{"referenceKey":"PVCBow","label":"PVCBow","data":{"type":"firearm","weight":550,"ammo":"Ammo_ArrowComposite","magazines":0}},{"referenceKey":"QuickieBow","label":"QuickieBow","data":{"type":"firearm"
+type=optic	count=32	bytes=3920	buildMs=0	serializeMs=2	untranslated=2	dropped=0
+sample=optic	[{"referenceKey":"M4_CarryHandleOptic","label":"M4-A1 Carry Handle Sights","data":{"type":"optic","weight":350,"zoomMin":0.52,"zoomMax":0.52}},{"referenceKey":"BUISOptic","label":"Backup Iron Sights",
+sample=optic	[{"referenceKey":"M4_CarryHandleOptic","label":"M4-A1 Carry Handle Sights","data":{"type":"optic","weight":350,"zoomMin":0.52,"zoomMax":0.52}},{"referenceKey":"BUISOptic","label":"Backup Iron Sights",
+type=ammo	count=39	bytes=5156	buildMs=1	serializeMs=6	untranslated=4	dropped=0
+sample=ammo	[{"referenceKey":"Ammo_45ACP","label":".45 ACP Rounds","data":{"type":"ammo","weight":12,"count":25,"ammo":"Bullet_45ACP"}},{"referenceKey":"Ammo_308Win","label":".308 WIN Rounds","data":{"type":"ammo
+sample=ammo	[{"referenceKey":"Ammo_45ACP","label":".45 ACP Rounds","data":{"type":"ammo","weight":12,"count":25,"ammo":"Bullet_45ACP"}},{"referenceKey":"Ammo_308Win","label":".308 WIN Rounds","data":{"type":"ammo
+type=magazine	count=82	bytes=11223	buildMs=0	serializeMs=9	untranslated=12	dropped=0
+sample=magazine	[{"referenceKey":"Mag_FNX45_15Rnd","label":"15rd FX-45 Mag","data":{"type":"magazine","weight":113,"count":15,"ammo":"Bullet_45ACP"}},{"referenceKey":"Mag_357Speedloader_6Rnd","label":"Mag_357Speedloa
+sample=magazine	[{"referenceKey":"Mag_FNX45_15Rnd","label":"15rd FX-45 Mag","data":{"type":"magazine","weight":113,"count":15,"ammo":"Bullet_45ACP"}},{"referenceKey":"Mag_357Speedloader_6Rnd","label":"Mag_357Speedloa
+type=edible	count=127	bytes=14621	buildMs=1	serializeMs=11	untranslated=6	dropped=0
+sample=edible	[{"referenceKey":"Canteen","label":"Canteen","data":{"type":"edible","weight":250,"energy":0.00,"water":0.00}},{"referenceKey":"WaterBottle","label":"Plastic Bottle","data":{"type":"edible","weight":5
+sample=edible	[{"referenceKey":"Canteen","label":"Canteen","data":{"type":"edible","weight":250,"energy":0.00,"water":0.00}},{"referenceKey":"WaterBottle","label":"Plastic Bottle","data":{"type":"edible","weight":5
+type=clothing	count=786	bytes=107098	buildMs=16	serializeMs=78	untranslated=0	dropped=0
+sample=clothing	[{"referenceKey":"WorkingGloves_Black","label":"Working Gloves","data":{"type":"clothing","weight":130,"slot":"Gloves","heatIsolation":0.50}},{"referenceKey":"WorkingGloves_Beige","label":"Working Glo
+sample=clothing	[{"referenceKey":"WorkingGloves_Black","label":"Working Gloves","data":{"type":"clothing","weight":130,"slot":"Gloves","heatIsolation":0.50}},{"referenceKey":"WorkingGloves_Beige","label":"Working Glo
+type=vehicle	count=20	bytes=2070	buildMs=0	serializeMs=1	untranslated=0	dropped=0
+sample=vehicle	[{"referenceKey":"Boat_01_Orange","label":"Rubber Boat","data":{"type":"vehicle","fuel":25.00,"crew":4}},{"referenceKey":"Boat_01_Blue","label":"Rubber Boat","data":{"type":"vehicle","fuel":25.00,"cre
+sample=vehicle	[{"referenceKey":"Boat_01_Orange","label":"Rubber Boat","data":{"type":"vehicle","fuel":25.00,"crew":4}},{"referenceKey":"Boat_01_Blue","label":"Rubber Boat","data":{"type":"vehicle","fuel":25.00,"cre
+type=other	count=849	bytes=85042	buildMs=8	serializeMs=78	untranslated=41	dropped=0
+sample=other	[{"referenceKey":"TestObject","label":"TestObject","data":{"type":"other","weight":1000}},{"referenceKey":"Headtorch_Grey","label":"Head Torch","data":{"type":"other","weight":200}},{"referenceKey":"H
+sample=other	[{"referenceKey":"TestObject","label":"TestObject","data":{"type":"other","weight":1000}},{"referenceKey":"Headtorch_Grey","label":"Head Torch","data":{"type":"other","weight":200}},{"referenceKey":"H
+finished	wallMs=535

@@ -23,6 +23,34 @@ func TestSynthesizeParamsSatisfiesTheDriverSchema(t *testing.T) {
 	}
 }
 
+func TestValidateSubsetContextAnnotation(t *testing.T) {
+	declared := map[string]bool{"driver.zone": true, "driver.item": true}
+	accepted := []map[string]any{
+		{"type": "object", "properties": map[string]any{
+			"zone": map[string]any{"type": "string", "context": "driver.zone"},
+		}},
+		{"type": "array", "items": map[string]any{"type": "string", "context": []any{"driver.zone", "driver.item"}}},
+	}
+	for i, schema := range accepted {
+		if err := validateSubset(schema, "params", declared); err != nil {
+			t.Errorf("accepted[%d]: %v", i, err)
+		}
+	}
+	rejected := map[string]map[string]any{
+		"undeclared": {"type": "string", "context": "driver.nothing"},
+		"nonString":  {"type": "integer", "context": "driver.zone"},
+		"untyped":    {"context": "driver.zone"},
+		"empty":      {"type": "string", "context": []any{}},
+		"number":     {"type": "string", "context": 3},
+		"duplicate":  {"type": "string", "context": []any{"driver.zone", "driver.zone"}},
+	}
+	for name, schema := range rejected {
+		if err := validateSubset(schema, "params", declared); err == nil {
+			t.Errorf("%s: a hub rejects this annotation, the suite accepted it", name)
+		}
+	}
+}
+
 func TestSynthesizeParamsPrefersDefaultsAndEnums(t *testing.T) {
 	schema := map[string]any{
 		"type":     "object",

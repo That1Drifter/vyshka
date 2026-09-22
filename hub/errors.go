@@ -36,6 +36,9 @@ const (
 	codeUnknownAction              = "unknown_action"
 	codeParamsInvalid              = "params_invalid"
 	codeRevisionMismatch           = "revision_mismatch"
+	codeLinkDown                   = "link_down"
+	codeEnumerationTimeout         = "enumeration_timeout"
+	codeEnumerationInvalid         = "enumeration_invalid"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the

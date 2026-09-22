@@ -80,8 +80,23 @@ management views).
 - **Targets**: a `player` context action gets a required player field fed by the same
   snapshot; `vehicle` gets a required id field fed by the latest `state.vehicles`
   snapshot (each vehicle's id with its display name or class and its kind as the
-  suggestion); `object` gets an id field; custom contexts get an optional reference field
-  (enumeration arrives with the first custom context, issue #73).
+  suggestion); `object` gets an id field; a declared custom context gets an optional
+  reference field fed by that context's enumeration (below).
+- **Custom context enumerations** (protocol section 6.2): before an action form is built,
+  the panel reads `GET /servers/{id}/contexts/{contextId}/entries` once for the action's
+  own custom context and once for every context a `context` annotation in its params
+  schema names (section 6.1), all at once. Each annotated string field and the custom
+  target field then suggest the entries, the `referenceKey` as the value and the label as
+  the text, and their hint says which contexts fed them and how many entries each has. A
+  context the hub could not enumerate (the plugin did not answer, the link is down) leaves
+  a plain input with the error code in the hint; a value typed outside the list is sent as
+  typed, since the annotation never constrains the data model. The annotation wins over a
+  widget hint beside it (a `player` widget with a `context` suggests the context's
+  entries). An array of annotated string items gets a picker beside its one-per-line
+  textarea: an input suggesting the entries, whose chosen value is appended as a line,
+  the textarea staying the value that is sent. The hub caches an
+  answer briefly (10 s by default), so reopening a form within that window asks the plugin
+  nothing.
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
   Dispatch button does anything.
 - **Dispatch and live result**: one `POST /api/v1/servers/{id}/actions` with an idempotency

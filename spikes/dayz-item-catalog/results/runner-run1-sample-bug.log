@@ -1,0 +1,30 @@
+runner: server pid 5276, profiles C:\WorkDrive\Vyshka\spikes\dayz-item-catalog\results\profile, mission vyshkaCatalogSpike.chernarusplus
+runner: following C:\WorkDrive\Vyshka\spikes\dayz-item-catalog\results\profile\script_2026-09-22_10-34-58.log
+  dayz:  SCRIPT       : [Vyshka] ERROR: no usable config at $profile:Vyshka/config.json; it needs at least {"hubUrl": "...", "enrollmentToken": "..."}. The plugin is idle.
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+  dayz: SCRIPT    (E): Virtual Machine Exception
+runner: crash report:
+C:\WorkDrive\Vyshka\spikes\dayz-item-catalog\results\profile\crash_2026-09-22_10-34-58.log
+---------------------------------------------
+Log C:\WorkDrive\Vyshka\spikes\dayz-item-catalog\results\profile\crash_2026-09-22_10-34-58.log started at 22.09. 10:35:21
+
+
+
+------------------------------------
+MAINPC, 22.09 2026 10:35:21
+Virtual Machine Exception
+

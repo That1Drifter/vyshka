@@ -15,12 +15,22 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"unicode/utf8"
 )
 
 // maxDepth bounds schema nesting. Real parameter schemas are a few levels deep;
 // the cap exists so an adversarial manifest cannot make compilation or
 // validation recurse without limit.
 const maxDepth = 32
+
+// The bounds of the `context` annotation (spec section 6.1): a context id is
+// at most 64 code points (section 6.2), and one field draws on at most 16 of
+// them, which is more than a form has any use for and few enough that a
+// manifest cannot make a UI fetch hundreds of enumerations per field.
+const (
+	maxContextIDLength = 64
+	maxContextRefs     = 16
+)
 
 // maxExactNumber is 2^53, the largest magnitude at which float64, the type
 // every JSON number here passes through, still represents integers exactly.
@@ -64,6 +74,42 @@ type Schema struct {
 
 	minimum, maximum                   *float64
 	exclusiveMinimum, exclusiveMaximum *float64
+
+	// contexts is the `context` annotation: the declared custom contexts
+	// whose entries a UI offers for this string field (section 6.1). Kept
+	// for ContextRefs, never consulted by Validate.
+	contexts []string
+}
+
+// ContextRef is one `context` annotation found in a compiled schema: the
+// dotted path of the node carrying it and the context id it names.
+type ContextRef struct {
+	Path string
+	ID   string
+}
+
+// ContextRefs lists every context id the schema's `context` annotations
+// name, in path order, so a manifest validator can check each against the
+// contexts the manifest declares (section 6.4).
+func (s *Schema) ContextRefs() []ContextRef {
+	var refs []ContextRef
+	s.contextRefs("", &refs)
+	return refs
+}
+
+func (s *Schema) contextRefs(path string, refs *[]ContextRef) {
+	if s == nil {
+		return
+	}
+	for _, id := range s.contexts {
+		*refs = append(*refs, ContextRef{Path: joinPath(path, "context"), ID: id})
+	}
+	for _, name := range s.propertyOrder {
+		s.properties[name].contextRefs(joinPath(path, "properties."+name), refs)
+	}
+	if s.items != nil {
+		s.items.contextRefs(joinPath(path, "items"), refs)
+	}
 }
 
 // Compile parses a raw schema and checks it against the subset. It returns
@@ -166,6 +212,18 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 			compiled.exclusiveMaximum = compileBound(value, child, faults)
 		case "default":
 			// Annotation only: surfaced to UIs, never enforced.
+		case "context":
+			// Annotation only as well (section 6.1), but a constrained one:
+			// it names manifest entities, so a malformed value is a typo the
+			// author wants to hear about at publish. Whether each id is
+			// declared is the manifest validator's check (ContextRefs); the
+			// type requirement is checked once every keyword is read, since
+			// "context" sorts before "type". A JSON null reads as no
+			// annotation (section 6.4).
+			if value == nil {
+				continue
+			}
+			compiled.contexts = compileContextRefs(value, child, faults)
 		case "x-vyshka-widget":
 			// A UI hint, deliberately unconstrained (section 6.1): a widget
 			// name this hub has not heard of must not reject the manifest,
@@ -178,7 +236,53 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 				Message: fmt.Sprintf("keyword %q is outside the schema subset this protocol enforces", keyword)})
 		}
 	}
+	if compiled.contexts != nil && compiled.typeName != "string" {
+		*faults = append(*faults, Fault{Path: joinPath(path, "context"),
+			Message: "context is an annotation for a string schema; add \"type\": \"string\" beside it"})
+	}
 	return compiled
+}
+
+// compileContextRefs reads a `context` annotation: one context id, or an
+// array of them. It returns nil with faults recorded when the value is
+// unusable, and a non-nil (possibly single-element) slice otherwise.
+func compileContextRefs(value any, path string, faults *[]Fault) []string {
+	fault := func(format string, args ...any) []string {
+		*faults = append(*faults, Fault{Path: path, Message: fmt.Sprintf(format, args...)})
+		return nil
+	}
+	var members []any
+	switch typed := value.(type) {
+	case string:
+		members = []any{typed}
+	case []any:
+		members = typed
+	default:
+		return fault("context must be a context id or an array of them")
+	}
+	if len(members) == 0 {
+		return fault("context must name at least one context")
+	}
+	if len(members) > maxContextRefs {
+		return fault("context may name at most %d contexts, got %d", maxContextRefs, len(members))
+	}
+	ids := make([]string, 0, len(members))
+	seen := make(map[string]bool, len(members))
+	for i, member := range members {
+		id, ok := member.(string)
+		if !ok || id == "" {
+			return fault("context[%d] must be a non-empty context id", i)
+		}
+		if utf8.RuneCountInString(id) > maxContextIDLength {
+			return fault("context[%d] is longer than %d characters", i, maxContextIDLength)
+		}
+		if seen[id] {
+			return fault("context names %q more than once", id)
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func compileBound(value any, path string, faults *[]Fault) *float64 {

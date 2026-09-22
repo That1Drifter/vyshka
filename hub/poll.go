@@ -113,6 +113,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	actions := prepareActions(request.Envelopes)
 	events := s.prepareEvents(request.Envelopes, now)
 	snapshots := s.prepareSnapshots(request.Envelopes, now)
+	contextReplies := prepareContextEntries(request.Envelopes, now)
 	replayedBatches, err := s.ingestedEventBatches(r.Context(), server.ID, request.Envelopes, events)
 	if err != nil {
 		s.writeInternalError(w, r, err)
@@ -220,6 +221,27 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inboundAck := applied.Ack
+
+	// Context enumeration replies change no durable state, so they are
+	// handed to the reads waiting on them once the batch is committed, and
+	// only the newly accepted ones: a retransmitted reply was delivered the
+	// first time (spec section 6.2). One nobody asked for is acked and
+	// ignored, as the section says.
+	var unsolicitedContextReplies int
+	for _, index := range batch.Accepted {
+		prepared, isReply := contextReplies[index]
+		if !isReply {
+			continue
+		}
+		if !s.enumerations.deliver(server.ID, prepared, now) {
+			unsolicitedContextReplies++
+		}
+	}
+	if unsolicitedContextReplies > 0 {
+		s.log.Info("poll carried context.entries replies nobody was waiting for; acked and ignored",
+			"serverId", server.ID, "sessionId", session.ID, "count", unsolicitedContextReplies)
+	}
+
 	if len(request.Envelopes) > 0 {
 		s.log.Info("poll ingested envelopes",
 			"serverId", server.ID, "sessionId", session.ID,

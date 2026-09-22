@@ -143,6 +143,16 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 			maxManifestActions, len(manifest.Actions))
 		manifest.Actions = nil
 	}
+	// Every `context` annotation in a params or payload schema (section 6.1)
+	// is collected here and checked once the declared contexts are known,
+	// since the actions come before the contexts in the body.
+	var contextRefs []schema.ContextRef
+	compileSchema := func(raw json.RawMessage, path string) {
+		refs, schemaFaults := compileParams(raw, path)
+		faults = append(faults, schemaFaults...)
+		contextRefs = append(contextRefs, refs...)
+	}
+
 	codes := make(map[string]bool, len(manifest.Actions))
 	for i, action := range manifest.Actions {
 		path := fmt.Sprintf("actions[%d]", i)
@@ -168,7 +178,7 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 		if !dangerLevels[action.Danger] {
 			fault(path+".danger", "danger must be none, warning, or destructive, got %q", action.Danger)
 		}
-		faults = append(faults, compileParams(action.Params, path+".params")...)
+		compileSchema(action.Params, path+".params")
 	}
 
 	if len(manifest.Contexts) > maxManifestContexts {
@@ -184,6 +194,8 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 			fault(path+".id", "id is required")
 		case tooLong(declared.ID, maxNamespaceLength):
 			fault(path+".id", "id is longer than %d characters", maxNamespaceLength)
+		case builtinContexts[declared.ID]:
+			fault(path+".id", "id %q names a built-in context, which a manifest cannot declare as its own (section 6.2)", declared.ID)
 		case contextIDs[declared.ID]:
 			fault(path+".id", "id %q appears more than once", declared.ID)
 		default:
@@ -221,7 +233,17 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 		if tooLong(declared.Namespace, maxNamespaceLength) {
 			fault(path+".namespace", "namespace is longer than %d characters", maxNamespaceLength)
 		}
-		faults = append(faults, compileParams(declared.Payload, path+".payload")...)
+		compileSchema(declared.Payload, path+".payload")
+	}
+
+	// A `context` annotation naming a context this manifest does not declare
+	// is a typo the author wants to hear about now, not a dropdown that stays
+	// empty (section 6.4). Checked against the declared ids whatever the
+	// contexts list's own faults, so the notice names the reference too.
+	for _, ref := range contextRefs {
+		if !contextIDs[ref.ID] {
+			fault(ref.Path, "context %q is not declared in this manifest's contexts", ref.ID)
+		}
 	}
 
 	// kvNamespaces is validated against the full section 12.1 grammar, not
@@ -255,20 +277,30 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 }
 
 // compileParams runs the schema-subset compiler over an optional schema field
-// and rebases its fault paths into the manifest.
-func compileParams(raw json.RawMessage, path string) []schema.Fault {
+// and rebases its fault paths, and the paths of the `context` annotations it
+// found, into the manifest.
+func compileParams(raw json.RawMessage, path string) ([]schema.ContextRef, []schema.Fault) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return nil
+		return nil, nil
 	}
-	_, faults := schema.Compile(raw)
+	compiled, faults := schema.Compile(raw)
+	rebase := func(inner string) string {
+		if inner == "" {
+			return path
+		}
+		return path + "." + inner
+	}
 	for i, one := range faults {
-		if one.Path == "" {
-			faults[i].Path = path
-		} else {
-			faults[i].Path = path + "." + one.Path
+		faults[i].Path = rebase(one.Path)
+	}
+	var refs []schema.ContextRef
+	if compiled != nil {
+		refs = compiled.ContextRefs()
+		for i, ref := range refs {
+			refs[i].Path = rebase(ref.Path)
 		}
 	}
-	return faults
+	return refs, faults
 }
 
 // preparedManifest is one manifest.publish envelope after body validation:

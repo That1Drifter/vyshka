@@ -74,7 +74,11 @@ declare **at least one action**, because the harness grades the action lifecycle
 dispatching the first declared action with params synthesized from its own schema (and, for
 the crash check, params that violate it). An action whose execution can fail harmlessly is
 ideal; the harness accepts `ok: false` results, since it grades the lifecycle rather than
-the game outcome.
+the game outcome. The manifest stage also grades what a conformant hub's section 6.4
+validation would refuse, so a candidate learns here rather than from the first hub it
+meets: a duplicated code, a keyword outside the section 6.1 subset, a `context`
+annotation that names a context the manifest does not declare or sits on a non-string
+schema, and a declared context whose id is one of the built-in contexts.
 
 One grading convention follows from being black-box: when a dispatch arrives for an
 actionId the plugin has already executed, the plugin should ack the envelope and send

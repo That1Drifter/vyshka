@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.26 (2026-09-21)
+**Status:** draft 0.27 (2026-09-22)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -637,8 +637,8 @@ of the same queue, with its own endpoint and its own validation.
   a session, and an envelope may be queued while no session exists (section 9.2). The
   response therefore carries no `seq`.
 - A hub MUST reject a `type` family the hub itself models (`action.*` via the dispatch
-  endpoint of section 7, `manifest.*` via section 6, `event.*` via section 8.1, `state.*`
-  via section 8.3) with `conflict`. This endpoint must never become a way around the
+  endpoint of section 7, `manifest.*` via section 6, `context.*` via section 6.2,
+  `event.*` via section 8.1, `state.*` via section 8.3) with `conflict`. This endpoint must never become a way around the
   validation those surfaces perform, nor a way to queue a message, such as a forged
   `manifest.reject`, `event.reject`, or `state.reject`, that the plugin would take as the
   hub's own word.
@@ -697,6 +697,17 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
   MUST lie strictly within ±2^53: every JSON toolchain in this ecosystem passes numbers
   through IEEE doubles somewhere, and a constant that rounds on the way would be enforced
   against a value its author never wrote, so hubs reject what they cannot compare exactly.
+- A string schema MAY carry a `context` annotation naming a custom context the manifest
+  declares (section 6.2), or a non-empty array of at most 16 of them, none repeated: the values a UI
+  offers for the field are the entries of those contexts (the `referenceKey` as the value,
+  the `label` as what is shown), obtained by enumeration. It is an annotation, not a
+  constraint: a hub MUST NOT validate a dispatched value against an enumeration, since an
+  enumeration is a read of what the plugin could list at one moment, and a plugin is free
+  to accept what it did not list. A hub MUST reject a manifest whose `context` annotation
+  names a context the manifest does not declare, or sits on a schema whose `type` is not
+  `string` (section 6.4): both are typos the author wants to hear about at publish, not a
+  dropdown that stays empty. A JSON `null` reads as no annotation, as everywhere else
+  (section 6.4). `x-vyshka-widget` remains free-form beside it.
 - The hub MUST validate dispatch payloads against the schema **before** queueing, so
   schema-invalid input never reaches the game server.
 - `danger` is `none | warning | destructive`, advisory, for UI confirmation prompts.
@@ -760,6 +771,51 @@ answer a `context.enumerate` request (hub -> plugin) with a `context.entries` re
   is conformant, so a plugin MUST NOT wait for one. A hub receiving a `context.entries`
   it did not ask for, or no longer wants, acks and ignores it.
 
+**Reading a context's entries (Admin API).** A hub that implements the exchange exposes
+it as one read, so a UI or a bot never has to speak the Plugin API to fill a list:
+
+```
+GET /api/v1/servers/{serverId}/contexts/{contextId}/entries
+GET /api/v1/servers/{serverId}/contexts/{contextId}/entries?refresh=true
+
+-> 200 OK
+{ "context": "territory",
+  "entries": [ { "referenceKey": "north-ridge", "label": "North Ridge",
+                 "position": [4231.5, 300.2, 10620.0] } ],
+  "reason": null,
+  "enumeratedAt": "2026-09-22T12:00:00.000Z" }
+```
+
+- `contextId` MUST name a context the server's stored manifest declares; anything else,
+  a server the hub does not know, and a server with no manifest are `not_found` alike. The
+  built-in contexts are not enumerated here: their members are the state snapshots of
+  section 8.3.
+- The hub answers from its cache when it holds an enumeration of this context younger
+  than its cache bound (reference: 10 s) and the manifest has not been replaced since;
+  otherwise it sends one `context.enumerate` and holds the request until the
+  `context.entries` echoing its `requestId` arrives, up to a bound of its own (reference:
+  10 s). `refresh=true` skips the cache. Concurrent reads of one context SHOULD share one
+  question rather than each sending their own.
+- `entries` is the plugin's list, verbatim and whole, in the plugin's order. `reason` is
+  the plugin's string when it sent one (an undeclared context, a list that did not fit)
+  and `null` otherwise. `enumeratedAt` is when the reply arrived, so a reader can see how
+  stale a cached answer is.
+- The hub SHOULD refuse, rather than queue, when the server has no live session
+  (section 5.3): an enumeration is a question for a plugin that is there, and one queued
+  for a plugin that is not would be answered into a hub that no longer wants the answer.
+- The read requires `servers:read` (section 10), like the manifest and the snapshots.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `not_found` | 404 | No such server, no manifest, or the manifest declares no such context |
+| `link_down` | 409 | The server has no live session, so nothing can be asked |
+| `enumeration_timeout` | 504 | No reply echoing the question arrived within the hub's bound |
+| `enumeration_invalid` | 502 | The reply was outside the bounds above (an entry without a `referenceKey`, more than 5000 entries, a body over 262144 bytes) |
+
+A reply arriving after the hub stopped waiting is acked and ignored, as above; a hub MAY
+still cache it. A reply the hub refused as invalid is acked too (section 4), since acking
+promises only that the hub is done with it.
+
 ### 6.3 Declared custom events
 
 The manifest's `events` array declares custom telemetry types:
@@ -784,8 +840,12 @@ reach the game server, so a keyword it accepted but did not enforce (`pattern`, 
 wave through exactly the input the mod author wrote the schema to exclude, with the mod
 trusting a guarantee nobody was providing. A manifest is also rejected when
 `manifestRevision` is missing or outside `[1, 2^53)`, an action `code` is missing or
-duplicated, or a declared field exceeds the hub's length limits (counted in Unicode code
-points, the unit `maxLength` means in the companion schema). A JSON `null` where an
+duplicated, a declared context `id` is one of the built-in contexts (`world`, `player`,
+`vehicle`, `object`: a manifest cannot declare those as its own, section 6.2), a `context`
+annotation (section 6.1) names a context the manifest does not
+declare or sits on a non-string schema, or a declared field exceeds the hub's length
+limits (counted in Unicode code points, the unit `maxLength` means in the companion
+schema). A JSON `null` where an
 OPTIONAL field could appear reads as the field being absent, never as a type error.
 
 Validation runs before the revision comparison: an invalid manifest is answered with
@@ -1425,7 +1485,7 @@ Every Admin API credential is a bearer token carrying an explicit set of scopes.
 `resource:verb`, optionally narrowed by a third `:pattern` field:
 
 ```
-servers:read                     server records, sessions, manifests, and state snapshots
+servers:read                     server records, sessions, manifests, state snapshots, and context enumerations
 events:read                      every event type
 events:read:example-mod.*        one namespace of event types
 actions:read                     every action record
@@ -1504,7 +1564,7 @@ in the request, the check MUST run against that value:
 
 | Surface | Scope |
 |---|---|
-| `GET /api/v1/servers`, `GET /api/v1/servers/{id}`, `GET .../manifest`, `GET .../state/{type}` and `.../history` | `servers:read` |
+| `GET /api/v1/servers`, `GET /api/v1/servers/{id}`, `GET .../manifest`, `GET .../state/{type}` and `.../history`, `GET .../contexts/{contextId}/entries` | `servers:read` |
 | `POST /api/v1/servers`, `POST .../enrollment-token`, `DELETE .../credentials` | `admin` |
 | `POST /api/v1/servers/{id}/envelopes` | `admin` |
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |

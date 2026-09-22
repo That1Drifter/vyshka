@@ -600,6 +600,10 @@ func (d *driver) manifest(game string) map[string]any {
 				"required": []string{"amount"},
 				"properties": map[string]any{
 					"amount": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+					// A string drawing on the declared context (the `context`
+					// annotation of section 6.1), so the driver's manifest
+					// exercises what a hub validates and a panel offers.
+					"zone": map[string]any{"type": "string", "context": driverContext},
 				},
 			},
 		}},

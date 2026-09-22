@@ -17,7 +17,7 @@
     "paramsSchema": {
       "type": "object",
       "title": "Section 6.1 schema subset",
-      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
+      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, the `context` annotation on string schemas, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
       "properties": {
         "type": {
           "type": "string",
@@ -44,6 +44,20 @@
         "exclusiveMaximum": { "type": "number" },
         "default": {
           "description": "Annotation only: surfaced to UIs, never enforced."
+        },
+        "context": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 64 },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+            },
+            { "type": "null" }
+          ],
+          "description": "Annotation on a `type: string` schema: the custom context (or contexts, none repeated) the manifest declares whose enumerated entries a UI offers as the field's values, the referenceKey as the value and the label as the text (section 6.1). Never enforced against a dispatched value. A manifest naming an undeclared context here, or putting it on a non-string schema, is rejected (section 6.4); null reads as no annotation."
         },
         "x-vyshka-widget": {
           "type": "string",
@@ -86,7 +100,13 @@
       "title": "Declared custom context",
       "required": ["id"],
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "not": { "enum": ["world", "player", "vehicle", "object"] },
+          "description": "Unique within the manifest. The built-in contexts (world, player, vehicle, object) cannot be declared as a manifest's own (section 6.2); a hub rejects the manifest (section 6.4)."
+        },
         "name": { "$ref": "#/$defs/label" },
         "namespace": { "$ref": "#/$defs/namespace" }
       },

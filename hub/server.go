@@ -126,6 +126,16 @@ type Config struct {
 	// enforced at insert so a fast-pushing plugin cannot outrun the retention
 	// pass. Zero means the default; the latest snapshot always survives.
 	StateHistoryDepth int
+	// ContextCacheTTL is how long an answered context enumeration feeds
+	// reads before the plugin is asked again (spec section 6.2, reference
+	// 10 s). A republished manifest invalidates the answer sooner.
+	ContextCacheTTL time.Duration
+	// ContextEnumerateTimeout bounds how long a read holds for the plugin's
+	// context.entries reply before answering enumeration_timeout (section
+	// 6.2, reference 10 s). The question reaches a polling plugin within its
+	// poll cycle and the answer rides its next poll, so the bound is for a
+	// plugin that will not answer, not for a slow one.
+	ContextEnumerateTimeout time.Duration
 	// Panel is the optional web UI, served under /panel/ with the prefix
 	// stripped, and reached by a redirect from /. Nil serves no panel and
 	// leaves / a 404 like any other unrouted path. The hub takes it as a
@@ -269,6 +279,13 @@ func (c *Config) withDefaults() {
 	if c.StateHistoryDepth <= 0 {
 		c.StateHistoryDepth = 500
 	}
+	// The reference bounds of spec section 6.2, both 10 s.
+	if c.ContextCacheTTL <= 0 {
+		c.ContextCacheTTL = 10 * time.Second
+	}
+	if c.ContextEnumerateTimeout <= 0 {
+		c.ContextEnumerateTimeout = 10 * time.Second
+	}
 }
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
@@ -284,8 +301,11 @@ type Server struct {
 	// and holds bounds how many of them one session may park at once.
 	waiters *waiters
 	holds   *holds
-	handler http.Handler
-	started time.Time
+	// enumerations holds the context questions in flight and the answers
+	// cached against reads (spec section 6.2).
+	enumerations *enumerations
+	handler      http.Handler
+	started      time.Time
 	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
 	// Close never races the loop against the store it is closing. The webhook
 	// dispatcher shares the stop channel and confirms through dispatcherDone.
@@ -381,6 +401,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		store:          st,
 		waiters:        newWaiters(),
 		holds:          newHolds(),
+		enumerations:   newEnumerations(cfg.ContextCacheTTL, cfg.ContextEnumerateTimeout),
 		started:        time.Now(),
 		stopSweeper:    make(chan struct{}),
 		sweeperDone:    make(chan struct{}),
@@ -540,6 +561,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{serverId}/manifest",
 		s.admin(resourceServers, verbRead, s.handleGetManifest))
 	mux.HandleFunc("/api/v1/servers/{serverId}/manifest", methodNotAllowed("GET"))
+
+	// Context enumeration (spec section 6.2), behind servers:read like the
+	// manifest whose contexts it reads.
+	mux.HandleFunc("GET /api/v1/servers/{serverId}/contexts/{contextId}/entries",
+		s.admin(resourceServers, verbRead, s.handleEnumerateContext))
+	mux.HandleFunc("/api/v1/servers/{serverId}/contexts/{contextId}/entries", methodNotAllowed("GET"))
 
 	mux.HandleFunc("POST /api/v1/servers/{serverId}/actions",
 		s.admin(resourceActions, verbDispatch, s.handleDispatchAction))
