@@ -146,13 +146,19 @@ var stages = []Stage{
 			// refuse, so a candidate learns here rather than from the first
 			// real hub it meets.
 			seenCodes := map[string]bool{}
-			declared := make(map[string]bool, len(manifest.Contexts))
+			declared := declaredNames{
+				contexts:     make(map[string]bool, len(manifest.Contexts)),
+				kvNamespaces: make(map[string]bool, len(manifest.KVNamespaces)),
+			}
 			for index, context := range manifest.Contexts {
 				switch context.ID {
 				case "world", "player", "vehicle", "object":
 					return fmt.Errorf("a hub would reject this manifest: contexts[%d].id names the built-in context %q, which a manifest cannot declare as its own (section 6.2)", index, context.ID)
 				}
-				declared[context.ID] = true
+				declared.contexts[context.ID] = true
+			}
+			for _, namespace := range manifest.KVNamespaces {
+				declared.kvNamespaces[namespace] = true
 			}
 			for index, action := range manifest.Actions {
 				if action.Code == "" {
@@ -166,6 +172,16 @@ var stages = []Stage{
 					if err := validateSubset(action.Params, fmt.Sprintf("actions[%d].params", index), declared); err != nil {
 						return fmt.Errorf("a hub would reject this manifest: %w", err)
 					}
+				}
+			}
+			// A declared event's payload schema is compiled like a params
+			// schema, annotations and all (section 6.4).
+			for index, payload := range manifest.EventPayloads {
+				if payload == nil {
+					continue
+				}
+				if err := validateSubset(payload, fmt.Sprintf("events[%d].payload", index), declared); err != nil {
+					return fmt.Errorf("a hub would reject this manifest: %w", err)
 				}
 			}
 			h.action = manifest.Actions[0]

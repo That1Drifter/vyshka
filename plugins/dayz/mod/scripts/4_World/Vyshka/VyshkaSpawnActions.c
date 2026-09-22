@@ -69,6 +69,23 @@ class VyshkaSpawn
 	// The attachment candidates by slot, lowercased slot name to class
 	// names in the order `auto` tries them; built on the first auto spawn.
 	static ref map<string, ref array<string>> s_Candidates;
+	// A caller with a budget of its own (a vehicle preset's item cap) sets
+	// s_EquipBounded and how many more parts Equip may create in
+	// s_EquipLeft; a slot Equip reaches with none left is reported empty.
+	// Unset, Equip is unbounded.
+	static bool s_EquipBounded;
+	static int s_EquipLeft;
+
+	static bool EquipExhausted()
+	{
+		return s_EquipBounded && s_EquipLeft <= 0;
+	}
+
+	static void EquipSpent()
+	{
+		if (s_EquipBounded)
+			s_EquipLeft--;
+	}
 
 	static void Reset()
 	{
@@ -339,13 +356,18 @@ class VyshkaSpawn
 		string ammo = "";
 		if (weapon && depth == 1)
 			ammo = LoadWith(item);
+		if (EquipExhausted())
+			ammo = "";
 		if (ammo != "" && weapon.VyshkaFsmRunning())
 		{
 			// The engine's own spawn-with-ammo: a magazine attached (or an
 			// internal one filled) and a round chambered, and the weapon's
 			// state machine told, so it fires at once.
 			if (weapon.SpawnAmmo(ammo, WeaponWithAmmoFlags.CHAMBER))
+			{
 				loaded = ammo;
+				EquipSpent();
+			}
 		}
 		else if (ammo != "" && weapon.GetMagazineTypeCount(0) > 0)
 		{
@@ -358,6 +380,7 @@ class VyshkaSpawn
 			{
 				box.ServerSetAmmoMax();
 				loaded = ammo;
+				EquipSpent();
 			}
 		}
 		int slotCount = inventory.GetAttachmentSlotsCount();
@@ -375,7 +398,7 @@ class VyshkaSpawn
 			{
 				array<string> candidates = Candidates(slotName);
 				int tries = 0;
-				for (int c = 0; c < candidates.Count() && tries < SLOT_TRIES && !part; c++)
+				for (int c = 0; c < candidates.Count() && tries < SLOT_TRIES && !part && !EquipExhausted(); c++)
 				{
 					string candidate = candidates.Get(c);
 					if (IsBlocked(candidate))
@@ -389,6 +412,8 @@ class VyshkaSpawn
 						GetGame().ObjectDelete(part);
 						part = null;
 					}
+					if (part)
+						EquipSpent();
 				}
 				if (!part)
 				{

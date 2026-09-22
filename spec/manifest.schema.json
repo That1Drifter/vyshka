@@ -17,7 +17,7 @@
     "paramsSchema": {
       "type": "object",
       "title": "Section 6.1 schema subset",
-      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `not` in the one form `{\"enum\": [...]}`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, the `context` annotation on string schemas, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
+      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `not` in the one form `{\"enum\": [...]}`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, the `context` and `kvNamespace` annotations on string schemas, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
       "properties": {
         "type": {
           "type": "string",
@@ -70,6 +70,18 @@
             { "type": "null" }
           ],
           "description": "Annotation on a `type: string` schema: the custom context (or contexts, none repeated) the manifest declares whose enumerated entries a UI offers as the field's values, the referenceKey as the value and the label as the text (section 6.1). Never enforced against a dispatched value. A manifest naming an undeclared context here, or putting it on a non-string schema, is rejected (section 6.4); null reads as no annotation."
+        },
+        "kvNamespace": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+            },
+            { "type": "null" }
+          ],
+          "description": "Annotation on a `type: string` schema: the key/value namespace, one the manifest declares in kvNamespaces, whose keys a UI offers as the field's values through the list-keys read (section 6.1). Never enforced against a dispatched value. A manifest naming an undeclared namespace here, or putting it on a non-string schema, is rejected (section 6.4); null reads as no annotation."
         },
         "x-vyshka-widget": {
           "type": "string",

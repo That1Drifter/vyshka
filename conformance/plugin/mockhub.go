@@ -336,10 +336,15 @@ type manifestContext struct {
 }
 
 type manifestInfo struct {
-	Game     string
-	Revision int64
-	Actions  []manifestAction
-	Contexts []manifestContext
+	Game         string
+	Revision     int64
+	Actions      []manifestAction
+	Contexts     []manifestContext
+	KVNamespaces []string
+	// EventPayloads are the declared events' payload schemas by index into
+	// the manifest's events (nil where an event declares none), which a hub
+	// compiles like a params schema (spec section 6.4).
+	EventPayloads []map[string]any
 }
 
 type actionTrack struct {
@@ -1293,6 +1298,10 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 				ID   string `json:"id"`
 				Name string `json:"name"`
 			} `json:"contexts"`
+			KVNamespaces []string `json:"kvNamespaces"`
+			Events       []struct {
+				Payload map[string]any `json:"payload"`
+			} `json:"events"`
 		}
 		if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 			h.faultLocked("6", "a manifest.publish body could not be decoded as an object")
@@ -1305,7 +1314,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		if h.manifest != nil && revision <= h.manifest.Revision {
 			return
 		}
-		info := &manifestInfo{Game: body.Game, Revision: revision}
+		info := &manifestInfo{Game: body.Game, Revision: revision, KVNamespaces: body.KVNamespaces}
 		for _, action := range body.Actions {
 			info.Actions = append(info.Actions, manifestAction{
 				Code: action.Code, Context: action.Context, Params: action.Params,
@@ -1313,6 +1322,9 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		}
 		for _, context := range body.Contexts {
 			info.Contexts = append(info.Contexts, manifestContext{ID: context.ID, Name: context.Name})
+		}
+		for _, event := range body.Events {
+			info.EventPayloads = append(info.EventPayloads, event.Payload)
 		}
 		h.manifest = info
 

@@ -90,6 +90,63 @@ func TestCompileContextAnnotation(t *testing.T) {
 	}
 }
 
+func TestCompileKVNamespaceAnnotation(t *testing.T) {
+	compiled := mustCompile(t, `{
+		"type": "object",
+		"properties": {
+			"loadout": { "type": "string", "kvNamespace": "vyshka.loadouts" },
+			"names":   { "type": "array", "items": { "type": "string", "kvNamespace": "vyshka.locations" } },
+			"plain":   { "type": "string" }
+		}
+	}`)
+	refs := compiled.KVNamespaceRefs()
+	want := []ContextRef{
+		{Path: "properties.loadout.kvNamespace", ID: "vyshka.loadouts"},
+		{Path: "properties.names.items.kvNamespace", ID: "vyshka.locations"},
+	}
+	if len(refs) != len(want) {
+		t.Fatalf("KVNamespaceRefs() = %+v, want %+v", refs, want)
+	}
+	for i := range want {
+		if refs[i] != want[i] {
+			t.Errorf("KVNamespaceRefs()[%d] = %+v, want %+v", i, refs[i], want[i])
+		}
+	}
+	if len(compiled.ContextRefs()) != 0 {
+		t.Errorf("a kvNamespace annotation was reported as a context: %+v", compiled.ContextRefs())
+	}
+
+	// A null annotation is no annotation (section 6.4), whatever the type.
+	if nulled := mustCompile(t, `{"type": "integer", "kvNamespace": null}`); len(nulled.KVNamespaceRefs()) != 0 {
+		t.Errorf("a null kvNamespace annotation produced refs %+v", nulled.KVNamespaceRefs())
+	}
+
+	// The annotation never constrains the value (section 6.1).
+	if faults := compiled.Validate(json.RawMessage(`{"loadout": "no-such-key", "names": ["x"]}`)); len(faults) > 0 {
+		t.Errorf("a value naming no stored key was refused: %v", faults)
+	}
+
+	rejected := map[string]string{
+		"nonString": `{"type": "integer", "kvNamespace": "vyshka.loadouts"}`,
+		"untyped":   `{"kvNamespace": "vyshka.loadouts"}`,
+		"empty":     `{"type": "string", "kvNamespace": ""}`,
+		"number":    `{"type": "string", "kvNamespace": 7}`,
+		"array":     `{"type": "string", "kvNamespace": ["vyshka.loadouts"]}`,
+		"tooLong":   `{"type": "string", "kvNamespace": "` + strings.Repeat("n", 65) + `"}`,
+	}
+	for name, raw := range rejected {
+		t.Run(name, func(t *testing.T) {
+			_, faults := Compile(json.RawMessage(raw))
+			if len(faults) == 0 {
+				t.Fatalf("Compile(%s) accepted a malformed kvNamespace annotation", raw)
+			}
+			if !strings.Contains(faults[0].Path, "kvNamespace") {
+				t.Fatalf("fault %q does not point at the annotation", faults[0])
+			}
+		})
+	}
+}
+
 func TestCompileRejectsKeywordsOutsideTheSubset(t *testing.T) {
 	cases := []struct {
 		name   string

@@ -146,11 +146,14 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 	// Every `context` annotation in a params or payload schema (section 6.1)
 	// is collected here and checked once the declared contexts are known,
 	// since the actions come before the contexts in the body.
-	var contextRefs []schema.ContextRef
+	// The `kvNamespace` annotations likewise wait for kvNamespaces, which
+	// comes last.
+	var contextRefs, kvRefs []schema.ContextRef
 	compileSchema := func(raw json.RawMessage, path string) {
 		refs, schemaFaults := compileParams(raw, path)
 		faults = append(faults, schemaFaults...)
-		contextRefs = append(contextRefs, refs...)
+		contextRefs = append(contextRefs, refs.contexts...)
+		kvRefs = append(kvRefs, refs.kvNamespaces...)
 	}
 
 	codes := make(map[string]bool, len(manifest.Actions))
@@ -269,6 +272,13 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 			kvNamespaces[namespace] = true
 		}
 	}
+	// A `kvNamespace` annotation naming a namespace this manifest does not
+	// declare is the same typo as an undeclared context (section 6.4).
+	for _, ref := range kvRefs {
+		if !kvNamespaces[ref.ID] {
+			fault(ref.Path, "kvNamespace %q is not declared in this manifest's kvNamespaces", ref.ID)
+		}
+	}
 
 	if len(faults) > 0 {
 		return 0, faults
@@ -276,12 +286,21 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 	return revision, nil
 }
 
+// schemaRefs is what compileParams found in one schema: the `context` and
+// the `kvNamespace` annotations, each to be checked against what the manifest
+// declares.
+type schemaRefs struct {
+	contexts     []schema.ContextRef
+	kvNamespaces []schema.ContextRef
+}
+
 // compileParams runs the schema-subset compiler over an optional schema field
-// and rebases its fault paths, and the paths of the `context` annotations it
-// found, into the manifest.
-func compileParams(raw json.RawMessage, path string) ([]schema.ContextRef, []schema.Fault) {
+// and rebases its fault paths, and the paths of the annotations it found, into
+// the manifest.
+func compileParams(raw json.RawMessage, path string) (schemaRefs, []schema.Fault) {
+	var refs schemaRefs
 	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
+		return refs, nil
 	}
 	compiled, faults := schema.Compile(raw)
 	rebase := func(inner string) string {
@@ -293,11 +312,13 @@ func compileParams(raw json.RawMessage, path string) ([]schema.ContextRef, []sch
 	for i, one := range faults {
 		faults[i].Path = rebase(one.Path)
 	}
-	var refs []schema.ContextRef
 	if compiled != nil {
-		refs = compiled.ContextRefs()
-		for i, ref := range refs {
-			refs[i].Path = rebase(ref.Path)
+		refs.contexts = compiled.ContextRefs()
+		refs.kvNamespaces = compiled.KVNamespaceRefs()
+		for _, list := range [][]schema.ContextRef{refs.contexts, refs.kvNamespaces} {
+			for i, ref := range list {
+				list[i].Path = rebase(ref.Path)
+			}
 		}
 	}
 	return refs, faults

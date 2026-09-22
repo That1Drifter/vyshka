@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.28 (2026-09-22)
+**Status:** draft 0.29 (2026-09-22)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -708,6 +708,20 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
   `string` (section 6.4): both are typos the author wants to hear about at publish, not a
   dropdown that stays empty. A JSON `null` reads as no annotation, as everywhere else
   (section 6.4). `x-vyshka-widget` remains free-form beside it.
+- A string schema MAY carry a `kvNamespace` annotation naming one key/value namespace the
+  manifest declares in `kvNamespaces` (section 6.6): the values a UI offers for the field
+  are the keys of that namespace, obtained with **list keys** (section 12.2). It is how an
+  action that reads a named record from the store (an operator-written preset, say) lets
+  a UI offer the names that exist, and it is an annotation in the same sense as `context`:
+  a hub MUST NOT validate a dispatched value against the store, since the listing is a
+  read of one moment and the plugin reports a missing key itself. A hub MUST reject a
+  manifest whose `kvNamespace` names a namespace its `kvNamespaces` does not declare, is
+  not a string, or sits on a schema whose `type` is not `string` (section 6.4). A JSON
+  `null` reads as no annotation. The listing needs a `kv:rw` grant on the namespace
+  (section 12.3) that a token allowed to dispatch the action need not hold, so a UI whose
+  token cannot list the keys SHOULD fall back to a plain text field and say why, rather
+  than offer an empty list: dispatching the action and editing the records it reads are
+  separate grants on purpose.
 - `not` is admitted in one form only, `{ "enum": [ ... ] }`: a non-empty list of values the
   field must not take, compared by deep equality as `enum` compares, so a string matches
   only itself, case and all. It is a constraint like every other keyword: a dispatch
@@ -857,8 +871,9 @@ trusting a guarantee nobody was providing. A manifest is also rejected when
 duplicated, a declared context `id` is one of the built-in contexts (`world`, `player`,
 `vehicle`, `object`: a manifest cannot declare those as its own, section 6.2), a `context`
 annotation (section 6.1) names a context the manifest does not
-declare or sits on a non-string schema, a `not` is in any form but `{ "enum": [...] }`
-(section 6.1), or a declared field exceeds the hub's length
+declare or sits on a non-string schema, a `kvNamespace` annotation (section 6.1) names a
+namespace the manifest's `kvNamespaces` does not declare or sits on a non-string schema, a
+`not` is in any form but `{ "enum": [...] }` (section 6.1), or a declared field exceeds the hub's length
 limits (counted in Unicode code points, the unit `maxLength` means in the companion
 schema). A JSON `null` where an
 OPTIONAL field could appear reads as the field being absent, never as a type error.

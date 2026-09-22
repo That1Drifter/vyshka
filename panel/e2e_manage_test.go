@@ -3,6 +3,7 @@ package panel_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -825,8 +826,8 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	waitJS("the unlisted id round-trips through Apply rather than widening the filter",
 		`!document.querySelector("#audit-server").dataset.probe && location.hash === "#/audit?serverId=`+unlisted+`"`)
 
-	// 8. Key/value, read-only in this slice. The expired key's namespace
-	// holds nothing live, so it is not listed at all.
+	// 8. Key/value: the listings, then the editor. The expired key's
+	// namespace holds nothing live, so it is not listed at all.
 	run("open the key/value view", chromedp.Click("#nav a[data-nav=kv]", chromedp.ByQuery),
 		chromedp.WaitVisible("#kv-namespaces", chromedp.ByQuery))
 	if got := evalString(`document.querySelector('tr[data-namespace="example-mod"] td:nth-child(2)').textContent`); got != "4" {
@@ -838,20 +839,156 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	run("open the namespace", chromedp.Click(`tr[data-namespace="example-mod"] a`, chromedp.ByQuery),
 		chromedp.WaitVisible("#kv-keys", chromedp.ByQuery))
 	waitJS("every live key is listed", `document.querySelectorAll("#kv-keys tbody tr[data-key]").length === 4`)
-	if got := text("#kv-readonly"); !strings.Contains(got, "Read-only") {
-		t.Fatalf("the read-only notice = %q", got)
-	}
 	run("filter by prefix", setValue("#kv-prefix", "balance."), chromedp.Click("#kv-prefix-apply", chromedp.ByQuery))
 	waitJS("the prefix filter is in the route and applied",
 		`location.hash.includes("prefix=balance.") && `+
 			`Array.from(document.querySelectorAll("#kv-keys tbody tr[data-key]")).map(r => r.dataset.key).join(",") === "balance.alpha,balance.beta,balance.gamma"`)
 	run("open a key", chromedp.Click(`button[data-open-key="balance.alpha"]`, chromedp.ByQuery),
 		chromedp.WaitVisible("#kv-value-card", chromedp.ByQuery))
-	if got := text("#kv-value-json"); !strings.Contains(got, `"coins": 42`) {
+	if got := evalString(`document.querySelector("#kv-edit-value").value`); !strings.Contains(got, `"coins": 42`) {
 		t.Fatalf("the opened value = %q, want the stored JSON", got)
 	}
 	if got := text("#kv-value-revision"); got != "1" {
 		t.Fatalf("the opened key's revision = %q, want 1", got)
+	}
+	kvValue := func(key string) (int, map[string]any) {
+		var record struct {
+			Value    map[string]any `json:"value"`
+			Revision int            `json:"revision"`
+		}
+		status, body := adminRequest(t, http.MethodGet, hubURL+"/api/v1/kv/example-mod/"+key, nil)
+		if status == http.StatusNotFound {
+			return 0, nil
+		}
+		if status != http.StatusOK {
+			t.Fatalf("read kv key %s: status %d body %s", key, status, body)
+		}
+		if err := json.Unmarshal(body, &record); err != nil {
+			t.Fatalf("decode kv key %s: %v", key, err)
+		}
+		return record.Revision, record.Value
+	}
+
+	// Save: the edit lands as revision 2, guarded by the revision opened.
+	run("edit and save the key", setValue("#kv-edit-value", `{"coins": 43}`),
+		chromedp.Click("#kv-save", chromedp.ByQuery))
+	waitJS("the save reports the new revision",
+		`document.querySelector("#kv-value-revision").textContent === "2" && `+
+			`document.querySelector('tr[data-key="balance.alpha"] td[data-revision]').textContent === "2"`)
+	if revision, value := kvValue("balance.alpha"); revision != 2 || value["coins"] != float64(43) {
+		t.Fatalf("after the save the store holds revision %d value %v, want 2 and 43 coins", revision, value)
+	}
+
+	// A write from elsewhere between the open and the save: the save is
+	// refused with revision_mismatch and the other writer's value stands.
+	if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/example-mod/balance.alpha",
+		map[string]any{"value": map[string]any{"coins": 99}}); status != http.StatusOK {
+		t.Fatalf("the concurrent write: status %d body %s", status, body)
+	}
+	run("save over the concurrent write", setValue("#kv-edit-value", `{"coins": 44}`),
+		chromedp.Click("#kv-save", chromedp.ByQuery))
+	waitJS("the stale save is refused and says why",
+		`!document.querySelector("#kv-keys-error").hidden && document.querySelector("#kv-keys-error").textContent.includes("revision_mismatch")`)
+	if got := text("#kv-keys-error"); !strings.Contains(got, "revision 3 now") {
+		t.Fatalf("the mismatch notice = %q, want the current revision named", got)
+	}
+	if revision, value := kvValue("balance.alpha"); revision != 3 || value["coins"] != float64(99) {
+		t.Fatalf("after the refused save the store holds revision %d value %v, want the concurrent writer's 3 and 99", revision, value)
+	}
+	run("reload the key", chromedp.Click("#kv-reload", chromedp.ByQuery))
+	waitJS("the reload shows the stored value",
+		`document.querySelector("#kv-value-revision").textContent === "3" && document.querySelector("#kv-edit-value").value.includes("99")`)
+
+	// A value that is not JSON, or is null, is refused before any request.
+	run("save a value that is not JSON", setValue("#kv-edit-value", `{"coins": `),
+		chromedp.Click("#kv-save", chromedp.ByQuery))
+	waitJS("the malformed value is refused in the browser",
+		`document.querySelector("#kv-keys-error").textContent.includes("bad_json")`)
+	if revision, _ := kvValue("balance.alpha"); revision != 3 {
+		t.Fatalf("a malformed save reached the store: revision %d, want 3", revision)
+	}
+
+	// Create: a new key lands in key order; a name already taken is refused,
+	// not replaced (ifRevision 0).
+	run("create a key", setValue("#kv-new-key", "balance.delta"), setValue("#kv-new-value", `{"coins": 5}`),
+		chromedp.Click("#kv-create", chromedp.ByQuery))
+	waitJS("the created key is listed in order and opened",
+		`Array.from(document.querySelectorAll("#kv-keys tbody tr[data-key]")).map(r => r.dataset.key).join(",") === "balance.alpha,balance.beta,balance.delta,balance.gamma" && `+
+			`document.querySelector("#kv-value-card h2").textContent.includes("balance.delta")`)
+	if revision, value := kvValue("balance.delta"); revision != 1 || value["coins"] != float64(5) {
+		t.Fatalf("the created key holds revision %d value %v, want 1 and 5 coins", revision, value)
+	}
+	run("create the same key again", setValue("#kv-new-key", "balance.beta"), setValue("#kv-new-value", `{"coins": 1000}`),
+		chromedp.Click("#kv-create", chromedp.ByQuery))
+	waitJS("a taken name is refused",
+		`document.querySelector("#kv-keys-error").textContent.includes("exists already")`)
+	if _, value := kvValue("balance.beta"); value["coins"] != float64(7) {
+		t.Fatalf("creating over an existing key replaced it: %v", value)
+	}
+
+	// Delete: refused until confirmed, then gone from the list and the store.
+	run("delete without confirming", chromedp.Click("#kv-delete", chromedp.ByQuery))
+	waitJS("the delete asks for the confirmation",
+		`document.querySelector("#kv-keys-error").textContent.includes("confirmation")`)
+	if revision, _ := kvValue("balance.delta"); revision != 1 {
+		t.Fatalf("an unconfirmed delete reached the store")
+	}
+	run("delete the key", chromedp.Click("#kv-delete-confirm", chromedp.ByQuery), chromedp.Click("#kv-delete", chromedp.ByQuery))
+	waitJS("the deleted key leaves the list and the editor",
+		`!document.querySelector('tr[data-key="balance.delta"]') && document.querySelector("#kv-value").hidden`)
+	if revision, _ := kvValue("balance.delta"); revision != 0 {
+		t.Fatalf("the deleted key still reads at revision %d", revision)
+	}
+
+	// A stored integer beyond 2^53 has been rounded by the browser's parser
+	// before the editor sees it, so the editor refuses to save it back.
+	if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/example-mod/balance.huge",
+		json.RawMessage(`{"value": {"id": 9007199254740993}}`)); status != http.StatusOK {
+		t.Fatalf("write the huge-number key: status %d body %s", status, body)
+	}
+	run("open the huge-number key", chromedp.Navigate(hubURL+"/#/kv/example-mod?prefix=balance.huge"),
+		chromedp.WaitVisible(`button[data-open-key="balance.huge"]`, chromedp.ByQuery),
+		chromedp.Click(`button[data-open-key="balance.huge"]`, chromedp.ByQuery),
+		chromedp.WaitVisible("#kv-edit-unsafe", chromedp.ByQuery))
+	if got := evalString(`document.querySelector("#kv-save").disabled ? "disabled" : "enabled"`); got != "disabled" {
+		t.Fatalf("the save of a value holding an unsafe integer is %s, want disabled", got)
+	}
+	// The same number 70 arrays deep, and one past the range of a double,
+	// which the browser parses as Infinity and would write back as null.
+	deep := strings.Repeat("[", 70) + "9007199254740993" + strings.Repeat("]", 70)
+	for key, raw := range map[string]string{"balance.hugedeep": deep, "balance.infinite": "1e400"} {
+		if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/example-mod/"+key,
+			json.RawMessage(`{"value": `+raw+`}`)); status != http.StatusOK {
+			t.Fatalf("write %s: status %d body %s", key, status, body)
+		}
+		run("open "+key, chromedp.Navigate(hubURL+"/#/kv/example-mod?prefix="+key),
+			chromedp.WaitVisible(`button[data-open-key="`+key+`"]`, chromedp.ByQuery),
+			chromedp.Click(`button[data-open-key="`+key+`"]`, chromedp.ByQuery),
+			chromedp.WaitVisible("#kv-edit-unsafe", chromedp.ByQuery))
+		if got := evalString(`document.querySelector("#kv-save").disabled ? "disabled" : "enabled"`); got != "disabled" {
+			t.Fatalf("the save of %s is %s, want disabled", key, got)
+		}
+	}
+
+	// A key created inside the walked part of a paged namespace does not
+	// move the walk's boundary: a second one that sorts after the first but
+	// inside the page is listed too (the hub's page is 100 keys, so 101 make
+	// a cursor).
+	for i := 0; i <= 100; i++ {
+		key := fmt.Sprintf("k%03d", i)
+		if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/paged/"+key,
+			map[string]any{"value": i}); status != http.StatusOK {
+			t.Fatalf("write paged/%s: status %d body %s", key, status, body)
+		}
+	}
+	run("open the paged namespace", chromedp.Navigate(hubURL+"/#/kv/paged"),
+		chromedp.WaitVisible("#kv-keys", chromedp.ByQuery))
+	waitJS("the first page is listed with more to come",
+		`document.querySelectorAll("#kv-keys tbody tr[data-key]").length === 100 && !document.querySelector("#kv-more").hidden`)
+	for _, key := range []string{"k005a", "k006a"} {
+		run("create "+key, setValue("#kv-new-key", key), setValue("#kv-new-value", `1`),
+			chromedp.Click("#kv-create", chromedp.ByQuery))
+		waitJS(key+" is listed", `!!document.querySelector('tr[data-key="`+key+`"]')`)
 	}
 
 	// 9. Signing out forgets the token, and the nav goes with it.

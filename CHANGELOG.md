@@ -19,6 +19,32 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-22: the `kvNamespace` annotation (issue #76, protocol draft 0.29, sections 6.1
+  and 6.4): a string param may name one key/value namespace its manifest declares in
+  `kvNamespaces`, and a UI offers that namespace's keys as the field's values through
+  the list-keys read. Like `context` it is an annotation, never checked against a
+  dispatch; a manifest naming an undeclared namespace, or putting it on a non-string
+  schema, is rejected at the annotation's path. `spec/manifest.schema.json` carries it.
+  The hub conformance suite gains `plugin.manifest.kvNamespaceAnnotation` (accepted and
+  stored verbatim, advisory at dispatch, rejected when undeclared, absent, or on a
+  non-string schema), shown to discriminate against a hub that skips the declared check;
+  the plugin suite grades a manifest's annotations the way a hub does, in params and in
+  declared event payloads alike.
+- 2026-09-22: the panel's key/value view becomes an editor (issue #76): a new-key form
+  that creates only (`ifRevision: 0`, so a taken name is refused rather than replaced),
+  and an editor per key whose save is guarded by the revision it opened, so a key a
+  plugin or a bot changed meanwhile is refused with `revision_mismatch` and never
+  overwritten blind; Reload shows the stored value, the remaining TTL is carried into a
+  save (a set defines the key entirely), a delete asks for a confirmation, and a value
+  holding a number the browser could not carry exactly (an integer beyond 2^53, rounded,
+  or one past the double range, made infinite), at any depth, is shown but not saved; a
+  key created inside the walked part of a paged namespace is listed without moving the
+  walk's boundary. A param annotated with `kvNamespace` (a string field, or the string
+  items of an array through the item picker) suggests the namespace's keys in the
+  action form, marks one the schema excludes, and tells a token without the namespace's
+  `kv:rw` grant why the list is empty rather than showing none. The browser tests cover
+  both, and each was shown to discriminate (a save without the revision guard, a form
+  with no suggestions).
 - 2026-09-22: the schema subset gains `not` in one form, `{"enum": [...]}` (issue #75,
   protocol draft 0.28, sections 6.1 and 6.4): the values a field must not take, compared
   by deep equality as `enum` compares, and enforced like every other keyword, so a
@@ -179,6 +205,41 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-22: presets (issue #76, plugin 0.8.0). Loadouts, teleport locations, and
+  vehicle presets live in the hub's key/value store, one namespace per kind
+  (`vyshka.loadouts`, `vyshka.locations`, `vyshka.vehicles`, declared in the manifest),
+  so editing one kind is a grant of its own, apart from the flags under `vyshka`, and
+  applying a preset needs only the action's scope: the plugin reads the record under
+  its own session when the action runs, so an edit takes effect on the next dispatch.
+  Each action's name param carries the `kvNamespace` annotation (protocol draft 0.29),
+  which is how the panel offers the stored names. `vyshka.loadout.apply` (player) makes
+  a loadout's item tree on the player (worn items, then the rest through the
+  inventory's placement search, then the hands; a firearm's magazine through the
+  engine's spawn-with-magazine call; quantity, health, liquid, and `loaded` per entry;
+  each class checked as the spawn action checks one, a refused entry listed with its
+  reason), with `previous: drop` stripping the player first and dressing them once the
+  engine's drops have left the character. `vyshka.loadout.capture` (player) writes
+  what a player wears and holds in that shape, creating only unless `overwrite`.
+  `vyshka.location.teleport` (player) teleports to a location, scattered evenly over
+  its radius on the terrain. `vyshka.vehicle.spawn` (world) spawns a car at a position
+  or in front of a player with the preset's parts and cargo, `autoParts` filling the
+  empty slots the way `vyshka.spawn` `auto` does, and `fluids` filled to their
+  fractions (`autoParts` creates within what is left of the preset's item budget,
+  and counts only the parts it made). Every deferred step checks the dispatch's own
+  deadline on the clock as well as whether it is still pending, so nothing is made after
+  it. `vyshka.loadout.capture` writes under the plugin's session, so the README says
+  plainly that its action grant is a grant to create and replace loadouts. The strip's
+  work moves to `VyshkaInventory.Strip`, shared by the strip
+  action and the loadout's drop. Verified live on DayZ 1.29 with a retail client: a
+  122-item loadout captured to 5062 bytes and applied back to a cleared character as
+  the same tree (the inventory read before and after equal in every field but a worn
+  gas mask filter the engine consumes); a hand-written loadout made its six items and
+  listed the three bad entries; a drop of 122 items followed by the dress in 352 ms
+  (made in the same frame as the drop, the dress had found no room for anything); three
+  scattered teleports landed 15.6 to 25 m from a 25 m location's centre and a radius-0
+  one on it; and a sedan preset came out with four wheels and the spare, doors, hood,
+  trunk, battery, spark plug, radiator, and lights, every fluid full, and an engine that
+  started.
 - 2026-09-22: the spawning extension (issue #75, plugin 0.8.0). `vyshka.spawn` takes
   `into` (`ground`, the default; `inventory`, through the inventory's own placement
   search, which falls back to the hands; `hands`, refused when they are full), `quantity`
@@ -403,7 +464,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.28 (2026-09-22). The document's header carries the draft number and date; each
+Draft 0.29 (2026-09-22). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

@@ -385,7 +385,7 @@ var subsetKeywords = map[string]bool{
 	"items": true, "minimum": true, "maximum": true,
 	"exclusiveMinimum": true, "exclusiveMaximum": true,
 	"default": true, "context": true, "x-vyshka-widget": true,
-	"not": true,
+	"not": true, "kvNamespace": true,
 }
 
 var subsetTypes = map[string]bool{
@@ -400,11 +400,17 @@ const (
 	maxAnnotationContexts  = 16
 )
 
+// declaredNames is what a manifest declares that a schema's annotations must
+// name (section 6.4): its custom context ids, which a `context` annotation
+// draws on, and its KV namespaces, which a `kvNamespace` annotation draws on.
+type declaredNames struct {
+	contexts     map[string]bool
+	kvNamespaces map[string]bool
+}
+
 // validateSubset walks a params schema and reports the first keyword outside
 // the section 6.1 subset, with the path a plugin author needs to find it.
-// declared is the set of custom context ids the manifest declares, which a
-// `context` annotation must name (section 6.4).
-func validateSubset(schema map[string]any, path string, declared map[string]bool) error {
+func validateSubset(schema map[string]any, path string, declared declaredNames) error {
 	for keyword, value := range schema {
 		if !subsetKeywords[keyword] {
 			return fmt.Errorf("%s.%s: keyword %q is outside the schema subset this protocol enforces (section 6.1)", path, keyword, keyword)
@@ -454,7 +460,7 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 				// A JSON null reads as no annotation (section 6.4).
 				continue
 			}
-			if err := validateContextAnnotation(value, path, declared); err != nil {
+			if err := validateContextAnnotation(value, path, declared.contexts); err != nil {
 				return err
 			}
 			// The annotation belongs on a string schema, and the node's
@@ -462,6 +468,18 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 			// keywords come in map order.
 			if name, _ := schema["type"].(string); name != "string" {
 				return fmt.Errorf("%s.context: the context annotation belongs on a schema with \"type\": \"string\", and a hub rejects it elsewhere (section 6.1)", path)
+			}
+		case "kvNamespace":
+			if value == nil {
+				// A JSON null reads as no annotation (section 6.4).
+				continue
+			}
+			name, ok := value.(string)
+			if !ok || !declared.kvNamespaces[name] {
+				return fmt.Errorf("%s.kvNamespace: %v is not a namespace this manifest declares in kvNamespaces, and a hub rejects the manifest over it (section 6.4)", path, value)
+			}
+			if typeName, _ := schema["type"].(string); typeName != "string" {
+				return fmt.Errorf("%s.kvNamespace: the kvNamespace annotation belongs on a schema with \"type\": \"string\", and a hub rejects it elsewhere (section 6.1)", path)
 			}
 		}
 	}

@@ -30,6 +30,9 @@ const maxDepth = 32
 const (
 	maxContextIDLength = 64
 	maxContextRefs     = 16
+
+	// A key/value namespace is at most 64 code points (section 12.1).
+	maxKVNamespaceLength = 64
 )
 
 // maxExactNumber is 2^53, the largest magnitude at which float64, the type
@@ -84,6 +87,11 @@ type Schema struct {
 	// whose entries a UI offers for this string field (section 6.1). Kept
 	// for ContextRefs, never consulted by Validate.
 	contexts []string
+
+	// kvNamespace is the `kvNamespace` annotation: the key/value namespace
+	// whose keys a UI offers for this string field (section 6.1). Kept for
+	// KVNamespaceRefs, never consulted by Validate.
+	kvNamespace string
 }
 
 // ContextRef is one `context` annotation found in a compiled schema: the
@@ -103,17 +111,38 @@ func (s *Schema) ContextRefs() []ContextRef {
 }
 
 func (s *Schema) contextRefs(path string, refs *[]ContextRef) {
+	s.walk(path, func(node *Schema, at string) {
+		for _, id := range node.contexts {
+			*refs = append(*refs, ContextRef{Path: joinPath(at, "context"), ID: id})
+		}
+	})
+}
+
+// KVNamespaceRefs lists every namespace the schema's `kvNamespace`
+// annotations name, in path order, so a manifest validator can check each
+// against the namespaces the manifest declares in kvNamespaces (section
+// 6.4). The ID of each ref is the namespace.
+func (s *Schema) KVNamespaceRefs() []ContextRef {
+	var refs []ContextRef
+	s.walk("", func(node *Schema, at string) {
+		if node.kvNamespace != "" {
+			refs = append(refs, ContextRef{Path: joinPath(at, "kvNamespace"), ID: node.kvNamespace})
+		}
+	})
+	return refs
+}
+
+// walk visits the schema and every schema nested in it, in path order.
+func (s *Schema) walk(path string, visit func(node *Schema, at string)) {
 	if s == nil {
 		return
 	}
-	for _, id := range s.contexts {
-		*refs = append(*refs, ContextRef{Path: joinPath(path, "context"), ID: id})
-	}
+	visit(s, path)
 	for _, name := range s.propertyOrder {
-		s.properties[name].contextRefs(joinPath(path, "properties."+name), refs)
+		s.properties[name].walk(joinPath(path, "properties."+name), visit)
 	}
 	if s.items != nil {
-		s.items.contextRefs(joinPath(path, "items"), refs)
+		s.items.walk(joinPath(path, "items"), visit)
 	}
 }
 
@@ -233,6 +262,23 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 				continue
 			}
 			compiled.contexts = compileContextRefs(value, child, faults)
+		case "kvNamespace":
+			// An annotation like context (section 6.1): whether the namespace
+			// is declared is the manifest validator's check
+			// (KVNamespaceRefs). A JSON null reads as no annotation.
+			if value == nil {
+				continue
+			}
+			name, ok := value.(string)
+			switch {
+			case !ok || name == "":
+				*faults = append(*faults, Fault{Path: child, Message: "kvNamespace must name a key/value namespace"})
+			case utf8.RuneCountInString(name) > maxKVNamespaceLength:
+				*faults = append(*faults, Fault{Path: child,
+					Message: fmt.Sprintf("kvNamespace is longer than %d characters", maxKVNamespaceLength)})
+			default:
+				compiled.kvNamespace = name
+			}
 		case "x-vyshka-widget":
 			// A UI hint, deliberately unconstrained (section 6.1): a widget
 			// name this hub has not heard of must not reject the manifest,
@@ -248,6 +294,10 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 	if compiled.contexts != nil && compiled.typeName != "string" {
 		*faults = append(*faults, Fault{Path: joinPath(path, "context"),
 			Message: "context is an annotation for a string schema; add \"type\": \"string\" beside it"})
+	}
+	if compiled.kvNamespace != "" && compiled.typeName != "string" {
+		*faults = append(*faults, Fault{Path: joinPath(path, "kvNamespace"),
+			Message: "kvNamespace is an annotation for a string schema; add \"type\": \"string\" beside it"})
 	}
 	return compiled
 }
