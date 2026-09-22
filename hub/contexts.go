@@ -480,25 +480,19 @@ func (s *Server) handleEnumerateContext(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		_, err = s.store.QueueEnvelope(r.Context(), server.ID, envelopeTypeContextEnumerate, body, outboundQueueLimit)
-		switch {
-		case errors.Is(err, store.ErrOutboundQueueFull):
+		if err != nil {
+			// The question could not be asked. Everyone who joined it,
+			// this reader included, is answered from the abandoned
+			// question's error below, so a reader that joined a moment
+			// after the starter gets the same answer.
 			s.enumerations.abandon(pending, err)
-			writeError(w, http.StatusConflict, codeOutboundQueueFull,
-				"this server already has "+strconv.Itoa(outboundQueueLimit)+" unacked envelopes queued")
-			return
-		case errors.Is(err, store.ErrNotFound):
-			s.enumerations.abandon(pending, err)
-			writeError(w, http.StatusNotFound, codeNotFound, "no such server")
-			return
-		case err != nil:
-			s.enumerations.abandon(pending, err)
-			s.writeInternalError(w, r, err)
-			return
+		} else {
+			// Wake the poll holding for this server, so the question goes
+			// out now.
+			s.waiters.notify(server.ID)
+			s.log.Info("context enumeration asked",
+				"serverId", server.ID, "context", contextID, "requestId", pending.requestID)
 		}
-		// Wake the poll holding for this server, so the question goes out now.
-		s.waiters.notify(server.ID)
-		s.log.Info("context enumeration asked",
-			"serverId", server.ID, "context", contextID, "requestId", pending.requestID)
 	}
 
 	timer := time.NewTimer(time.Until(pending.deadline))
@@ -514,10 +508,17 @@ func (s *Server) handleEnumerateContext(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// One mapping from a question's outcome to a response, whether this
+	// reader started the question or joined it.
 	var invalid *enumerationInvalidError
 	switch {
 	case pending.err == nil:
 		writeJSON(w, http.StatusOK, newContextEntriesView(pending.enumeration))
+	case errors.Is(pending.err, store.ErrOutboundQueueFull):
+		writeError(w, http.StatusConflict, codeOutboundQueueFull,
+			"this server already has "+strconv.Itoa(outboundQueueLimit)+" unacked envelopes queued")
+	case errors.Is(pending.err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "no such server")
 	case errors.Is(pending.err, errEnumerationTimeout):
 		s.log.Warn("context enumeration timed out",
 			"serverId", server.ID, "context", contextID, "requestId", pending.requestID)

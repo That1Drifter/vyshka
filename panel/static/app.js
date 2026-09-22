@@ -1408,15 +1408,17 @@ function contextRefsOf(schema) {
 }
 
 // schemaContextRefs collects every context id a params schema's annotations
-// name on a field the form renders with suggestions, so each enumeration is
-// fetched once before the form is built. Array items are not walked: the
-// one-per-line form has no datalist to feed, so fetching for them would
-// cost latency and show nothing (arrayField says so in its hint instead).
+// name on a field the form renders with suggestions (a string field, or the
+// string items of an array), so each enumeration is fetched once before the
+// form is built.
 function schemaContextRefs(schema, found = new Set(), depth = 0) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return found;
   if (schema.type === 'string') for (const id of contextRefsOf(schema)) found.add(id);
   if (schema.properties && typeof schema.properties === 'object') {
     for (const child of Object.values(schema.properties)) schemaContextRefs(child, found, depth + 1);
+  }
+  if (schema.type === 'array' && schema.items && typeof schema.items === 'object' && schema.items.type === 'string') {
+    for (const id of contextRefsOf(schema.items)) found.add(id);
   }
   return found;
 }
@@ -1608,13 +1610,31 @@ function arrayField(schema, opts) {
     textarea.value = schema.default.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join('\n');
   }
   const kind = items.type ? items.type + ' items' : 'JSON items';
-  // Items annotated with a custom context are named in the hint: the
-  // one-per-line form has no datalist, so the members are not suggested
-  // here, and the operator is told where they come from instead.
+  // String items annotated with a custom context (section 6.1) get a
+  // picker beside the textarea: an input with the context's entries as
+  // suggestions, whose chosen value is appended as a line. The textarea
+  // stays the value, so anything typed there is sent as typed.
   const itemContexts = items.type === 'string' ? contextRefsOf(items) : [];
-  const wrapped = wrap(opts, textarea, 'one value per line, ' + kind +
-    (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : '') +
-    (itemContexts.length > 0 ? '; items are members of context ' + itemContexts.join(', ') + ' (not suggested in this form)' : ''));
+  let hint = 'one value per line, ' + kind +
+    (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : '');
+  let control = textarea;
+  if (itemContexts.length > 0) {
+    const datalist = contextDatalist(itemContexts, opts.contextEntries);
+    const picker = el('input', {
+      type: 'text', id: nextId('pick'), list: datalist ? datalist.id : undefined,
+      placeholder: 'add an item from the list', spellcheck: 'false', autocomplete: 'off',
+      'aria-label': 'add to ' + opts.label, 'data-picker-for': opts.name,
+      onchange: () => {
+        const value = picker.value;
+        if (value === '') return;
+        textarea.value = textarea.value === '' ? value : textarea.value.replace(/\n?$/, '\n') + value;
+        picker.value = '';
+      },
+    });
+    control = el('span', { class: 'stack' }, textarea, el('span', {}, picker, datalist));
+    hint += '; items ' + contextHint(itemContexts, opts.contextEntries);
+  }
+  const wrapped = wrap(opts, control, hint);
   const initial = textarea.value;
   return {
     node: wrapped.node, setError: wrapped.setError,

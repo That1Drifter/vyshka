@@ -39,9 +39,11 @@ arrived, since those entries were written for one stream.
   declaration, so the read can never be talked into enumerating one. `spec/manifest.schema.json` carries the keyword and
   `spec/openapi-admin.yaml` (0.10.0) the endpoint. The hub conformance suite gains
   `admin.contexts.enumerate` and `plugin.manifest.contextAnnotation`. The panel enumerates
-  every context an action form draws on (its own custom context, every annotated param)
-  before building the form and suggests the entries, the `referenceKey` as the value and
-  the label as the text; the browser test grades it against a fake plugin's answers.
+  every context an action form draws on (its own custom context, every annotated string
+  param, the annotated string items of an array) before building the form and suggests
+  the entries, the `referenceKey` as the value and the label as the text (an array gets a
+  picker beside its one-per-line textarea); the browser test grades it against a fake
+  plugin's answers.
   Config: `ContextCacheTTL` and `ContextEnumerateTimeout`.
 - 2026-09-21: the plugin conformance suite gains `dispatch.largeParams` (issue #108): one
   dispatch carries the usual params plus a 512 KiB string member no schema names, and the

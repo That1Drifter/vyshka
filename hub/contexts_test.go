@@ -399,6 +399,38 @@ func TestContextEnumerationInvalidReply(t *testing.T) {
 	}
 }
 
+func TestContextEnumerationRefusedQueueAnswersEveryReader(t *testing.T) {
+	t.Parallel()
+	server := newEnumerationServer(t, 30*time.Second, time.Hour)
+	created, live := enrolledSession(t, server, "context queue full")
+	poll(t, server, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(1, territoryManifest(1))},
+	})
+
+	// Fill the server's outbound queue to its bound, so the question cannot
+	// be queued.
+	for range 5000 {
+		queueEnvelope(t, server, created.Server.ID, "test.fill", nil)
+	}
+	if code := errorCode(t, server, http.MethodPost, "/api/v1/servers/"+created.Server.ID+"/envelopes",
+		testAdminToken, map[string]any{"type": "test.fill"}, http.StatusConflict); code != "outbound_queue_full" {
+		t.Fatalf("the queue is not at its bound: code = %q", code)
+	}
+
+	// Every reader of the refused question gets the same answer, whether it
+	// started the question or joined it a moment later.
+	var readers []<-chan entriesOutcome
+	for range 3 {
+		readers = append(readers, readEntries(server, created.Server.ID, "example-mod.territory", ""))
+	}
+	for i, reader := range readers {
+		outcome := <-reader
+		if outcome.status != http.StatusConflict || outcome.code != "outbound_queue_full" {
+			t.Errorf("reader %d: status %d code %q, want 409 outbound_queue_full", i, outcome.status, outcome.code)
+		}
+	}
+}
+
 func TestContextEnumerationCoalescesAndInvalidatesOnRepublish(t *testing.T) {
 	t.Parallel()
 	server := newEnumerationServer(t, 30*time.Second, time.Hour)

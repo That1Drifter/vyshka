@@ -75,7 +75,8 @@ var e2eManifest = map[string]any{
 				// names the data, so its entries are what the field suggests.
 				"owner": map[string]any{"type": "string", "x-vyshka-widget": "player", "context": "example-mod.item"},
 				// Array items annotated with a context the form does not
-				// otherwise draw on: named in the hint, never fetched.
+				// otherwise draw on: fetched once, offered through a picker
+				// beside the one-per-line textarea.
 				"parts": map[string]any{"type": "array", "items": map[string]any{"type": "string", "context": "example-mod.landmark"}},
 				// Fractional bounds on an integer round inward onto the input.
 				"ticks": map[string]any{"type": "integer", "exclusiveMinimum": 0.5, "maximum": 9.9},
@@ -320,15 +321,25 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := evalString(`(function(){const i=document.querySelector('input[name="params.item"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent).join(","):"no datalist"})()`); got != "AKM=AKM,Apple=Apple" {
 		t.Errorf("item datalist = %q, want the context's entries", got)
 	}
-	if got := plugin.enumerated(); got != 1 {
-		t.Errorf("the plugin answered %d context.enumerate questions for one form, want 1: the item and owner fields share a context and the array items fetch nothing", got)
+	if got := plugin.enumerated(); got != 2 {
+		t.Errorf("the plugin answered %d context.enumerate questions for one form, want 2: one per context the form draws on (the item and owner fields share one, the array items name the other)", got)
 	}
 	if got := evalString(`(function(){const i=document.querySelector('input[name="params.owner"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value).join(","):"no datalist"})()`); got != "AKM,Apple" {
 		t.Errorf("owner datalist = %q, want the context's entries over the player widget's", got)
 	}
-	if got := evalString(`document.querySelector('textarea[name="params.parts"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "members of context example-mod.landmark") {
-		t.Errorf("parts hint = %q, want the item context named", got)
+	// The array's picker suggests the item context's entries and appends
+	// the chosen one as a line of the textarea.
+	if got := evalString(`(function(){const p=document.querySelector('input[data-picker-for="params.parts"]');const l=document.getElementById(p.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent).join(","):"no datalist"})()`); got != "green-mountain=Green Mountain" {
+		t.Errorf("parts picker datalist = %q, want the landmark entries", got)
 	}
+	run("pick a part", chromedp.SendKeys(`input[data-picker-for="params.parts"]`, "green-mountain\t", chromedp.ByQuery))
+	if got := evalString(`document.querySelector('textarea[name="params.parts"]').value`); got != "green-mountain" {
+		t.Errorf("parts textarea = %q after the pick, want the picked value as its line", got)
+	}
+	if got := evalString(`document.querySelector('textarea[name="params.parts"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "Landmark (1 entry)") {
+		t.Errorf("parts hint = %q, want the landmark context named with its count", got)
+	}
+	run("clear the part", setValue(`textarea[name="params.parts"]`, ""))
 	if got := attribute(`input[name="params.ticks"]`, "min") + ".." + attribute(`input[name="params.ticks"]`, "max"); got != "1..9" {
 		t.Errorf("ticks bounds = %q, want 1..9 (fractional bounds rounded inward for an integer)", got)
 	}
@@ -356,7 +367,7 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("a custom-context target is marked required; the protocol leaves the reference optional")
 	}
 	if got := plugin.enumerated(); got != 2 {
-		t.Errorf("the plugin answered %d context.enumerate questions after two forms, want 2 (one per context)", got)
+		t.Errorf("the plugin answered %d context.enumerate questions after two forms, want 2: the beacon form's landmark context was read within the cache bound", got)
 	}
 	run("reopen the heal action", chromedp.Navigate(web.URL+"/panel/#/servers/"+created.Server.ID+"/actions/example-mod.heal"),
 		chromedp.WaitVisible("#action-form", chromedp.ByQuery))

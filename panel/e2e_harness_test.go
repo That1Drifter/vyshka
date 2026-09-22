@@ -71,6 +71,10 @@ func newE2EHarness(t *testing.T, mapsDir string) *e2eHarness {
 		AdminToken:  e2eAdminToken,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Panel:       panel.NewHandler(panel.Config{MapsDir: mapsDir}),
+		// Long enough that every form the test opens after the first is
+		// served from the cache, so the count of questions the fake plugin
+		// answered is a fact about the panel and not about the clock.
+		ContextCacheTTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("boot hub: %v", err)

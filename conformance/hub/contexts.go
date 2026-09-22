@@ -305,7 +305,16 @@ var contextChecks = []Check{
 				{"id": "example-mod.territory", "name": "Territory", "namespace": "example-mod"},
 				{"id": "player", "name": "Players", "namespace": "example-mod"},
 			}
-			for _, invalid := range []map[string]any{undeclared, nonString, builtin} {
+			fixtures := []struct {
+				manifest map[string]any
+				wantPath string // where the rejection must point
+			}{
+				{undeclared, "actions[0].params.properties.neighbour.context"},
+				{nonString, "actions[0].params.properties.count.context"},
+				{builtin, "contexts[1].id"},
+			}
+			for _, fixture := range fixtures {
+				invalid := fixture.manifest
 				published := plugin.nextOutbound("manifest.publish", invalid)
 				response, err := plugin.pollAndAck(ctx, published)
 				if err != nil {
@@ -339,12 +348,12 @@ var contextChecks = []Check{
 				}
 				named := false
 				for _, fault := range reject.Errors {
-					if strings.HasSuffix(fault.Path, ".context") || strings.HasPrefix(fault.Path, "contexts[") {
+					if fault.Path == fixture.wantPath {
 						named = true
 					}
 				}
 				if !named {
-					return fmt.Errorf("manifest.reject %s names no fault at a .context path or a contexts[] declaration; that is what was wrong", truncate(rejects[0].Body))
+					return fmt.Errorf("manifest.reject %s names no fault at %q; that is what was wrong (section 6.4)", truncate(rejects[0].Body), fixture.wantPath)
 				}
 			}
 			record, err = env.storedManifest(ctx, serverID)

@@ -100,7 +100,13 @@
       "title": "Declared custom context",
       "required": ["id"],
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "not": { "enum": ["world", "player", "vehicle", "object"] },
+          "description": "Unique within the manifest. The built-in contexts (world, player, vehicle, object) cannot be declared as a manifest's own (section 6.2); a hub rejects the manifest (section 6.4)."
+        },
         "name": { "$ref": "#/$defs/label" },
         "namespace": { "$ref": "#/$defs/namespace" }
       },

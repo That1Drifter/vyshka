@@ -92,8 +92,9 @@ management views).
   a plain input with the error code in the hint; a value typed outside the list is sent as
   typed, since the annotation never constrains the data model. The annotation wins over a
   widget hint beside it (a `player` widget with a `context` suggests the context's
-  entries). Array items annotated with a context are named in the array's hint but not
-  suggested or fetched: the one-per-line form has no datalist to feed. The hub caches an
+  entries). An array of annotated string items gets a picker beside its one-per-line
+  textarea: an input suggesting the entries, whose chosen value is appended as a line,
+  the textarea staying the value that is sent. The hub caches an
   answer briefly (10 s by default), so reopening a form within that window asks the plugin
   nothing.
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
