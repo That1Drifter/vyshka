@@ -1,0 +1,60 @@
+plan=10
+body	class=SurvivorM_Mirek	slots=17	alive=true
+slot=Hands	class=M4A1	result=Hands
+slot=Headgear	class=BallisticHelmet_Green	result=Headgear	cargo=none
+slot=Mask	class=GasMask	result=Mask	cargo=none
+slot=Eyewear	class=AviatorGlasses	result=Eyewear	cargo=none
+slot=Gloves	class=TacticalGloves_Black	result=Gloves	cargo=none
+slot=Armband	class=Armband_White	result=Armband	cargo=none
+slot=Body	class=HuntingJacket_Brown	result=Body	cargo=6x4
+slot=Vest	class=HighCapacityVest_Black	result=Vest	cargo=5x4
+slot=Back	class=AliceBag_Green	result=Back	cargo=8x8
+slot=Legs	class=HunterPants_Brown	result=Legs	cargo=5x4
+slot=Feet	class=MilitaryBoots_Black	result=Feet	cargo=none
+slot=Hips	class=MilitaryBelt	result=Hips	cargo=none
+slot=Shoulder	class=M4A1	result=Shoulder	cargo=none
+slot=Melee	class=AKM	result=Melee	cargo=none
+geared	items=35	ms=8
+stuffed	containers=4	nested=4	filled=92
+filled	items=131	ms=9
+top=14	carried=131
+carried	slot=Hands	class=M4A1	items=6	cargo=none
+carried	slot=Headgear	class=BallisticHelmet_Green	items=1	cargo=none
+carried	slot=Gloves	class=TacticalGloves_Black	items=1	cargo=none
+carried	slot=Shoulder	class=M4A1	items=6	cargo=none
+carried	slot=Armband	class=Armband_White	items=1	cargo=none
+carried	slot=Back	class=AliceBag_Green	items=57	cargo=8x8
+carried	slot=Body	class=HuntingJacket_Brown	items=17	cargo=6x4
+carried	slot=Feet	class=MilitaryBoots_Black	items=1	cargo=none
+carried	slot=Hips	class=MilitaryBelt	items=7	cargo=none
+carried	slot=Legs	class=HunterPants_Brown	items=13	cargo=5x4
+carried	slot=Mask	class=GasMask	items=1	cargo=none
+carried	slot=Vest	class=HighCapacityVest_Black	items=13	cargo=5x4
+carried	slot=Melee	class=AKM	items=6	cargo=none
+carried	slot=Eyewear	class=AviatorGlasses	items=1	cargo=none
+depth=4	items=131	included=131	bytes=14035	buildMs=1	serializeMs=14	cut=false
+depth=3	items=131	included=130	bytes=13894	buildMs=1	serializeMs=8	cut=true
+depth=2	items=131	included=128	bytes=13667	buildMs=1	serializeMs=8	cut=true
+depth=1	items=131	included=14	bytes=1504	buildMs=0	serializeMs=0	cut=true
+fits	depth=3	bytes=13894	attempts=2
+sample	{"class":"M4A1","name":"M4-A1","slot":"Hands","health":100,"state":"pristine","rounds":0,"attachments":[{"class":"Mag_STANAG_30Rnd","name":"30rd Standardized Mag","slot":"magazine","health":100,"state":"pristine","am
+before-strip	carried=131	nearby=0
+strip	dropped=14	skipped=0	items=131
+after-strip	carried=131	nearby=0
+slot=Headgear	class=BallisticHelmet_Green	result=slot already taken by BallisticHelmet_Green
+slot=Mask	class=GasMask	result=slot already taken by GasMask
+slot=Eyewear	class=AviatorGlasses	result=slot already taken by AviatorGlasses
+slot=Gloves	class=TacticalGloves_Black	result=slot already taken by TacticalGloves_Black
+slot=Armband	class=Armband_White	result=slot already taken by Armband_White
+slot=Body	class=HuntingJacket_Brown	result=slot already taken by HuntingJacket_Brown
+slot=Vest	class=HighCapacityVest_Black	result=slot already taken by HighCapacityVest_Black
+slot=Back	class=AliceBag_Green	result=slot already taken by AliceBag_Green
+slot=Legs	class=HunterPants_Brown	result=slot already taken by HunterPants_Brown
+slot=Feet	class=MilitaryBoots_Black	result=slot already taken by MilitaryBoots_Black
+slot=Hips	class=MilitaryBelt	result=slot already taken by MilitaryBelt
+slot=Shoulder	class=M4A1	result=slot already taken by M4A1
+slot=Melee	class=AKM	result=slot already taken by AKM
+geared	items=131	ms=0
+clear	deleted=14	items=131
+after-clear	carried=0	nearby=0
+finished	wallMs=5571

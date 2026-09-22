@@ -1,5 +1,6 @@
-// Vyshka spike helper: the heaviest loadout a stock DayZ 1.29 character
-// can carry, built from named classes (issue #74). Shared by the spike's
+// Vyshka spike helper: a heavy stock DayZ 1.29 loadout built from named
+// classes (issue #74), a list chosen for cargo rather than a search of
+// every garment, so a heavy load and not a proven maximum. Shared by the spike's
 // probe and the live run's gear rig, so the tree measured on a body with
 // no client and the tree read live from a player are the same tree.
 //

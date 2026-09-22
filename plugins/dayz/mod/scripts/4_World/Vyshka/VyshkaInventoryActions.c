@@ -19,8 +19,9 @@
 // serialized before it is answered and, when it does not fit, cut at the
 // deepest level of containers until it does, with the count of what each
 // cut container holds kept on it and `truncated` and `depth` saying what
-// happened. The `slot` parameter then reads one worn container's subtree
-// whole.
+// happened. The `slot` parameter then gives one worn container's subtree
+// the whole budget to itself (a subtree alone over it is cut the same
+// way).
 //
 // Everything here uses what the engine gives every server: the inventory
 // hierarchy (attachments, cargo, hands), the item's own quantity, health
@@ -518,7 +519,12 @@ class VyshkaInventoryReadAction : VyshkaAction
 				maxDepth = 1;
 		}
 		if (bytes > VyshkaInventory.RESULT_BUDGET)
-			return VyshkaActionOutcome.Failure("the " + tree.m_Items.ToString() + " items this character carries directly describe to " + bytes.ToString() + " bytes, over the " + VyshkaInventory.RESULT_BUDGET.ToString() + "-byte budget a result may take; read one slot at a time with the slot parameter");
+		{
+			int roots = result.Get("worn").Count();
+			if (result.Get("hands").IsObject())
+				roots++;
+			return VyshkaActionOutcome.Failure("this character carries " + tree.m_Items.ToString() + " items; even the " + roots.ToString() + " it carries directly describe to " + bytes.ToString() + " bytes, over the " + VyshkaInventory.RESULT_BUDGET.ToString() + "-byte budget a result may take; read one slot at a time with the slot parameter");
+		}
 		int depth = maxDepth;
 		if (depth == 0)
 			depth = tree.m_Deepest;

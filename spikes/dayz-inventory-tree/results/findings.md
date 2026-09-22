@@ -60,6 +60,13 @@ fit its 60 000-byte budget) settled on the whole tree at the first attempt. One 
 about 107 bytes: class, display name, slot, health, state, and the fields its kind adds
 (`quantity` and `quantityMax`, `ammo` and `ammoMax`, `rounds`).
 
+Two controls run the probe with the budget lowered in a copy (`-probe`), since this
+loadout never exercises the cut: at 14 000 bytes the loop stepped down once and settled on
+depth 3 (13 894 bytes, 2 attempts, `probe-control-budget14000.log`); at 1 000 bytes it
+walked down to depth 1, still 1 504 bytes, and reported `over-budget` after 4 attempts
+(`probe-control-budget1000.log`), the condition on which the action fails the read
+rather than answer a payload the hub would drop.
+
 ## Strip and clear with no client
 
 `before-strip carried=131 nearby=0`; the strip reported 14 dropped, 0 skipped; two seconds

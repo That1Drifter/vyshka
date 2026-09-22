@@ -4,8 +4,8 @@
 // Appended to the init.c of a mission run with the Vyshka mod loaded,
 // together with VyshkaLoadout.c, and started from main() with
 // VyshkaInventoryProbe.Run(). It creates a survivor body with no client
-// behind it, gears it with the heaviest loadout a stock character can
-// carry (VyshkaLoadout: the largest containers, three rifles with every
+// behind it, gears it with a heavy stock loadout from named classes
+// (VyshkaLoadout, a list and not a search: large containers, three rifles with every
 // attachment, cases nested in every cargo, every cargo filled with
 // one-slot items), then builds the tree the plugin's read action builds
 // (VyshkaInventoryTree, the plugin's own class) at every depth and
@@ -209,7 +209,12 @@ class VyshkaInventoryProbe
 		}
 		if (maxDepth == 0)
 			maxDepth = m_Deepest;
-		Print(TAG + "\tfits\tdepth=" + maxDepth.ToString() + "\tbytes=" + bytes.ToString() + "\tattempts=" + attempts.ToString());
+		// The action fails a read whose top level alone is over the
+		// budget; the probe says the same rather than claim a fit.
+		if (bytes > VyshkaInventory.RESULT_BUDGET)
+			Print(TAG + "\tover-budget\tdepth=" + maxDepth.ToString() + "\tbytes=" + bytes.ToString() + "\tattempts=" + attempts.ToString());
+		else
+			Print(TAG + "\tfits\tdepth=" + maxDepth.ToString() + "\tbytes=" + bytes.ToString() + "\tattempts=" + attempts.ToString());
 		VyshkaJsonValue hands = result.Get("hands");
 		if (hands && hands.IsObject())
 		{
