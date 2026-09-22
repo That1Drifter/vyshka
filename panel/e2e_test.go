@@ -51,6 +51,13 @@ var e2eManifest = map[string]any{
 	"events": []map[string]any{{
 		"id": "example-mod.raid.started", "name": "Raid started", "namespace": "example-mod",
 	}},
+	// Two custom contexts (section 6.2): one an annotated param draws on, one
+	// an action is in, so both the param datalist and the target datalist are
+	// exercised against the fake plugin's enumeration.
+	"contexts": []map[string]any{
+		{"id": "example-mod.item", "name": "Item", "namespace": "example-mod"},
+		{"id": "example-mod.landmark", "name": "Landmark", "namespace": "example-mod"},
+	},
 	"actions": []map[string]any{{
 		"code": "example-mod.heal", "name": "Heal player", "context": "player",
 		"namespace": "example-mod", "danger": "warning",
@@ -63,7 +70,7 @@ var e2eManifest = map[string]any{
 				"reason":       map[string]any{"type": "string", "enum": []string{"admin", "event", "test"}, "default": "event"},
 				"restoreBlood": map[string]any{"type": "boolean", "default": true},
 				"position":     map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "x-vyshka-widget": "vector"},
-				"item":         map[string]any{"type": "string", "x-vyshka-widget": "itemlist"},
+				"item":         map[string]any{"type": "string", "x-vyshka-widget": "itemlist", "context": "example-mod.item"},
 				// Fractional bounds on an integer round inward onto the input.
 				"ticks": map[string]any{"type": "integer", "exclusiveMinimum": 0.5, "maximum": 9.9},
 				// An optional object with a required child: untouched, it is
@@ -98,6 +105,13 @@ var e2eManifest = map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"lift": map[string]any{"type": "number", "minimum": 0, "default": 1}},
 		},
+	}, {
+		// A custom-context action: its target field is fed by the context's
+		// enumeration (section 6.2), the way the player one is fed by the
+		// snapshot.
+		"code": "example-mod.beacon", "name": "Place a beacon", "context": "example-mod.landmark",
+		"namespace": "example-mod", "danger": "none",
+		"params": map[string]any{"type": "object", "properties": map[string]any{}},
 	}},
 }
 
@@ -294,6 +308,15 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := attribute(`input[name="params.item"]`, "placeholder"); got != "item class name" {
 		t.Errorf("item placeholder = %q, want the itemlist hint", got)
 	}
+	// The item param is annotated with a custom context (section 6.1): the
+	// hub asked the plugin for its entries (section 6.2) and the field
+	// suggests them, the referenceKey as the value and the label as the text.
+	if got := evalString(`(function(){const i=document.querySelector('input[name="params.item"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent).join(","):"no datalist"})()`); got != "AKM=AKM,Apple=Apple" {
+		t.Errorf("item datalist = %q, want the context's entries", got)
+	}
+	if got := plugin.enumerated(); got != 1 {
+		t.Errorf("the plugin answered %d context.enumerate questions for one form, want 1", got)
+	}
 	if got := attribute(`input[name="params.ticks"]`, "min") + ".." + attribute(`input[name="params.ticks"]`, "max"); got != "1..9" {
 		t.Errorf("ticks bounds = %q, want 1..9 (fractional bounds rounded inward for an integer)", got)
 	}
@@ -306,6 +329,30 @@ func TestPanelEndToEnd(t *testing.T) {
 	}
 	if evalString(`document.querySelector('input[name="referenceKey"]').required ? "yes" : "no"`) != "yes" {
 		t.Errorf("player target is not marked required")
+	}
+
+	// 5a. A custom-context action's target is fed by that context's
+	// enumeration, the way the player target is fed by the snapshot; the
+	// heal form is then reopened for the steps below, from the hub's cache
+	// (the plugin is not asked again within the cache bound).
+	run("open the beacon action", chromedp.Navigate(web.URL+"/panel/#/servers/"+created.Server.ID+"/actions/example-mod.beacon"),
+		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+	if got := evalString(`(function(){const i=document.querySelector('input[name="referenceKey"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent).join(","):"no datalist"})()`); got != "green-mountain=Green Mountain" {
+		t.Errorf("landmark datalist = %q, want the context's entries", got)
+	}
+	if evalString(`document.querySelector('input[name="referenceKey"]').required ? "yes" : "no"`) != "no" {
+		t.Errorf("a custom-context target is marked required; the protocol leaves the reference optional")
+	}
+	if got := plugin.enumerated(); got != 2 {
+		t.Errorf("the plugin answered %d context.enumerate questions after two forms, want 2 (one per context)", got)
+	}
+	run("reopen the heal action", chromedp.Navigate(web.URL+"/panel/#/servers/"+created.Server.ID+"/actions/example-mod.heal"),
+		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+	if got := evalString(`(function(){const i=document.querySelector('input[name="params.item"]');const l=document.getElementById(i.getAttribute("list"));return l?String(l.options.length):"no datalist"})()`); got != "2" {
+		t.Errorf("item datalist on reopen has %s options, want 2", got)
+	}
+	if got := plugin.enumerated(); got != 2 {
+		t.Errorf("the plugin answered %d questions after the reopen, want the cached 2 (section 6.2: a hub caches briefly)", got)
 	}
 
 	// 6. The danger confirmation is the form's own check now that native

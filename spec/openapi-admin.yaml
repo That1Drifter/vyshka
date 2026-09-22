@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.9.0
+  version: 0.10.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.5, 7, 8.3, 8.5, 10, 11, and 12).
+    6.2, 6.5, 7, 8.3, 8.5, 10, 11, and 12).
 
     Authentication is a bearer token carrying explicit scopes (spec section
     10). The scope each endpoint requires is stated in its description; where
@@ -36,6 +36,8 @@ tags:
     description: Reading the telemetry a plugin has pushed.
   - name: state
     description: Reading the latest state snapshots behind the live map (spec section 8.3).
+  - name: contexts
+    description: Enumerating the members of a custom context a manifest declares (spec section 6.2).
   - name: tokens
     description: Minting, listing, and revoking scoped Admin API credentials.
   - name: audit
@@ -264,6 +266,66 @@ paths:
               schema: { $ref: "#/components/schemas/ManifestRecord" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/servers/{serverId}/contexts/{contextId}/entries:
+    parameters:
+      - $ref: "#/components/parameters/ServerId"
+      - name: contextId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+        description: The id of a custom context the server's stored manifest declares.
+    get:
+      tags: [contexts]
+      operationId: enumerateContext
+      summary: Enumerate the members of one custom context.
+      description: |
+        Requires `servers:read`. The hub answers from its cache when it holds
+        an enumeration of this context younger than its cache bound
+        (reference 10 s) taken against the current manifest; otherwise it
+        sends one `context.enumerate` to the plugin and holds this request
+        until the `context.entries` echoing it arrives, up to a bound of its
+        own (reference 10 s). `refresh=true` skips the cache. The built-in
+        contexts are not enumerated here: their members are the state
+        snapshots (spec section 6.2).
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Skip the cache and ask the plugin now.
+      responses:
+        "200":
+          description: The plugin's entries, verbatim and whole, in its order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextEntries" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: |
+            No such server, no manifest, or the manifest declares no such
+            context (`not_found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The server has no live session, so nothing can be asked (`link_down`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: |
+            The plugin's reply was outside the bounds of spec section 6.2
+            (`enumeration_invalid`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "504":
+          description: No reply echoing the question arrived within the hub's bound (`enumeration_timeout`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/servers/{serverId}/actions:
     parameters:
@@ -1128,6 +1190,52 @@ components:
           description: |
             The accepted manifest.publish body, verbatim. Its shape is
             `manifest.schema.json#/$defs/manifestPublish`.
+
+    ContextEntries:
+      type: object
+      description: |
+        One enumeration of a custom context (spec section 6.2): the plugin's
+        `context.entries` reply, verbatim and whole, with when it arrived.
+      required: [context, entries, reason, enumeratedAt]
+      properties:
+        context:
+          type: string
+          description: The declared context id that was enumerated.
+        entries:
+          type: array
+          maxItems: 5000
+          description: |
+            The plugin's list in the plugin's order. Each entry is the
+            `manifest.schema.json#/$defs/contextEntries` entry shape:
+            `referenceKey` (what an action in this context takes as its
+            `referenceKey`), `label`, and optional `position` and `data`.
+          items:
+            type: object
+            required: [referenceKey, label]
+            properties:
+              referenceKey: { type: string, minLength: 1, maxLength: 128 }
+              label: { type: string, maxLength: 200 }
+              position:
+                type: array
+                minItems: 2
+                maxItems: 3
+                items: { type: number }
+                nullable: true
+              data:
+                type: object
+                additionalProperties: true
+                nullable: true
+            additionalProperties: true
+        reason:
+          type: string
+          nullable: true
+          description: |
+            The plugin's reason when it sent one (a context it does not
+            declare, a list that did not fit in one reply), null otherwise.
+        enumeratedAt:
+          type: string
+          format: date-time
+          description: When the reply arrived, so a reader can tell how stale a cached answer is.
 
     ActionRecord:
       type: object

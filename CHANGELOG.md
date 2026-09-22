@@ -19,6 +19,28 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-22: the hub half of custom context enumeration (issue #73, protocol draft
+  0.27, sections 6.1, 6.2, 5.5, 10.1): `GET /api/v1/servers/{serverId}/contexts/{contextId}/entries`
+  (`servers:read`) sends `context.enumerate` to the plugin and holds the request until the
+  `context.entries` echoing its `requestId` arrives (`enumeration_timeout` 504 after the
+  hub's bound, 10 s by default; `enumeration_invalid` 502 for a reply outside the section
+  6.2 bounds, acked all the same), answers from a cache younger than 10 s taken against
+  the current manifest revision unless `refresh=true`, shares one question between
+  concurrent reads, refuses a context the manifest does not declare with `not_found`
+  without asking, and refuses a server with no live session with `link_down` (409) rather
+  than queueing a question for a plugin that is not there. A `context.entries` nobody is
+  waiting for is acked and ignored. `context.*` joins the envelope families the raw queue
+  endpoint refuses. The schema subset gains the `context` annotation on string schemas
+  (one declared custom context id or an array of them) whose enumerated entries a UI
+  offers as the field's values, never enforced against a dispatch; a manifest whose
+  annotation names an undeclared context, or sits on a non-string schema, is rejected at
+  the annotation's path. `spec/manifest.schema.json` carries the keyword and
+  `spec/openapi-admin.yaml` (0.10.0) the endpoint. The hub conformance suite gains
+  `admin.contexts.enumerate` and `plugin.manifest.contextAnnotation`. The panel enumerates
+  every context an action form draws on (its own custom context, every annotated param)
+  before building the form and suggests the entries, the `referenceKey` as the value and
+  the label as the text; the browser test grades it against a fake plugin's answers.
+  Config: `ContextCacheTTL` and `ContextEnumerateTimeout`.
 - 2026-09-21: the plugin conformance suite gains `dispatch.largeParams` (issue #108): one
   dispatch carries the usual params plus a 512 KiB string member no schema names, and the
   stage expects the ordinary lifecycle inside the ordinary deadline (the envelope acked,
@@ -126,6 +148,25 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 ## DayZ plugin
 
 ### [Unreleased]
+
+#### Added
+
+- 2026-09-22: the item catalog as the plugin's first custom contexts (issue #73, plugin
+  0.8.0): the manifest declares `dayz.items.firearms`, `dayz.items.optics`,
+  `dayz.items.ammo`, `dayz.items.magazines`, `dayz.items.edibles`, `dayz.items.clothing`,
+  `dayz.items.gear`, and `dayz.vehicles`, each enumerating the public classes of
+  `CfgVehicles`, `CfgWeapons`, and `CfgMagazines` whose inheritance path reaches the type's
+  base, with the class name as the `referenceKey`, the translated display name as the label
+  (the class name when the server cannot translate it), and the type's declared stats in
+  `data` (weight; a firearm's ammunition and magazine count; a magazine's capacity and
+  ammunition; a food's energy and water, from the raw stage when it has stages; a garment's
+  slot, cargo, and heat isolation; an optic's zoom range; a vehicle's fuel capacity and
+  seats). `vyshka.spawn`'s `className` names all eight with the `context` annotation
+  (protocol section 6.1). The catalog is built once per session on the first request.
+  `spikes/dayz-item-catalog` measured why it is split by type: about 2050 classes on a
+  stock 1.29 server serialize to 243 KiB as one list, 7 percent under the bound of one
+  reply, while the largest type is 107 KiB; the walk and the builds cost about 30 ms on
+  the main thread; the dedicated server translates all but 80 display names.
 
 #### Fixed
 
@@ -274,7 +315,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.25 (2026-09-18). The document's header carries the draft number and date; each
+Draft 0.27 (2026-09-22). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

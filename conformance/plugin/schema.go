@@ -6,6 +6,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"unicode/utf8"
 )
 
 // The harness dispatches whatever action the candidate's manifest declares, so
@@ -185,7 +186,7 @@ var subsetKeywords = map[string]bool{
 	"type": true, "enum": true, "required": true, "properties": true,
 	"items": true, "minimum": true, "maximum": true,
 	"exclusiveMinimum": true, "exclusiveMaximum": true,
-	"default": true, "x-vyshka-widget": true,
+	"default": true, "context": true, "x-vyshka-widget": true,
 }
 
 var subsetTypes = map[string]bool{
@@ -193,9 +194,18 @@ var subsetTypes = map[string]bool{
 	"number": true, "boolean": true, "null": true,
 }
 
+// The bounds of the `context` annotation (section 6.1): a context id is at
+// most 64 code points (section 6.2), and one field names at most 16.
+const (
+	maxAnnotationContextID = 64
+	maxAnnotationContexts  = 16
+)
+
 // validateSubset walks a params schema and reports the first keyword outside
 // the section 6.1 subset, with the path a plugin author needs to find it.
-func validateSubset(schema map[string]any, path string) error {
+// declared is the set of custom context ids the manifest declares, which a
+// `context` annotation must name (section 6.4).
+func validateSubset(schema map[string]any, path string, declared map[string]bool) error {
 	for keyword, value := range schema {
 		if !subsetKeywords[keyword] {
 			return fmt.Errorf("%s.%s: keyword %q is outside the schema subset this protocol enforces (section 6.1)", path, keyword, keyword)
@@ -216,7 +226,7 @@ func validateSubset(schema map[string]any, path string) error {
 				if !ok {
 					return fmt.Errorf("%s.properties.%s: not a schema object (section 6.1)", path, name)
 				}
-				if err := validateSubset(sub, path+".properties."+name); err != nil {
+				if err := validateSubset(sub, path+".properties."+name, declared); err != nil {
 					return err
 				}
 			}
@@ -225,9 +235,51 @@ func validateSubset(schema map[string]any, path string) error {
 			if !ok {
 				return fmt.Errorf("%s.items: not a schema object (section 6.1)", path)
 			}
-			if err := validateSubset(sub, path+".items"); err != nil {
+			if err := validateSubset(sub, path+".items", declared); err != nil {
 				return err
 			}
+		case "context":
+			if err := validateContextAnnotation(value, path, declared); err != nil {
+				return err
+			}
+			// The annotation belongs on a string schema, and the node's
+			// type is checked here rather than in its own case because the
+			// keywords come in map order.
+			if name, _ := schema["type"].(string); name != "string" {
+				return fmt.Errorf("%s.context: the context annotation belongs on a schema with \"type\": \"string\", and a hub rejects it elsewhere (section 6.1)", path)
+			}
+		}
+	}
+	return nil
+}
+
+// validateContextAnnotation checks one `context` value: a declared context
+// id, or a non-empty array of at most 16 of them, none repeated.
+func validateContextAnnotation(value any, path string, declared map[string]bool) error {
+	var members []any
+	switch typed := value.(type) {
+	case string:
+		members = []any{typed}
+	case []any:
+		members = typed
+	default:
+		return fmt.Errorf("%s.context: must be a context id or an array of them (section 6.1)", path)
+	}
+	if len(members) == 0 || len(members) > maxAnnotationContexts {
+		return fmt.Errorf("%s.context: names %d contexts, want 1 to %d (section 6.1)", path, len(members), maxAnnotationContexts)
+	}
+	seen := map[string]bool{}
+	for i, member := range members {
+		id, ok := member.(string)
+		if !ok || id == "" || utf8.RuneCountInString(id) > maxAnnotationContextID {
+			return fmt.Errorf("%s.context[%d]: must be a non-empty context id of at most %d code points (section 6.1)", path, i, maxAnnotationContextID)
+		}
+		if seen[id] {
+			return fmt.Errorf("%s.context: names %q twice (section 6.1)", path, id)
+		}
+		seen[id] = true
+		if !declared[id] {
+			return fmt.Errorf("%s.context: names %q, which the manifest's contexts do not declare; a hub rejects the manifest over it (section 6.4)", path, id)
 		}
 	}
 	return nil

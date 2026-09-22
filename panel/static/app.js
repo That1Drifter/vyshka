@@ -1397,8 +1397,66 @@ function vehicleDatalist(vehicles) {
   return list;
 }
 
+// contextRefsOf reads a schema's `context` annotation (protocol section 6.1):
+// one declared custom context id or an array of them, whose enumerated
+// entries are what the field offers. Anything else reads as no annotation.
+function contextRefsOf(schema) {
+  const value = schema && schema.context;
+  if (typeof value === 'string' && value !== '') return [value];
+  if (Array.isArray(value)) return value.filter((id) => typeof id === 'string' && id !== '');
+  return [];
+}
+
+// schemaContextRefs collects every context id a params schema's annotations
+// name, so the form can fetch each enumeration once before it is built.
+function schemaContextRefs(schema, found = new Set(), depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return found;
+  for (const id of contextRefsOf(schema)) found.add(id);
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const child of Object.values(schema.properties)) schemaContextRefs(child, found, depth + 1);
+  }
+  if (schema.items && typeof schema.items === 'object') schemaContextRefs(schema.items, found, depth + 1);
+  return found;
+}
+
+// contextDatalist offers the entries of the contexts a field names: the
+// referenceKey as the value (what the plugin gets back), the label as what
+// the operator reads. Null when no context could be enumerated.
+function contextDatalist(refs, feed) {
+  const options = [];
+  for (const id of refs) {
+    const loaded = feed && feed[id];
+    if (!loaded || !Array.isArray(loaded.entries)) continue;
+    for (const entry of loaded.entries) {
+      if (!entry || typeof entry.referenceKey !== 'string' || entry.referenceKey === '') continue;
+      const label = typeof entry.label === 'string' && entry.label !== '' ? entry.label : entry.referenceKey;
+      options.push(el('option', { value: entry.referenceKey }, label));
+    }
+  }
+  if (options.length === 0) return null;
+  return el('datalist', { id: nextId('context') }, options);
+}
+
+// contextHint says where a field's suggestions come from, context by
+// context, and what became of a context that could not be enumerated. A
+// typed value outside the list is still sent: the annotation never
+// constrains the data model (section 6.1).
+function contextHint(refs, feed) {
+  const parts = refs.map((id) => {
+    const loaded = feed && feed[id];
+    const name = loaded && loaded.name ? loaded.name : id;
+    if (!loaded) return name + ' (not enumerated)';
+    if (loaded.error) return name + ' (' + loaded.error + ')';
+    const count = Array.isArray(loaded.entries) ? loaded.entries.length : 0;
+    const reason = loaded.reason ? ', ' + loaded.reason : '';
+    return name + ' (' + count + (count === 1 ? ' entry' : ' entries') + reason + ')';
+  });
+  return 'suggested from ' + parts.join(', ') + '; a value outside the list is sent as typed';
+}
+
 function stringField(schema, opts) {
   const widget = widgetOf(schema);
+  const contextRefs = contextRefsOf(schema);
   // Hints shape the input, never its validation (section 6.1: a hint does
   // not constrain the data model), so a webhook stays a text input with a
   // URL keyboard rather than a URL input that would refuse a relative path
@@ -1422,6 +1480,14 @@ function stringField(schema, opts) {
     if (datalist) attrs.list = datalist.id;
     attrs.placeholder = 'vehicle id';
     hint = 'vehicle id from the latest state.vehicles snapshot' + (datalist ? '; the vehicles in it are suggested' : '');
+  } else if (contextRefs.length > 0) {
+    // A field annotated with a custom context (section 6.1): its values
+    // are the referenceKeys of that context's enumeration (section 6.2),
+    // fetched before the form was built and offered as suggestions.
+    datalist = contextDatalist(contextRefs, opts.contextEntries);
+    if (datalist) attrs.list = datalist.id;
+    if (widget === 'itemlist') attrs.placeholder = 'item class name';
+    hint = contextHint(contextRefs, opts.contextEntries);
   } else if (widget === 'webhook') {
     attrs.inputmode = 'url';
     attrs.placeholder = 'https://';
@@ -1587,6 +1653,7 @@ function objectField(schema, opts) {
     required: required.has(key),
     soft: optional || opts.soft,
     players: opts.players,
+    contextEntries: opts.contextEntries,
     register: opts.register,
   }));
   const includeBox = optional && opts.path !== ''
@@ -1686,7 +1753,7 @@ function jsonField(schema, opts) {
 // buildParamsForm turns an action's params schema into fields, returning the
 // container node, a read() that yields the params object, and a map from
 // hub fault paths to the fields that own them.
-function buildParamsForm(paramsSchema, players) {
+function buildParamsForm(paramsSchema, players, contextEntries) {
   const fieldsByPath = new Map();
   const register = (field) => { fieldsByPath.set(field.node.dataset.path, field); };
   const container = el('div', { class: 'stack', id: 'params' });
@@ -1695,7 +1762,7 @@ function buildParamsForm(paramsSchema, players) {
     return { node: container, fieldsByPath, read: () => ({}) };
   }
   const root = buildField(paramsSchema, {
-    name: 'params', path: '', label: 'Parameters', required: true, players, register,
+    name: 'params', path: '', label: 'Parameters', required: true, players, contextEntries, register,
   });
   register(root);
   container.append(root.node);
@@ -1740,20 +1807,56 @@ function showFaults(faults, fieldsByPath) {
 // ---------------------------------------------------------------------------
 // Action form and dispatch
 
-function targetField(action, contexts, players, vehicles) {
+function targetField(action, contexts, players, vehicles, contextEntries) {
   const context = action.context || '';
   if (context === '' || context === 'world') return null;
   const builtin = { player: 'Player', vehicle: 'Vehicle id', object: 'Object id' };
   let label = builtin[context];
   let required = Boolean(label);
-  if (!label) {
+  let schema = { type: 'string' };
+  if (context === 'player') {
+    schema = { type: 'string', 'x-vyshka-widget': 'player' };
+  } else if (!label) {
+    // A declared custom context: the target is one of its enumerated
+    // members (section 6.2), offered the way a param annotated with the
+    // context is.
     const declared = contexts.find((entry) => entry && entry.id === context);
     label = (declared && declared.name ? declared.name : context) + ' reference';
     required = false;
+    if (declared) schema = { type: 'string', context };
   }
-  return stringField(
-    context === 'player' ? { type: 'string', 'x-vyshka-widget': 'player' } : { type: 'string' },
-    { name: 'referenceKey', path: 'referenceKey', label, required, players, vehicles: context === 'vehicle' ? vehicles : null });
+  return stringField(schema,
+    { name: 'referenceKey', path: 'referenceKey', label, required, players, contextEntries, vehicles: context === 'vehicle' ? vehicles : null });
+}
+
+// loadContextEntries enumerates each named custom context through
+// GET /servers/{id}/contexts/{contextId}/entries (section 6.2), all at once,
+// into a map by id: the entries and the plugin's reason when it gave one, or
+// the error code when the hub could not answer, so a form still renders with
+// a plain input and a hint that says why. A refused token propagates: the
+// page's sign-out logic wants it.
+async function loadContextEntries(serverId, ids, declared) {
+  const feed = {};
+  const nameOf = (id) => {
+    const entry = declared.find((context) => context && context.id === id);
+    return entry && entry.name ? entry.name : id;
+  };
+  const reads = ids.map(async (id) => {
+    try {
+      const answer = await api('GET', '/servers/' + encodeURIComponent(serverId) + '/contexts/' + encodeURIComponent(id) + '/entries');
+      feed[id] = {
+        name: nameOf(id),
+        entries: answer && Array.isArray(answer.entries) ? answer.entries : [],
+        reason: answer && typeof answer.reason === 'string' ? answer.reason : '',
+        error: '',
+      };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) throw err;
+      feed[id] = { name: nameOf(id), entries: [], reason: '', error: err instanceof ApiError ? err.code : 'unreachable' };
+    }
+  });
+  await Promise.all(reads);
+  return feed;
 }
 
 async function loadPlayers(serverId) {
@@ -1860,9 +1963,17 @@ async function viewAction(app, route, seq) {
   const vehicles = action.context === 'vehicle' ? await loadVehicles(server.id) : [];
   if (stale(seq)) return;
 
+  // The custom contexts this form draws on: the action's own, when it is a
+  // declared one, and every `context` annotation in its params. Each is
+  // enumerated once, before the form is built.
   const contexts = Array.isArray(body.contexts) ? body.contexts : [];
-  const target = targetField(action, contexts, players, vehicles);
-  const params = buildParamsForm(action.params, players);
+  const wanted = schemaContextRefs(action.params);
+  if (contexts.some((entry) => entry && entry.id === action.context)) wanted.add(action.context);
+  const contextEntries = wanted.size > 0 ? await loadContextEntries(server.id, [...wanted], contexts) : {};
+  if (stale(seq)) return;
+
+  const target = targetField(action, contexts, players, vehicles, contextEntries);
+  const params = buildParamsForm(action.params, players, contextEntries);
   if (target) params.fieldsByPath.set('referenceKey', target);
   // A player picked on the map arrives in the route and lands in the
   // target field, which stays editable: the preselection is a convenience,

@@ -1,9 +1,10 @@
 # Roadmap
 
-**As of:** 2026-09-21 (the server binding of #81 landed as protocol draft 0.26 and the plugin fixes of #108 the same day; the shape
-of #80 settled in its issue, its pull spike measured, and the plugin's string and file
-defects filed as #108; the mod surface and its sample landed 2026-09-18, with the hub side
-of `context.enumerate` staying with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
+**As of:** 2026-09-22 (the item catalog of #73 landed as protocol draft 0.27, closing the
+hub side of `context.enumerate`; the server binding of #81 landed as draft 0.26 and the
+plugin fixes of #108 on 2026-09-21; the shape of #80 settled in its issue, its pull spike
+measured, and the plugin's string and file defects filed as #108; the mod surface and its
+sample landed 2026-09-18). Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -53,7 +54,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.24 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.27 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -137,11 +138,21 @@ After the tag, in this order:
    context with two fixed entries, depends on nothing but the game, and was booted with and
    without the plugin on DayZ 1.29; the plugin conformance suite gained the
    `context.enumerate` stage.
-10. **Item catalog as the first custom context** (#73): the plugin publishes its class-name
-    catalog with display names and per-type stats once per session; the hub gains the
-    missing half of protocol section 6.2 (sending `context.enumerate`, caching the answer)
-    and the panel its dropdown. Spawn and loadout forms then autocomplete on names an
-    operator recognizes.
+10. **Item catalog as the first custom context** (#73), landed 2026-09-22: the plugin
+    declares eight catalog contexts (firearms, optics, ammunition, magazines, edibles,
+    clothing, gear, vehicles), each enumerating the public classes of that type with the
+    translated display name and the type's declared stats, built once per session on the
+    first request; the hub gained the missing half of protocol section 6.2 as draft 0.27
+    (`GET .../contexts/{contextId}/entries` sends `context.enumerate`, holds for the
+    echoing reply, caches it 10 s against the manifest revision, shares one question
+    between concurrent reads, and refuses a context the manifest does not declare or a
+    server with no live session without asking) and the schema subset the `context`
+    annotation that names which contexts a string param draws on; the panel enumerates
+    every context a form names and suggests the entries, so the spawn form autocompletes
+    on names an operator recognizes. The split by type comes from
+    `spikes/dayz-item-catalog`: a stock 1.29 server's 2050 items are 243 KiB as one list,
+    7 percent under one reply's bound, and 107 KiB for the largest type. Loadout forms
+    (#76) get the same suggestions for free through the annotation.
 11. **Inventory** (#74): `vyshka.inventory.read` returns one player's inventory tree as an
     action result (a request with a result, not a snapshot, so a snapshot keeps meaning a
     whole list the plugin pushes on its own cadence); strip (`warning`) and clear cargo
@@ -223,7 +234,7 @@ spec reader is not surprised.
 
 | Item | Section | Status |
 |---|---|---|
-| Custom contexts and `context.enumerate` | 6.2 | Committed (#73), half done. Draft 0.25 (issue #72) fixed the exchange (`context.enumerate` in, `context.entries` out), the DayZ plugin answers it, and the plugin conformance suite grades the answer; the hub accepts context declarations and stores them but never sends `context.enumerate` (a `context.entries` it receives is acked and ignored, section 4), and the panel has no dropdown to feed. The item catalog is the customer |
+| Custom contexts and `context.enumerate` | 6.2 | Shipped 2026-09-22 (#73, draft 0.27): the hub sends `context.enumerate` behind an Admin API read, caches the answer, and the hub conformance suite grades it (`admin.contexts.enumerate`); the DayZ item catalog is the first customer and the panel's spawn form the first consumer |
 | WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD), no issue yet. Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins are the customer |
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
 | Server-scoped token dimension | 10.1 | Shipped 2026-09-21 (#81, draft 0.26): a token-level `servers` binding |

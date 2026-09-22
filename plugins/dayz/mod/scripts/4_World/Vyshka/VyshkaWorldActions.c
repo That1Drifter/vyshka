@@ -335,6 +335,9 @@ class VyshkaSpawnAction : VyshkaAction
 		VyshkaJsonValue className = VyshkaJsonValue.NewObject();
 		className.Set("type", VyshkaJsonValue.NewString("string"));
 		className.Set("x-vyshka-widget", VyshkaJsonValue.NewString("itemlist"));
+		// The catalog's contexts (spec section 6.1): a panel offers their
+		// entries as the names to pick from, and still sends what is typed.
+		className.Set("context", VyshkaCatalog.ContextIds());
 
 		VyshkaJsonValue properties = VyshkaJsonValue.NewObject();
 		properties.Set("className", className);

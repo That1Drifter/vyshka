@@ -8,7 +8,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 | Suite | Question it answers | Status |
 |---|---|---|
-| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, actions, telemetry, state snapshots, scoped tokens and audit, webhooks, key/value store |
+| `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, context enumeration, actions, telemetry, state snapshots, scoped tokens and audit, webhooks, key/value store |
 | `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, and a schema-invalid dispatch; see `plugin/README.md` |
 
 ## Hub suite

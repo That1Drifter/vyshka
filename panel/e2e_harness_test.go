@@ -336,8 +336,31 @@ type fakePlugin struct {
 	ids          int64
 	received     []dispatchBody
 	unauthorized int
+	// enumerations counts the context.enumerate questions answered, which
+	// is how the browser test tells a cached read from a fresh one.
+	enumerations int
 	allAcked     chan struct{}
 	ackedOnce    sync.Once
+}
+
+// enumerated is how many context.enumerate questions this plugin answered.
+func (p *fakePlugin) enumerated() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.enumerations
+}
+
+// e2eContextEntries is what the fake plugin answers a context.enumerate with,
+// by context id (spec section 6.2). The browser test's manifest declares the
+// contexts; a question about any other id gets an empty list and a reason.
+var e2eContextEntries = map[string][]map[string]any{
+	"example-mod.item": {
+		{"referenceKey": "AKM", "label": "AKM", "data": map[string]any{"type": "firearm"}},
+		{"referenceKey": "Apple", "label": "Apple", "data": map[string]any{"type": "edible"}},
+	},
+	"example-mod.landmark": {
+		{"referenceKey": "green-mountain", "label": "Green Mountain", "position": []float64{3700, 402, 5980}},
+	},
 }
 
 func newFakePlugin(t *testing.T, hubURL, enrollmentToken string) *fakePlugin {
@@ -438,6 +461,30 @@ func (p *fakePlugin) run(ctx context.Context) {
 		for _, e := range answer.Envelopes {
 			if e.Seq > p.inAck {
 				p.inAck = e.Seq
+			}
+			if e.Type == "context.enumerate" {
+				// The hub asking what a custom context holds (section 6.2):
+				// answered from the fixture, echoing the question, with an
+				// empty list and a reason for a context this plugin does not
+				// declare.
+				var question struct {
+					RequestID string `json:"requestId"`
+					Context   string `json:"context"`
+				}
+				if err := json.Unmarshal(e.Body, &question); err != nil {
+					continue
+				}
+				p.enumerations++
+				reply := map[string]any{"requestId": question.RequestID, "context": question.Context, "entries": []any{}}
+				if entries, known := e2eContextEntries[question.Context]; known {
+					reply["entries"] = entries
+				} else {
+					reply["reason"] = "this plugin declares no context " + question.Context
+				}
+				p.mu.Unlock()
+				p.queue("context.entries", reply)
+				p.mu.Lock()
+				continue
 			}
 			if e.Type != "action.dispatch" {
 				continue
