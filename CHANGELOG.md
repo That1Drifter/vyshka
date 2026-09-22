@@ -155,6 +155,33 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-22: the inventory actions (issue #74, plugin 0.8.0). `vyshka.inventory.read`
+  (player, `none`) answers with the player's inventory tree as its result: `hands` (the
+  held item or null), `worn` (one entry per worn item in slot order), and inside each
+  entry its `attachments` and `cargo`, every entry with its class, display name, slot
+  (worn items and attachments), health percent, state (`pristine` to `ruined`), and the
+  fields its kind adds (`quantity` and `quantityMax`, a magazine's or an ammunition pile's
+  `ammo` and `ammoMax`, a firearm's `rounds` in the chamber and any internal magazine, a
+  container's `liquid`, a food's `stage`, and `items`, how many it holds in all); plus
+  `items` (the whole tree's count), `alive`, and the optional `slot` param that reads one
+  worn slot's subtree (`Back`, `Vest`, `Hands`, ..., any case; an unknown name fails the
+  action naming the character's slots). A read is a request with a result (protocol
+  section 7), not a snapshot, and its result is kept under the hub's 64 KiB result cap:
+  the tree is serialized before it is answered and, over a 60 000-byte budget, described
+  one level of containers less each time until it fits, each cut container keeping its
+  `items` count, with `depth` and `truncated` saying so. `vyshka.inventory.strip` (player,
+  `warning`) drops the held item and every worn item, contents included, on the ground
+  beside the player through the engine's server-side drop, reporting each under `dropped`
+  or, with a reason, `skipped`. `vyshka.inventory.clear` (player, `destructive`) deletes
+  them through the engine's safe delete, reporting each under `deleted`.
+  `spikes/dayz-inventory-tree` measured the cap against the heaviest loadout it could
+  build on a stock 1.29 server: 131 items, 4 levels deep, 14 035 bytes as the whole tree,
+  a quarter of the budget, built and serialized in about 10 ms, so a stock character is
+  always answered whole and the cut is for modded servers; it also found that the
+  engine's server-side drop of a living character's item waits on a client's juncture
+  (nothing moves on a body with none) while the safe delete runs without one, that the
+  script config reader returns nothing for `Cargo itemsCargoSize`, and that a weapon
+  created for an empty-handed character lands in the hands whatever slot was asked for.
 - 2026-09-22: the item catalog as the plugin's first custom contexts (issue #73, plugin
   0.8.0): the manifest declares `dayz.items.firearms`, `dayz.items.optics`,
   `dayz.items.ammo`, `dayz.items.magazines`, `dayz.items.edibles`, `dayz.items.clothing`,

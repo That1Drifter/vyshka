@@ -20,7 +20,7 @@ Clean-room: written from the engine's public script headers and the measurements
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
 | `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the registry of actions, contexts, events, and namespaces, the event buffer, the ban list, the key/value store client (`VyshkaStoreClient`) and the namespace-bound handle mods use (`VyshkaStore`), the map markers (`VyshkaMapMarker`), and the mod-facing facade (`GetVyshka()`) |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the inventory actions (`VyshkaInventoryActions`), the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat, and the `VyshkaRegister` hook a mod overrides to add its own actions |
 | `sample/` | A self-contained sample mod built on the surface below: one action, one event, one context, a map marker, a store counter. Copy it to start your own |
 | `selftest/` | The engine-limit self-test: a script appended to a mission's `init.c` that runs the plugin's file and JSON classes past the engine's limits inside a real server (see "Conformance") |
@@ -126,6 +126,9 @@ is derived from its content, see "Writing a mod against the plugin") declares:
 | `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
+| `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that item's subtree whole) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
+| `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
+| `vyshka.inventory.clear` | player | destructive | none | `name`, `deleted` (one `{ class, name, slot, items }` per item), `deletedCount`, `items` (everything deleted, contents included); each item is deleted through the engine's safe delete, its contents with it |
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
 
 Kick, message, teleport, spawn, the ban's own kick, vitals, stop bleeding, dry, broken legs,
@@ -323,6 +326,36 @@ stamina handler and the character. A frozen player seated in a vehicle drives it
 the override is the character's movement, not the vehicle's controls. The action is
 `warning` because god and freeze change what a player can do to and with others.
 
+**Inventory** is three actions on one player. `vyshka.inventory.read` answers with the
+player's inventory tree as its result: the item in hands, every worn item in slot order,
+and inside each what is attached (a magazine on a rifle, a battery in a light) and what is
+in its cargo, each with its display name, condition, and whatever state applies to its
+kind (a stack's quantity, a magazine's rounds, a firearm's chambered round, a bottle's
+liquid, a steak's stage). It is a request with a result (protocol section 7), not a
+snapshot: a snapshot is a whole list the plugin pushes on its own cadence, and a tree per
+player at that cadence would be bytes nobody asked for. The result is bounded by the hub's
+64 KiB result cap, over which the hub keeps the outcome and drops the payload, so the
+plugin serializes the tree before answering and, when it does not fit a 60 000-byte
+budget, describes one level of containers less each time until it does, keeping on every
+container the count of what it holds and saying so in `truncated` and `depth`; `slot`
+then reads one worn container's subtree whole. On a stock 1.29 server the cut is never
+needed: the heaviest loadout `spikes/dayz-inventory-tree` could build (an Alice bag, a
+hunting jacket, a high-capacity vest, hunter pants, a belt with a holstered pistol, three
+rifles with every attachment, cases nested in every cargo and every cargo filled) is 131
+items and 14 KiB, described whole at the first attempt in about 10 ms; the budget holds
+about 560 entries, so the cut is for a modded server with far larger containers.
+`vyshka.inventory.strip` drops the held
+item and every worn item on the ground beside the player through the engine's own
+server-side drop (the move a player's drop makes, synchronized to the client through a
+juncture and finding a free spot for each), contents included; nothing is lost, so the
+action is `warning`. `vyshka.inventory.clear` deletes them through the engine's safe delete
+(for a living character, queued on the character through a juncture and run on its next
+update once no inventory action is in flight, the way the engine removes a consumed item),
+contents included, so it is `destructive`. Both report what they acted on per top-level
+item and refuse nothing: a strip lists under `skipped`, with the reason, an item the
+engine would not drop (one under an inventory reservation while the player moves it, the
+hands of a restrained character).
+
 ## Telemetry
 
 The plugin publishes events (protocol section 8.1) and `state.players`, `state.vehicles`,
@@ -502,9 +535,11 @@ deciding. An entry's `referenceKey` is the class name (what `vyshka.spawn` takes
 does not translate), and its `data` carries `type` and what the type is declared with:
 `weight` (grams) for all; `ammo` (the first `chamberableFrom`) and `magazines` (how many
 fit) for a firearm; `count` and `ammo` for a magazine or an ammunition pile; `energy` and
-`water` for a food (the `Raw` stage's when the food has stages); `slot`, `cargo` (slots),
-and `heatIsolation` for a garment; `zoomMin` and `zoomMax` for an optic; `fuel` (litres)
-and `crew` (seats) for a vehicle.
+`water` for a food (the `Raw` stage's when the food has stages); `slot` and
+`heatIsolation` for a garment (the catalog also asks for the cargo declared under `Cargo
+itemsCargoSize`, but the script config reader returns nothing for it on DayZ 1.29, so no
+stock garment carries a `cargo`; `spikes/dayz-inventory-tree` measured that); `zoomMin`
+and `zoomMax` for an optic; `fuel` (litres) and `crew` (seats) for a vehicle.
 
 The spawn action's `className` names all eight in its params schema (the `context`
 annotation, section 6.1), which is how the panel's spawn form suggests them; a mod's own
