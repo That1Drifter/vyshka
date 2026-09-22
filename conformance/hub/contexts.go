@@ -314,46 +314,9 @@ var contextChecks = []Check{
 				{builtin, "contexts[1].id"},
 			}
 			for _, fixture := range fixtures {
-				invalid := fixture.manifest
-				published := plugin.nextOutbound("manifest.publish", invalid)
-				response, err := plugin.pollAndAck(ctx, published)
-				if err != nil {
+				if err := plugin.expectManifestReject(ctx, fixture.manifest, fixture.wantPath,
+					"a context annotation naming an undeclared context, or sitting on a non-string schema, rejects the manifest (section 6.4)"); err != nil {
 					return err
-				}
-				if response.Ack < published.Seq {
-					return fmt.Errorf("ack = %d, want %d: a rejected manifest is still acked (section 6.4)", response.Ack, published.Seq)
-				}
-				var rejects []envelope
-				for _, delivered := range response.Envelopes {
-					if delivered.Type == "manifest.reject" {
-						rejects = append(rejects, delivered)
-					}
-				}
-				if len(rejects) == 0 {
-					if rejects, err = plugin.awaitEnvelope(ctx, "manifest.reject", 3); err != nil {
-						return fmt.Errorf("%w; a context annotation naming an undeclared context, or sitting on a non-string schema, rejects the manifest (section 6.4)", err)
-					}
-				}
-				var reject struct {
-					EnvelopeID string `json:"envelopeId"`
-					Errors     []struct {
-						Path string `json:"path"`
-					} `json:"errors"`
-				}
-				if err := json.Unmarshal(rejects[0].Body, &reject); err != nil {
-					return fmt.Errorf("decode manifest.reject body %q: %w", truncate(rejects[0].Body), err)
-				}
-				if reject.EnvelopeID != published.ID {
-					return fmt.Errorf("manifest.reject names envelope %q, want the rejected %q", reject.EnvelopeID, published.ID)
-				}
-				named := false
-				for _, fault := range reject.Errors {
-					if fault.Path == fixture.wantPath {
-						named = true
-					}
-				}
-				if !named {
-					return fmt.Errorf("manifest.reject %s names no fault at %q; that is what was wrong (section 6.4)", truncate(rejects[0].Body), fixture.wantPath)
 				}
 			}
 			record, err = env.storedManifest(ctx, serverID)
@@ -366,6 +329,49 @@ var contextChecks = []Check{
 			return nil
 		},
 	},
+}
+
+// expectManifestReject publishes an invalid manifest and requires the hub to
+// ack it and answer with a manifest.reject naming this envelope and a fault at
+// wantPath (section 6.4). why is appended when no rejection arrives.
+func (p *fakePlugin) expectManifestReject(ctx context.Context, invalid map[string]any, wantPath, why string) error {
+	published := p.nextOutbound("manifest.publish", invalid)
+	response, err := p.pollAndAck(ctx, published)
+	if err != nil {
+		return err
+	}
+	if response.Ack < published.Seq {
+		return fmt.Errorf("ack = %d, want %d: a rejected manifest is still acked (section 6.4)", response.Ack, published.Seq)
+	}
+	var rejects []envelope
+	for _, delivered := range response.Envelopes {
+		if delivered.Type == "manifest.reject" {
+			rejects = append(rejects, delivered)
+		}
+	}
+	if len(rejects) == 0 {
+		if rejects, err = p.awaitEnvelope(ctx, "manifest.reject", 3); err != nil {
+			return fmt.Errorf("%w; %s", err, why)
+		}
+	}
+	var reject struct {
+		EnvelopeID string `json:"envelopeId"`
+		Errors     []struct {
+			Path string `json:"path"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rejects[0].Body, &reject); err != nil {
+		return fmt.Errorf("decode manifest.reject body %q: %w", truncate(rejects[0].Body), err)
+	}
+	if reject.EnvelopeID != published.ID {
+		return fmt.Errorf("manifest.reject names envelope %q, want the rejected %q", reject.EnvelopeID, published.ID)
+	}
+	for _, fault := range reject.Errors {
+		if fault.Path == wantPath {
+			return nil
+		}
+	}
+	return fmt.Errorf("manifest.reject %s names no fault at %q; that is what was wrong (section 6.4)", truncate(rejects[0].Body), wantPath)
 }
 
 func init() {

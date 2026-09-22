@@ -224,6 +224,45 @@ class VyshkaInventory
 		return entry;
 	}
 
+	// Strip drops everything the player carries directly on the ground
+	// beside them, describing each item in dropped or skipped, and answers
+	// how many items went, contents included. Each top-level item goes
+	// through the engine's own server-side drop, the move a player's drop
+	// makes, which finds a free spot beside the character and synchronizes
+	// the move to the client through a juncture; what is inside goes with
+	// it. The item in hands takes the hand event path of the same drop. A
+	// drop the engine refuses (an item under an inventory reservation, the
+	// hands of a restrained character) is listed as skipped.
+	static int Strip(PlayerBase player, VyshkaJsonValue dropped, VyshkaJsonValue skipped)
+	{
+		array<EntityAI> items = TopLevel(player);
+		int total = 0;
+		for (int i = 0; i < items.Count(); i++)
+		{
+			EntityAI item = items.Get(i);
+			string place = PlaceOf(player, item);
+			int inside = CountTree(item);
+			VyshkaJsonValue brief = Brief(item, place);
+			if (inside > 1)
+				brief.Set("items", VyshkaJsonValue.NewInt(inside - 1));
+			if (!player.CanDropEntity(item))
+			{
+				brief.Set("reason", VyshkaJsonValue.NewString("the engine will not let this item be dropped now (an inventory move in flight, or a restrained character's hands)"));
+				skipped.Add(brief);
+				continue;
+			}
+			if (!player.ServerDropEntity(item))
+			{
+				brief.Set("reason", VyshkaJsonValue.NewString("the engine refused the drop"));
+				skipped.Add(brief);
+				continue;
+			}
+			dropped.Add(brief);
+			total += inside;
+		}
+		return total;
+	}
+
 	// PlaceOf is the slot a top-level item is in, or Hands.
 	static string PlaceOf(PlayerBase player, EntityAI item)
 	{
@@ -561,40 +600,9 @@ class VyshkaInventoryStripAction : VyshkaAction
 		if (!player)
 			return VyshkaActionOutcome.Failure(error);
 
-		// Each top-level item goes to the ground through the engine's own
-		// server-side drop, the move a player's drop makes, which finds a
-		// free spot beside the character and synchronizes the move to the
-		// client through a juncture; what is inside goes with it. The item
-		// in hands takes the hand event path of the same drop. A drop the
-		// engine refuses (an item under an inventory reservation, the
-		// hands of a restrained character) is listed as skipped.
-		array<EntityAI> items = VyshkaInventory.TopLevel(player);
 		VyshkaJsonValue dropped = VyshkaJsonValue.NewArray();
 		VyshkaJsonValue skipped = VyshkaJsonValue.NewArray();
-		int total = 0;
-		for (int i = 0; i < items.Count(); i++)
-		{
-			EntityAI item = items.Get(i);
-			string place = VyshkaInventory.PlaceOf(player, item);
-			int inside = VyshkaInventory.CountTree(item);
-			VyshkaJsonValue brief = VyshkaInventory.Brief(item, place);
-			if (inside > 1)
-				brief.Set("items", VyshkaJsonValue.NewInt(inside - 1));
-			if (!player.CanDropEntity(item))
-			{
-				brief.Set("reason", VyshkaJsonValue.NewString("the engine will not let this item be dropped now (an inventory move in flight, or a restrained character's hands)"));
-				skipped.Add(brief);
-				continue;
-			}
-			if (!player.ServerDropEntity(item))
-			{
-				brief.Set("reason", VyshkaJsonValue.NewString("the engine refused the drop"));
-				skipped.Add(brief);
-				continue;
-			}
-			dropped.Add(brief);
-			total += inside;
-		}
+		int total = VyshkaInventory.Strip(player, dropped, skipped);
 		VyshkaLog.Info("stripped " + VyshkaVitals.Describe(player) + ": " + dropped.Count().ToString() + " items dropped (" + total.ToString() + " with their contents), " + skipped.Count().ToString() + " skipped");
 
 		VyshkaJsonValue result = VyshkaVitals.Result(player);

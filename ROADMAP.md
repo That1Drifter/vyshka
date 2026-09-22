@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the spawning extension of #75 landed as protocol draft 0.28, the
+**As of:** 2026-09-22 (the presets of #76 landed as protocol draft 0.29, the schema subset
+gaining the `kvNamespace` annotation and the panel's key/value view becoming an editor,
+with operator-defined weather presets moved to #78; the spawning extension of #75 landed as protocol draft 0.28, the
 schema subset gaining its one form of `not`; the inventory actions of #74 landed, the first action result
 measured against its cap; the item catalog of #73 landed as protocol draft 0.27, closing the
 hub side of `context.enumerate`; the server binding of #81 landed as draft 0.26 and the
@@ -56,7 +58,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.28 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.29 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -181,17 +183,27 @@ After the tag, in this order:
     it in any case. `spikes/dayz-spawn-attachments` measured `auto` on all 115 stock
     firearms (104 loaded, at most 3 ms each) and found the six classes whose weapon state
     machine never runs. Verified live on DayZ 1.29 with a retail client.
-13. **Presets** (#76): loadouts captured from a player's gear or a placed object; named
-    teleport locations with a scatter radius; vehicle spawn presets with the parts a car
-    needs to drive; operator-defined weather presets. All live in the key/value store, so
-    the read-only browser from #64 becomes an editor here. The store's first operator-written
-    data (the admin flags of #71 were its first customer, written by the plugin).
+13. **Presets** (#76), landed 2026-09-22: loadouts captured from a player's gear and
+    applied to a player (dressing them, or stripping them first), named teleport
+    locations with a scatter radius, and vehicle presets that spawn a car with the parts
+    and fluids it needs to drive (the engine started on the live run). Each kind is a
+    key/value namespace of its own, so editing presets is a grant apart from dispatching
+    them and apart from the admin flags, and the read-only browser from #64 became an
+    editor: create only, save guarded by the revision opened, delete confirmed. The
+    protocol gained the `kvNamespace` annotation (draft 0.29), so a form offers the names
+    the store holds without the panel knowing any game. The store's first
+    operator-written data. Operator-defined weather presets moved to #78, which builds
+    the weather action they feed. Capture from a placed object was left out: vehicles
+    are the only placed objects with ids today, and nothing asked for it yet.
 14. **Vehicles 2** (#77): refuel, repair, and intact, destroyed, and exploded states in the
     snapshot. Delete-all-unclaimed depends on an ownership mod and becomes a documented
     mod-surface example instead of a plugin action.
 15. **World** (#78): `state.world` first (the panel needs current time and conditions
     before a weather form makes sense), then one action with every engine knob optional, a
-    fixed preset enum shipped in the plugin (clear, cloudy, storm), and freeze time.
+    fixed preset enum shipped in the plugin (clear, cloudy, storm), and freeze time, and the
+    operator-defined weather presets moved here from #76 on 2026-09-22 (a `vyshka.weather`
+    namespace applied through the same action, since a preset before the action it feeds
+    would have had to invent the knob set twice).
 16. **Hub features an in-game menu cannot offer** (#79): a player profile per identity
     across every server on the installation, honestly a 30-day view until a per-identity
     roll-up exists (event retention is 30 days, chat 90); per-webhook redaction of named

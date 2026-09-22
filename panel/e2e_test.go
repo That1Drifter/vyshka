@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -127,7 +128,22 @@ var e2eManifest = map[string]any{
 		"code": "example-mod.beacon", "name": "Place a beacon", "context": "example-mod.landmark",
 		"namespace": "example-mod", "danger": "none",
 		"params": map[string]any{"type": "object", "properties": map[string]any{}},
+	}, {
+		// Two params annotated with a KV namespace (section 6.1): the form
+		// offers the keys the store holds there, and says why it offers none
+		// when the token cannot list a namespace.
+		"code": "example-mod.preset", "name": "Apply a preset", "context": "world",
+		"namespace": "example-mod", "danger": "none",
+		"params": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"preset": map[string]any{"type": "string", "kvNamespace": "example-mod.presets",
+					"not": map[string]any{"enum": []string{"retired"}}},
+				"secret": map[string]any{"type": "string", "kvNamespace": "example-mod.locked"},
+			},
+		},
 	}},
+	"kvNamespaces": []string{"example-mod.presets", "example-mod.locked"},
 }
 
 var e2ePlayers = map[string]any{
@@ -1076,6 +1092,51 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := evalString(`sessionStorage.getItem("vyshka.adminToken") || "none"`); got != "none" {
 		t.Fatalf("token survived sign-out: %q", got)
 	}
+
+	// 11. A param annotated with a KV namespace (section 6.1) suggests the
+	// keys stored there. The token here may dispatch and may list one of
+	// the two namespaces, not the other: the listed one suggests its keys,
+	// the excluded key marked, and the other says why it has none.
+	for _, key := range []string{"night-raid", "retired", "spawn-kit"} {
+		if status, body := adminRequest(t, http.MethodPut, web.URL+"/api/v1/kv/example-mod.presets/"+key,
+			map[string]any{"value": map[string]any{"name": key}}); status != http.StatusOK {
+			t.Fatalf("write preset %s: status %d body %s", key, status, body)
+		}
+	}
+	status, minted := adminRequest(t, http.MethodPost, web.URL+"/api/v1/tokens", map[string]any{
+		"name":   "preset operator",
+		"scopes": []string{"servers:read", "actions:dispatch", "kv:rw:example-mod.presets"},
+	})
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("mint the narrowed token: status %d body %s", status, minted)
+	}
+	var mintedToken struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(minted, &mintedToken); err != nil || mintedToken.Secret == "" {
+		t.Fatalf("decode the minted token %s: %v", minted, err)
+	}
+	run("sign in with the narrowed token", setValue("#token", ""),
+		chromedp.SendKeys("#token", mintedToken.Secret, chromedp.ByQuery),
+		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#sign-out", chromedp.ByQuery))
+	run("open the preset action", chromedp.Navigate(web.URL+"/panel/#/servers/"+created.Server.ID+"/actions/example-mod.preset"),
+		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+	if got := evalString(`(function(){const i=document.querySelector('input[name="params.preset"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent+(o.dataset.excluded?"!":"")).join(","):"no datalist"})()`); got != "night-raid=night-raid,retired=retired (blocked on this server)!,spawn-kit=spawn-kit" {
+		t.Errorf("preset datalist = %q, want the stored keys, the excluded one marked", got)
+	}
+	if got := evalString(`document.querySelector('input[name="params.preset"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "example-mod.presets (3 keys)") {
+		t.Errorf("preset hint = %q, want the namespace named with its count", got)
+	}
+	if got := evalString(`document.querySelector('input[name="params.secret"]').getAttribute("list") || "no list"`); got != "no list" {
+		t.Errorf("the unlistable namespace's field has a datalist %q, want a plain input", got)
+	}
+	if got := evalString(`document.querySelector('input[name="params.secret"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "holds no kv:rw:example-mod.locked grant") {
+		t.Errorf("secret hint = %q, want the missing grant named", got)
+	}
+	// The annotation never constrains the dispatch: a name the store does
+	// not hold is sent as typed.
+	run("dispatch a name nobody stored", chromedp.SendKeys(`input[name="params.preset"]`, "no-such-preset", chromedp.ByQuery),
+		chromedp.Click("#dispatch", chromedp.ByQuery), chromedp.WaitVisible("#result-card", chromedp.ByQuery))
 }
 
 func abs(value int) int {

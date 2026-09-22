@@ -20,6 +20,13 @@ func TestValidateManifest(t *testing.T) {
 				"payload": {"type": "object"}}]}`,
 		"unknownTopLevelField": `{"manifestRevision": 1, "fieldFromALaterDraft": true}`,
 		"nullParams":           `{"manifestRevision": 1, "actions": [{"code": "m.x", "params": null}]}`,
+		// A kvNamespace annotation naming a declared namespace (section 6.1),
+		// and one on an event payload.
+		"kvNamespaceDeclared": `{"manifestRevision": 1, "kvNamespaces": ["m.presets"],
+			"actions": [{"code": "m.x", "params": {"type": "object",
+				"properties": {"name": {"type": "string", "kvNamespace": "m.presets"}}}}],
+			"events": [{"id": "m.e", "payload": {"type": "object",
+				"properties": {"name": {"type": "string", "kvNamespace": "m.presets"}}}}]}`,
 		// Length limits count code points, not bytes: 100 two-byte runes fit
 		// a 128-character cap.
 		"multibyteCode": `{"manifestRevision": 1, "actions": [{"code": "` +
@@ -58,6 +65,16 @@ func TestValidateManifest(t *testing.T) {
 			"contexts": [{"id": "t"}, {"id": "t"}]}`, "contexts[1].id"},
 		"longCode": {`{"manifestRevision": 1,
 			"actions": [{"code": "` + strings.Repeat("x", 129) + `"}]}`, "code"},
+		"kvNamespaceUndeclared": {`{"manifestRevision": 1, "kvNamespaces": ["m"],
+			"actions": [{"code": "m.x", "params": {"type": "object",
+				"properties": {"name": {"type": "string", "kvNamespace": "m.presets"}}}}]}`,
+			"actions[0].params.properties.name.kvNamespace"},
+		"kvNamespaceNoneDeclared": {`{"manifestRevision": 1,
+			"events": [{"id": "m.e", "payload": {"type": "string", "kvNamespace": "m"}}]}`,
+			"events[0].payload.kvNamespace"},
+		"kvNamespaceNonString": {`{"manifestRevision": 1, "kvNamespaces": ["m"],
+			"actions": [{"code": "m.x", "params": {"type": "integer", "kvNamespace": "m"}}]}`,
+			"string schema"},
 		"hugeRevision":    {`{"manifestRevision": 9007199254740993}`, "2^53"},
 		"gameWrongType":   {`{"manifestRevision": 1, "game": []}`, "shape"},
 		"pluginWrongType": {`{"manifestRevision": 1, "plugin": "x"}`, "shape"},

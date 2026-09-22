@@ -108,6 +108,9 @@ modded class MissionServer
 		registry.Register(new VyshkaInventoryReadAction());
 		registry.Register(new VyshkaInventoryStripAction());
 		registry.Register(new VyshkaInventoryClearAction());
+		// Presets: loadouts, locations, and vehicle presets kept in the
+		// store, each kind in a namespace of its own.
+		VyshkaPresets.Register(registry);
 		// The item catalog: one custom context per item type (spec section
 		// 6.2), which the spawn action's className draws on.
 		VyshkaCatalog.RegisterContexts(registry);

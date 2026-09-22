@@ -1378,8 +1378,63 @@ export async function viewAudit(app, route, seq) {
 // ---------------------------------------------------------------------------
 // Key/value
 //
-// Read-only in this slice. The listing endpoints arrive with the hub lane of
-// issue #64; a hub without them answers 404, which the view shows.
+// The namespaces this token may read, their keys, and an editor over one key
+// at a time (issue #76): create, save guarded by the revision the editor
+// opened (section 12.2's compare-and-swap, so a key a plugin or a bot changed
+// meanwhile is never overwritten blind), and delete.
+
+// unsafeNumber finds an integer beyond 2^53 in a value, which this browser's
+// JSON parser has already rounded: saving it back would write a number
+// nobody stored. Answers the path of the first one, or '' when there is none.
+function unsafeNumber(value, path = '', depth = 0) {
+  if (typeof value === 'number') return Number.isInteger(value) && !Number.isSafeInteger(value) ? path || 'the value' : '';
+  if (value === null || typeof value !== 'object' || depth > 64) return '';
+  for (const [key, member] of Object.entries(value)) {
+    const found = unsafeNumber(member, Array.isArray(value) ? path + '[' + key + ']' : (path ? path + '.' : '') + key, depth + 1);
+    if (found) return found;
+  }
+  return '';
+}
+
+// kvValueOf reads an editor's text as a value: JSON, not null (section 12.1),
+// and with no number this browser cannot carry exactly.
+function kvValueOf(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new ApiError(0, 'bad_json', 'the value is not valid JSON: ' + err.message);
+  }
+  if (parsed === null) {
+    throw new ApiError(0, 'bad_value', 'a value cannot be null (protocol section 12.1); delete the key instead');
+  }
+  const unsafe = unsafeNumber(parsed);
+  if (unsafe) {
+    throw new ApiError(0, 'bad_value', unsafe + ' is an integer beyond 2^53, which this browser cannot carry exactly; write it as a string, or write the key with the Admin API');
+  }
+  return parsed;
+}
+
+// kvTTLOf reads an "expires in" field: blank for a key that never expires,
+// otherwise whole seconds within section 12.2's bound.
+function kvTTLOf(text) {
+  const trimmed = text.trim();
+  if (trimmed === '') return undefined;
+  const seconds = Number(trimmed);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 315360000) {
+    throw new ApiError(0, 'bad_ttl', 'expires in must be whole seconds within 1 and 315360000, or blank for never');
+  }
+  return seconds;
+}
+
+// kvRemaining is the time left before an expiry, in whole seconds rounded
+// up, so a save keeps a key's expiry: a set defines the key entirely, and one
+// without ttlSeconds makes it permanent (section 12.2).
+function kvRemaining(expiresAt) {
+  if (!expiresAt) return '';
+  const ms = Date.parse(expiresAt) - Date.now();
+  return ms > 0 ? String(Math.ceil(ms / 1000)) : '1';
+}
 
 export async function viewKVNamespaces(app, route, seq) {
   setCrumbs([{ label: 'Key/value' }]);
@@ -1495,28 +1550,13 @@ export async function viewKVKeys(app, route, seq) {
   const more = el('button', { type: 'button', id: 'kv-more', hidden: true }, 'Load more');
 
   let cursor = null;
-  let shown = 0;
-  const openKey = async (key) => {
+  // The rows on the page by key, so a save, a create, or a delete updates
+  // the list where it stands instead of reloading it.
+  const rows = new Map();
+  const guarded = (run) => async (...args) => {
     problem.hide();
     try {
-      const record = await api('GET', base + '/' + encodeURIComponent(key));
-      if (stale(seq)) return;
-      clear(value);
-      value.hidden = false;
-      value.append(el('div', { class: 'card', id: 'kv-value-card' },
-        el('h2', {}, 'Value of ', el('span', { class: 'mono' }, key)),
-        el('dl', { class: 'kv' },
-          el('dt', {}, 'Revision'), el('dd', { id: 'kv-value-revision' }, String(record.revision)),
-          el('dt', {}, 'Expires'), el('dd', { id: 'kv-value-expires' },
-            record.expiresAt ? formatTime(record.expiresAt) : 'never'),
-          // A stored value is bounded in bytes by the hub, not in depth
-          // (section 12.2), and indenting a deeply nested one multiplies its
-          // size by its depth: 16 KiB nested 4000 deep is tens of millions
-          // of characters of whitespace. The same bounded helper the event
-          // feed uses goes compact past 64 levels, and attempt keeps a value
-          // that cannot be serialized to this one line.
-          el('dt', {}, 'Value'), el('dd', {}, el('pre', { id: 'kv-value-json' },
-            attempt(() => eventPayloadText(record.value), 'The value could not be serialized.'))))));
+      await run(...args);
     } catch (err) {
       if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) {
@@ -1526,24 +1566,204 @@ export async function viewKVKeys(app, route, seq) {
       problem.show(err);
     }
   };
-  const drawKeys = (keys) => {
-    for (const entry of keys) {
-      tbody.append(el('tr', { 'data-key': entry.key },
-        el('td', { class: 'mono' }, entry.key),
-        el('td', {}, String(entry.revision === undefined ? '' : entry.revision)),
-        el('td', {}, entry.expiresAt ? formatTime(entry.expiresAt) : el('span', { class: 'muted' }, 'never')),
-        el('td', { class: 'row-actions' }, el('button', {
-          type: 'button', class: 'small', 'data-open-key': entry.key,
-          onclick: () => { openKey(entry.key); },
-        }, 'Open'))));
-      shown++;
-    }
+  const keyPath = (key) => base + '/' + encodeURIComponent(key);
+
+  const drawStatus = () => {
+    const shown = rows.size;
     table.hidden = shown === 0;
     empty.hidden = shown > 0;
     more.hidden = !cursor;
     status.textContent = (shown === 0 ? 'No keys shown' : shown + ' key' + (shown === 1 ? '' : 's') + ' shown, key ascending') +
       (cursor ? '; more are available' : '');
   };
+  const rowFor = (entry) => {
+    const revision = el('td', { 'data-revision': 'true' }, String(entry.revision === undefined ? '' : entry.revision));
+    const expires = el('td', {}, entry.expiresAt ? formatTime(entry.expiresAt) : el('span', { class: 'muted' }, 'never'));
+    const row = el('tr', { 'data-key': entry.key },
+      el('td', { class: 'mono' }, entry.key), revision, expires,
+      el('td', { class: 'row-actions' }, el('button', {
+        type: 'button', class: 'small', 'data-open-key': entry.key,
+        onclick: guarded(async () => { await openKey(entry.key); }),
+      }, 'Open')));
+    return { row, revision, expires };
+  };
+  const drawKeys = (keys) => {
+    for (const entry of keys) {
+      if (rows.has(entry.key)) continue;
+      const drawn = rowFor(entry);
+      tbody.append(drawn.row);
+      rows.set(entry.key, drawn);
+    }
+    drawStatus();
+  };
+  // placeRow shows a key written here: its row updated when the page has
+  // one, and a new one inserted in key order when the key falls inside the
+  // part of the namespace the page has walked (or inside the prefix, with
+  // nothing left to walk); a key beyond the walked part comes with a later
+  // page, as any other would.
+  const placeRow = (entry) => {
+    const existing = rows.get(entry.key);
+    if (existing) {
+      existing.revision.textContent = String(entry.revision);
+      clear(existing.expires);
+      existing.expires.append(entry.expiresAt ? formatTime(entry.expiresAt) : el('span', { class: 'muted' }, 'never'));
+      return;
+    }
+    if (route.prefix && !entry.key.startsWith(route.prefix)) return;
+    const keys = [...rows.keys()];
+    const last = keys.length > 0 ? keys[keys.length - 1] : '';
+    if (cursor && entry.key > last) return;
+    const drawn = rowFor(entry);
+    const after = [...tbody.children].find((row) => row.dataset.key > entry.key);
+    tbody.insertBefore(drawn.row, after || null);
+    rows.set(entry.key, drawn);
+    drawStatus();
+  };
+  const dropRow = (key) => {
+    const existing = rows.get(key);
+    if (!existing) return;
+    existing.row.remove();
+    rows.delete(key);
+    drawStatus();
+  };
+
+  // openKey reads one key and puts it in the editor. The save is guarded by
+  // the revision read here, so a key that changed since it was opened is
+  // refused with revision_mismatch rather than overwritten, and the editor
+  // says so; Reload shows what the store holds now.
+  const openKey = async (key) => {
+    const record = await api('GET', keyPath(key));
+    if (stale(seq)) return;
+    let current = record.revision;
+    clear(value);
+    value.hidden = false;
+    const revisionNode = el('dd', { id: 'kv-value-revision' }, String(current));
+    const expiresNode = el('dd', { id: 'kv-value-expires' }, record.expiresAt ? formatTime(record.expiresAt) : 'never');
+    const editStatus = el('p', { class: 'muted', id: 'kv-edit-status' });
+    const unsafe = unsafeNumber(record.value);
+    // A stored value is bounded in bytes by the hub, not in depth (section
+    // 12.2), and indenting a deeply nested one multiplies its size by its
+    // depth: 16 KiB nested 4000 deep is tens of millions of characters of
+    // whitespace. The same bounded helper the event feed uses goes compact
+    // past 64 levels, which is still the same JSON.
+    const text = attempt(() => eventPayloadText(record.value), '');
+    const editor = textArea('kv-edit-value', { rows: '16', class: 'mono' });
+    editor.value = text;
+    const ttl = textInput('kv-edit-ttl', { inputmode: 'numeric', placeholder: 'never' });
+    ttl.value = kvRemaining(record.expiresAt);
+    const save = el('button', { type: 'button', id: 'kv-save' }, 'Save');
+    const reload = el('button', { type: 'button', id: 'kv-reload' }, 'Reload');
+    save.addEventListener('click', guarded(async () => {
+      const body = { value: kvValueOf(editor.value), ifRevision: current };
+      const seconds = kvTTLOf(ttl.value);
+      if (seconds !== undefined) body.ttlSeconds = seconds;
+      save.disabled = true;
+      try {
+        const written = await api('PUT', keyPath(key), body);
+        if (stale(seq)) return;
+        current = written.revision;
+        revisionNode.textContent = String(current);
+        expiresNode.textContent = written.expiresAt ? formatTime(written.expiresAt) : 'never';
+        editStatus.textContent = 'Saved as revision ' + current + '.';
+        placeRow({ key, revision: current, expiresAt: written.expiresAt });
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'revision_mismatch') {
+          const now = err.details && err.details.revision;
+          throw new ApiError(err.status, err.code, now === 0
+            ? 'the key was deleted since it was opened; nothing was saved'
+            : 'the key changed since it was opened (it is at revision ' + now + ' now, the editor opened ' + current + '); nothing was saved, and Reload shows what it holds');
+        }
+        throw err;
+      } finally {
+        save.disabled = false;
+      }
+    }));
+    reload.addEventListener('click', guarded(async () => { await openKey(key); }));
+
+    const deleteConfirm = confirmation('kv-delete-confirm',
+      'I understand this deletes the key for every server and client that reads it');
+    const remove = el('button', { type: 'button', class: 'danger', id: 'kv-delete' }, 'Delete key');
+    remove.addEventListener('click', guarded(async () => {
+      if (!deleteConfirm.checked) {
+        throw new ApiError(0, 'confirm', 'tick the confirmation box: a delete is unconditional and cannot be undone (section 12.2)');
+      }
+      remove.disabled = true;
+      try {
+        await api('DELETE', keyPath(key)).catch((err) => {
+          // Already gone is what a delete asked for (section 12.2).
+          if (!(err instanceof ApiError && err.status === 404)) throw err;
+        });
+        if (stale(seq)) return;
+        dropRow(key);
+        clear(value);
+        value.hidden = true;
+        status.textContent += '; deleted ' + key;
+      } finally {
+        remove.disabled = false;
+      }
+    }));
+
+    const controls = [];
+    if (unsafe) {
+      // Saving would write the rounded number; the editor shows the value
+      // and refuses to save it.
+      save.disabled = true;
+      controls.push(el('p', { class: 'notice', id: 'kv-edit-unsafe' },
+        unsafe + ' is an integer beyond 2^53, which this browser has already rounded, so the value cannot be saved from here; write it with PUT /api/v1/kv/{namespace}/{key}.'));
+    }
+    value.append(el('div', { class: 'card', id: 'kv-value-card' },
+      el('h2', {}, 'Value of ', el('span', { class: 'mono' }, key)),
+      el('dl', { class: 'kv' },
+        el('dt', {}, 'Revision'), revisionNode,
+        el('dt', {}, 'Expires'), expiresNode),
+      controls,
+      fieldRow('kv-edit-value', 'Value', editor, 'JSON; the save is refused if the key changed since it was opened'),
+      fieldRow('kv-edit-ttl', 'Expires in (seconds)', ttl, 'blank for never; a save sets the expiry again, so the remaining time is filled in'),
+      el('div', { class: 'actions-row' }, save, reload),
+      editStatus,
+      el('div', { class: 'stack' }, deleteConfirm.node, el('div', { class: 'actions-row' }, remove))));
+  };
+
+  // The new-key form creates only: ifRevision 0 means "only if the key does
+  // not exist" (section 12.2), so a name already taken is refused, not
+  // replaced.
+  const newKey = textInput('kv-new-key', { placeholder: 'key name' });
+  const newValue = textArea('kv-new-value', { rows: '6', class: 'mono', placeholder: '{ }' });
+  const newTTL = textInput('kv-new-ttl', { inputmode: 'numeric', placeholder: 'never' });
+  const create = el('button', { type: 'submit', id: 'kv-create' }, 'Create key');
+  const createForm = el('form', {
+    class: 'card stack', id: 'kv-new', novalidate: true,
+    onsubmit: guarded(async (event) => {
+      event.preventDefault();
+      const key = newKey.value.trim();
+      if (key === '') throw new ApiError(0, 'bad_request', 'name the key to create');
+      const body = { value: kvValueOf(newValue.value), ifRevision: 0 };
+      const seconds = kvTTLOf(newTTL.value);
+      if (seconds !== undefined) body.ttlSeconds = seconds;
+      create.disabled = true;
+      try {
+        const written = await api('PUT', keyPath(key), body);
+        if (stale(seq)) return;
+        newKey.value = '';
+        newValue.value = '';
+        newTTL.value = '';
+        placeRow({ key, revision: written.revision, expiresAt: written.expiresAt });
+        await openKey(key);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'revision_mismatch') {
+          throw new ApiError(err.status, err.code, 'a key named ' + key + ' exists already; open it to edit it');
+        }
+        throw err;
+      } finally {
+        create.disabled = false;
+      }
+    }),
+  },
+  el('h2', {}, 'New key'),
+  fieldRow('kv-new-key', 'Key', newKey, 'dot-separated segments of letters, digits, _, and -, at most 128 characters (section 12.1)'),
+  fieldRow('kv-new-value', 'Value', newValue, 'JSON, at most 16384 bytes; not null'),
+  fieldRow('kv-new-ttl', 'Expires in (seconds)', newTTL, 'blank for never'),
+  el('div', { class: 'actions-row' }, create));
 
   let loading = false;
   more.addEventListener('click', async () => {
@@ -1573,10 +1793,10 @@ export async function viewKVKeys(app, route, seq) {
 
   app.append(
     el('h1', {}, 'Key/value ', el('span', { class: 'muted title-tail' }, namespace)),
-    el('p', { class: 'notice', id: 'kv-readonly' },
-      'Read-only in this slice: the panel lists keys and opens one value at a time. Editing arrives with presets, issue #76; until then a value is written with PUT /api/v1/kv/{namespace}/{key} (protocol section 12.2).'),
+    el('p', { class: 'muted' },
+      'Keys are shared by every server whose plugin declares this namespace, and by every token that holds its grant (protocol section 12). A write here is the same PUT /api/v1/kv/{namespace}/{key} a bot would make.'),
     prefixForm, problem.node, status, empty, table,
-    el('div', { class: 'actions-row' }, more), value);
+    el('div', { class: 'actions-row' }, more), value, createForm);
 
   if (listProblem) {
     status.textContent = 'The keys could not be listed.';

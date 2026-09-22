@@ -91,6 +91,13 @@ management views).
   snapshot (each vehicle's id with its display name or class and its kind as the
   suggestion); `object` gets an id field; a declared custom context gets an optional
   reference field fed by that context's enumeration (below).
+- **Key/value suggestions** (protocol section 6.1): a string field annotated with
+  `kvNamespace` suggests the keys stored in that namespace, read with one
+  `GET /kv/{namespace}` page (up to 500 keys) per namespace before the form is built; an
+  excluded key is marked as a context entry is, and the hint names the namespace and the
+  count. A token without the namespace's `kv:rw` grant gets a plain text field whose hint
+  names the missing grant, since dispatching an action and editing the records it reads
+  are separate grants. A name outside the list is sent as typed.
 - **Custom context enumerations** (protocol section 6.2): before an action form is built,
   the panel reads `GET /servers/{id}/contexts/{contextId}/entries` once for the action's
   own custom context and once for every context a `context` annotation in its params
@@ -224,14 +231,23 @@ management views).
   option of its own carrying the id, so the select holds it and Apply sends it back
   unchanged rather than widening the filter to every server. "Load older" walks the hub's
   cursor. Needs `admin`.
-- **Key/value** at `#/kv` and `#/kv/{namespace}` (protocol section 12), read-only in this
-  slice: the namespaces the token's grants cover that hold at least one live key, with their
-  key counts, plus a free-text input for a namespace that holds none yet; then that
-  namespace's keys, key ascending, with a `prefix` filter in the route and "Load more"
-  behind the cursor. Opening a key fetches its value with the ordinary get and shows the
-  value, revision, and expiry. The value goes through the same bounded renderer the event
-  feed uses, compact rather than indented past 64 levels, because the hub bounds a stored
-  value in bytes and not in depth. Editing arrives with presets, issue #76.
+- **Key/value** at `#/kv` and `#/kv/{namespace}` (protocol section 12): the namespaces the
+  token's grants cover that hold at least one live key, with their key counts, plus a
+  free-text input for a namespace that holds none yet; then that namespace's keys, key
+  ascending, with a `prefix` filter in the route and "Load more" behind the cursor, and an
+  editor (issue #76). Opening a key fetches its value with the ordinary get into a JSON
+  text area, rendered by the same bounded helper the event feed uses (compact rather than
+  indented past 64 levels, because the hub bounds a stored value in bytes and not in
+  depth), with its revision and the seconds left before it expires. Save writes the value
+  with `ifRevision` set to the revision opened, so a key a plugin or a bot changed
+  meanwhile is refused with `revision_mismatch` (named with the current revision) rather
+  than overwritten; Reload shows what the store holds now. The remaining TTL is filled in
+  and sent with the save, because a set without `ttlSeconds` makes a key permanent. A
+  value that is not JSON, or is `null`, is refused on the page, and a stored value holding
+  an integer beyond 2^53 is shown but cannot be saved: the browser's parser has already
+  rounded it. Delete asks for a confirmation box and treats an already-gone key as done.
+  The new-key form creates only (`ifRevision: 0`), so a name already taken is refused
+  rather than replaced; a key written here lands in the list in key order.
 
 ## Map tilesets
 

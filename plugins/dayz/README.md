@@ -108,8 +108,9 @@ curl -X POST https://hub.example.net/api/v1/servers/<serverId>/actions \
 The `referenceKey` of a player-context action is the player's plain Steam64 id, the same
 identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
 from the latest `state.vehicles` snapshot. The manifest (declaring the `vyshka` key/value
-namespace for the admin flags, plus whatever the mods on the server register; its revision
-is derived from its content, see "Writing a mod against the plugin") declares:
+namespace for the admin flags and one namespace per preset kind, `vyshka.loadouts`,
+`vyshka.locations`, and `vyshka.vehicles`, plus whatever the mods on the server register;
+its revision is derived from its content, see "Writing a mod against the plugin") declares:
 
 | Code | Context | Danger | Params | Result |
 |---|---|---|---|---|
@@ -133,9 +134,13 @@ is derived from its content, see "Writing a mod against the plugin") declares:
 | `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
 | `vyshka.inventory.clear` | player | destructive | none | `name`, `deleted` (one `{ class, name, slot, items }` per item), `deletedCount`, `items` (everything deleted, contents included); each item is deleted through the engine's safe delete, its contents with it |
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
+| `vyshka.loadout.apply` | player | warning | `loadout` (required; a key of `vyshka.loadouts`, annotated so a panel offers the stored names), `previous` (`keep`, the default, or `drop`: everything the player carries goes to the ground beside them first, as a strip does) | `loadout`, `revision` (of the record read), `name`, `created` (items made, contents included), `problems` (one `{ class, reason }` per entry that could not be made or set, at most 40), `problemCount` (when there were more), and with `drop` the `dropped` count and any `skipped`; see "Presets" below |
+| `vyshka.loadout.capture` | player | warning | `loadout` (required; the name to store it under), `overwrite` (default false: an existing loadout of that name fails the action rather than being replaced) | `loadout`, `items`, `bytes` (the stored value's size, at most 16384), `revision`; what the player wears and holds is written to `vyshka.loadouts/<loadout>` under the plugin's own session |
+| `vyshka.location.teleport` | player | warning | `location` (required; a key of `vyshka.locations`) | `location`, `revision`, `name`, `from`, `to`, `radius`, `offset` (metres from the location's centre, when it scatters), `vehicle` when the player's vehicle was moved with them; the teleport is the undo point `vyshka.teleport` `previous` returns to |
+| `vyshka.vehicle.spawn` | world | warning | `vehicle` (required; a key of `vyshka.vehicles`), and exactly one place: `position` (`[x, y, z]`, or `[x, z]` placed on the terrain) or `nearPlayer` (a Steam64 id: 6 m in front of that player, facing the way they face) | `vehicle`, `revision`, `className`, `position`, `nearPlayer`, `created`, `autoParts` (parts `autoParts` added), `empty` (`{ slot, on }` per slot `autoParts` found no part for, a part's own optional slot such as a battery's wire included), `fluids` (`fuel`, `oil`, `brake`, `coolant` as fractions read back), `wheels`, `problems`, `problemCount` |
 
 Kick, message, teleport, spawn, the ban's own kick, vitals, stop bleeding, dry, broken legs,
-and bloody hands need the player online and fail with `player <id> is not online` otherwise;
+bloody hands, and the loadout and location actions need the player online and fail with `player <id> is not online` otherwise;
 ban, unban, and flags take an offline identity by its plain Steam64 id. Unstuck fails with `no vehicle <id> exists on this
 server` when the id is not in the current vehicle list.
 
@@ -578,6 +583,87 @@ and a process kill does not: a server killed from the outside leaves no stop eve
 **Positions** are the engine's own vector, `[x, y, z]` with `y` the elevation in metres, so
 a DayZ map plots `x` against `z`. That is the game's own map frame of section 8.3; the hub
 never interprets it and a map view has to know the game.
+
+## Presets
+
+Loadouts, teleport locations, and vehicle presets are records an operator keeps in the
+hub's key/value store (protocol section 12), one namespace per kind, the key being the
+preset's name: `vyshka.loadouts`, `vyshka.locations`, `vyshka.vehicles`. The panel's
+key/value view edits them, and a bot writes them with `PUT /api/v1/kv/{namespace}/{key}`
+like any other key. Each apply action reads its record when it runs, under the plugin's own
+session, so an edit takes effect on the next dispatch with no restart, and dispatching an
+apply needs no store grant: who may apply presets (`actions:dispatch`) and who may edit
+them (`kv:rw:vyshka.loadouts`, and so on) are separate grants, and neither reaches the
+admin flags under `vyshka`. The store is installation-wide, so a preset written once is
+there on every server enrolled in the hub. Each action's name param carries the
+`kvNamespace` annotation (protocol section 6.1), which is how the panel offers the names
+the store holds to a token that may list them.
+
+A **loadout** is a list of item entries:
+
+```json
+{ "items": [
+    { "class": "TShirt_Black", "slot": "Body", "cargo": [ { "class": "BandageDressing" } ] },
+    { "class": "M4A1", "slot": "Hands", "loaded": true,
+      "attachments": [ { "class": "Mag_STANAG_30Rnd", "slot": "magazine", "quantity": 30 },
+                       { "class": "ACOGOptic", "slot": "weaponOptics" } ] },
+    { "class": "Canteen", "quantity": 1000, "liquid": "Water", "health": 70 } ] }
+```
+
+An entry takes `class` (required), `slot` (for an item worn by the player, the character's
+slot name, `Hands` for the held item; for an attachment, the slot it goes in),
+`quantity` (a stack's count, a container's fill, a magazine's rounds), `health` (0 to 100,
+a percent of the item's maximum), `liquid` (a `cfgLiquidDefinitions` class name such as
+`Water`), `loaded` (a firearm: chamber a round, or fill a hand-fed firearm's internal
+magazine, full), and `attachments` and `cargo` (entries of its own contents). Applying a
+loadout creates the worn items first, then the items with no slot through the inventory's
+own placement search, then the held item; an item whose slot is taken or refuses it goes
+wherever the inventory finds room, and one that fits nowhere is a problem in the result.
+A firearm's magazine goes on through the engine's spawn-with-magazine call, so the weapon
+knows it is loaded. Every class is checked as `vyshka.spawn` checks one (a public class
+this server declares, not on the `spawnBlocklist`); a refused entry is skipped with its
+reason and the rest are made. A loadout nests at most 8 levels and creates at most 400
+items. `previous: drop` strips the player first; to delete what they carry instead, run
+`vyshka.inventory.clear` before the apply.
+
+`vyshka.loadout.capture` writes what a player wears and holds in that shape, with
+`capturedFrom`, `capturedAt`, and `actionId` beside `items`. It records each item's class,
+slot, health below 100, quantity or rounds, liquid, and a firearm's `loaded`; it does not
+record a food's stage, temperature, wetness, or the exact rounds in a hand-fed firearm
+(applied full). The record must fit the store's 16384-byte value bound: the heavy stock
+loadout of `spikes/dayz-inventory-tree`, 122 items on a live DayZ 1.29 character, captured
+to 5062 bytes, and a capture over the bound fails and says so.
+
+A **location** is a position and a scatter radius:
+
+```json
+{ "position": [4230.5, 10620.0], "radius": 25, "label": "North-west airfield" }
+```
+
+`position` is `[x, z]` (placed on the terrain) or `[x, y, z]`, the shape `vyshka.teleport`
+takes; `radius` is metres within 0 and 1000, default 0. With a radius, each teleport lands
+on a point drawn evenly over the disc, on the terrain (the location's own `y` is for its
+centre only), so a group sent one by one does not land in one spot; a point past the map
+edge is drawn again, up to eight times, and the centre is used after that. Other members
+(`label` here) are the operator's and are ignored.
+
+A **vehicle preset** is a car, its parts, and its fluids:
+
+```json
+{ "class": "CivilianSedan", "autoParts": true,
+  "attachments": [ { "class": "CivSedanWheel", "slot": "CivSedanWheel_1_1" } ],
+  "cargo": [ { "class": "CanisterGasoline", "quantity": 20000 } ],
+  "fluids": { "fuel": 1, "coolant": 1, "oil": 1, "brake": 1 } }
+```
+
+`class` must be a car (`CarScript`). `attachments` and `cargo` are loadout entries;
+`autoParts` then fills every slot still empty with the first compatible part the engine
+accepts, the way `vyshka.spawn` `auto` does (wheels, doors, hood and trunk, battery, spark
+plug, radiator, headlights); `fluids` fills each named fluid to its fraction of the tank,
+and a fluid not named stays as the engine made it, which for a new car is empty. A car
+with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and
+`coolant`, which the engine overheats without).
+
 
 ## Item catalog
 

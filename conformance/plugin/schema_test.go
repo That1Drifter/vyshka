@@ -189,7 +189,7 @@ func TestValidateSubsetRejectsInexactConstants(t *testing.T) {
 		"enumMember": {"enum": []any{[]any{float64(-9007199254740993)}}},
 		"bound":      {"type": "integer", "maximum": float64(9007199254740993)},
 	} {
-		if err := validateSubset(schema, "params", nil); err == nil {
+		if err := validateSubset(schema, "params", declaredNames{}); err == nil {
 			t.Errorf("%s: a hub rejects a constant beyond 2^53, the suite accepted it", name)
 		}
 	}
@@ -214,7 +214,7 @@ func TestSynthesizeParamsSatisfiesTheDriverSchema(t *testing.T) {
 }
 
 func TestValidateSubsetContextAnnotation(t *testing.T) {
-	declared := map[string]bool{"driver.zone": true, "driver.item": true}
+	declared := declaredNames{contexts: map[string]bool{"driver.zone": true, "driver.item": true}}
 	accepted := []map[string]any{
 		{"type": "object", "properties": map[string]any{
 			"zone": map[string]any{"type": "string", "context": "driver.zone"},
@@ -233,6 +233,32 @@ func TestValidateSubsetContextAnnotation(t *testing.T) {
 		"empty":      {"type": "string", "context": []any{}},
 		"number":     {"type": "string", "context": 3},
 		"duplicate":  {"type": "string", "context": []any{"driver.zone", "driver.zone"}},
+	}
+	for name, schema := range rejected {
+		if err := validateSubset(schema, "params", declared); err == nil {
+			t.Errorf("%s: a hub rejects this annotation, the suite accepted it", name)
+		}
+	}
+}
+
+func TestValidateSubsetKVNamespaceAnnotation(t *testing.T) {
+	declared := declaredNames{kvNamespaces: map[string]bool{"driver.presets": true}}
+	accepted := []map[string]any{
+		{"type": "object", "properties": map[string]any{
+			"preset": map[string]any{"type": "string", "kvNamespace": "driver.presets"},
+		}},
+		{"type": "string", "kvNamespace": nil},
+	}
+	for i, schema := range accepted {
+		if err := validateSubset(schema, "params", declared); err != nil {
+			t.Errorf("accepted[%d]: %v", i, err)
+		}
+	}
+	rejected := map[string]map[string]any{
+		"undeclared": {"type": "string", "kvNamespace": "driver.nothing"},
+		"nonString":  {"type": "integer", "kvNamespace": "driver.presets"},
+		"untyped":    {"kvNamespace": "driver.presets"},
+		"array":      {"type": "string", "kvNamespace": []any{"driver.presets"}},
 	}
 	for name, schema := range rejected {
 		if err := validateSubset(schema, "params", declared); err == nil {
@@ -329,7 +355,7 @@ func TestValidateSubsetExclusion(t *testing.T) {
 		{"type": "string", "not": nil},
 	}
 	for i, schema := range accepted {
-		if err := validateSubset(schema, "params", nil); err != nil {
+		if err := validateSubset(schema, "params", declaredNames{}); err != nil {
 			t.Errorf("accepted[%d]: %v", i, err)
 		}
 	}
@@ -340,7 +366,7 @@ func TestValidateSubsetExclusion(t *testing.T) {
 		"emptyEnum": {"type": "string", "not": map[string]any{"enum": []any{}}},
 	}
 	for name, schema := range rejected {
-		if err := validateSubset(schema, "params", nil); err == nil {
+		if err := validateSubset(schema, "params", declaredNames{}); err == nil {
 			t.Errorf("%s: a hub rejects this not, the suite accepted it", name)
 		}
 	}

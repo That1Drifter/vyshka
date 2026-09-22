@@ -1503,9 +1503,87 @@ function contextHint(refs, feed) {
   return 'suggested from ' + parts.join(', ') + '; a value outside the list is sent as typed';
 }
 
+// kvNamespaceOf reads a schema's `kvNamespace` annotation (protocol section
+// 6.1): the key/value namespace whose keys the field offers. Anything but a
+// non-empty string reads as no annotation.
+function kvNamespaceOf(schema) {
+  const value = schema && schema.kvNamespace;
+  return typeof value === 'string' && value !== '' ? value : '';
+}
+
+// schemaKVNamespaces collects every namespace a params schema's `kvNamespace`
+// annotations name on a string field, so each is listed once before the form
+// is built.
+function schemaKVNamespaces(schema, found = new Set(), depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return found;
+  if (schema.type === 'string' && kvNamespaceOf(schema) !== '') found.add(kvNamespaceOf(schema));
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const child of Object.values(schema.properties)) schemaKVNamespaces(child, found, depth + 1);
+  }
+  return found;
+}
+
+// How many keys a field's suggestions list: one page at the reference hub's
+// cap (section 12.2), which a hand-kept set of presets does not reach.
+const KV_SUGGEST_LIMIT = 500;
+
+// loadKVKeys lists the keys of each named namespace through
+// GET /kv/{namespace} (section 12.2), one page each, into a map by
+// namespace. A token without the namespace's kv:rw grant still gets the
+// form, with a hint that says why the list is empty: dispatching an action
+// and editing the records it reads are separate grants (section 6.1). A
+// refused token propagates: the page's sign-out logic wants it.
+async function loadKVKeys(namespaces) {
+  const feed = {};
+  await Promise.all(namespaces.map(async (namespace) => {
+    try {
+      const answer = await api('GET', '/kv/' + encodeURIComponent(namespace) + '?limit=' + KV_SUGGEST_LIMIT);
+      const keys = answer && Array.isArray(answer.keys) ? answer.keys : [];
+      feed[namespace] = {
+        keys: keys.map((entry) => entry && entry.key).filter((key) => typeof key === 'string' && key !== ''),
+        more: Boolean(answer && answer.nextCursor),
+        error: '',
+      };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) throw err;
+      const error = err instanceof ApiError ? (err.status === 403 ? 'forbidden' : err.code) : 'unreachable';
+      feed[namespace] = { keys: [], more: false, error };
+    }
+  }));
+  return feed;
+}
+
+// kvDatalist offers a namespace's keys as a field's values; an excluded one
+// is marked the way contextDatalist marks it. Null when there is none.
+function kvDatalist(namespace, feed, schema) {
+  const loaded = feed && feed[namespace];
+  if (!loaded || loaded.keys.length === 0) return null;
+  const options = loaded.keys.map((key) => {
+    const blocked = isExcluded(schema, key);
+    return el('option', { value: key, 'data-excluded': blocked ? 'true' : undefined },
+      blocked ? key + ' (blocked on this server)' : key);
+  });
+  return el('datalist', { id: nextId('kv') }, options);
+}
+
+// kvHint says where a field's suggestions come from, and why there are none
+// when the token cannot list the namespace.
+function kvHint(namespace, feed) {
+  const loaded = feed && feed[namespace];
+  if (!loaded) return 'a key of ' + namespace;
+  if (loaded.error === 'forbidden') {
+    return 'a key of ' + namespace + '; this token holds no kv:rw:' + namespace + ' grant, so the names cannot be listed: type one';
+  }
+  if (loaded.error) return 'a key of ' + namespace + ' (' + loaded.error + '); type one';
+  const count = loaded.keys.length;
+  return 'suggested from the keys of ' + namespace + ' (' + count + (loaded.more ? '+' : '') +
+    (count === 1 ? ' key' : ' keys') + '); a name outside the list is sent as typed';
+}
+
 function stringField(schema, opts) {
   const widget = widgetOf(schema);
   const contextRefs = contextRefsOf(schema);
+  const kvNamespace = kvNamespaceOf(schema);
   // Hints shape the input, never its validation (section 6.1: a hint does
   // not constrain the data model), so a webhook stays a text input with a
   // URL keyboard rather than a URL input that would refuse a relative path
@@ -1528,6 +1606,15 @@ function stringField(schema, opts) {
     hint = contextHint(contextRefs, opts.contextEntries);
     const excluded = excludedOf(schema);
     if (excluded.length > 0) hint += '; ' + excluded.length + (excluded.length === 1 ? ' value is' : ' values are') + ' blocked on this server';
+  } else if (kvNamespace !== '') {
+    // A field annotated with a key/value namespace (section 6.1): its
+    // values are the keys the store holds there, listed before the form
+    // was built.
+    datalist = kvDatalist(kvNamespace, opts.kvKeys, schema);
+    if (datalist) attrs.list = datalist.id;
+    attrs.placeholder = 'a name in ' + kvNamespace;
+    attrs['data-kv-namespace'] = kvNamespace;
+    hint = kvHint(kvNamespace, opts.kvKeys);
   } else if (widget === 'player') {
     datalist = playerDatalist(opts.players);
     if (datalist) attrs.list = datalist.id;
@@ -1742,6 +1829,7 @@ function objectField(schema, opts) {
     soft: optional || opts.soft,
     players: opts.players,
     contextEntries: opts.contextEntries,
+    kvKeys: opts.kvKeys,
     register: opts.register,
   }));
   const includeBox = optional && opts.path !== ''
@@ -1841,7 +1929,7 @@ function jsonField(schema, opts) {
 // buildParamsForm turns an action's params schema into fields, returning the
 // container node, a read() that yields the params object, and a map from
 // hub fault paths to the fields that own them.
-function buildParamsForm(paramsSchema, players, contextEntries) {
+function buildParamsForm(paramsSchema, players, contextEntries, kvKeys) {
   const fieldsByPath = new Map();
   const register = (field) => { fieldsByPath.set(field.node.dataset.path, field); };
   const container = el('div', { class: 'stack', id: 'params' });
@@ -1850,7 +1938,7 @@ function buildParamsForm(paramsSchema, players, contextEntries) {
     return { node: container, fieldsByPath, read: () => ({}) };
   }
   const root = buildField(paramsSchema, {
-    name: 'params', path: '', label: 'Parameters', required: true, players, contextEntries, register,
+    name: 'params', path: '', label: 'Parameters', required: true, players, contextEntries, kvKeys, register,
   });
   register(root);
   container.append(root.node);
@@ -2081,9 +2169,14 @@ async function viewAction(app, route, seq) {
   if (contexts.some((entry) => entry && entry.id === action.context)) wanted.add(action.context);
   const contextEntries = wanted.size > 0 ? await loadContextEntries(server.id, [...wanted], contexts) : {};
   if (stale(seq)) return;
+  // The key/value namespaces its `kvNamespace` annotations name, each listed
+  // once (section 6.1).
+  const namespaces = schemaKVNamespaces(action.params);
+  const kvKeys = namespaces.size > 0 ? await loadKVKeys([...namespaces]) : {};
+  if (stale(seq)) return;
 
   const target = targetField(action, contexts, players, vehicles, contextEntries);
-  const params = buildParamsForm(action.params, players, contextEntries);
+  const params = buildParamsForm(action.params, players, contextEntries, kvKeys);
   if (target) params.fieldsByPath.set('referenceKey', target);
   // A player picked on the map arrives in the route and lands in the
   // target field, which stays editable: the preselection is a convenience,

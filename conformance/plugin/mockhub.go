@@ -336,10 +336,11 @@ type manifestContext struct {
 }
 
 type manifestInfo struct {
-	Game     string
-	Revision int64
-	Actions  []manifestAction
-	Contexts []manifestContext
+	Game         string
+	Revision     int64
+	Actions      []manifestAction
+	Contexts     []manifestContext
+	KVNamespaces []string
 }
 
 type actionTrack struct {
@@ -1293,6 +1294,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 				ID   string `json:"id"`
 				Name string `json:"name"`
 			} `json:"contexts"`
+			KVNamespaces []string `json:"kvNamespaces"`
 		}
 		if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 			h.faultLocked("6", "a manifest.publish body could not be decoded as an object")
@@ -1305,7 +1307,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		if h.manifest != nil && revision <= h.manifest.Revision {
 			return
 		}
-		info := &manifestInfo{Game: body.Game, Revision: revision}
+		info := &manifestInfo{Game: body.Game, Revision: revision, KVNamespaces: body.KVNamespaces}
 		for _, action := range body.Actions {
 			info.Actions = append(info.Actions, manifestAction{
 				Code: action.Code, Context: action.Context, Params: action.Params,
