@@ -35,6 +35,27 @@ func TestSynthesizeStaysInsideTheSchemaWhenStepping(t *testing.T) {
 	}
 }
 
+func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
+	blocked := map[string]any{"enum": []any{"blocked"}}
+	for name, schema := range map[string]map[string]any{
+		"fractionalRange": {"type": "number", "minimum": float64(0), "maximum": 0.5, "not": map[string]any{"enum": []any{float64(0)}}},
+		"exclusiveStart":  {"type": "number", "exclusiveMinimum": float64(0), "maximum": 0.5, "not": map[string]any{"enum": []any{float64(0)}}},
+		"objectDefault": {"type": "object", "default": map[string]any{"x": "blocked"},
+			"properties": map[string]any{"x": map[string]any{"type": "string", "not": blocked}}},
+		"compoundEnum": {"enum": []any{map[string]any{"x": "blocked"}, map[string]any{"x": "allowed"}},
+			"properties": map[string]any{"x": map[string]any{"type": "string", "not": blocked}}},
+		"emptyArrayExcluded": {"type": "array", "items": map[string]any{"type": "string"}, "not": map[string]any{"enum": []any{[]any{}}}},
+	} {
+		value := synthesizeValue(schema)
+		encoded, _ := json.Marshal(value)
+		var decoded any
+		_ = json.Unmarshal(encoded, &decoded)
+		if !satisfies(schema, decoded) {
+			t.Errorf("%s: synthesized %s, which the schema refuses", name, encoded)
+		}
+	}
+}
+
 func TestValidateSubsetRejectsInexactConstants(t *testing.T) {
 	for name, schema := range map[string]map[string]any{
 		"notMember":  {"type": "number", "not": map[string]any{"enum": []any{float64(9007199254740993)}}},

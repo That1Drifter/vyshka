@@ -252,8 +252,10 @@ result is the class as the engine reports it.
   without a rail, a muzzle behind a bayonet). A stock car's report is about 1 KiB; one that
   would pass the 60 000-byte result budget (a modded item with many slots, each part with
   many of its own) lists the parts with their own parts counted as `parts`, and past that
-  keeps only the counts, with `truncated`, `attachmentCount`, and `emptyCount` saying so,
-  so the hub's 64 KiB cap never drops the result.
+  keeps only the counts, with `truncated`, `attachmentCount`, and `emptyCount` saying so.
+  The display name is cut to 200 characters, and a result still over the budget (names a
+  modded class brings) is answered with `name`, `className`, `into`, `placed`, and
+  `truncated` alone, so the hub's 64 KiB cap never drops the result.
 - **Blocklist.** `spawnBlocklist` in `config.json` (below) names classes the action must
   not create. The plugin publishes it in the action's params schema as `"not": {"enum":
   [...]}` (protocol section 6.1), so the hub refuses a listed name before it is ever

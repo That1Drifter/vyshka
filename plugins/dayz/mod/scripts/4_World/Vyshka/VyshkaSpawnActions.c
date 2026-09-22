@@ -265,12 +265,12 @@ class VyshkaSpawn
 			if (slots.Count() == 0)
 				continue;
 			// A sort key per class, so the native sort orders the list: the
-			// count of slots it fits (four digits), then its name. The
+			// count of slots it fits (ten digits, any int), then its name. The
 			// separator sorts below every character a class name has, so a
 			// name comes before its own variants (M4_MPHndgrd before
 			// M4_MPHndgrd_Black, HatchbackWheel before HatchbackWheel_Ruined).
 			string width = slots.Count().ToString();
-			while (width.Length() < 4)
+			while (width.Length() < 10)
 				width = "0" + width;
 			string sortName = name;
 			sortName.ToLower();
@@ -603,13 +603,12 @@ class VyshkaSpawn
 	}
 
 	// Discard removes an item the action created and then failed on, so a
-	// refused spawn leaves nothing behind: in an inventory through the
-	// engine's safe delete, on the ground at once.
+	// refused spawn leaves nothing behind. The engine's safe delete deletes
+	// what no living player holds (on the ground: on the next frame) and
+	// queues on the holder, synchronized, what one does; an item the engine
+	// is already deleting (a quantity setter that deleted it) is left be.
 	static void Discard(Object created)
 	{
-		// The engine's safe delete deletes at once what no living player
-		// holds and queues the rest on the holder; an item the engine is
-		// already deleting (a quantity setter that deleted it) is left be.
 		EntityAI entity = EntityAI.Cast(created);
 		if (entity)
 		{
@@ -808,7 +807,10 @@ class VyshkaSpawnAction : VyshkaAction
 
 		VyshkaJsonValue result = VyshkaVitals.Result(player);
 		result.Set("className", VyshkaJsonValue.NewString(created.GetType()));
-		result.Set("displayName", VyshkaJsonValue.NewString(created.GetDisplayName()));
+		// A display name comes from a mod's string table and has no bound
+		// of its own; the catalog's label bound keeps it from filling the
+		// result budget.
+		result.Set("displayName", VyshkaJsonValue.NewString(VyshkaAction.Bound(created.GetDisplayName(), VyshkaRegistry.LABEL_MAX)));
 		result.Set("config", VyshkaJsonValue.NewString(tree));
 		result.Set("into", VyshkaJsonValue.NewString(into));
 		if (item)
@@ -836,6 +838,19 @@ class VyshkaSpawnAction : VyshkaAction
 		}
 		string placedAs = result.GetString("placed", "ground");
 		VyshkaLog.Info("spawned " + created.GetType() + " for " + VyshkaVitals.Describe(player) + " (" + placedAs + ") at " + created.GetPosition().ToString());
+		// The last guard on the result cap: whatever else a modded class
+		// brings (a slot or container name of its own), a result past the
+		// budget is answered with the fields that say what happened, rather
+		// than one the hub would drop whole.
+		if (result.Serialize().Length() > VyshkaInventory.RESULT_BUDGET)
+		{
+			VyshkaJsonValue brief = VyshkaVitals.Result(player);
+			brief.Set("className", VyshkaJsonValue.NewString(created.GetType()));
+			brief.Set("into", VyshkaJsonValue.NewString(into));
+			brief.Set("placed", VyshkaJsonValue.NewString(placedAs));
+			brief.Set("truncated", VyshkaJsonValue.NewBool(true));
+			return VyshkaActionOutcome.Success(brief);
+		}
 		return VyshkaActionOutcome.Success(result);
 	}
 }

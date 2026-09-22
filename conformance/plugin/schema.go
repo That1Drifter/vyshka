@@ -37,8 +37,10 @@ func synthesizeValue(schema map[string]any) any {
 		return value
 	}
 	if enum, ok := schema["enum"].([]any); ok && len(enum) > 0 {
+		// The first member the whole schema admits: an exclusion or a
+		// property schema can refuse a member the enum lists.
 		for _, member := range enum {
-			if !excluded(schema, member) {
+			if satisfies(schema, member) {
 				return member
 			}
 		}
@@ -65,7 +67,12 @@ func synthesizeValue(schema map[string]any) any {
 		}
 		return out
 	case "array":
-		return []any{}
+		// Empty unless the schema excludes the empty array; then one item.
+		if satisfies(schema, []any{}) {
+			return []any{}
+		}
+		items, _ := schema["items"].(map[string]any)
+		return []any{synthesizeValue(items)}
 	case "string":
 		// A value the schema's `not` excludes (section 6.1) is stepped past;
 		// the list is finite, so one more candidate than it has members
@@ -116,22 +123,41 @@ func synthesizeNumber(schema map[string]any, schemaType string) any {
 // never across the schema's bounds. The first candidate is returned when
 // every step in reach is excluded too.
 func steppedNumber(schema map[string]any, first any) any {
-	if !excluded(schema, first) {
-		return first
+	integer := false
+	if _, ok := first.(int64); ok {
+		integer = true
+	}
+	var candidates []float64
+	start, _ := normalize(first).(float64)
+	candidates = append(candidates, start)
+	// The bounds and points between them, so a narrow or fractional range
+	// that excludes its only whole step still yields a value inside it.
+	low, hasLow := asFloat(schema["minimum"])
+	if exclusive, ok := asFloat(schema["exclusiveMinimum"]); ok && (!hasLow || exclusive >= low) {
+		low, hasLow = exclusive, true
+	}
+	high, hasHigh := asFloat(schema["maximum"])
+	if exclusive, ok := asFloat(schema["exclusiveMaximum"]); ok && (!hasHigh || exclusive <= high) {
+		high, hasHigh = exclusive, true
+	}
+	if hasLow && hasHigh {
+		for _, fraction := range []float64{0, 1, 0.5, 0.25, 0.75, 0.125, 0.875} {
+			candidates = append(candidates, low+(high-low)*fraction)
+		}
 	}
 	reach := exclusionCount(schema) + 1
-	for _, direction := range []float64{1, -1} {
-		for step := 1; step <= reach; step++ {
-			var candidate any
-			switch typed := first.(type) {
-			case int64:
-				candidate = typed + int64(direction)*int64(step)
-			case float64:
-				candidate = typed + direction*float64(step)
+	for step := 1; step <= reach; step++ {
+		candidates = append(candidates, start+float64(step), start-float64(step))
+	}
+	for _, candidate := range candidates {
+		if integer {
+			candidate = math.Ceil(candidate)
+		}
+		if satisfies(schema, candidate) {
+			if integer {
+				return int64(candidate)
 			}
-			if satisfies(schema, normalize(candidate)) {
-				return candidate
-			}
+			return candidate
 		}
 	}
 	return first
@@ -169,6 +195,13 @@ func satisfies(schema map[string]any, value any) bool {
 		}
 	}
 	schemaType, _ := schema["type"].(string)
+	// An untyped schema with properties still holds an object value to
+	// them (a compound enum member, say).
+	if _, isObject := value.(map[string]any); isObject && schemaType == "" {
+		if _, has := schema["properties"]; has {
+			schemaType = "object"
+		}
+	}
 	switch schemaType {
 	case "string":
 		_, ok := value.(string)
@@ -203,10 +236,12 @@ func satisfies(schema map[string]any, value any) bool {
 			if !isString {
 				continue
 			}
-			member, present := object[key]
-			if !present {
+			if _, present := object[key]; !present {
 				return false
 			}
+		}
+		// Every property present is held to its schema, required or not.
+		for key, member := range object {
 			if property, isSchema := properties[key].(map[string]any); isSchema && !satisfies(property, member) {
 				return false
 			}
