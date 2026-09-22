@@ -2262,6 +2262,100 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "action.dispatch.excluded",
+		Title:   "A schema's not/enum exclusion is enforced at dispatch, and no other form of not is accepted",
+		Section: "6.1",
+		Run: func(ctx context.Context, env Env) error {
+			plugin, err := env.newFakePlugin(ctx, "conformance: excluded values", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			// A spawn-style action whose class name carries a server-side
+			// blocklist, the use the form exists for.
+			spawn := func(not any) map[string]any {
+				return map[string]any{
+					"code": "example-mod.spawn", "name": "Spawn item",
+					"context": "player", "namespace": "example-mod", "danger": "warning",
+					"params": map[string]any{
+						"type":     "object",
+						"required": []string{"className"},
+						"properties": map[string]any{
+							"className": map[string]any{"type": "string", "not": not},
+						},
+					},
+				}
+			}
+			if _, err := plugin.publishManifest(ctx, manifestBody(1, spawn(map[string]any{"enum": []string{"Blocked_Launcher", "Blocked_Grenade"}}))); err != nil {
+				return err
+			}
+			record, err := env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 1 {
+				return fmt.Errorf("revision = %d, want 1: a not of the form {\"enum\": [...]} is inside the subset and the manifest must be accepted", record.Revision)
+			}
+			path := "/api/v1/servers/" + plugin.Server.Server.ID + "/actions"
+			for _, blocked := range []string{"Blocked_Launcher", "Blocked_Grenade"} {
+				if err := env.expectError(ctx, http.MethodPost, path, env.AdminToken, map[string]any{
+					"code": "example-mod.spawn", "params": map[string]any{"className": blocked},
+				}, http.StatusBadRequest, "params_invalid"); err != nil {
+					return fmt.Errorf("dispatching the excluded %q: %w", blocked, err)
+				}
+			}
+			// Nothing refused reached the queue: a poll comes back with nothing
+			// but the nudge it was primed with.
+			if _, err := env.queueEnvelope(ctx, plugin.Server.Server.ID, unknownType(), nil); err != nil {
+				return err
+			}
+			response, err := plugin.pollAndAck(ctx)
+			if err != nil {
+				return err
+			}
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "action.dispatch" {
+					return fmt.Errorf("a dispatch naming an excluded value was queued; the exclusion is a constraint, not an annotation")
+				}
+			}
+			// A value the list does not name passes, whatever it resembles: the
+			// comparison is by equality, so a different case is a different value.
+			for _, allowed := range []string{"Allowed_Rifle", "blocked_launcher"} {
+				if _, _, err := env.dispatchAction(ctx, plugin.Server.Server.ID, map[string]any{
+					"code": "example-mod.spawn", "params": map[string]any{"className": allowed},
+				}); err != nil {
+					return fmt.Errorf("dispatching %q, which the exclusion does not list: %w", allowed, err)
+				}
+			}
+
+			// Any other form of not is outside the subset: a hub that accepted
+			// `not: {"type": "string"}` would promise an exclusion no UI can show.
+			published := plugin.nextOutbound("manifest.publish", manifestBody(2, spawn(map[string]any{"type": "integer"})))
+			response, err = plugin.pollAndAck(ctx, published)
+			if err != nil {
+				return err
+			}
+			var rejects []envelope
+			for _, delivered := range response.Envelopes {
+				if delivered.Type == "manifest.reject" {
+					rejects = append(rejects, delivered)
+				}
+			}
+			if len(rejects) == 0 {
+				if rejects, err = plugin.awaitEnvelope(ctx, "manifest.reject", 3); err != nil {
+					return fmt.Errorf("a manifest with not in a form other than {\"enum\": [...]} drew no manifest.reject: %w", err)
+				}
+			}
+			record, err = env.storedManifest(ctx, plugin.Server.Server.ID)
+			if err != nil {
+				return err
+			}
+			if record.Revision != 1 {
+				return fmt.Errorf("revision = %d after a manifest whose not was {\"type\": ...}, want the accepted 1 untouched", record.Revision)
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "action.isolation",
 		Title:   "An actionId is not a credential: another server's plugin cannot move it",
 		Section: "7",

@@ -50,6 +50,9 @@ class VyshkaBoot
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
 		VyshkaCatalog.Reset();
+		// Read before the actions register, so the spawn action's schema
+		// carries the blocklist from the first manifest.
+		VyshkaSpawn.LoadBlocklist();
 
 		VyshkaRegistry registry = new VyshkaRegistry();
 		if (mission)

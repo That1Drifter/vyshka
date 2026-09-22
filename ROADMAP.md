@@ -1,6 +1,7 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the inventory actions of #74 landed, the first action result
+**As of:** 2026-09-22 (the spawning extension of #75 landed as protocol draft 0.28, the
+schema subset gaining its one form of `not`; the inventory actions of #74 landed, the first action result
 measured against its cap; the item catalog of #73 landed as protocol draft 0.27, closing the
 hub side of `context.enumerate`; the server binding of #81 landed as draft 0.26 and the
 plugin fixes of #108 on 2026-09-21; the shape of #80 settled in its issue, its pull spike
@@ -55,7 +56,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.27 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.28 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -168,10 +169,18 @@ After the tag, in this order:
     that much is answered whole and the action's cut (one level of containers less until
     it fits, the counts kept) is for far larger loads, modded containers first of all.
     Each action was verified live on DayZ 1.29 with a retail client.
-12. **Spawning extension** (#75): spawn into a target inventory with quantity and health;
-    `attachments: auto`; the class-name blocklist expressed in the action's parameter schema
-    so the panel greys entries out with no manifest change and third-party spawn actions
-    get it for free.
+12. **Spawning extension** (#75), landed 2026-09-22: `vyshka.spawn` takes `into` (the
+    ground, the inventory through the engine's own placement search, or the hands), a
+    `quantity` and a `health` bounded by the item's own ranges, and `attachments: auto`,
+    which loads a firearm through the engine's spawn-with-ammo call and fills every slot
+    with the first compatible part the engine accepts in a fixed order. The operator's
+    `spawnBlocklist` rides the action's params schema as `not`/`enum`, the one form of
+    `not` the schema subset now admits (protocol draft 0.28), so the hub refuses a blocked
+    name before it is queued, the panel marks it in the catalog's suggestions, and any
+    third-party action gets the same by writing the same clause; the plugin also refuses
+    it in any case. `spikes/dayz-spawn-attachments` measured `auto` on all 115 stock
+    firearms (104 loaded, at most 3 ms each) and found the six classes whose weapon state
+    machine never runs. Verified live on DayZ 1.29 with a retail client.
 13. **Presets** (#76): loadouts captured from a player's gear or a placed object; named
     teleport locations with a scatter radius; vehicle spawn presets with the parts a car
     needs to drive; operator-defined weather presets. All live in the key/value store, so

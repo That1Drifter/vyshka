@@ -20,7 +20,7 @@ Clean-room: written from the engine's public script headers and the measurements
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
 | `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the registry of actions, contexts, events, and namespaces, the event buffer, the ban list, the key/value store client (`VyshkaStoreClient`) and the namespace-bound handle mods use (`VyshkaStore`), the map markers (`VyshkaMapMarker`), and the mod-facing facade (`GetVyshka()`) |
-| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the inventory actions (`VyshkaInventoryActions`), the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
+| `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the spawn action (`VyshkaSpawnActions`), the inventory actions (`VyshkaInventoryActions`), the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat, and the `VyshkaRegister` hook a mod overrides to add its own actions |
 | `sample/` | A self-contained sample mod built on the surface below: one action, one event, one context, a map marker, a store counter. Copy it to start your own |
 | `selftest/` | The engine-limit self-test: a script appended to a mission's `init.c` that runs the plugin's file and JSON classes past the engine's limits inside a real server (see "Conformance") |
@@ -76,6 +76,9 @@ server-side, clients never load it, so nothing needs a Workshop id to pair again
    snapshots off).
    `fpsIntervalSeconds` is optional
    (default 60, honored between 5 and 3600; `0` turns `core.server.fps` samples off).
+   `spawnBlocklist` is optional: an array of class names `vyshka.spawn` refuses to create
+   (at most 500; any case; a name no config tree declares is kept as written and logged),
+   for example `"spawnBlocklist": ["M79", "LAW", "RPG7"]`. See "Spawn" below.
 4. Start the server with the mod as a server mod:
 
    ```
@@ -123,7 +126,7 @@ is derived from its content, see "Writing a mod against the plugin") declares:
 | `vyshka.message` | player | none | `message` (required), `title`, `seconds` (1 to 60, default 10), `style` (`notification`, the default, or `chat`) | `name`, `style` |
 | `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
 | `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
-| `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
+| `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names, and excluding the server's `spawnBlocklist`), `into` (`ground`, the default, `inventory`, or `hands`), `quantity` (a stack's count, a container's fill, a magazine's or an ammunition pile's rounds), `health` (0 to 100, a percent of the item's maximum), `attachments` (`none`, the default, or `auto`) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `into`, `placed` (`ground`, `hands`, `attachment`, `cargo`) with `slot` and `container` when it went into the inventory, the condition fields of an inventory read entry (`health`, `state`, and `quantity`, `ammo`, `rounds`, `liquid` where they apply), `position`, `name`; with `auto`, `attachments` (one `{ slot, class }` per part, `ammo` on a magazine, a part's own parts inside), `empty` (`{ slot, on }` per slot left empty), and for a firearm `loaded` (the magazine or round it was loaded with, or null) |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
 | `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that slot's subtree alone, with the whole result budget to itself) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
@@ -202,15 +205,60 @@ the player again.
 The schema subset of protocol section 6.1 cannot say "exactly one of", so a dispatch naming
 no destination, or more than one, is refused by the plugin.
 
-**Spawn** creates one object of `className` on the ground 1.5 m in front of the player, with
-the placement flags the central economy uses (traced to the surface, physics on, navmesh
-updated) and the item's default quantity and condition; the inventory target, quantity,
-health, and attachments belong to the spawning extension slice. The name must be made of
+**Spawn** creates one object of `className` for the player. The name must be made of
 letters, digits, and underscores, and must be a public class (`scope` 2) declared in
 `CfgVehicles`, `CfgWeapons`, or `CfgMagazines`; anything else is refused before the engine
 is asked, with the reason in the result. That admits every vanilla and modded item, and also
-vehicles, infected, and animals, which is what an event host wants; a blocklist arrives with
-the spawning extension. `className` in the result is the class as the engine reports it.
+vehicles, infected, and animals, which is what an event host wants. `className` in the
+result is the class as the engine reports it.
+
+- **Where.** `ground` (the default) puts it 1.5 m in front of the player with the placement
+  flags the central economy uses (traced to the surface, physics on, navmesh updated).
+  `inventory` asks the inventory's own search for a place a new item fits, the one a
+  player's pick-up makes: a free attachment slot or cargo space, and the hands when nothing
+  else has room (the engine's fallback, so a rifle given to an undressed character lands in
+  the hands). `hands` refuses when the hands are full. The result's `placed`, `slot`, and
+  `container` say where it went; a place the engine cannot find fails the action.
+- **Quantity and health.** `quantity` is the unit the inventory read reports: a
+  magazine's rounds (a whole number from 0 to its capacity), an ammunition pile's rounds
+  (at least 1), a stack's count (a whole number), a bottle's millilitres, within the range
+  the engine holds for that item. `health` is a percent of the item's own maximum; 0 makes
+  it ruined. A value outside the item's range, a quantity on an item without one (a
+  firearm), a quantity at which the engine would delete the item (a rag stack at 0), or a
+  health on a class without a damage system (the launchers, the dart gun, the shock
+  pistol) fails the action, and the item that was created is removed again, so a refused
+  spawn leaves nothing behind. Both apply to the spawned item, not to what `auto` attaches.
+- **`attachments: auto`** fills every attachment slot the item declares, in the order the
+  item declares them: for each empty slot the public items of `CfgVehicles` whose
+  `inventorySlot` names it are tried until the engine accepts one (up to 8), those made for
+  fewer slots first (a rifle's own suppressor before the improvised one that fits every
+  muzzle), then by name, a name before its own variants (`M4_MPHndgrd` before
+  `M4_MPHndgrd_Black`). A part is filled the same way one level down (a battery in a light
+  or an optic, a knife in a sheath). A firearm is loaded first with the first magazine its
+  config lists, or its first round for one fed by hand, through the engine's own
+  spawn-with-ammo call, which chambers a round. Never attached: firearms, grenades and
+  explosives, a blocked class, and a part the engine creates ruined. Measured on every
+  public firearm of a stock 1.29 server (`spikes/dayz-spawn-attachments`): 104 of 115 load,
+  101 with a round chambered, at most 3 ms each, and the part index costs about 20 ms once
+  a session. Six classes never run the weapon state machine that call needs (the bows,
+  the LAW, the RPG-7, the M249, the dart gun, the shock pistol): the M249 and the shock
+  pistols get their magazine attached full with nothing chambered, the others stay
+  unloaded (`loaded: null`). Creating those six logs script errors in the server log
+  whatever the plugin does; the engine raises them, not the plugin. A car gets its wheels,
+  doors, hood, trunk, lights, radiator, spark plug, and battery (fuel and coolant are not
+  parts). The picks are the engine's acceptance within that fixed rule, so the result
+  lists every part attached and every slot left empty (a flashlight slot on a handguard
+  without a rail, a muzzle behind a bayonet).
+- **Blocklist.** `spawnBlocklist` in `config.json` (below) names classes the action must
+  not create. The plugin publishes it in the action's params schema as `"not": {"enum":
+  [...]}` (protocol section 6.1), so the hub refuses a listed name before it is ever
+  queued and the panel marks the item catalog's listed entries as blocked; each entry the
+  server's config declares is published in the config's own case, which is the case the
+  catalog enumerates. The hub compares names exactly and the engine does not, so the
+  action refuses a listed name in any case itself, and `auto` never attaches a listed
+  class. Blocking is by exact class: a class's subclasses and colour variants are separate
+  names. The list is read at boot; a change takes a restart, which publishes a new
+  manifest revision.
 
 **Set time** writes the world clock through the engine's `SetDate`, keeping the year, month,
 and day and replacing the hour and minute; the clients follow the server's clock as they

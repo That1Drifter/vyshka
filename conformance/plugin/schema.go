@@ -6,13 +6,15 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"unicode/utf8"
 )
 
 // The harness dispatches whatever action the candidate's manifest declares, so
 // it has to invent params from the action's own schema. The schema language is
-// the section 6.1 subset: object/array/scalar types, enum, required, numeric
-// bounds, default. Nothing here validates a schema; it builds one instance that
+// the section 6.1 subset: object/array/scalar types, enum, not in its one
+// {"enum": [...]} form, required, numeric bounds, default. Apart from the
+// subset check below, nothing here validates a schema; it builds one instance that
 // satisfies it and, for the crash check, one that does not.
 
 // synthesizeParams builds a params object satisfying the schema. A nil schema
@@ -35,6 +37,11 @@ func synthesizeValue(schema map[string]any) any {
 		return value
 	}
 	if enum, ok := schema["enum"].([]any); ok && len(enum) > 0 {
+		for _, member := range enum {
+			if !excluded(schema, member) {
+				return member
+			}
+		}
 		return enum[0]
 	}
 	schemaType, _ := schema["type"].(string)
@@ -60,13 +67,27 @@ func synthesizeValue(schema map[string]any) any {
 	case "array":
 		return []any{}
 	case "string":
-		return "conformance"
+		// A value the schema's `not` excludes (section 6.1) is stepped past.
+		value := "conformance"
+		for i := 1; excluded(schema, value) && i <= 100; i++ {
+			value = "conformance-" + strconv.Itoa(i)
+		}
+		return value
 	case "boolean":
-		return true
+		return !excluded(schema, true)
 	case "null":
 		return nil
 	case "integer", "number":
-		return synthesizeNumber(schema, schemaType)
+		value := synthesizeNumber(schema, schemaType)
+		for i := 0; excluded(schema, value) && i < 100; i++ {
+			switch typed := value.(type) {
+			case int64:
+				value = typed + 1
+			case float64:
+				value = typed + 1
+			}
+		}
+		return value
 	default:
 		return map[string]any{}
 	}
@@ -104,8 +125,11 @@ func asFloat(value any) (float64, bool) {
 
 // satisfies is the small validator behind synthesis: does value meet this
 // schema's own constraints? It checks what the subset can express (type, enum,
-// bounds, required properties) and nothing more.
+// exclusions, bounds, required properties) and nothing more.
 func satisfies(schema map[string]any, value any) bool {
+	if excluded(schema, value) {
+		return false
+	}
 	if enum, ok := schema["enum"].([]any); ok && len(enum) > 0 {
 		found := false
 		for _, member := range enum {
@@ -187,6 +211,7 @@ var subsetKeywords = map[string]bool{
 	"items": true, "minimum": true, "maximum": true,
 	"exclusiveMinimum": true, "exclusiveMaximum": true,
 	"default": true, "context": true, "x-vyshka-widget": true,
+	"not": true,
 }
 
 var subsetTypes = map[string]bool{
@@ -238,6 +263,14 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 			if err := validateSubset(sub, path+".items", declared); err != nil {
 				return err
 			}
+		case "not":
+			if value == nil {
+				// A JSON null reads as no exclusion (section 6.4).
+				continue
+			}
+			if err := validateExclusion(value, path); err != nil {
+				return err
+			}
 		case "context":
 			if value == nil {
 				// A JSON null reads as no annotation (section 6.4).
@@ -255,6 +288,46 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 		}
 	}
 	return nil
+}
+
+// validateExclusion checks `not`, which the subset admits in one form only:
+// an object whose single keyword is a non-empty `enum` (section 6.1).
+func validateExclusion(value any, path string) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf(`%s.not: must be an object of the form {"enum": [...]}; a hub rejects any other form (section 6.1)`, path)
+	}
+	for keyword := range object {
+		if keyword != "enum" {
+			return fmt.Errorf(`%s.not.%s: not admits only {"enum": [...]}, and a hub rejects the manifest over %q (section 6.4)`, path, keyword, keyword)
+		}
+	}
+	if members, ok := object["enum"].([]any); !ok || len(members) == 0 {
+		return fmt.Errorf("%s.not.enum: must be a non-empty array of the values excluded (section 6.1)", path)
+	}
+	return nil
+}
+
+// excluded reports whether value is one the schema's `not` excludes.
+func excluded(schema map[string]any, value any) bool {
+	not, _ := schema["not"].(map[string]any)
+	members, _ := not["enum"].([]any)
+	for _, member := range members {
+		if reflect.DeepEqual(member, normalize(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalize puts a synthesized number in the shape JSON decoding gives a
+// schema constant, so the int64 synthesizeNumber builds compares equal to
+// the float64 an excluded member decodes as.
+func normalize(value any) any {
+	if integer, ok := value.(int64); ok {
+		return float64(integer)
+	}
+	return value
 }
 
 // validateContextAnnotation checks one `context` value: a declared context

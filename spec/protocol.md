@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.27 (2026-09-22)
+**Status:** draft 0.28 (2026-09-22)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -691,8 +691,8 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
 
 - `code` is globally unique within a server and SHOULD be `{namespace}.{name}`.
 - `params` is a **JSON Schema subset** (draft 2020-12): `object`/`array`/scalar types,
-  `enum`, `required`, numeric bounds, `default`. The vendor keyword `x-vyshka-widget`
-  hints an admin UI widget (`itemlist`, `vector`, `player`, `webhook`) without
+  `enum`, `not` in one form (below), `required`, numeric bounds, `default`. The vendor
+  keyword `x-vyshka-widget` hints an admin UI widget (`itemlist`, `vector`, `player`, `webhook`) without
   constraining the data model. Integer constants in a schema (bounds and `enum` members)
   MUST lie strictly within ±2^53: every JSON toolchain in this ecosystem passes numbers
   through IEEE doubles somewhere, and a constant that rounds on the way would be enforced
@@ -708,6 +708,20 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
   `string` (section 6.4): both are typos the author wants to hear about at publish, not a
   dropdown that stays empty. A JSON `null` reads as no annotation, as everywhere else
   (section 6.4). `x-vyshka-widget` remains free-form beside it.
+- `not` is admitted in one form only, `{ "enum": [ ... ] }`: a non-empty list of values the
+  field must not take, compared by deep equality as `enum` compares, so a string matches
+  only itself, case and all. It is a constraint like every other keyword: a dispatch
+  naming a listed value fails validation (`params_invalid`, section 7) and never reaches
+  the game server. It is how a plugin publishes a server-side exclusion (a spawn action's
+  blocklist of class names, say) with no manifest field of its own, so any action's schema
+  can carry one and every hub and UI treats it the same way. A UI that offers values for
+  the field (an enumeration through the `context` annotation, the members of an `enum`)
+  SHOULD show a listed value as unavailable rather than offer it as a choice, and SHOULD
+  refuse it before dispatching. The hub's comparison is exact, so a plugin whose game
+  resolves names without regard to case enforces its own list as well. Any other form of
+  `not` (another keyword inside it or beside `enum`, an `enum` that is empty or not an
+  array) is outside the subset (section 6.4); its constants follow the ±2^53 rule above,
+  and a JSON `null` reads as no exclusion.
 - The hub MUST validate dispatch payloads against the schema **before** queueing, so
   schema-invalid input never reaches the game server.
 - `danger` is `none | warning | destructive`, advisory, for UI confirmation prompts.
@@ -843,7 +857,8 @@ trusting a guarantee nobody was providing. A manifest is also rejected when
 duplicated, a declared context `id` is one of the built-in contexts (`world`, `player`,
 `vehicle`, `object`: a manifest cannot declare those as its own, section 6.2), a `context`
 annotation (section 6.1) names a context the manifest does not
-declare or sits on a non-string schema, or a declared field exceeds the hub's length
+declare or sits on a non-string schema, a `not` is in any form but `{ "enum": [...] }`
+(section 6.1), or a declared field exceeds the hub's length
 limits (counted in Unicode code points, the unit `maxLength` means in the companion
 schema). A JSON `null` where an
 OPTIONAL field could appear reads as the field being absent, never as a type error.

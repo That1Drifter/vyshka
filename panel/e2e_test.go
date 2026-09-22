@@ -78,6 +78,12 @@ var e2eManifest = map[string]any{
 				// otherwise draw on: fetched once, offered through a picker
 				// beside the one-per-line textarea.
 				"parts": map[string]any{"type": "array", "items": map[string]any{"type": "string", "context": "example-mod.landmark"}},
+				// A server-side exclusion (section 6.1, not in its one form):
+				// the enumerated entry it names is marked blocked in the list
+				// and refused at the field, and an excluded enum member is a
+				// disabled option.
+				"gift":  map[string]any{"type": "string", "context": "example-mod.item", "not": map[string]any{"enum": []string{"Apple"}}},
+				"grade": map[string]any{"type": "string", "enum": []string{"a", "b", "c"}, "not": map[string]any{"enum": []string{"c"}}},
 				// Fractional bounds on an integer round inward onto the input.
 				"ticks": map[string]any{"type": "integer", "exclusiveMinimum": 0.5, "maximum": 9.9},
 				// An optional object with a required child: untouched, it is
@@ -340,6 +346,24 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("parts hint = %q, want the landmark context named with its count", got)
 	}
 	run("clear the part", setValue(`textarea[name="params.parts"]`, ""))
+	// The excluded entry stays in the suggestions, marked, and naming it is
+	// an error on the field as it is typed and again when the form is read.
+	if got := evalString(`(function(){const i=document.querySelector('input[name="params.gift"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent+(o.dataset.excluded?"!":"")).join(","):"no datalist"})()`); got != "AKM=AKM,Apple=Apple (blocked on this server)!" {
+		t.Errorf("gift datalist = %q, want Apple marked as blocked", got)
+	}
+	if got := evalString(`document.querySelector('input[name="params.gift"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "1 value is blocked on this server") {
+		t.Errorf("gift hint = %q, want the blocked count", got)
+	}
+	run("type an excluded gift", chromedp.SendKeys(`input[name="params.gift"]`, "Apple", chromedp.ByQuery))
+	waitJS("excluded value named on the field as typed",
+		`(function(){const e=document.querySelector('label[data-path="gift"] .field-error');return e && !e.hidden && e.textContent.includes("excluded")})()`)
+	run("dispatch with the excluded gift", chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("excluded value refused when the form is read",
+		`(function(){const e=document.querySelector('label[data-path="gift"] .field-error');return e && !e.hidden && e.textContent.startsWith("gift is excluded")})()`)
+	run("clear the gift", setValue(`input[name="params.gift"]`, ""))
+	if got := evalString(`Array.from(document.querySelectorAll('select[name="params.grade"] option')).map(o => o.textContent+(o.disabled?"!":"")).join(",")`); got != "(not set),a,b,c (excluded)!" {
+		t.Errorf("grade options = %q, want c disabled and marked", got)
+	}
 	if got := attribute(`input[name="params.ticks"]`, "min") + ".." + attribute(`input[name="params.ticks"]`, "max"); got != "1..9" {
 		t.Errorf("ticks bounds = %q, want 1..9 (fractional bounds rounded inward for an integer)", got)
 	}

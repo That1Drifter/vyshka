@@ -75,6 +75,11 @@ type Schema struct {
 	minimum, maximum                   *float64
 	exclusiveMinimum, exclusiveMaximum *float64
 
+	// excluded is `not` in the one form the subset admits, `{"enum": [...]}`
+	// (section 6.1): the values an instance must not take, compared the way
+	// enum compares. Nil when the schema excludes nothing.
+	excluded []any
+
 	// contexts is the `context` annotation: the declared custom contexts
 	// whose entries a UI offers for this string field (section 6.1). Kept
 	// for ContextRefs, never consulted by Validate.
@@ -174,6 +179,13 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 				}
 			}
 			compiled.enum = values
+		case "not":
+			// A JSON null reads as no exclusion (section 6.4), as a null
+			// context annotation does.
+			if value == nil {
+				continue
+			}
+			compiled.excluded = compileExclusion(value, child, faults)
 		case "required":
 			names, ok := value.([]any)
 			if !ok {
@@ -285,6 +297,45 @@ func compileContextRefs(value any, path string, faults *[]Fault) []string {
 	return ids
 }
 
+// compileExclusion reads `not`, which the subset admits in one form only: an
+// object whose single keyword is a non-empty `enum` (section 6.1). That form
+// is the one a UI can render, by showing the listed values as unavailable; a
+// general `not` over any subschema would be enforceable but not displayable,
+// and a keyword a UI cannot show is a promise to the operator nobody keeps.
+// Returns nil with faults recorded when the value is not that form.
+func compileExclusion(value any, path string, faults *[]Fault) []any {
+	fault := func(at, message string) []any {
+		*faults = append(*faults, Fault{Path: at, Message: message})
+		return nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fault(path, `not must be an object of the form {"enum": [...]}`)
+	}
+	for _, keyword := range sortedKeys(object) {
+		if keyword != "enum" {
+			return fault(joinPath(path, keyword),
+				fmt.Sprintf(`keyword %q inside not is outside the subset: not admits only {"enum": [...]}`, keyword))
+		}
+	}
+	members, ok := object["enum"].([]any)
+	if !ok || len(members) == 0 {
+		return fault(joinPath(path, "enum"), "not must carry a non-empty enum of the values it excludes")
+	}
+	allExact := true
+	for i, member := range members {
+		if number, isNumber := member.(float64); isNumber && !exact(number) {
+			*faults = append(*faults, Fault{Path: joinPath(path, "enum") + "[" + strconv.Itoa(i) + "]",
+				Message: "numbers beyond 2^53 in magnitude cannot be compared exactly"})
+			allExact = false
+		}
+	}
+	if !allExact {
+		return nil
+	}
+	return members
+}
+
 func compileBound(value any, path string, faults *[]Fault) *float64 {
 	number, ok := value.(float64)
 	if !ok {
@@ -346,6 +397,13 @@ func (s *Schema) validate(value any, path string, faults *[]Fault) {
 		}
 		if !found {
 			fault("value is not one of the enum's %d allowed values", len(s.enum))
+		}
+	}
+
+	for _, refused := range s.excluded {
+		if reflect.DeepEqual(refused, value) {
+			fault("value is one of the %d values the schema excludes", len(s.excluded))
+			break
 		}
 	}
 
