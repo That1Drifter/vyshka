@@ -662,9 +662,9 @@ A **vehicle preset** is a car, its parts, and its fluids:
 
 `class` must be a car (`CarScript`). `attachments` and `cargo` are loadout entries;
 `autoParts` then fills every slot still empty with the first compatible part the engine
-accepts, the way `vyshka.spawn` `auto` does (when the preset's own entries have not used
-the 400-item budget; it fills at most two levels of the car's slots, and `autoParts` in the
-result counts only what it made) (wheels, doors, hood and trunk, battery, spark
+accepts, the way `vyshka.spawn` `auto` does (within what the preset's own entries left of
+the 400-item budget, a slot reached with none left staying empty; `autoParts` in the result
+counts only what it made) (wheels, doors, hood and trunk, battery, spark
 plug, radiator, headlights); `fluids` fills each named fluid to its fraction of the tank,
 and a fluid not named stays as the engine made it, which for a new car is empty. A car
 with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and

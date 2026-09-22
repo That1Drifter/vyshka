@@ -224,8 +224,8 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   its radius on the terrain. `vyshka.vehicle.spawn` (world) spawns a car at a position
   or in front of a player with the preset's parts and cargo, `autoParts` filling the
   empty slots the way `vyshka.spawn` `auto` does, and `fluids` filled to their
-  fractions (`autoParts` runs only while the preset's item budget has room, and
-  counts only the parts it made). Every deferred step checks the dispatch's own
+  fractions (`autoParts` creates within what is left of the preset's item budget,
+  and counts only the parts it made). Every deferred step checks the dispatch's own
   deadline on the clock as well as whether it is still pending, so nothing is made after
   it. `vyshka.loadout.capture` writes under the plugin's session, so the README says
   plainly that its action grant is a grant to create and replace loadouts. The strip's

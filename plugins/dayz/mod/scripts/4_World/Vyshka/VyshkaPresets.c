@@ -533,9 +533,10 @@ class VyshkaLoadoutApply : VyshkaPresetApply
 			Release();
 			return;
 		}
-		// The dress happens inside the store's margin before the deadline,
-		// or not at all.
-		if (VyshkaClock.MonotonicMs() >= m_DeadlineMs)
+		// The dress happens before the dispatch's own deadline, or not at
+		// all (m_DeadlineMs is the store's earlier cutoff, not the
+		// dispatch's).
+		if (Late())
 		{
 			Finish(VyshkaActionOutcome.Failure("the dropped items had not left the character when the dispatch's time ran out; the player was stripped and nothing was created"));
 			Release();
@@ -767,13 +768,16 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 		else if (record.GetBool("autoParts", false))
 		{
 			// Equip lists every part on the car, the preset's own included,
-			// so what it made is counted as the tree's growth. It fills at
-			// most two levels of the car's own slots, a bounded set for any
-			// class, which is why it is let finish once the budget has room.
+			// so what it made is counted as the tree's growth, and it gets
+			// what is left of the budget: a slot it reaches with none left
+			// stays empty.
 			VyshkaJsonValue attached = VyshkaJsonValue.NewArray();
 			VyshkaJsonValue empty = VyshkaJsonValue.NewArray();
 			int before = VyshkaInventory.CountTree(car);
+			VyshkaSpawn.s_EquipBounded = true;
+			VyshkaSpawn.s_EquipLeft = VyshkaPresets.ITEMS_MAX - builder.m_Created;
 			VyshkaSpawn.Equip(car, 1, attached, empty);
+			VyshkaSpawn.s_EquipBounded = false;
 			int autoCount = VyshkaInventory.CountTree(car) - before;
 			builder.m_Created += autoCount;
 			result.Set("autoParts", VyshkaJsonValue.NewInt(autoCount));
