@@ -163,11 +163,11 @@ After the tag, in this order:
     (`destructive`) deletes it all through the engine's safe delete. The first result
     checked against a cap with a real payload: the bound that applies to a result is the
     64 KiB of protocol section 7 (the 256 KiB figure is the snapshot body cap), and
-    `spikes/dayz-inventory-tree` measured the heaviest stock loadout it could build at 131
-    items and 14 KiB, a quarter of the action's budget, so a stock character is answered
-    whole and the action's cut (one level of containers less until it fits, the counts
-    kept) is for modded servers. Each action was verified live on DayZ 1.29 with a retail
-    client.
+    `spikes/dayz-inventory-tree` measured a heavy loadout built from named stock classes
+    at 131 items and 14 KiB, a quarter of the action's budget, so a character carrying
+    that much is answered whole and the action's cut (one level of containers less until
+    it fits, the counts kept) is for far larger loads, modded containers first of all.
+    Each action was verified live on DayZ 1.29 with a retail client.
 12. **Spawning extension** (#75): spawn into a target inventory with quantity and health;
     `attachments: auto`; the class-name blocklist expressed in the action's parameter schema
     so the panel greys entries out with no manifest change and third-party spawn actions

@@ -126,7 +126,7 @@ is derived from its content, see "Writing a mod against the plugin") declares:
 | `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `position`, `name`; one item is created on the ground in front of the player |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
-| `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that item's subtree whole) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
+| `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that slot's subtree alone, with the whole result budget to itself) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
 | `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
 | `vyshka.inventory.clear` | player | destructive | none | `name`, `deleted` (one `{ class, name, slot, items }` per item), `deletedCount`, `items` (everything deleted, contents included); each item is deleted through the engine's safe delete, its contents with it |
 | `vyshka.deletedestroyed` | world | destructive | `dryRun` (default false) | `deleted` and `skipped` (each a list of `{ vehicle, type, kind, position }`, a skipped entry with its `reason`; the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap whatever the class names), `deletedCount` and `skippedCount` (always complete), `truncated` (true when a list was cut), `intact` (how many were left alone), `dryRun` |
@@ -338,12 +338,15 @@ player at that cadence would be bytes nobody asked for. The result is bounded by
 plugin serializes the tree before answering and, when it does not fit a 60 000-byte
 budget, describes one level of containers less each time until it does, keeping on every
 container the count of what it holds and saying so in `truncated` and `depth`; `slot`
-then reads one worn container's subtree whole. On a stock 1.29 server the cut is never
-needed: the heaviest loadout `spikes/dayz-inventory-tree` could build (an Alice bag, a
-hunting jacket, a high-capacity vest, hunter pants, a belt with a holstered pistol, three
-rifles with every attachment, cases nested in every cargo and every cargo filled) is 131
-items and 14 KiB, described whole at the first attempt in about 10 ms; the budget holds
-about 560 entries, so the cut is for a modded server with far larger containers.
+then gives one worn container's subtree the whole budget to itself (a subtree that alone
+is over the budget is cut the same way). Should even the top level not fit, the action
+fails and says so rather than answer a payload the hub would drop. On a stock 1.29 server
+the cut was not needed for anything measured: the heaviest loadout
+`spikes/dayz-inventory-tree` builds from named classes (an Alice bag, a hunting jacket, a
+high-capacity vest, hunter pants, a belt with a holstered pistol, three rifles with every
+attachment, cases nested in every cargo and every cargo filled) is 131 items and 14 KiB,
+described whole at the first attempt in about 10 ms; the budget holds about 560 entries
+at that density, so the cut is for far larger loads, modded containers first of all.
 `vyshka.inventory.strip` drops the held
 item and every worn item on the ground beside the player through the engine's own
 server-side drop (the move a player's drop makes, synchronized to the client through a
@@ -352,9 +355,11 @@ action is `warning`. `vyshka.inventory.clear` deletes them through the engine's 
 (for a living character, queued on the character through a juncture and run on its next
 update once no inventory action is in flight, the way the engine removes a consumed item),
 contents included, so it is `destructive`. Both report what they acted on per top-level
-item and refuse nothing: a strip lists under `skipped`, with the reason, an item the
-engine would not drop (one under an inventory reservation while the player moves it, the
-hands of a restrained character).
+item as the engine accepted it (the move and the delete themselves complete on the
+character's next inventory update; the live run saw every accepted drop on the ground and
+every accepted delete gone) and refuse nothing: a strip lists under `skipped`, with the
+reason, an item the engine would not drop (one under an inventory reservation while the
+player moves it, the hands of a restrained character).
 
 ## Telemetry
 

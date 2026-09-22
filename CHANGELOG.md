@@ -169,15 +169,17 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   section 7), not a snapshot, and its result is kept under the hub's 64 KiB result cap:
   the tree is serialized before it is answered and, over a 60 000-byte budget, described
   one level of containers less each time until it fits, each cut container keeping its
-  `items` count, with `depth` and `truncated` saying so. `vyshka.inventory.strip` (player,
+  `items` count, with `depth` and `truncated` saying so (a top level that alone does not
+  fit fails the action rather than answer a payload the hub would drop). `vyshka.inventory.strip` (player,
   `warning`) drops the held item and every worn item, contents included, on the ground
   beside the player through the engine's server-side drop, reporting each under `dropped`
   or, with a reason, `skipped`. `vyshka.inventory.clear` (player, `destructive`) deletes
   them through the engine's safe delete, reporting each under `deleted`.
-  `spikes/dayz-inventory-tree` measured the cap against the heaviest loadout it could
-  build on a stock 1.29 server: 131 items, 4 levels deep, 14 035 bytes as the whole tree,
-  a quarter of the budget, built and serialized in about 10 ms, so a stock character is
-  always answered whole and the cut is for modded servers; it also found that the
+  `spikes/dayz-inventory-tree` measured the cap against a heavy loadout built from named
+  stock classes on a 1.29 server: 131 items, 4 levels deep, 14 035 bytes as the whole
+  tree, a quarter of the budget, built and serialized in about 10 ms, so a character
+  carrying that much is answered whole and the cut is for far larger loads, modded
+  containers first of all; it also found that the
   engine's server-side drop of a living character's item waits on a client's juncture
   (nothing moves on a body with none) while the safe delete runs without one, that the
   script config reader returns nothing for `Cargo itemsCargoSize`, and that a weapon

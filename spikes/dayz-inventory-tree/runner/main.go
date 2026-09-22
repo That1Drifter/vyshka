@@ -175,6 +175,12 @@ func follow(profiles string, since time.Time, earlier map[string]bool, exited <-
 					finished = true
 					return true
 				}
+				if strings.HasPrefix(payload, "error") {
+					// The probe gave up (no body could be created); its
+					// error line is final and there will be no finished
+					// line, so stop following now.
+					return true
+				}
 				continue
 			}
 			if strings.Contains(text, "[Vyshka]") || strings.Contains(text, "Can't compile") || (strings.Contains(text, "SCRIPT") && strings.Contains(text, "(E)")) {
@@ -210,7 +216,9 @@ func follow(profiles string, since time.Time, earlier map[string]bool, exited <-
 			}
 		}
 		if consume() {
-			return true, nil
+			// consume stops on the finished line and on the probe's
+			// error line alike; only the first is a finished probe.
+			return finished, nil
 		}
 		if time.Now().After(deadline) {
 			return finished, fmt.Errorf("the probe did not finish within %s", timeout)

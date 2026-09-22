@@ -123,6 +123,34 @@ class VyshkaInventory
 		return InventorySlots.GetSlotName(location.GetSlot());
 	}
 
+	// Worn lists the player's worn attachments in the character's slot
+	// order (Headgear, Gloves, Shoulder, ..., the order the engine declares
+	// the slots in), which is a fixed order for a character whatever was
+	// put on first; the engine's own attachment list is in the order the
+	// items were attached. An attachment in a slot the character does not
+	// declare (none is known, but a mod could add one) follows at the end.
+	static array<EntityAI> Worn(PlayerBase player)
+	{
+		array<EntityAI> items = new array<EntityAI>;
+		GameInventory inventory = player.GetInventory();
+		int slots = inventory.GetAttachmentSlotsCount();
+		int i;
+		for (i = 0; i < slots; i++)
+		{
+			EntityAI inSlot = inventory.FindAttachment(inventory.GetAttachmentSlotId(i));
+			if (inSlot && items.Find(inSlot) < 0)
+				items.Insert(inSlot);
+		}
+		int count = inventory.AttachmentCount();
+		for (i = 0; i < count; i++)
+		{
+			EntityAI attached = inventory.GetAttachmentFromIndex(i);
+			if (attached && items.Find(attached) < 0)
+				items.Insert(attached);
+		}
+		return items;
+	}
+
 	// TopLevel lists what the player carries directly: the item in hands
 	// first, then every worn attachment in slot order. A copy, so a caller
 	// that drops or deletes as it walks is not walking a list the engine
@@ -133,14 +161,9 @@ class VyshkaInventory
 		EntityAI inHands = player.GetHumanInventory().GetEntityInHands();
 		if (inHands)
 			items.Insert(inHands);
-		GameInventory inventory = player.GetInventory();
-		int count = inventory.AttachmentCount();
-		for (int i = 0; i < count; i++)
-		{
-			EntityAI attached = inventory.GetAttachmentFromIndex(i);
-			if (attached)
-				items.Insert(attached);
-		}
+		array<EntityAI> worn = Worn(player);
+		for (int i = 0; i < worn.Count(); i++)
+			items.Insert(worn.Get(i));
 		return items;
 	}
 
@@ -231,13 +254,10 @@ class VyshkaInventoryTree
 		VyshkaJsonValue worn = VyshkaJsonValue.NewArray();
 		if (slot != VyshkaInventory.SLOT_HANDS)
 		{
-			GameInventory inventory = player.GetInventory();
-			int count = inventory.AttachmentCount();
-			for (int i = 0; i < count; i++)
+			array<EntityAI> items = VyshkaInventory.Worn(player);
+			for (int i = 0; i < items.Count(); i++)
 			{
-				EntityAI attached = inventory.GetAttachmentFromIndex(i);
-				if (!attached)
-					continue;
+				EntityAI attached = items.Get(i);
 				string at = VyshkaInventory.SlotOf(attached);
 				if (slot != "" && at != slot)
 					continue;
@@ -323,14 +343,44 @@ class VyshkaInventoryTree
 	}
 
 	// Skip counts a subtree that is past the depth without describing it,
-	// still recording how deep it goes.
+	// still recording how deep it goes, so `depth` can be read against the
+	// tree's real depth whatever was cut.
 	int Skip(EntityAI item, int depth)
 	{
 		m_Cut = true;
+		int count = Measure(item, depth);
+		m_Items += count;
+		return count;
+	}
+
+	// Measure counts an item and everything inside it, recording the
+	// deepest level reached, without describing anything.
+	int Measure(EntityAI item, int depth)
+	{
 		if (depth > m_Deepest)
 			m_Deepest = depth;
-		int count = VyshkaInventory.CountTree(item);
-		m_Items += count;
+		int count = 1;
+		GameInventory inventory = item.GetInventory();
+		if (!inventory)
+			return count;
+		int attachments = inventory.AttachmentCount();
+		for (int i = 0; i < attachments; i++)
+		{
+			EntityAI attached = inventory.GetAttachmentFromIndex(i);
+			if (attached)
+				count += Measure(attached, depth + 1);
+		}
+		CargoBase cargo = inventory.GetCargo();
+		if (cargo)
+		{
+			int inCargo = cargo.GetItemCount();
+			for (int c = 0; c < inCargo; c++)
+			{
+				EntityAI carried = cargo.GetItem(c);
+				if (carried)
+					count += Measure(carried, depth + 1);
+			}
+		}
 		return count;
 	}
 
@@ -440,8 +490,10 @@ class VyshkaInventoryReadAction : VyshkaAction
 
 		// The whole tree first; when its bytes do not fit the hub's cap,
 		// one level less each time until they do. Depth 1 (what is worn
-		// and held, nothing inside) is a few dozen entries and always
-		// fits.
+		// and held, nothing inside) is a few dozen entries on any known
+		// character; should a modded one put even that over the budget,
+		// the action fails and says so rather than answer a payload the
+		// hub would drop whole.
 		int maxDepth = 0;
 		VyshkaJsonValue result;
 		VyshkaInventoryTree tree;
@@ -465,6 +517,8 @@ class VyshkaInventoryReadAction : VyshkaAction
 			if (maxDepth < 1)
 				maxDepth = 1;
 		}
+		if (bytes > VyshkaInventory.RESULT_BUDGET)
+			return VyshkaActionOutcome.Failure("the " + tree.m_Items.ToString() + " items this character carries directly describe to " + bytes.ToString() + " bytes, over the " + VyshkaInventory.RESULT_BUDGET.ToString() + "-byte budget a result may take; read one slot at a time with the slot parameter");
 		int depth = maxDepth;
 		if (depth == 0)
 			depth = tree.m_Deepest;

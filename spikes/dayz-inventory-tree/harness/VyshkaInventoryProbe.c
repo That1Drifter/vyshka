@@ -82,11 +82,11 @@ class VyshkaInventoryProbe
 		int gap = GAP_MS;
 		if (step == 0)
 		{
+			// No body, no measurement: the error line is the probe's last
+			// word, and the runner fails on it rather than on a finished
+			// line that measured nothing.
 			if (!CreateBody())
-			{
-				Finish();
 				return;
-			}
 		}
 		else if (step == 1)
 			Gear();

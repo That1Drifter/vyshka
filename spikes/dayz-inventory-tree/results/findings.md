@@ -5,7 +5,10 @@ offline mission, the Vyshka plugin (0.8.0, unreleased) loaded idle, its
 `VyshkaInventoryTree` class building the tree exactly as `vyshka.inventory.read` does. Four
 runs; the fourth (`probe-run4.log`) is the one cited. The third (`probe-run3-config-walk.log`)
 is kept for two engine facts it found the hard way, below; the first two crashed or
-measured an undressed body and are not kept.
+measured an undressed body and are not kept. A fifth run (`probe-run5-slot-order.log`),
+after the review fix that lists worn items in the character's slot order, measured the same
+bytes and counts; only the order of its `carried` lines differs from run 4, which listed
+them in the order they were attached.
 
 ## The body
 
@@ -70,16 +73,19 @@ their containers (131 items gone for 14 deletes, nothing left on the ground).
 
 ## What follows
 
-1. **A stock character's whole tree fits the cap with room to spare.** 14 KiB against the
-   hub's 64 KiB result cap and the action's 60 000-byte budget, on the heaviest loadout
-   this probe could build; the action answers it whole at the first attempt. The shrink
-   loop exists for a modded server (a bag with several times the cargo, a mod that adds
-   slots) and costs about 10 ms per attempt at this size, so it needs no budgeting of its
-   own. At about 107 bytes an entry, the budget holds about 560 entries.
-2. **Depth 4 is what a stock tree reaches.** A magazine on a pistol in a holster on a belt.
+1. **A character carrying this loadout fits the cap with room to spare.** 14 KiB against
+   the hub's 64 KiB result cap and the action's 60 000-byte budget; the action answers it
+   whole at the first attempt. The loadout is a named list (`harness/VyshkaLoadout.c`),
+   not a search of every stock garment, so this is the size of a heavy stock load, not a
+   proven stock maximum. The shrink loop exists for far larger loads (a modded bag with
+   several times the cargo, a mod that adds slots) and costs about 10 ms per attempt at
+   this size, so it needs no budgeting of its own. At about 107 bytes an entry, the budget
+   holds about 560 entries.
+2. **Depth 4 is what this tree reaches.** A magazine on a pistol in a holster on a belt.
    Cutting at depth 3 loses that one magazine; cutting at 2 loses what the nested cases
    hold; only depth 1 loses the bulk. The action reports the depth it settled on and
-   `truncated`, and a `slot` read gives one container's subtree whole.
+   `truncated`, and a `slot` read gives one container's subtree the whole budget to
+   itself (a subtree alone over the budget is cut the same way).
 3. **The strip cannot be shown without a client; the clear can.** Recorded above. The
    live run (the slice's notes) is the evidence for the strip.
 
