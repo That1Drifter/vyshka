@@ -1283,23 +1283,6 @@ function wrap(opts, control, hint, inline) {
 
 function buildField(schema, opts) {
   schema = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {};
-  const field = buildKind(schema, opts);
-  if (excludedOf(schema).length === 0) return field;
-  // An exclusion (section 6.1) is refused here before the hub refuses it, so
-  // the operator hears about it at the field rather than from a 400.
-  const read = field.read;
-  field.read = (errors, present) => {
-    const value = read(errors, present);
-    if (value !== undefined && isExcluded(schema, value)) {
-      errors.push({ path: opts.path, message: EXCLUDED_MESSAGE });
-      return undefined;
-    }
-    return value;
-  };
-  return field;
-}
-
-function buildKind(schema, opts) {
   if (Array.isArray(schema.enum)) return enumField(schema, opts);
   switch (schema.type) {
     case 'boolean': return booleanField(schema, opts);
@@ -1402,6 +1385,12 @@ function numberField(schema, opts) {
     value: typeof schema.default === 'number' ? String(schema.default) : undefined,
   });
   const wrapped = wrap(opts, input, describe(schema));
+  if (excludedOf(schema).length > 0) {
+    input.addEventListener('input', () => {
+      const text = input.value.trim();
+      wrapped.setError(text !== '' && isExcluded(schema, Number(text)) ? EXCLUDED_MESSAGE : '');
+    });
+  }
   const initial = input.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
@@ -1722,12 +1711,7 @@ function arrayField(schema, opts) {
       // Empty: a required array of a present object is sent empty; an
       // optional one is omitted.
       if (lines.length === 0) return opts.required && present ? [] : undefined;
-      const values = lines.map((line, index) => {
-        const value = coerceItem(items, line, errors, opts.path + '[' + index + ']');
-        if (value === undefined || !isExcluded(items, value)) return value;
-        errors.push({ path: opts.path + '[' + index + ']', message: EXCLUDED_MESSAGE });
-        return undefined;
-      });
+      const values = lines.map((line, index) => coerceItem(items, line, errors, opts.path + '[' + index + ']'));
       return values.some((value) => value === undefined) ? undefined : values;
     },
   };
@@ -1879,9 +1863,31 @@ function buildParamsForm(paramsSchema, players, contextEntries) {
     fieldsByPath,
     read(errors) {
       const value = root.read(errors, true);
+      // Exclusions (section 6.1) are checked once over the finished value,
+      // at every depth, so a value no field typed is caught too: a vector's
+      // coordinate, a member of a compound enum, an array's default.
+      exclusionFaults(paramsSchema, value, '', errors);
       return value === undefined ? {} : value;
     },
   };
+}
+
+// exclusionFaults adds a fault for every place in value that its schema's
+// `not` excludes, walking the properties and items the schema describes.
+function exclusionFaults(schema, value, path, errors, depth = 0) {
+  if (value === undefined || !schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return;
+  if (isExcluded(schema, value)) errors.push({ path, message: EXCLUDED_MESSAGE });
+  if (Array.isArray(value)) {
+    if (schema.items && typeof schema.items === 'object') {
+      value.forEach((element, index) => exclusionFaults(schema.items, element, path + '[' + index + ']', errors, depth + 1));
+    }
+  } else if (value !== null && typeof value === 'object' && schema.properties && typeof schema.properties === 'object') {
+    for (const [key, member] of Object.entries(value)) {
+      if (Object.prototype.hasOwnProperty.call(schema.properties, key)) {
+        exclusionFaults(schema.properties[key], member, path === '' ? key : path + '.' + key, errors, depth + 1);
+      }
+    }
+  }
 }
 
 // showFaults places each { path, message } on the field that owns it, falling

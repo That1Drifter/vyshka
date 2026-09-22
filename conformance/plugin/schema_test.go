@@ -2,8 +2,51 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 )
+
+func TestSynthesizeStaysInsideTheSchemaWhenStepping(t *testing.T) {
+	many := []any{"conformance"}
+	for i := 1; i <= 150; i++ {
+		many = append(many, "conformance-"+strconv.Itoa(i))
+	}
+	schema := map[string]any{
+		"type":     "object",
+		"required": []any{"low", "name", "parts"},
+		"properties": map[string]any{
+			// The first candidate is 0; stepping up would break maximum.
+			"low":  map[string]any{"type": "integer", "maximum": float64(0), "not": map[string]any{"enum": []any{float64(0)}}},
+			"name": map[string]any{"type": "string", "not": map[string]any{"enum": many}},
+			// A default whose item the items schema excludes is no default.
+			"parts": map[string]any{
+				"type":    "array",
+				"default": []any{"blocked"},
+				"items":   map[string]any{"type": "string", "not": map[string]any{"enum": []any{"blocked"}}},
+			},
+		},
+	}
+	params := synthesizeParams(schema)
+	encoded, _ := json.Marshal(params)
+	var decoded any
+	_ = json.Unmarshal(encoded, &decoded)
+	if !satisfies(schema, decoded) {
+		t.Fatalf("synthesized %s, which the schema refuses", encoded)
+	}
+}
+
+func TestValidateSubsetRejectsInexactConstants(t *testing.T) {
+	for name, schema := range map[string]map[string]any{
+		"notMember":  {"type": "number", "not": map[string]any{"enum": []any{float64(9007199254740993)}}},
+		"nestedNot":  {"not": map[string]any{"enum": []any{map[string]any{"id": float64(9007199254740993)}}}},
+		"enumMember": {"enum": []any{[]any{float64(-9007199254740993)}}},
+		"bound":      {"type": "integer", "maximum": float64(9007199254740993)},
+	} {
+		if err := validateSubset(schema, "params", nil); err == nil {
+			t.Errorf("%s: a hub rejects a constant beyond 2^53, the suite accepted it", name)
+		}
+	}
+}
 
 func TestSynthesizeParamsSatisfiesTheDriverSchema(t *testing.T) {
 	schema := map[string]any{

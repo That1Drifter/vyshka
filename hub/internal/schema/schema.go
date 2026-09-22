@@ -173,10 +173,7 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 				continue
 			}
 			for i, member := range values {
-				if number, isNumber := member.(float64); isNumber && !exact(number) {
-					*faults = append(*faults, Fault{Path: child + "[" + strconv.Itoa(i) + "]",
-						Message: "numbers beyond 2^53 in magnitude cannot be compared exactly"})
-				}
+				inexactConstants(member, child+"["+strconv.Itoa(i)+"]", faults)
 			}
 			compiled.enum = values
 		case "not":
@@ -324,9 +321,7 @@ func compileExclusion(value any, path string, faults *[]Fault) []any {
 	}
 	allExact := true
 	for i, member := range members {
-		if number, isNumber := member.(float64); isNumber && !exact(number) {
-			*faults = append(*faults, Fault{Path: joinPath(path, "enum") + "[" + strconv.Itoa(i) + "]",
-				Message: "numbers beyond 2^53 in magnitude cannot be compared exactly"})
+		if !inexactConstants(member, joinPath(path, "enum")+"["+strconv.Itoa(i)+"]", faults) {
 			allExact = false
 		}
 	}
@@ -334,6 +329,38 @@ func compileExclusion(value any, path string, faults *[]Fault) []any {
 		return nil
 	}
 	return members
+}
+
+// inexactConstants records a fault for every number inside a constant (an
+// enum or exclusion member, at any depth of an object or array member) that a
+// float64 does not hold exactly, and reports whether there was none: such a
+// constant would be compared as a rounded value its author never wrote.
+func inexactConstants(value any, path string, faults *[]Fault) bool {
+	switch typed := value.(type) {
+	case float64:
+		if !exact(typed) {
+			*faults = append(*faults, Fault{Path: path,
+				Message: "numbers beyond 2^53 in magnitude cannot be compared exactly"})
+			return false
+		}
+	case []any:
+		clean := true
+		for i, element := range typed {
+			if !inexactConstants(element, path+"["+strconv.Itoa(i)+"]", faults) {
+				clean = false
+			}
+		}
+		return clean
+	case map[string]any:
+		clean := true
+		for _, key := range sortedKeys(typed) {
+			if !inexactConstants(typed[key], joinPath(path, key), faults) {
+				clean = false
+			}
+		}
+		return clean
+	}
+	return true
 }
 
 func compileBound(value any, path string, faults *[]Fault) *float64 {

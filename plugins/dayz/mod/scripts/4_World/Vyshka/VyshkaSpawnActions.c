@@ -265,12 +265,12 @@ class VyshkaSpawn
 			if (slots.Count() == 0)
 				continue;
 			// A sort key per class, so the native sort orders the list: the
-			// count of slots it fits (two digits), then its name. The
+			// count of slots it fits (four digits), then its name. The
 			// separator sorts below every character a class name has, so a
 			// name comes before its own variants (M4_MPHndgrd before
 			// M4_MPHndgrd_Black, HatchbackWheel before HatchbackWheel_Ruined).
 			string width = slots.Count().ToString();
-			if (slots.Count() < 10)
+			while (width.Length() < 4)
 				width = "0" + width;
 			string sortName = name;
 			sortName.ToLower();
@@ -417,6 +417,75 @@ class VyshkaSpawn
 		return loaded;
 	}
 
+	// Report adds what `auto` did to the result, inside the budget a result
+	// may take (VyshkaInventory.RESULT_BUDGET, under the hub's 64 KiB cap,
+	// spec section 7; over it the hub keeps the outcome and drops the whole
+	// result). A stock car's report is about 1 KiB; a modded item with many
+	// slots each holding a part with many slots of its own could pass the
+	// budget, so the parts' own parts are then counted rather than listed,
+	// and past that only the counts are kept, with `truncated` saying so.
+	static void Report(VyshkaJsonValue result, VyshkaJsonValue attached, VyshkaJsonValue empty)
+	{
+		int parts = CountParts(attached);
+		int base = result.Serialize().Length();
+		VyshkaJsonValue listed = attached;
+		VyshkaJsonValue gaps = empty;
+		bool truncated = false;
+		if (base + listed.Serialize().Length() + gaps.Serialize().Length() > VyshkaInventory.RESULT_BUDGET)
+		{
+			truncated = true;
+			listed = Shallow(attached);
+			if (base + listed.Serialize().Length() + gaps.Serialize().Length() > VyshkaInventory.RESULT_BUDGET)
+			{
+				listed = VyshkaJsonValue.NewArray();
+				gaps = VyshkaJsonValue.NewArray();
+			}
+		}
+		result.Set("attachments", listed);
+		result.Set("empty", gaps);
+		if (truncated)
+		{
+			result.Set("truncated", VyshkaJsonValue.NewBool(true));
+			result.Set("attachmentCount", VyshkaJsonValue.NewInt(parts));
+			result.Set("emptyCount", VyshkaJsonValue.NewInt(empty.Count()));
+		}
+	}
+
+	// CountParts counts the parts in an attached list at every level.
+	static int CountParts(VyshkaJsonValue attached)
+	{
+		int count = 0;
+		for (int i = 0; i < attached.Count(); i++)
+		{
+			count++;
+			VyshkaJsonValue inner = attached.At(i).Get("attachments");
+			if (inner)
+				count += CountParts(inner);
+		}
+		return count;
+	}
+
+	// Shallow copies an attached list one level deep: each part's own parts
+	// become a `parts` count.
+	static VyshkaJsonValue Shallow(VyshkaJsonValue attached)
+	{
+		VyshkaJsonValue copy = VyshkaJsonValue.NewArray();
+		for (int i = 0; i < attached.Count(); i++)
+		{
+			VyshkaJsonValue entry = attached.At(i);
+			VyshkaJsonValue brief = VyshkaJsonValue.NewObject();
+			brief.Set("slot", VyshkaJsonValue.NewString(entry.GetString("slot", "")));
+			brief.Set("class", VyshkaJsonValue.NewString(entry.GetString("class", "")));
+			if (entry.Get("ammo"))
+				brief.Set("ammo", VyshkaJsonValue.NewInt(entry.GetInt("ammo", 0)));
+			VyshkaJsonValue inner = entry.Get("attachments");
+			if (inner)
+				brief.Set("parts", VyshkaJsonValue.NewInt(CountParts(inner)));
+			copy.Add(brief);
+		}
+		return copy;
+	}
+
 	// Place describes where an item ended up: `placed` (ground, hands,
 	// attachment, cargo), and for an attachment or cargo the `slot` and the
 	// `container` it is in.
@@ -496,14 +565,26 @@ class VyshkaSpawn
 			error = className + " is a stack, so its quantity must be a whole number";
 			return false;
 		}
-		if (quantity <= min && asItem.ConfigGetBool("varQuantityDestroyOnMin"))
+		// The engine's setter takes anything within MIN_SNAP of the minimum
+		// as the minimum itself (ItemBase.SetQuantity), so that is where the
+		// delete-at-minimum rule starts.
+		if (quantity <= min + MIN_SNAP && asItem.ConfigGetBool("varQuantityDestroyOnMin"))
 		{
 			error = "the engine deletes " + className + " at quantity " + min.ToString() + "; give more than " + min.ToString();
 			return false;
 		}
-		asItem.SetQuantity(quantity);
+		// The setter answers true when it deleted the item.
+		if (asItem.SetQuantity(quantity))
+		{
+			error = "the engine deleted " + className + " when its quantity was set";
+			return false;
+		}
 		return true;
 	}
+
+	// How close to its minimum a quantity is taken as the minimum by the
+	// engine's setter (ItemBase.SetQuantity, DayZ 1.29).
+	static const float MIN_SNAP = 0.001;
 
 	// SetHealth applies a dispatched health, a percent of the item's own
 	// maximum, the unit the inventory read reports.
@@ -526,11 +607,14 @@ class VyshkaSpawn
 	// engine's safe delete, on the ground at once.
 	static void Discard(Object created)
 	{
+		// The engine's safe delete deletes at once what no living player
+		// holds and queues the rest on the holder; an item the engine is
+		// already deleting (a quantity setter that deleted it) is left be.
 		EntityAI entity = EntityAI.Cast(created);
-		InventoryLocation location = new InventoryLocation();
-		if (entity && entity.GetInventory() && entity.GetInventory().GetCurrentInventoryLocation(location) && location.GetType() != InventoryLocationType.GROUND)
+		if (entity)
 		{
-			entity.DeleteSafe();
+			if (!entity.IsSetForDeletion())
+				entity.DeleteSafe();
 			return;
 		}
 		GetGame().ObjectDelete(created);
@@ -748,8 +832,7 @@ class VyshkaSpawnAction : VyshkaAction
 				else
 					result.Set("loaded", VyshkaJsonValue.NewNull());
 			}
-			result.Set("attachments", attached);
-			result.Set("empty", empty);
+			VyshkaSpawn.Report(result, attached, empty);
 		}
 		string placedAs = result.GetString("placed", "ground");
 		VyshkaLog.Info("spawned " + created.GetType() + " for " + VyshkaVitals.Describe(player) + " (" + placedAs + ") at " + created.GetPosition().ToString());

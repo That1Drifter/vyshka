@@ -1,4 +1,4 @@
-index	ms=19
+index	ms=11
 firearms	count=115
 firearm	class=PVCBow	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=1
 firearm	class=QuickieBow	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=1
@@ -49,7 +49,7 @@ part	AK74	weaponMuzzleAK=AK_Suppressor
 part	AK74	weaponOpticsAK=GrozaOptic
 gap	AK74	weaponFlashlight
 gap	AK74	weaponBayonetAK
-firearm	class=AK74_Black	loaded=Mag_AK74_30Rnd	rounds=1	ammo=30	parts=6	empty=2	ms=1
+firearm	class=AK74_Black	loaded=Mag_AK74_30Rnd	rounds=1	ammo=30	parts=6	empty=2	ms=2
 part	AK74_Black	weaponHandguardAK=AK74_Hndgrd
 part	AK74_Black	weaponWrap=GhillieAtt_Mossy
 part	AK74_Black	magazine=Mag_AK74_30Rnd
@@ -123,7 +123,7 @@ part	B95_Green	weaponWrap=GhillieAtt_Mossy
 part	B95_Green	weaponOpticsHunting=HuntingOptic
 firearm	class=SawedoffB95	loaded=Ammo_308Win	rounds=2	ammo=-1	parts=1	empty=0	ms=1
 part	SawedoffB95	weaponOpticsHunting=HuntingOptic
-firearm	class=CZ527	loaded=Mag_CZ527_5rnd	rounds=1	ammo=5	parts=4	empty=0	ms=1
+firearm	class=CZ527	loaded=Mag_CZ527_5rnd	rounds=1	ammo=5	parts=4	empty=0	ms=2
 part	CZ527	weaponWrap=GhillieAtt_Mossy
 part	CZ527	magazine=Mag_CZ527_5rnd
 part	CZ527	weaponOpticsHunting=HuntingOptic
@@ -138,7 +138,7 @@ part	CZ527_Green	weaponWrap=GhillieAtt_Mossy
 part	CZ527_Green	magazine=Mag_CZ527_5rnd
 part	CZ527_Green	weaponOpticsHunting=HuntingOptic
 part	CZ527_Green	suppressorImpro=ImprovisedSuppressor
-firearm	class=CZ527_Camo	loaded=Mag_CZ527_5rnd	rounds=1	ammo=5	parts=4	empty=0	ms=2
+firearm	class=CZ527_Camo	loaded=Mag_CZ527_5rnd	rounds=1	ammo=5	parts=4	empty=0	ms=1
 part	CZ527_Camo	weaponWrap=GhillieAtt_Mossy
 part	CZ527_Camo	magazine=Mag_CZ527_5rnd
 part	CZ527_Camo	weaponOpticsHunting=HuntingOptic
@@ -151,7 +151,7 @@ part	CZ550	suppressorImpro=ImprovisedSuppressor
 firearm	class=CZ61	loaded=Mag_CZ61_20Rnd	rounds=1	ammo=20	parts=2	empty=0	ms=1
 part	CZ61	pistolMuzzle=MakarovPBSuppressor
 part	CZ61	magazine=Mag_CZ61_20Rnd
-firearm	class=FAL	loaded=Mag_FAL_20Rnd	rounds=1	ammo=20	parts=5	empty=0	ms=2
+firearm	class=FAL	loaded=Mag_FAL_20Rnd	rounds=1	ammo=20	parts=5	empty=0	ms=1
 part	FAL	weaponButtstockFal=Fal_FoldingBttstck
 part	FAL	weaponOptics=ACOGOptic
 part	FAL	weaponWrap=GhillieAtt_Mossy
@@ -161,20 +161,20 @@ firearm	class=FAMAS	loaded=Mag_FAMAS_25Rnd	rounds=1	ammo=25	parts=3	empty=0	ms=1
 part	FAMAS	weaponWrap=GhillieAtt_Mossy
 part	FAMAS	magazine=Mag_FAMAS_25Rnd
 part	FAMAS	suppressorImpro=ImprovisedSuppressor
-firearm	class=SawedoffFAMAS	loaded=Mag_FAMAS_25Rnd	rounds=1	ammo=25	parts=3	empty=0	ms=1
+firearm	class=SawedoffFAMAS	loaded=Mag_FAMAS_25Rnd	rounds=1	ammo=25	parts=3	empty=0	ms=2
 part	SawedoffFAMAS	weaponWrap=GhillieAtt_Mossy
 part	SawedoffFAMAS	magazine=Mag_FAMAS_25Rnd
 part	SawedoffFAMAS	suppressorImpro=ImprovisedSuppressor
 firearm	class=Izh18	loaded=Ammo_762x39	rounds=1	ammo=-1	parts=2	empty=0	ms=0
 part	Izh18	weaponWrap=GhillieAtt_Mossy
 part	Izh18	suppressorImpro=ImprovisedSuppressor
-firearm	class=SawedoffIzh18	loaded=Ammo_762x39	rounds=1	ammo=-1	parts=0	empty=0	ms=0
+firearm	class=SawedoffIzh18	loaded=Ammo_762x39	rounds=1	ammo=-1	parts=0	empty=0	ms=1
 firearm	class=M14	loaded=Mag_M14_10Rnd	rounds=1	ammo=10	parts=4	empty=0	ms=1
 part	M14	weaponOptics=ACOGOptic
 part	M14	weaponWrap=GhillieAtt_Mossy
 part	M14	magazine=Mag_M14_10Rnd
 part	M14	suppressorImpro=ImprovisedSuppressor
-firearm	class=M4A1	loaded=Mag_STANAG_30Rnd	rounds=1	ammo=30	parts=6	empty=2	ms=2
+firearm	class=M4A1	loaded=Mag_STANAG_30Rnd	rounds=1	ammo=30	parts=6	empty=2	ms=1
 part	M4A1	weaponHandguardM4=M4_MPHndgrd
 part	M4A1	weaponOptics=ACOGOptic
 part	M4A1	weaponWrap=GhillieAtt_Mossy
@@ -188,12 +188,11 @@ part	M16A2	weaponWrap=GhillieAtt_Mossy
 part	M16A2	magazine=Mag_STANAG_30Rnd
 part	M16A2	weaponBayonet=M9A1_Bayonet
 gap	M16A2	weaponMuzzleM4
-firearm	class=M249	loaded=Mag_M249_Box200Rnd	rounds=0	ammo=200	parts=4	empty=1	ms=3
+firearm	class=M249	loaded=Mag_M249_Box200Rnd	rounds=0	ammo=200	parts=4	empty=0	ms=2
 part	M249	weaponOptics=ACOGOptic
 part	M249	weaponHandguardM249=M249_Hndgrd
 part	M249	magazine=Mag_M249_Box200Rnd
 part	M249	weaponMuzzleM4=M4_Suppressor
-gap	M249	
 firearm	class=M4A1_Green	loaded=Mag_STANAG_30Rnd	rounds=1	ammo=30	parts=6	empty=2	ms=2
 part	M4A1_Green	weaponHandguardM4=M4_MPHndgrd
 part	M4A1_Green	weaponOptics=ACOGOptic
@@ -213,7 +212,7 @@ part	M4A1_Black	weaponBayonet=M9A1_Bayonet
 gap	M4A1_Black	weaponFlashlight
 gap	M4A1_Black	weaponMuzzleM4
 firearm	class=UnderSlugGrenadeM4	loaded=	rounds=-1	ammo=-1	parts=0	empty=0	ms=2
-firearm	class=Mosin9130	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=4	empty=1	ms=1
+firearm	class=Mosin9130	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=4	empty=1	ms=0
 part	Mosin9130	weaponBayonetMosin=Mosin_Bayonet
 part	Mosin9130	weaponMuzzleMosin=Mosin_Compensator
 part	Mosin9130	weaponWrap=GhillieAtt_Mossy
@@ -225,7 +224,7 @@ part	Mosin9130_Black	weaponMuzzleMosin=Mosin_Compensator
 part	Mosin9130_Black	weaponWrap=GhillieAtt_Mossy
 part	Mosin9130_Black	weaponOpticsMosin=PUScopeOptic
 gap	Mosin9130_Black	suppressorImpro
-firearm	class=Mosin9130_Green	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=4	empty=1	ms=2
+firearm	class=Mosin9130_Green	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=4	empty=1	ms=1
 part	Mosin9130_Green	weaponBayonetMosin=Mosin_Bayonet
 part	Mosin9130_Green	weaponMuzzleMosin=Mosin_Compensator
 part	Mosin9130_Green	weaponWrap=GhillieAtt_Mossy
@@ -237,13 +236,13 @@ part	Mosin9130_Camo	weaponMuzzleMosin=Mosin_Compensator
 part	Mosin9130_Camo	weaponWrap=GhillieAtt_Mossy
 part	Mosin9130_Camo	weaponOpticsMosin=PUScopeOptic
 gap	Mosin9130_Camo	suppressorImpro
-firearm	class=SawedoffMosin9130	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=1
+firearm	class=SawedoffMosin9130	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=0
 part	SawedoffMosin9130	weaponOpticsMosin=PUScopeOptic
 firearm	class=SawedoffMosin9130_Black	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=0
 part	SawedoffMosin9130_Black	weaponOpticsMosin=PUScopeOptic
 firearm	class=SawedoffMosin9130_Green	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=0
 part	SawedoffMosin9130_Green	weaponOpticsMosin=PUScopeOptic
-firearm	class=SawedoffMosin9130_Camo	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=1
+firearm	class=SawedoffMosin9130_Camo	loaded=Ammo_762x54	rounds=5	ammo=-1	parts=1	empty=0	ms=0
 part	SawedoffMosin9130_Camo	weaponOpticsMosin=PUScopeOptic
 firearm	class=MP5K	loaded=Mag_MP5_15Rnd	rounds=1	ammo=15	parts=5	empty=2	ms=1
 part	MP5K	weaponButtstockMP5=MP5k_StockBttstck
@@ -253,7 +252,7 @@ part	MP5K	weaponOptics=ACOGOptic
 part	MP5K	magazine=Mag_MP5_15Rnd
 gap	MP5K	weaponFlashlight
 gap	MP5K	weaponMuzzleMP5
-firearm	class=Groza	loaded=Mag_Groza_20Rnd	rounds=1	ammo=20	parts=4	empty=0	ms=1
+firearm	class=Groza	loaded=Mag_Groza_20Rnd	rounds=1	ammo=20	parts=4	empty=0	ms=2
 part	Groza	magazine=Mag_Groza_20Rnd
 part	Groza	weaponButtstockAK=AK74_WoodBttstck
 part	Groza	weaponMuzzleAK=AK_Suppressor
@@ -269,7 +268,7 @@ part	PP19	weaponOpticsAK=GrozaOptic
 firearm	class=Repeater	loaded=Ammo_357	rounds=7	ammo=-1	parts=2	empty=0	ms=0
 part	Repeater	weaponWrap=GhillieAtt_Mossy
 part	Repeater	suppressorImpro=ImprovisedSuppressor
-firearm	class=Ruger1022	loaded=Mag_Ruger1022_30Rnd	rounds=1	ammo=30	parts=4	empty=0	ms=1
+firearm	class=Ruger1022	loaded=Mag_Ruger1022_30Rnd	rounds=1	ammo=30	parts=4	empty=0	ms=0
 part	Ruger1022	weaponWrap=GhillieAtt_Mossy
 part	Ruger1022	magazine=Mag_Ruger1022_30Rnd
 part	Ruger1022	weaponOpticsHunting=HuntingOptic
@@ -297,7 +296,7 @@ part	Scout	weaponOptics=ACOGOptic
 part	Scout	weaponWrap=GhillieAtt_Mossy
 part	Scout	magazine=Mag_Scout_5Rnd
 part	Scout	weaponMuzzleM4=M4_Suppressor
-firearm	class=Scout_Chernarus	loaded=Mag_Scout_5Rnd	rounds=1	ammo=5	parts=4	empty=0	ms=0
+firearm	class=Scout_Chernarus	loaded=Mag_Scout_5Rnd	rounds=1	ammo=5	parts=4	empty=0	ms=1
 part	Scout_Chernarus	weaponOptics=ACOGOptic
 part	Scout_Chernarus	weaponWrap=GhillieAtt_Mossy
 part	Scout_Chernarus	magazine=Mag_Scout_5Rnd
@@ -307,7 +306,7 @@ part	Scout_Livonia	weaponOptics=ACOGOptic
 part	Scout_Livonia	weaponWrap=GhillieAtt_Mossy
 part	Scout_Livonia	magazine=Mag_Scout_5Rnd
 part	Scout_Livonia	weaponMuzzleM4=M4_Suppressor
-firearm	class=SKS	loaded=Ammo_762x39	rounds=10	ammo=-1	parts=3	empty=1	ms=1
+firearm	class=SKS	loaded=Ammo_762x39	rounds=10	ammo=-1	parts=3	empty=1	ms=0
 part	SKS	weaponWrap=GhillieAtt_Mossy
 part	SKS	weaponBayonetSKS=SKS_Bayonet
 part	SKS	weaponOpticsMosin=PUScopeOptic
@@ -371,7 +370,7 @@ firearm	class=Winchester70	loaded=Ammo_308Win	rounds=5	ammo=-1	parts=3	empty=0	m
 part	Winchester70	weaponWrap=GhillieAtt_Mossy
 part	Winchester70	weaponOpticsHunting=HuntingOptic
 part	Winchester70	suppressorImpro=ImprovisedSuppressor
-firearm	class=Winchester70_Black	loaded=Ammo_308Win	rounds=5	ammo=-1	parts=3	empty=0	ms=0
+firearm	class=Winchester70_Black	loaded=Ammo_308Win	rounds=5	ammo=-1	parts=3	empty=0	ms=1
 part	Winchester70_Black	weaponWrap=GhillieAtt_Mossy
 part	Winchester70_Black	weaponOpticsHunting=HuntingOptic
 part	Winchester70_Black	suppressorImpro=ImprovisedSuppressor
@@ -381,10 +380,10 @@ part	Winchester70_Green	weaponOpticsHunting=HuntingOptic
 part	Winchester70_Green	suppressorImpro=ImprovisedSuppressor
 firearm	class=GP25	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=0
 firearm	class=GP25_Standalone	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=0
-firearm	class=LAW	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=3
+firearm	class=LAW	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=2
 firearm	class=M203	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=0
 firearm	class=M203_Standalone	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=0
-firearm	class=M79	loaded=Ammo_40mm_Explosive	rounds=1	ammo=-1	parts=1	empty=0	ms=0
+firearm	class=M79	loaded=Ammo_40mm_Explosive	rounds=1	ammo=-1	parts=1	empty=0	ms=1
 part	M79	weaponOpticsAug=AugOptic
 firearm	class=RPG7	loaded=	rounds=0	ammo=-1	parts=0	empty=0	ms=3
 firearm	class=DartGun	loaded=	rounds=0	ammo=-1	parts=1	empty=1	ms=1
@@ -404,7 +403,7 @@ part	Engraved1911	pistolMuzzle=MakarovPBSuppressor
 part	Engraved1911	magazine=Mag_1911_7Rnd
 part	Engraved1911	pistolFlashlight=TLRLight
 part	Engraved1911>TLRLight	BatteryD=Battery9V
-firearm	class=CZ75	loaded=Mag_CZ75_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=1
+firearm	class=CZ75	loaded=Mag_CZ75_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=2
 part	CZ75	pistolMuzzle=MakarovPBSuppressor
 part	CZ75	pistolOptics=FNP45_MRDSOptic
 part	CZ75>FNP45_MRDSOptic	BatteryD=Battery9V
@@ -423,14 +422,14 @@ firearm	class=Derringer_Black	loaded=Ammo_357	rounds=2	ammo=-1	parts=0	empty=0	m
 firearm	class=Derringer_Pink	loaded=Ammo_357	rounds=2	ammo=-1	parts=0	empty=0	ms=0
 firearm	class=Derringer_Grey	loaded=Ammo_357	rounds=2	ammo=-1	parts=0	empty=0	ms=0
 firearm	class=Flaregun	loaded=Ammo_Flare	rounds=1	ammo=-1	parts=0	empty=0	ms=1
-firearm	class=FNX45	loaded=Mag_FNX45_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=1
+firearm	class=FNX45	loaded=Mag_FNX45_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=2
 part	FNX45	pistolMuzzle=MakarovPBSuppressor
 part	FNX45	pistolOptics=FNP45_MRDSOptic
 part	FNX45>FNP45_MRDSOptic	BatteryD=Battery9V
 part	FNX45	magazine=Mag_FNX45_15Rnd
 part	FNX45	pistolFlashlight=TLRLight
 part	FNX45>TLRLight	BatteryD=Battery9V
-firearm	class=FNX45_arrow	loaded=Mag_FNX45_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=2
+firearm	class=FNX45_arrow	loaded=Mag_FNX45_15Rnd	rounds=1	ammo=15	parts=6	empty=0	ms=1
 part	FNX45_arrow	pistolMuzzle=MakarovPBSuppressor
 part	FNX45_arrow	pistolOptics=FNP45_MRDSOptic
 part	FNX45_arrow>FNP45_MRDSOptic	BatteryD=Battery9V
@@ -455,13 +454,13 @@ part	SawedoffMagnum	RevolverCylinder=Magnum_Cylinder
 part	SawedoffMagnum	RevolverEjector=Magnum_Ejector
 firearm	class=MKII	loaded=Mag_MKII_10Rnd	rounds=1	ammo=10	parts=1	empty=0	ms=1
 part	MKII	magazine=Mag_MKII_10Rnd
-firearm	class=P1	loaded=Mag_P1_8Rnd	rounds=1	ammo=8	parts=2	empty=0	ms=0
+firearm	class=P1	loaded=Mag_P1_8Rnd	rounds=1	ammo=8	parts=2	empty=0	ms=1
 part	P1	magazine=Mag_P1_8Rnd
 part	P1	suppressorImpro=ImprovisedSuppressor
-firearm	class=MakarovPB	loaded=Mag_MakarovPB_8Rnd	rounds=1	ammo=8	parts=2	empty=0	ms=1
+firearm	class=MakarovPB	loaded=Mag_MakarovPB_8Rnd	rounds=1	ammo=8	parts=2	empty=0	ms=2
 part	MakarovPB	pistolMuzzle=MakarovPBSuppressor
 part	MakarovPB	magazine=Mag_MakarovPB_8Rnd
-firearm	class=MakarovIJ70	loaded=Mag_IJ70_8Rnd	rounds=1	ammo=12	parts=2	empty=0	ms=1
+firearm	class=MakarovIJ70	loaded=Mag_IJ70_8Rnd	rounds=1	ammo=12	parts=2	empty=0	ms=0
 part	MakarovIJ70	pistolMuzzle=MakarovPBSuppressor
 part	MakarovIJ70	magazine=Mag_IJ70_8Rnd
 firearm	class=Red9	loaded=Ammo_9x19	rounds=10	ammo=-1	parts=2	empty=0	ms=2
@@ -469,7 +468,7 @@ part	Red9	weaponButtstockRed9=Red9Bttstck
 part	Red9	suppressorImpro=ImprovisedSuppressor
 firearm	class=Izh18Shotgun	loaded=Ammo_12gaPellets	rounds=1	ammo=-1	parts=1	empty=0	ms=0
 part	Izh18Shotgun	weaponWrap=GhillieAtt_Mossy
-firearm	class=SawedoffIzh18Shotgun	loaded=Ammo_12gaPellets	rounds=1	ammo=-1	parts=0	empty=0	ms=1
+firearm	class=SawedoffIzh18Shotgun	loaded=Ammo_12gaPellets	rounds=1	ammo=-1	parts=0	empty=0	ms=0
 firearm	class=Izh43Shotgun	loaded=Ammo_12gaPellets	rounds=2	ammo=-1	parts=1	empty=0	ms=0
 part	Izh43Shotgun	weaponWrap=GhillieAtt_Mossy
 firearm	class=SawedoffIzh43Shotgun	loaded=Ammo_12gaPellets	rounds=2	ammo=-1	parts=0	empty=0	ms=1
@@ -479,7 +478,7 @@ part	Mp133Shotgun>FNP45_MRDSOptic	BatteryD=Battery9V
 firearm	class=Mp133Shotgun_PistolGrip	loaded=Ammo_12gaPellets	rounds=4	ammo=-1	parts=2	empty=0	ms=1
 part	Mp133Shotgun_PistolGrip	pistolOptics=FNP45_MRDSOptic
 part	Mp133Shotgun_PistolGrip>FNP45_MRDSOptic	BatteryD=Battery9V
-firearm	class=R12	loaded=Ammo_12gaPellets	rounds=7	ammo=-1	parts=4	empty=0	ms=1
+firearm	class=R12	loaded=Ammo_12gaPellets	rounds=7	ammo=-1	parts=4	empty=0	ms=0
 part	R12	weaponOptics=ACOGOptic
 part	R12	weaponWrap=GhillieAtt_Mossy
 part	R12	weaponFlashlight=UniversalLight
@@ -510,7 +509,7 @@ part	Mich2001Helmet	NVG=NVGoggles
 part	Mich2001Helmet>NVGoggles	BatteryD=Battery9V
 item	class=UniversalLight	parts=1	empty=0	ms=0
 part	UniversalLight	BatteryD=Battery9V
-item	class=OffroadHatchback	parts=14	empty=1	ms=1
+item	class=OffroadHatchback	parts=14	empty=1	ms=2
 part	OffroadHatchback	NivaCoDriverDoors=HatchbackDoors_CoDriver
 part	OffroadHatchback	SparkPlug=SparkPlug
 part	OffroadHatchback	NivaWheel_1_1=HatchbackWheel
@@ -526,7 +525,7 @@ part	OffroadHatchback	CarBattery=CarBattery
 part	OffroadHatchback	NivaTrunk=HatchbackTrunk
 part	OffroadHatchback	NivaWheel_Spare_1=HatchbackWheel
 gap	CarBattery	MetalWire
-item	class=CivilianSedan	parts=16	empty=1	ms=1
+item	class=CivilianSedan	parts=16	empty=1	ms=2
 part	CivilianSedan	CivSedanWheel_1_1=CivSedanWheel
 part	CivilianSedan	CivSedanWheel_1_2=CivSedanWheel
 part	CivilianSedan	CivSedanWheel_2_1=CivSedanWheel
@@ -568,6 +567,8 @@ machine	class=M4A1	at=loaded	loaded=Mag_STANAG_30Rnd	rounds=1	ammo=30
 quantity	class=Rag	asked=3	ok=true	read=3/6	error=
 quantity	class=Rag	asked=2.5	ok=false	read=6/6	error=Rag is a stack, so its quantity must be a whole number
 quantity	class=Rag	asked=0	ok=false	read=6/6	error=the engine deletes Rag at quantity 0; give more than 0
+quantity	class=Rag	asked=0.0005	ok=false	read=6/6	error=Rag is a stack, so its quantity must be a whole number
+quantity	class=WaterBottle	asked=0.0005	ok=true	read=0/1000	error=
 quantity	class=Rag	asked=50	ok=false	read=6/6	error=the quantity of Rag must lie within 0 and 6
 quantity	class=WaterBottle	asked=500	ok=true	read=500/1000	error=
 quantity	class=WaterBottle	asked=0	ok=true	read=0/1000	error=
@@ -595,4 +596,6 @@ place	case=dressed-inventory-rag	class=Rag	placed=cargo	slot=	container=HuntingJ
 place	case=dressed-inventory-rifle	class=M4A1	placed=attachment	slot=Shoulder	container=SurvivorM_Mirek
 place	case=dressed-inventory-car	result=refused
 blocklist	entries=4	ms=3	mag_stanag_30rnd=Mag_STANAG_30Rnd	m4a1=M4A1	nosuchclassanywhere=NoSuchClassAnywhere	grenade_rgd5=GRENADE_RGD5'
-finished	wallMs=5240
+budget	case=nested	listed=131681	result=6494	truncated=true	count=420	shown=20
+budget	case=flat	listed=186381	result=115	truncated=true	count=600	shown=0
+finished	wallMs=5819

@@ -72,8 +72,9 @@ management views).
   array items are taken as typed, whitespace included; an empty-string item cannot be
   expressed in the one-per-line form.
 - **Exclusions** (`"not": {"enum": [...]}`, protocol section 6.1) are refused on the page
-  before the hub refuses them: an excluded value is an error on its field as it is typed
-  and again when the form is read, an excluded `enum` member is a disabled option marked
+  before the hub refuses them, at any depth of the params (a vector's coordinate, an
+  array's default, a member of a compound enum): an excluded value is an error on its
+  field as it is typed (string and number inputs) and again when the form is read, an excluded `enum` member is a disabled option marked
   `(excluded)`, an excluded entry of a context enumeration stays in the suggestions with
   `(blocked on this server)` after its label (a datalist has no greyed state, so it is
   marked rather than hidden), an array picker will not add one, and the field's hint says

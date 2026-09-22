@@ -27,7 +27,8 @@ arrived, since those entries were written for one stream.
   manifest field of its own. Any other form of `not` (another keyword inside it or beside
   `enum`, an empty or non-array `enum`) rejects the manifest at its path; a null reads as
   no exclusion; its constants follow the ±2^53 rule. The panel refuses an excluded value
-  on the page: an error on the field as it is typed and when the form is read, a disabled
+  on the page, at any depth of the params (a vector's coordinate, an array's default, a
+  member of a compound enum): an error on the field as it is typed and when the form is read, a disabled
   `(excluded)` option for an excluded `enum` member, a context enumeration's excluded
   entry kept in the suggestions and marked `(blocked on this server)`, and an array picker
   that will not add one. `spec/manifest.schema.json` carries the keyword. The hub
@@ -130,6 +131,11 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-22: a number nested inside an `enum` member (an object or array member) beyond
+  ±2^53 was accepted and then compared as its rounded value; the ±2^53 rule of protocol
+  section 6.1 now applies at every depth of an `enum` or `not` member, and the plugin
+  conformance suite's subset check applies it to members and bounds as the hub does
+  (issue #75's review found it).
 - 2026-09-17: a live-map marker is placed the moment the widget creates it rather than by
   the next animation frame (issue #102). Until then a new marker sat at the stage's top
   left corner for one frame, and a click measured against that corner landed on the map
@@ -185,8 +191,10 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   a grenade or explosive, a blocked class, or a part created ruined. The result says where
   the item went (`placed`, `slot`, `container`), its condition as the inventory read
   reports it, and with `auto` every part attached, every slot left empty, and what a
-  firearm was `loaded` with. A refused quantity or health removes the item the action
-  created, so nothing is left behind. `spawnBlocklist` in `config.json` names classes the
+  firearm was `loaded` with; a report that would pass the result budget counts a part's
+  own parts, then keeps only the counts (`truncated`, `attachmentCount`, `emptyCount`). A
+  refused quantity or health removes the item the action created, so nothing is left
+  behind. `spawnBlocklist` in `config.json` names classes the
   action refuses: published in its params schema as `not`/`enum` in the config's own case
   (so the hub refuses them and the panel marks them), refused by the plugin in any case,
   and kept out of what `auto` attaches. The spawn action moves to

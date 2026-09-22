@@ -2,8 +2,8 @@
 
 Measured 2026-09-22 on DayZ 1.29.163709 dedicated server, Windows 11, stock Chernarus
 offline mission, the Vyshka plugin (0.8.0, unreleased) loaded idle, its `VyshkaSpawn` class
-doing the work exactly as `vyshka.spawn` does. Seven runs; the seventh (`probe-run7.log`,
-its script errors by source in `probe-run7-script-errors.log`) is the one cited. The second
+doing the work exactly as `vyshka.spawn` does. Eight runs; the eighth (`probe-run8.log`,
+its script errors by source in `probe-run8-script-errors.log`) is the one cited. The second
 (`probe-run2-unguarded-load.log`) is kept for the state-machine measurement below, since it
 called `SpawnAmmo` directly on the weapons that fault. The others found the defects listed
 at the end, each fixed before the next run.
@@ -11,7 +11,7 @@ at the end, each fixed before the next run.
 ## The part index
 
 `VyshkaSpawn.BuildCandidates` walks `CfgVehicles` once and indexes every public item by
-the slots its `inventorySlot` names: 1767 parts over 295 slots in 19 ms (runs 1 to 7:
+the slots its `inventorySlot` names: 1767 parts over 295 slots in 11 ms (runs 1 to 8:
 10 to 23 ms). It is built on the first `auto` spawn of a session and kept. A slot's
 candidates are tried in a fixed order, the parts made for fewer slots first (a rifle's own
 suppressor before the improvised one that fits every muzzle), then by name, with a name
@@ -83,7 +83,7 @@ pistols (`Mag_ShockCartridge`, 1) and leaves the launchers, the bows, and the da
 unloaded. The action's result says `loaded: null` for those.
 
 Creating these weapons logs script errors of its own, whatever the plugin does next: every
-one of the 21 errors left in run 7 is raised inside the probe's `CreateObjectEx` calls
+one of the 21 errors left in run 8 is raised inside the probe's `CreateObjectEx` calls
 (`SaveCurrentFSMState` 15 times, once per creation of the nine classes above, the three
 bows and both shock pistols included, and `ValidateMuzzleArray` once each for `Groza`,
 `Trumpet`, and the four under-barrel launchers), none inside a plugin file. A plain `vyshka.spawn` of an RPG-7 logs the same lines.
@@ -118,7 +118,9 @@ A health is a percent of the item's own maximum, the unit the inventory read rep
 | `Rag` | 0 | refused: the engine deletes a rag stack at 0 (`varQuantityDestroyOnMin`) |
 | `Rag` | 50 | refused: within 0 and 6 |
 | `WaterBottle` | 500 | 500 of 1000 |
+| `Rag` | 0.0005 | refused: a stack's quantity is a whole number |
 | `WaterBottle` | 0 | 0 of 1000, an empty bottle |
+| `WaterBottle` | 0.0005 | 0 of 1000: the engine's setter takes anything within 0.001 of the minimum as the minimum (`ItemBase.SetQuantity`), so the plugin's delete-at-minimum refusal starts there too, and it refuses a spawn the setter reports deleting |
 | `Canteen` | 250.5 | 250.5 of 1000 |
 | `Mag_STANAG_30Rnd` | 12 | 12 of 30 rounds |
 | `Mag_STANAG_30Rnd` | 31, 7.5 | refused: a count of rounds within 0 and 30 |
@@ -128,6 +130,17 @@ A health is a percent of the item's own maximum, the unit the inventory read rep
 | `Battery9V` | 50 | 50 of 50 |
 | `SmallGasCanister` | 100 | refused: within 0 and 20 |
 | `M4A1` | 1 | refused: no quantity |
+
+## The result budget
+
+The stock car's `auto` report is about 1 KiB (the live run's whole action record was 2 KiB).
+A modded item could make one far larger, and a result over the hub's 64 KiB cap is dropped
+whole (protocol section 7), so the reporter keeps the result under the inventory read's
+60 000-byte budget: first the parts' own parts are counted rather than listed, then only
+the counts are kept, `truncated` saying so. Handed synthetic reports with 120-character
+names (run 8): 20 parts of 20 parts each, 131 681 bytes listed, became a 6 494-byte result
+with the 20 parts and their counts (`attachmentCount` 420); 600 flat parts, 186 381 bytes,
+became a 115-byte result with the counts alone.
 
 ## Placement on a body with no client
 
@@ -175,3 +188,8 @@ kept as written, with a warning in the log.
   now.
 - Run 5: the `HasDamageSystem` guard above.
 - Run 6: an ammunition pile took a quantity of 0.
+- The live run (after run 7): the M249 declares one attachment slot with no name, which
+  `auto` reported as an empty slot called `""`; an unnamed empty slot is now passed over.
+- The review of the slice (before run 8): the delete-at-minimum refusal did not account for
+  the setter's 0.001 snap, the sort key padded slot counts to two digits only (four now),
+  and a very large report had no budget.

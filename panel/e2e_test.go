@@ -69,8 +69,10 @@ var e2eManifest = map[string]any{
 				"blood":        map[string]any{"type": "number", "exclusiveMaximum": 5000},
 				"reason":       map[string]any{"type": "string", "enum": []string{"admin", "event", "test"}, "default": "event"},
 				"restoreBlood": map[string]any{"type": "boolean", "default": true},
-				"position":     map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "x-vyshka-widget": "vector"},
-				"item":         map[string]any{"type": "string", "x-vyshka-widget": "itemlist", "context": "example-mod.item"},
+				// A coordinate the items schema excludes is refused on the page
+				// too, though no field of its own reads it.
+				"position": map[string]any{"type": "array", "items": map[string]any{"type": "number", "not": map[string]any{"enum": []int{13}}}, "x-vyshka-widget": "vector"},
+				"item":     map[string]any{"type": "string", "x-vyshka-widget": "itemlist", "context": "example-mod.item"},
 				// A context annotation beside a player widget: the annotation
 				// names the data, so its entries are what the field suggests.
 				"owner": map[string]any{"type": "string", "x-vyshka-widget": "player", "context": "example-mod.item"},
@@ -419,6 +421,12 @@ func TestPanelEndToEnd(t *testing.T) {
 		chromedp.Click("#dispatch", chromedp.ByQuery))
 	waitJS("blank coordinate fault shown on the vector",
 		`(function(){const e=document.querySelector('label[data-path="position"] .field-error');return e && !e.hidden && e.textContent.includes("coordinate y")})()`)
+	run("fill in an excluded coordinate",
+		setValue(`input[name="params.position.y"]`, "13"),
+		chromedp.Click("#dispatch", chromedp.ByQuery))
+	waitJS("excluded coordinate fault shown on the vector",
+		`(function(){const e=document.querySelector('label[data-path="position"] .field-error');return e && !e.hidden && e.textContent.startsWith("position[1] is excluded")})()`)
+	run("clear the excluded coordinate", setValue(`input[name="params.position.y"]`, ""))
 
 	// 6b. Invalid input inside an otherwise empty optional object is a fault
 	// on its field, never dropped by omitting the object.

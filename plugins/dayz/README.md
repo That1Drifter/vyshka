@@ -224,7 +224,8 @@ result is the class as the engine reports it.
   (at least 1), a stack's count (a whole number), a bottle's millilitres, within the range
   the engine holds for that item. `health` is a percent of the item's own maximum; 0 makes
   it ruined. A value outside the item's range, a quantity on an item without one (a
-  firearm), a quantity at which the engine would delete the item (a rag stack at 0), or a
+  firearm), a quantity at which the engine would delete the item (a rag stack at 0, or
+  within the 0.001 the engine's setter rounds to its minimum), or a
   health on a class without a damage system (the launchers, the dart gun, the shock
   pistol) fails the action, and the item that was created is removed again, so a refused
   spawn leaves nothing behind. Both apply to the spawned item, not to what `auto` attaches.
@@ -248,7 +249,11 @@ result is the class as the engine reports it.
   doors, hood, trunk, lights, radiator, spark plug, and battery (fuel and coolant are not
   parts). The picks are the engine's acceptance within that fixed rule, so the result
   lists every part attached and every slot left empty (a flashlight slot on a handguard
-  without a rail, a muzzle behind a bayonet).
+  without a rail, a muzzle behind a bayonet). A stock car's report is about 1 KiB; one that
+  would pass the 60 000-byte result budget (a modded item with many slots, each part with
+  many of its own) lists the parts with their own parts counted as `parts`, and past that
+  keeps only the counts, with `truncated`, `attachmentCount`, and `emptyCount` saying so,
+  so the hub's 64 KiB cap never drops the result.
 - **Blocklist.** `spawnBlocklist` in `config.json` (below) names classes the action must
   not create. The plugin publishes it in the action's params schema as `"not": {"enum":
   [...]}` (protocol section 6.1), so the hub refuses a listed name before it is ever

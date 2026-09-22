@@ -301,3 +301,21 @@ func TestExclusion(t *testing.T) {
 		})
 	}
 }
+
+// A constant nested inside an enum or exclusion member is compared exactly
+// too, so one a float64 cannot hold exactly rejects the schema (section 6.1).
+func TestCompileRejectsInexactNestedConstants(t *testing.T) {
+	for name, raw := range map[string]string{
+		"notObjectMember":  `{"not": {"enum": [{"id": 9007199254740993}]}}`,
+		"notArrayMember":   `{"not": {"enum": [[1, 9007199254740993]]}}`,
+		"enumObjectMember": `{"enum": [{"id": 9007199254740993}]}`,
+		"enumDeepMember":   `{"enum": [{"a": [{"b": -9007199254740993}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, faults := Compile(json.RawMessage(raw)); len(faults) == 0 {
+				t.Fatalf("Compile(%s) accepted a constant beyond 2^53", raw)
+			}
+		})
+	}
+	mustCompile(t, `{"not": {"enum": [{"id": 9007199254740991, "ratio": 0.5}]}}`)
+}

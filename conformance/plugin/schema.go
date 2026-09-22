@@ -67,9 +67,11 @@ func synthesizeValue(schema map[string]any) any {
 	case "array":
 		return []any{}
 	case "string":
-		// A value the schema's `not` excludes (section 6.1) is stepped past.
+		// A value the schema's `not` excludes (section 6.1) is stepped past;
+		// the list is finite, so one more candidate than it has members
+		// always finds a free one.
 		value := "conformance"
-		for i := 1; excluded(schema, value) && i <= 100; i++ {
+		for i := 1; excluded(schema, value) && i <= exclusionCount(schema)+1; i++ {
 			value = "conformance-" + strconv.Itoa(i)
 		}
 		return value
@@ -78,16 +80,7 @@ func synthesizeValue(schema map[string]any) any {
 	case "null":
 		return nil
 	case "integer", "number":
-		value := synthesizeNumber(schema, schemaType)
-		for i := 0; excluded(schema, value) && i < 100; i++ {
-			switch typed := value.(type) {
-			case int64:
-				value = typed + 1
-			case float64:
-				value = typed + 1
-			}
-		}
-		return value
+		return steppedNumber(schema, synthesizeNumber(schema, schemaType))
 	default:
 		return map[string]any{}
 	}
@@ -116,6 +109,39 @@ func synthesizeNumber(schema map[string]any, schemaType string) any {
 		return integer
 	}
 	return value
+}
+
+// steppedNumber moves a synthesized number past the values the schema's
+// `not` excludes, one whole step at a time, upward first and then downward,
+// never across the schema's bounds. The first candidate is returned when
+// every step in reach is excluded too.
+func steppedNumber(schema map[string]any, first any) any {
+	if !excluded(schema, first) {
+		return first
+	}
+	reach := exclusionCount(schema) + 1
+	for _, direction := range []float64{1, -1} {
+		for step := 1; step <= reach; step++ {
+			var candidate any
+			switch typed := first.(type) {
+			case int64:
+				candidate = typed + int64(direction)*int64(step)
+			case float64:
+				candidate = typed + direction*float64(step)
+			}
+			if satisfies(schema, normalize(candidate)) {
+				return candidate
+			}
+		}
+	}
+	return first
+}
+
+// exclusionCount is how many values the schema's `not` excludes.
+func exclusionCount(schema map[string]any) int {
+	not, _ := schema["not"].(map[string]any)
+	members, _ := not["enum"].([]any)
+	return len(members)
 }
 
 func asFloat(value any) (float64, bool) {
@@ -153,8 +179,18 @@ func satisfies(schema map[string]any, value any) bool {
 	case "null":
 		return value == nil
 	case "array":
-		_, ok := value.([]any)
-		return ok
+		elements, ok := value.([]any)
+		if !ok {
+			return false
+		}
+		if items, isSchema := schema["items"].(map[string]any); isSchema {
+			for _, element := range elements {
+				if !satisfies(items, element) {
+					return false
+				}
+			}
+		}
+		return true
 	case "object":
 		object, ok := value.(map[string]any)
 		if !ok {
@@ -236,6 +272,10 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 			return fmt.Errorf("%s.%s: keyword %q is outside the schema subset this protocol enforces (section 6.1)", path, keyword, keyword)
 		}
 		switch keyword {
+		case "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum":
+			if !exactConstant(value) {
+				return fmt.Errorf("%s.%s: a number beyond 2^53 in magnitude cannot be compared exactly, and a hub rejects the manifest over it (section 6.1)", path, keyword)
+			}
 		case "type":
 			name, ok := value.(string)
 			if !ok || !subsetTypes[name] {
@@ -302,10 +342,37 @@ func validateExclusion(value any, path string) error {
 			return fmt.Errorf(`%s.not.%s: not admits only {"enum": [...]}, and a hub rejects the manifest over %q (section 6.4)`, path, keyword, keyword)
 		}
 	}
-	if members, ok := object["enum"].([]any); !ok || len(members) == 0 {
+	members, ok := object["enum"].([]any)
+	if !ok || len(members) == 0 {
 		return fmt.Errorf("%s.not.enum: must be a non-empty array of the values excluded (section 6.1)", path)
 	}
+	if !exactConstant(members) {
+		return fmt.Errorf("%s.not.enum: a number beyond 2^53 in magnitude cannot be compared exactly, and a hub rejects the manifest over it (section 6.1)", path)
+	}
 	return nil
+}
+
+// exactConstant reports whether every number inside a schema constant (an
+// enum or exclusion member, or a bound) survives float64 exactly: a fraction,
+// or an integer strictly within ±2^53, the rule a hub applies (section 6.1).
+func exactConstant(value any) bool {
+	switch typed := value.(type) {
+	case float64:
+		return typed != math.Trunc(typed) || math.Abs(typed) < 1<<53
+	case []any:
+		for _, element := range typed {
+			if !exactConstant(element) {
+				return false
+			}
+		}
+	case map[string]any:
+		for _, member := range typed {
+			if !exactConstant(member) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // excluded reports whether value is one the schema's `not` excludes.

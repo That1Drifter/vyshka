@@ -33,6 +33,7 @@
 //   VYSHKA_SPAWN<TAB>health<TAB>class=<c><TAB>asked=<p><TAB>ok=<bool><TAB>read=<p><TAB>state=<level>
 //   VYSHKA_SPAWN<TAB>place<TAB>case=<name><TAB>class=<c><TAB>placed=<where><TAB>slot=<s><TAB>container=<c>
 //   VYSHKA_SPAWN<TAB>blocklist<TAB>entries=<n><TAB>ms=<ms><TAB><name>=<published>...
+//   VYSHKA_SPAWN<TAB>budget<TAB>case=<name><TAB>listed=<bytes><TAB>result=<bytes><TAB>truncated=<bool><TAB>count=<n><TAB>shown=<n>
 //   VYSHKA_SPAWN<TAB>finished<TAB>wallMs=<frame clock ms>
 
 class VyshkaSpawnProbe
@@ -125,6 +126,8 @@ class VyshkaSpawnProbe
 			Placements();
 		else if (m_Phase == 5)
 			Blocklist();
+		else if (m_Phase == 6)
+			Budget();
 		else
 		{
 			int wall = GetGame().GetTime() - m_StartTime;
@@ -254,6 +257,8 @@ class VyshkaSpawnProbe
 		QuantityCase("Rag", 3);
 		QuantityCase("Rag", 2.5);
 		QuantityCase("Rag", 0);
+		QuantityCase("Rag", 0.0005);
+		QuantityCase("WaterBottle", 0.0005);
 		QuantityCase("Rag", 50);
 		QuantityCase("WaterBottle", 500);
 		QuantityCase("WaterBottle", 0);
@@ -374,6 +379,50 @@ class VyshkaSpawnProbe
 		for (int i = 0; i < wanted.Count(); i++)
 			line = line + "\t" + wanted.GetKey(i) + "=" + wanted.GetElement(i);
 		Print(line);
+	}
+
+	// Budget hands the result reporter an `auto` report far larger than any
+	// stock item makes (a modded item with many slots, each part with many
+	// of its own, long names), so the cut to the result budget is seen: 20
+	// parts of 20 parts each, then 600 parts with none.
+	void Budget()
+	{
+		BudgetCase("nested", 20, 20);
+		BudgetCase("flat", 600, 0);
+	}
+
+	void BudgetCase(string name, int outer, int inner)
+	{
+		string longName = "";
+		while (longName.Length() < 120)
+			longName = longName + "VyshkaBudgetProbePart_";
+		VyshkaJsonValue attached = VyshkaJsonValue.NewArray();
+		for (int i = 0; i < outer; i++)
+		{
+			VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+			entry.Set("slot", VyshkaJsonValue.NewString("vyshkaBudgetSlot_" + i.ToString() + "_" + longName));
+			entry.Set("class", VyshkaJsonValue.NewString(longName + i.ToString()));
+			if (inner > 0)
+			{
+				VyshkaJsonValue children = VyshkaJsonValue.NewArray();
+				for (int j = 0; j < inner; j++)
+				{
+					VyshkaJsonValue child = VyshkaJsonValue.NewObject();
+					child.Set("slot", VyshkaJsonValue.NewString("vyshkaBudgetChildSlot_" + j.ToString() + "_" + longName));
+					child.Set("class", VyshkaJsonValue.NewString(longName + j.ToString()));
+					children.Add(child);
+				}
+				entry.Set("attachments", children);
+			}
+			attached.Add(entry);
+		}
+		VyshkaJsonValue empty = VyshkaJsonValue.NewArray();
+		int before = attached.Serialize().Length();
+		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
+		result.Set("className", VyshkaJsonValue.NewString("VyshkaBudgetProbe"));
+		VyshkaSpawn.Report(result, attached, empty);
+		int after = result.Serialize().Length();
+		Print(TAG + "\tbudget\tcase=" + name + "\tlisted=" + before.ToString() + "\tresult=" + after.ToString() + "\ttruncated=" + result.GetBool("truncated", false).ToString() + "\tcount=" + result.GetInt("attachmentCount", -1).ToString() + "\tshown=" + result.Get("attachments").Count().ToString());
 	}
 
 	// Count counts parts at every level of an attached list.
