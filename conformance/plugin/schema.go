@@ -62,6 +62,11 @@ func synthesizeValue(schema map[string]any) any {
 			if !ok {
 				continue
 			}
+			// A name required twice is synthesized once: nested, the
+			// repeats would multiply the work level by level.
+			if _, done := out[key]; done {
+				continue
+			}
 			property, _ := properties[key].(map[string]any)
 			out[key] = synthesizeValue(property)
 		}

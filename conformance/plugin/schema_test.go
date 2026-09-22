@@ -139,6 +139,26 @@ func TestSynthesizeNestedImpossibleArraysFinishPromptly(t *testing.T) {
 	}
 }
 
+// Round seven's case: a required name listed twice at each of thirty levels
+// synthesized the same subtree twice per level, 2^30 leaves in all.
+func TestSynthesizeDuplicateRequiredNamesFinishPromptly(t *testing.T) {
+	schema := map[string]any{"type": "string"}
+	for i := 0; i < 30; i++ {
+		schema = map[string]any{"type": "object", "required": []any{"x", "x"}, "properties": map[string]any{"x": schema}}
+	}
+	done := make(chan map[string]any, 1)
+	go func() { done <- synthesizeParams(schema) }()
+	select {
+	case params := <-done:
+		if !satisfies(schema, params) {
+			encoded, _ := json.Marshal(params)
+			t.Fatalf("synthesized %s, which the schema refuses", encoded)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("synthesis did not finish within 5 s")
+	}
+}
+
 func TestValidateSubsetRejectsInexactConstants(t *testing.T) {
 	for name, schema := range map[string]map[string]any{
 		"notMember":  {"type": "number", "not": map[string]any{"enum": []any{float64(9007199254740993)}}},
