@@ -1,6 +1,7 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the item catalog of #73 landed as protocol draft 0.27, closing the
+**As of:** 2026-09-22 (the inventory actions of #74 landed, the first action result
+measured against its cap; the item catalog of #73 landed as protocol draft 0.27, closing the
 hub side of `context.enumerate`; the server binding of #81 landed as draft 0.26 and the
 plugin fixes of #108 on 2026-09-21; the shape of #80 settled in its issue, its pull spike
 measured, and the plugin's string and file defects filed as #108; the mod surface and its
@@ -153,10 +154,20 @@ After the tag, in this order:
     `spikes/dayz-item-catalog`: a stock 1.29 server's 2050 items are 243 KiB as one list,
     7 percent under one reply's bound, and 107 KiB for the largest type. Loadout forms
     (#76) get the same suggestions for free through the annotation.
-11. **Inventory** (#74): `vyshka.inventory.read` returns one player's inventory tree as an
-    action result (a request with a result, not a snapshot, so a snapshot keeps meaning a
-    whole list the plugin pushes on its own cadence); strip (`warning`) and clear cargo
-    (`destructive`). The first body to check against the 256 KiB cap with a real payload.
+11. **Inventory** (#74), landed 2026-09-22: `vyshka.inventory.read` returns one player's
+    inventory tree as an action result (a request with a result, not a snapshot, so a
+    snapshot keeps meaning a whole list the plugin pushes on its own cadence): the held
+    item, every worn item, and inside each its attachments and cargo, with condition,
+    quantity, rounds, liquid, and food stage; `vyshka.inventory.strip` (`warning`) drops it
+    all beside the player through the engine's own drop and `vyshka.inventory.clear`
+    (`destructive`) deletes it all through the engine's safe delete. The first result
+    checked against a cap with a real payload: the bound that applies to a result is the
+    64 KiB of protocol section 7 (the 256 KiB figure is the snapshot body cap), and
+    `spikes/dayz-inventory-tree` measured a heavy loadout built from named stock classes
+    at 131 items and 14 KiB, a quarter of the action's budget, so a character carrying
+    that much is answered whole and the action's cut (one level of containers less until
+    it fits, the counts kept) is for far larger loads, modded containers first of all.
+    Each action was verified live on DayZ 1.29 with a retail client.
 12. **Spawning extension** (#75): spawn into a target inventory with quantity and health;
     `attachments: auto`; the class-name blocklist expressed in the action's parameter schema
     so the panel greys entries out with no manifest change and third-party spawn actions

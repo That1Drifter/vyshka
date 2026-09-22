@@ -102,6 +102,9 @@ modded class MissionServer
 		registry.Register(new VyshkaBrokenLegsAction());
 		registry.Register(new VyshkaBloodyHandsAction());
 		registry.Register(new VyshkaFlagsAction());
+		registry.Register(new VyshkaInventoryReadAction());
+		registry.Register(new VyshkaInventoryStripAction());
+		registry.Register(new VyshkaInventoryClearAction());
 		// The item catalog: one custom context per item type (spec section
 		// 6.2), which the spawn action's className draws on.
 		VyshkaCatalog.RegisterContexts(registry);
