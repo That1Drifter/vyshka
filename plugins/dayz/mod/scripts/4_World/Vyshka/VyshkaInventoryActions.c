@@ -47,6 +47,16 @@ class VyshkaInventory
 
 	static const int SLOT_NAME_MAX = 64;
 
+	// HasHealth says whether GetMaxHealth can be asked: a class whose config
+	// declares no DamageSystem (the launchers, the dart gun, and the shock
+	// pistol; issue #75's spike) makes it log a script error instead. The
+	// engine's own HasDamageSystem cannot say so: it reads false for every
+	// item in the frame the item is created, those with health included.
+	static bool HasHealth(EntityAI item)
+	{
+		return item.ConfigIsExisting("DamageSystem");
+	}
+
 	// State names the health level (GameConstants.STATE_*), the words the
 	// client shows.
 	static string StateName(int level)
@@ -393,7 +403,9 @@ class VyshkaInventoryTree
 	// liquid in a container that holds one; a food's stage.
 	static void Condition(EntityAI item, VyshkaJsonValue entry)
 	{
-		float max = item.GetMaxHealth(VyshkaInventory.ZONE_GLOBAL, VyshkaInventory.HEALTH_TYPE);
+		float max = 0;
+		if (VyshkaInventory.HasHealth(item))
+			max = item.GetMaxHealth(VyshkaInventory.ZONE_GLOBAL, VyshkaInventory.HEALTH_TYPE);
 		if (max > 0)
 		{
 			float health = item.GetHealth(VyshkaInventory.ZONE_GLOBAL, VyshkaInventory.HEALTH_TYPE);

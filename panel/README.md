@@ -71,6 +71,15 @@ management views).
   unticked omits the object whole whatever it requires of its children. String
   array items are taken as typed, whitespace included; an empty-string item cannot be
   expressed in the one-per-line form.
+- **Exclusions** (`"not": {"enum": [...]}`, protocol section 6.1) are refused on the page
+  before the hub refuses them, at any depth of the params (a vector's coordinate, an
+  array's default, a member of a compound enum): an excluded value is an error on its
+  field as it is typed (string and number inputs) and again when the form is read, an excluded `enum` member is a disabled option marked
+  `(excluded)`, an excluded entry of a context enumeration stays in the suggestions with
+  `(blocked on this server)` after its label (a datalist has no greyed state, so it is
+  marked rather than hidden), an array picker will not add one, and the field's hint says
+  how many values are blocked. This is how a plugin's spawn blocklist reaches the form with
+  no manifest field of its own; any action's schema gets the same.
 - **`x-vyshka-widget` hints** shape the input and never its validation: `player` offers
   the identities from the latest `state.players` snapshot as suggestions, `vector` renders
   x, y, z inputs for an array of numbers (z may be left blank for a flat position, and a

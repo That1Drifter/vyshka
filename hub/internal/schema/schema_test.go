@@ -236,3 +236,86 @@ func TestValidateEnumDeepEquality(t *testing.T) {
 		t.Error("a non-member object passed the enum")
 	}
 }
+
+func TestExclusion(t *testing.T) {
+	compiled := mustCompile(t, `{
+		"type": "object",
+		"properties": {
+			"className": { "type": "string", "context": "dayz.items", "not": { "enum": ["M79", "Grenade_RGD5"] } },
+			"count":     { "type": "integer", "not": { "enum": [13] } },
+			"part":      { "not": { "enum": [{"slot": "optic"}] } },
+			"nulled":    { "type": "string", "not": null }
+		}
+	}`)
+
+	for _, instance := range []string{
+		`{"className": "AKM"}`,
+		// The comparison is exact, as enum's is (section 6.1): a game that
+		// resolves names case-insensitively enforces its own list.
+		`{"className": "m79"}`,
+		`{"count": 12}`,
+		`{"part": {"slot": "muzzle"}}`,
+		`{"nulled": "anything"}`,
+	} {
+		if faults := compiled.Validate(json.RawMessage(instance)); len(faults) > 0 {
+			t.Errorf("Validate(%s) = %v, want no faults", instance, faults)
+		}
+	}
+	for instance, wantPath := range map[string]string{
+		`{"className": "M79"}`:          "className",
+		`{"className": "Grenade_RGD5"}`: "className",
+		`{"count": 13}`:                 "count",
+		`{"part": {"slot": "optic"}}`:   "part",
+	} {
+		faults := compiled.Validate(json.RawMessage(instance))
+		if len(faults) != 1 {
+			t.Errorf("Validate(%s) = %v, want exactly one fault", instance, faults)
+			continue
+		}
+		if faults[0].Path != wantPath || !strings.Contains(faults[0].Message, "excludes") {
+			t.Errorf("Validate(%s) fault %q, want one at %q saying the value is excluded", instance, faults[0], wantPath)
+		}
+	}
+
+	// not admits one form only: an object whose single keyword is a
+	// non-empty enum.
+	for name, raw := range map[string]string{
+		"string":      `{"type": "string", "not": "M79"}`,
+		"array":       `{"type": "string", "not": ["M79"]}`,
+		"emptyObject": `{"type": "string", "not": {}}`,
+		"emptyEnum":   `{"type": "string", "not": {"enum": []}}`,
+		"enumString":  `{"type": "string", "not": {"enum": "M79"}}`,
+		"typeInside":  `{"type": "string", "not": {"type": "string"}}`,
+		"extraKey":    `{"type": "string", "not": {"enum": ["M79"], "type": "string"}}`,
+		"nestedNot":   `{"type": "string", "not": {"not": {"enum": ["M79"]}}}`,
+		"hugeMember":  `{"type": "integer", "not": {"enum": [9007199254740993]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, faults := Compile(json.RawMessage(raw))
+			if len(faults) == 0 {
+				t.Fatalf("Compile(%s) accepted a not outside its one form", raw)
+			}
+			if !strings.HasPrefix(faults[0].Path, "not") {
+				t.Fatalf("fault %q does not point into not", faults[0])
+			}
+		})
+	}
+}
+
+// A constant nested inside an enum or exclusion member is compared exactly
+// too, so one a float64 cannot hold exactly rejects the schema (section 6.1).
+func TestCompileRejectsInexactNestedConstants(t *testing.T) {
+	for name, raw := range map[string]string{
+		"notObjectMember":  `{"not": {"enum": [{"id": 9007199254740993}]}}`,
+		"notArrayMember":   `{"not": {"enum": [[1, 9007199254740993]]}}`,
+		"enumObjectMember": `{"enum": [{"id": 9007199254740993}]}`,
+		"enumDeepMember":   `{"enum": [{"a": [{"b": -9007199254740993}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, faults := Compile(json.RawMessage(raw)); len(faults) == 0 {
+				t.Fatalf("Compile(%s) accepted a constant beyond 2^53", raw)
+			}
+		})
+	}
+	mustCompile(t, `{"not": {"enum": [{"id": 9007199254740991, "ratio": 0.5}]}}`)
+}

@@ -1,8 +1,8 @@
 // Vyshka DayZ plugin: the position and world actions (issue #66).
 //
 // Teleport (to coordinates, to another player, or back to where the last
-// teleport took the player from), spawn one item next to a player, and set
-// the world clock. Each is one manifest entry (spec section 6) plus the
+// teleport took the player from) and set the world clock; the spawn action
+// that began here lives in VyshkaSpawnActions.c. Each is one manifest entry (spec section 6) plus the
 // code that runs when the hub dispatches it (section 7). The two
 // player-context actions take the player's plain Steam64 id as their
 // referenceKey, the same identity the telemetry publishes (section 8.2),
@@ -10,8 +10,7 @@
 //
 // Everything here uses what the engine gives every server: SetPosition on
 // the character (or on the vehicle it sits in, the way the engine's own
-// teleport tooling moves a player), CreateObjectEx with the placement flags
-// the central economy uses, and the world's SetDate.
+// teleport tooling moves a player) and the world's SetDate.
 
 class VyshkaWorld
 {
@@ -319,74 +318,6 @@ class VyshkaTeleportAction : VyshkaAction
 		}
 		if (root != player)
 			result.Set("vehicle", VyshkaJsonValue.NewString(root.GetType()));
-		return VyshkaActionOutcome.Success(result);
-	}
-}
-
-class VyshkaSpawnAction : VyshkaAction
-{
-	override string Code()    { return "vyshka.spawn"; }
-	override string Name()    { return "Spawn item"; }
-	override string Context() { return "player"; }
-	override string Danger()  { return "warning"; }
-
-	override VyshkaJsonValue ParamsSchema()
-	{
-		VyshkaJsonValue className = VyshkaJsonValue.NewObject();
-		className.Set("type", VyshkaJsonValue.NewString("string"));
-		className.Set("x-vyshka-widget", VyshkaJsonValue.NewString("itemlist"));
-		// The catalog's contexts (spec section 6.1): a panel offers their
-		// entries as the names to pick from, and still sends what is typed.
-		className.Set("context", VyshkaCatalog.ContextIds());
-
-		VyshkaJsonValue properties = VyshkaJsonValue.NewObject();
-		properties.Set("className", className);
-
-		VyshkaJsonValue required = VyshkaJsonValue.NewArray();
-		required.Add(VyshkaJsonValue.NewString("className"));
-
-		VyshkaJsonValue schema = VyshkaJsonValue.NewObject();
-		schema.Set("type", VyshkaJsonValue.NewString("object"));
-		schema.Set("required", required);
-		schema.Set("properties", properties);
-		return schema;
-	}
-
-	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
-	{
-		if (referenceKey == "")
-			return VyshkaActionOutcome.Failure("a player-context action needs the player's identity as referenceKey");
-		string className = VyshkaAction.ReadText(params, "className", VyshkaWorld.MAX_CLASS_NAME);
-		if (className == "")
-			return VyshkaActionOutcome.Failure("className is required and must not be blank");
-		if (!VyshkaWorld.ValidClassName(className))
-			return VyshkaActionOutcome.Failure("className may contain only letters, digits, and underscores");
-		int scope;
-		string tree = VyshkaWorld.FindConfig(className, scope);
-		if (tree == "")
-			return VyshkaActionOutcome.Failure("no item class named " + className + " exists on this server");
-		if (scope != 2)
-			return VyshkaActionOutcome.Failure(className + " is a base class, not an item the engine will create");
-
-		PlayerBase player = VyshkaHealAction.FindPlayer(referenceKey);
-		if (!player)
-			return VyshkaActionOutcome.Failure("player " + referenceKey + " is not online");
-
-		vector position = player.GetPosition() + player.GetDirection() * VyshkaWorld.SPAWN_DISTANCE;
-		position[1] = GetGame().SurfaceY(position[0], position[2]);
-		Object created = GetGame().CreateObjectEx(className, position, ECE_PLACE_ON_SURFACE);
-		if (!created)
-			return VyshkaActionOutcome.Failure("the engine refused to create " + className);
-		VyshkaLog.Info("spawned " + created.GetType() + " for " + player.GetIdentity().GetName() + " (" + player.GetIdentity().GetPlainId() + ") at " + created.GetPosition().ToString());
-
-		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
-		result.Set("className", VyshkaJsonValue.NewString(created.GetType()));
-		result.Set("displayName", VyshkaJsonValue.NewString(created.GetDisplayName()));
-		result.Set("config", VyshkaJsonValue.NewString(tree));
-		VyshkaJsonValue where = VyshkaPlayers.Position(created.GetPosition());
-		if (where)
-			result.Set("position", where);
-		result.Set("name", VyshkaJsonValue.NewString(player.GetIdentity().GetName()));
 		return VyshkaActionOutcome.Success(result);
 	}
 }

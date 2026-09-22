@@ -1,0 +1,138 @@
+Reason: [wpnfsm] PVCBow:22477 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Archery_Base<0x000002B52B6AD8F0> PVCBow:22477 type=PVCBow
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] QuickieBow:22478 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Archery_Base<0x000002B52B6AD8F0> QuickieBow:22478 type=QuickieBow
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] RecurveBow:22479 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Archery_Base<0x000002B52B6AD8F0> RecurveBow:22479 type=RecurveBow
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] M249:22646 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=M249<0x000002B52B6AACB0> M249:22646 type=M249
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] LAW:22825 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AACB0> LAW:22825 type=LAW
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [WeaponStableState::ValidateMuzzleArray] :: [ERROR] :: Muzzle array validation has failed. Please set up the correct muzzle states by overriding InitMuzzleArray.
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:195 Function ValidateMuzzleArray
+scripts/4_World/entities\firearms\fsm\states\weaponstablestate.c:36 Function WeaponStableState
+scripts/4_World/entities\firearms\rifle_base.c:18 Function InitStateMachine
+scripts/4_World/entities\firearms\weapon_base.c:130 Function Weapon_Base@2123#698
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] RPG7:22830 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AC2D0> RPG7:22830 type=RPG7
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] DartGun:22831 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6B2660> DartGun:22831 type=DartGun
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] Shockpistol:22833 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AFA20> Shockpistol:22833 type=Shockpistol
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] Shockpistol_Black:22835 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AACB0> Shockpistol_Black:22835 type=Shockpistol_Black
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:248 Function Firearm
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:213 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] M249:22979 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=M249<0x000002B52B6AACB0> M249:22979 type=M249
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] LAW:22980 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AC2D0> LAW:22980 type=LAW
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] RPG7:22981 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6B1B50> RPG7:22981 type=RPG7
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] DartGun:22982 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6AEF10> DartGun:22982 type=DartGun
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] Shockpistol:22983 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Weapon_Base<0x000002B52B6B0530> Shockpistol:22983 type=Shockpistol
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+Reason: [wpnfsm] PVCBow:22984 Weapon.SaveCurrentFSMState: trying to save weapon without FSM (or uninitialized weapon) this=Archery_Base<0x000002B52B6B1040> PVCBow:22984 type=PVCBow
+scripts/1_Core/proto\endebug.c:92 Function Error
+scripts/4_World/entities\firearms\weapon_base.c:576 Function SaveCurrentFSMState
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:321 Function Machines
+$CurrentDir:mpmissions\vyshkaSpawnSpike.chernarusplus\init.c:223 Function Step
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate

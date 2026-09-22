@@ -19,6 +19,25 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-22: the schema subset gains `not` in one form, `{"enum": [...]}` (issue #75,
+  protocol draft 0.28, sections 6.1 and 6.4): the values a field must not take, compared
+  by deep equality as `enum` compares, and enforced like every other keyword, so a
+  dispatch naming one is refused with `params_invalid` and never queued. It is how a
+  plugin publishes a server-side exclusion (the DayZ plugin's spawn blocklist) with no
+  manifest field of its own. Any other form of `not` (another keyword inside it or beside
+  `enum`, an empty or non-array `enum`) rejects the manifest at its path; a null reads as
+  no exclusion; its constants follow the ±2^53 rule. The panel refuses an excluded value
+  on the page, at any depth of the params (a vector's coordinate, an array's default, a
+  member of a compound enum): an error on the field as it is typed and when the form is read, a disabled
+  `(excluded)` option for an excluded `enum` member, a context enumeration's excluded
+  entry kept in the suggestions and marked `(blocked on this server)`, and an array picker
+  that will not add one. `spec/manifest.schema.json` carries the keyword. The hub
+  conformance suite gains `action.dispatch.excluded` (an exclusion is accepted, enforced
+  at dispatch with nothing queued, compared exactly, and any other form of `not` is
+  rejected), shown to discriminate against a hub whose validator skips the exclusion; the
+  plugin suite admits the form, grades a manifest carrying any other, and steps its
+  synthesized params past excluded values; the browser test covers the panel's marks and
+  refusals.
 - 2026-09-22: the hub half of custom context enumeration (issue #73, protocol draft
   0.27, sections 6.1, 6.2, 5.5, 10.1): `GET /api/v1/servers/{serverId}/contexts/{contextId}/entries`
   (`servers:read`) sends `context.enumerate` to the plugin and holds the request until the
@@ -112,6 +131,11 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-22: a number nested inside an `enum` member (an object or array member) beyond
+  ±2^53 was accepted and then compared as its rounded value; the ±2^53 rule of protocol
+  section 6.1 now applies at every depth of an `enum` or `not` member, and the plugin
+  conformance suite's subset check applies it to members and bounds as the hub does
+  (issue #75's review found it).
 - 2026-09-17: a live-map marker is placed the moment the widget creates it rather than by
   the next animation frame (issue #102). Until then a new marker sat at the stage's top
   left corner for one frame, and a click measured against that corner landed on the map
@@ -155,6 +179,33 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-22: the spawning extension (issue #75, plugin 0.8.0). `vyshka.spawn` takes
+  `into` (`ground`, the default; `inventory`, through the inventory's own placement
+  search, which falls back to the hands; `hands`, refused when they are full), `quantity`
+  (a magazine's or an ammunition pile's rounds, a stack's count, a container's fill,
+  within the item's own range), `health` (a percent of the item's maximum), and
+  `attachments: auto`, which loads a firearm through the engine's own spawn-with-ammo call
+  (a round chambered) and fills every attachment slot the item declares, and each part's
+  own slots one level down, with the first compatible part the engine accepts in a fixed
+  order (parts made for fewer slots first, a name before its variants), never a firearm,
+  a grenade or explosive, a blocked class, or a part created ruined. The result says where
+  the item went (`placed`, `slot`, `container`), its condition as the inventory read
+  reports it, and with `auto` every part attached, every slot left empty, and what a
+  firearm was `loaded` with; a report that would pass the result budget counts a part's
+  own parts, then keeps only the counts (`truncated`, `attachmentCount`, `emptyCount`). A
+  refused quantity or health removes the item the action created, so nothing is left
+  behind. `spawnBlocklist` in `config.json` names classes the
+  action refuses: published in its params schema as `not`/`enum` in the config's own case
+  (so the hub refuses them and the panel marks them), refused by the plugin in any case,
+  and kept out of what `auto` attaches. The spawn action moves to
+  `VyshkaSpawnActions.c`. `spikes/dayz-spawn-attachments` measured `auto` on all 115
+  public firearms of a stock 1.29 server (104 loaded, 101 chambered, at most 3 ms each,
+  the part index about 20 ms once a session), found that six classes never run the weapon
+  state machine the load needs (the bows, LAW, RPG-7, M249, dart gun, shock pistol; the
+  M249 and shock pistols get their magazine attached full instead), that the engine's
+  `HasDamageSystem` reads false for every item in its creation frame, and that the first
+  ordering rule sorted variants (ruined wheels, rusted doors) before their plain class.
+  Verified live on DayZ 1.29 with a retail client.
 - 2026-09-22: the inventory actions (issue #74, plugin 0.8.0). `vyshka.inventory.read`
   (player, `none`) answers with the player's inventory tree as its result: `hands` (the
   held item or null), `worn` (one entry per worn item in slot order), and inside each
@@ -203,6 +254,10 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Fixed
 
+- 2026-09-22: an inventory read of a character holding a launcher, a dart gun, or a shock
+  pistol logged a script error per such item (`No DamageSystemData`): those classes
+  declare no damage system, and the read asked for their health anyway. Their entries now
+  carry no `health` (issue #75's spike found it).
 - 2026-09-21: the three string and file defects the ban list pull spike found (issue
   #108, plugin 0.8.0). The file reader faulted the server on a line of 64 KiB or more,
   which `bans.json` reached at about 300 entries and a manifest record or an outbox
@@ -348,7 +403,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.27 (2026-09-22). The document's header carries the draft number and date; each
+Draft 0.28 (2026-09-22). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

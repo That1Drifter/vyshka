@@ -1183,10 +1183,40 @@ function describe(schema) {
   if (schema.maximum !== undefined) parts.push('max ' + schema.maximum);
   if (schema.exclusiveMaximum !== undefined) parts.push('below ' + schema.exclusiveMaximum);
   if (schema.default !== undefined) parts.push('default ' + JSON.stringify(schema.default));
+  const excluded = excludedOf(schema);
+  if (excluded.length > 0) parts.push('excludes ' + excluded.map((value) => JSON.stringify(value)).join(', '));
   const widget = widgetOf(schema);
   if (widget) parts.push('widget ' + widget);
   return parts.join(', ');
 }
+
+// excludedOf reads `not` in the one form the subset admits (protocol section
+// 6.1), {"enum": [...]}: the values the field must not take, which the hub
+// refuses at dispatch. Anything else reads as excluding nothing.
+function excludedOf(schema) {
+  const not = schema && schema.not;
+  if (!not || typeof not !== 'object' || Array.isArray(not) || !Array.isArray(not.enum)) return [];
+  return not.enum;
+}
+
+// sameJSON compares two JSON values by deep equality, as the hub compares an
+// instance with an enum or an exclusion: key order does not matter, and a
+// string matches only itself, case and all.
+function sameJSON(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((key) => Object.prototype.hasOwnProperty.call(b, key) && sameJSON(a[key], b[key]));
+}
+
+function isExcluded(schema, value) {
+  return excludedOf(schema).some((member) => sameJSON(member, value));
+}
+
+const EXCLUDED_MESSAGE = 'is excluded on this server; the action refuses it';
 
 // Every field answers three questions. entered(): has the operator put
 // anything into it (a value different from what the form started with)?
@@ -1272,8 +1302,11 @@ function enumField(schema, opts) {
   const wanted = schema.default !== undefined ? JSON.stringify(schema.default) : null;
   schema.enum.forEach((member, index) => {
     const text = typeof member === 'string' ? member : JSON.stringify(member);
-    const option = el('option', { value: String(index) }, text);
-    if (wanted !== null && JSON.stringify(member) === wanted) option.selected = true;
+    // A member the schema also excludes is shown greyed out and cannot be
+    // chosen: the hub would refuse it.
+    const blocked = isExcluded(schema, member);
+    const option = el('option', { value: String(index), disabled: blocked }, blocked ? text + ' (excluded)' : text);
+    if (!blocked && wanted !== null && JSON.stringify(member) === wanted) option.selected = true;
     select.append(option);
   });
   const wrapped = wrap(opts, select, describe(schema));
@@ -1352,6 +1385,12 @@ function numberField(schema, opts) {
     value: typeof schema.default === 'number' ? String(schema.default) : undefined,
   });
   const wrapped = wrap(opts, input, describe(schema));
+  if (excludedOf(schema).length > 0) {
+    input.addEventListener('input', () => {
+      const text = input.value.trim();
+      wrapped.setError(text !== '' && isExcluded(schema, Number(text)) ? EXCLUDED_MESSAGE : '');
+    });
+  }
   const initial = input.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
@@ -1425,8 +1464,12 @@ function schemaContextRefs(schema, found = new Set(), depth = 0) {
 
 // contextDatalist offers the entries of the contexts a field names: the
 // referenceKey as the value (what the plugin gets back), the label as what
-// the operator reads. Null when no context could be enumerated.
-function contextDatalist(refs, feed) {
+// the operator reads. An entry the field's schema excludes (section 6.1)
+// stays in the list, marked as blocked, so the operator sees that the server
+// refuses it rather than wondering where it went; a datalist has no greyed
+// state, and choosing one shows the field's error at once. Null when no
+// context could be enumerated.
+function contextDatalist(refs, feed, schema) {
   const options = [];
   for (const id of refs) {
     const loaded = feed && feed[id];
@@ -1434,7 +1477,9 @@ function contextDatalist(refs, feed) {
     for (const entry of loaded.entries) {
       if (!entry || typeof entry.referenceKey !== 'string' || entry.referenceKey === '') continue;
       const label = typeof entry.label === 'string' && entry.label !== '' ? entry.label : entry.referenceKey;
-      options.push(el('option', { value: entry.referenceKey }, label));
+      const blocked = isExcluded(schema, entry.referenceKey);
+      options.push(el('option', { value: entry.referenceKey, 'data-excluded': blocked ? 'true' : undefined },
+        blocked ? label + ' (blocked on this server)' : label));
     }
   }
   if (options.length === 0) return null;
@@ -1477,10 +1522,12 @@ function stringField(schema, opts) {
     // are the referenceKeys of that context's enumeration (section 6.2),
     // fetched before the form was built and offered as suggestions. The
     // annotation names the data, so it wins over a widget hint beside it.
-    datalist = contextDatalist(contextRefs, opts.contextEntries);
+    datalist = contextDatalist(contextRefs, opts.contextEntries, schema);
     if (datalist) attrs.list = datalist.id;
     if (widget === 'itemlist') attrs.placeholder = 'item class name';
     hint = contextHint(contextRefs, opts.contextEntries);
+    const excluded = excludedOf(schema);
+    if (excluded.length > 0) hint += '; ' + excluded.length + (excluded.length === 1 ? ' value is' : ' values are') + ' blocked on this server';
   } else if (widget === 'player') {
     datalist = playerDatalist(opts.players);
     if (datalist) attrs.list = datalist.id;
@@ -1503,6 +1550,11 @@ function stringField(schema, opts) {
   }
   const input = el('input', attrs);
   const wrapped = wrap(opts, datalist ? el('span', {}, input, datalist) : input, hint);
+  if (excludedOf(schema).length > 0) {
+    // An excluded value is named as the operator picks or types it, not
+    // only on submit.
+    input.addEventListener('input', () => wrapped.setError(isExcluded(schema, input.value) ? EXCLUDED_MESSAGE : ''));
+  }
   const initial = input.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
@@ -1618,8 +1670,9 @@ function arrayField(schema, opts) {
   let hint = 'one value per line, ' + kind +
     (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : '');
   let control = textarea;
+  let wrapped = null;
   if (itemContexts.length > 0) {
-    const datalist = contextDatalist(itemContexts, opts.contextEntries);
+    const datalist = contextDatalist(itemContexts, opts.contextEntries, items);
     const picker = el('input', {
       type: 'text', id: nextId('pick'), list: datalist ? datalist.id : undefined,
       placeholder: 'add an item from the list', spellcheck: 'false', autocomplete: 'off',
@@ -1627,6 +1680,13 @@ function arrayField(schema, opts) {
       onchange: () => {
         const value = picker.value;
         if (value === '') return;
+        // An item the schema excludes is not added: the hub would refuse
+        // the whole dispatch over it.
+        if (isExcluded(items, value)) {
+          if (wrapped) wrapped.setError(JSON.stringify(value) + ' ' + EXCLUDED_MESSAGE);
+          return;
+        }
+        if (wrapped) wrapped.setError('');
         textarea.value = textarea.value === '' ? value : textarea.value.replace(/\n?$/, '\n') + value;
         picker.value = '';
       },
@@ -1634,7 +1694,7 @@ function arrayField(schema, opts) {
     control = el('span', { class: 'stack' }, textarea, el('span', {}, picker, datalist));
     hint += '; items ' + contextHint(itemContexts, opts.contextEntries);
   }
-  const wrapped = wrap(opts, control, hint);
+  wrapped = wrap(opts, control, hint);
   const initial = textarea.value;
   return {
     node: wrapped.node, setError: wrapped.setError,
@@ -1803,9 +1863,31 @@ function buildParamsForm(paramsSchema, players, contextEntries) {
     fieldsByPath,
     read(errors) {
       const value = root.read(errors, true);
+      // Exclusions (section 6.1) are checked once over the finished value,
+      // at every depth, so a value no field typed is caught too: a vector's
+      // coordinate, a member of a compound enum, an array's default.
+      exclusionFaults(paramsSchema, value, '', errors);
       return value === undefined ? {} : value;
     },
   };
+}
+
+// exclusionFaults adds a fault for every place in value that its schema's
+// `not` excludes, walking the properties and items the schema describes.
+function exclusionFaults(schema, value, path, errors, depth = 0) {
+  if (value === undefined || !schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return;
+  if (isExcluded(schema, value)) errors.push({ path, message: EXCLUDED_MESSAGE });
+  if (Array.isArray(value)) {
+    if (schema.items && typeof schema.items === 'object') {
+      value.forEach((element, index) => exclusionFaults(schema.items, element, path + '[' + index + ']', errors, depth + 1));
+    }
+  } else if (value !== null && typeof value === 'object' && schema.properties && typeof schema.properties === 'object') {
+    for (const [key, member] of Object.entries(value)) {
+      if (Object.prototype.hasOwnProperty.call(schema.properties, key)) {
+        exclusionFaults(schema.properties[key], member, path === '' ? key : path + '.' + key, errors, depth + 1);
+      }
+    }
+  }
 }
 
 // showFaults places each { path, message } on the field that owns it, falling

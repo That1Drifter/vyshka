@@ -6,19 +6,32 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"unicode/utf8"
 )
 
 // The harness dispatches whatever action the candidate's manifest declares, so
 // it has to invent params from the action's own schema. The schema language is
-// the section 6.1 subset: object/array/scalar types, enum, required, numeric
-// bounds, default. Nothing here validates a schema; it builds one instance that
+// the section 6.1 subset: object/array/scalar types, enum, not in its one
+// {"enum": [...]} form, required, numeric bounds, default. Apart from the
+// subset check below, nothing here validates a schema; it builds one instance that
 // satisfies it and, for the crash check, one that does not.
 
 // synthesizeParams builds a params object satisfying the schema. A nil schema
 // constrains nothing, so an empty object satisfies it.
 func synthesizeParams(schema map[string]any) map[string]any {
 	if object, ok := synthesizeValue(schema).(map[string]any); ok {
+		return object
+	}
+	// Params are an object whatever the root's default or first enum member
+	// is, so the root is synthesized again as an object.
+	asObject := map[string]any{"type": "object"}
+	for keyword, value := range schema {
+		if keyword != "type" && keyword != "default" {
+			asObject[keyword] = value
+		}
+	}
+	if object, ok := synthesizeValue(asObject).(map[string]any); ok {
 		return object
 	}
 	return map[string]any{}
@@ -35,6 +48,13 @@ func synthesizeValue(schema map[string]any) any {
 		return value
 	}
 	if enum, ok := schema["enum"].([]any); ok && len(enum) > 0 {
+		// The first member the whole schema admits: an exclusion or a
+		// property schema can refuse a member the enum lists.
+		for _, member := range enum {
+			if satisfies(schema, member) {
+				return member
+			}
+		}
 		return enum[0]
 	}
 	schemaType, _ := schema["type"].(string)
@@ -53,20 +73,89 @@ func synthesizeValue(schema map[string]any) any {
 			if !ok {
 				continue
 			}
+			// A name required twice is synthesized once: nested, the
+			// repeats would multiply the work level by level.
+			if _, done := out[key]; done {
+				continue
+			}
 			property, _ := properties[key].(map[string]any)
 			out[key] = synthesizeValue(property)
 		}
+		// An object the schema excludes gets an undeclared member more at a
+		// time (the subset has no additionalProperties, so any is allowed);
+		// a name the schema declares is passed over.
+		// The bound is fixed before the loop: names skipped as declared or
+		// present, plus one per excluded object, plus one.
+		attempts := exclusionCount(schema) + len(properties) + len(out) + 1
+		for extra := 1; !satisfies(schema, out) && extra <= attempts; extra++ {
+			key := "conformance-" + strconv.Itoa(extra)
+			if _, declared := properties[key]; declared {
+				continue
+			}
+			if _, present := out[key]; present {
+				continue
+			}
+			grown := map[string]any{key: true}
+			for existing, member := range out {
+				grown[existing] = member
+			}
+			out = grown
+		}
+		// A schema with no type admits any kind of value its keywords do
+		// not refuse, so when no object will do, another kind may.
+		// Each other kind is synthesized as if the schema declared it, so
+		// its own search steps past whatever the exclusion lists.
+		if _, typed := schema["type"]; !typed && !satisfies(schema, out) {
+			for _, kind := range []string{"number", "string", "boolean", "null", "array"} {
+				declared := map[string]any{"type": kind}
+				for keyword, value := range schema {
+					if keyword != "type" {
+						declared[keyword] = value
+					}
+				}
+				if other := synthesizeValue(declared); satisfies(schema, other) {
+					return other
+				}
+			}
+		}
 		return out
 	case "array":
+		// The shortest array the schema admits: empty, then one item more at
+		// a time, past however many arrays the schema excludes.
+		// The item is synthesized once, and only when the empty array will
+		// not do; one its own schema refuses cannot make a longer array
+		// valid, so the search stops there rather than growing.
+		items, _ := schema["items"].(map[string]any)
+		candidate := []any{}
+		if satisfies(schema, candidate) {
+			return candidate
+		}
+		item := synthesizeValue(items)
+		if items != nil && !satisfies(items, item) {
+			return candidate
+		}
+		for length := 1; length <= exclusionCount(schema)+1; length++ {
+			candidate = append(append([]any{}, candidate...), item)
+			if satisfies(schema, candidate) {
+				return candidate
+			}
+		}
 		return []any{}
 	case "string":
-		return "conformance"
+		// A value the schema's `not` excludes (section 6.1) is stepped past;
+		// the list is finite, so one more candidate than it has members
+		// always finds a free one.
+		value := "conformance"
+		for i := 1; excluded(schema, value) && i <= exclusionCount(schema)+1; i++ {
+			value = "conformance-" + strconv.Itoa(i)
+		}
+		return value
 	case "boolean":
-		return true
+		return !excluded(schema, true)
 	case "null":
 		return nil
 	case "integer", "number":
-		return synthesizeNumber(schema, schemaType)
+		return steppedNumber(schema, synthesizeNumber(schema, schemaType))
 	default:
 		return map[string]any{}
 	}
@@ -97,15 +186,88 @@ func synthesizeNumber(schema map[string]any, schemaType string) any {
 	return value
 }
 
+// steppedNumber finds a number the whole schema admits, starting from the
+// synthesized one: the start, the bounds, ever finer points between them,
+// then whole steps up and down. The first candidate is returned when nothing
+// in reach is admitted.
+func steppedNumber(schema map[string]any, first any) any {
+	_, integer := first.(int64)
+	start, _ := normalize(first).(float64)
+	found := first
+	// try reports whether a candidate satisfies the schema, keeping it.
+	try := func(candidate float64) bool {
+		if integer {
+			candidate = math.Ceil(candidate)
+		}
+		if !satisfies(schema, candidate) {
+			return false
+		}
+		if integer {
+			found = int64(candidate)
+		} else {
+			found = candidate
+		}
+		return true
+	}
+	if try(start) {
+		return found
+	}
+	// The bounds and points between them, so a narrow or fractional range
+	// that excludes its only whole step still yields a value inside it.
+	low, hasLow := asFloat(schema["minimum"])
+	if exclusive, ok := asFloat(schema["exclusiveMinimum"]); ok && (!hasLow || exclusive >= low) {
+		low, hasLow = exclusive, true
+	}
+	high, hasHigh := asFloat(schema["maximum"])
+	if exclusive, ok := asFloat(schema["exclusiveMaximum"]); ok && (!hasHigh || exclusive <= high) {
+		high, hasHigh = exclusive, true
+	}
+	excludedCount := exclusionCount(schema)
+	if hasLow && hasHigh {
+		if try(low) || try(high) {
+			return found
+		}
+		// Ever finer points between the bounds: a denominator of 2^k adds
+		// 2^(k-1) points no earlier one had, so once that passes the length
+		// of the exclusion list, one of them is free.
+		for denominator := 2; denominator <= 4*(excludedCount+2); denominator *= 2 {
+			for numerator := 1; numerator < denominator; numerator += 2 {
+				if try(low + (high-low)*float64(numerator)/float64(denominator)) {
+					return found
+				}
+			}
+		}
+	}
+	for step := 1; step <= excludedCount+1; step++ {
+		if try(start+float64(step)) || try(start-float64(step)) {
+			return found
+		}
+	}
+	return first
+}
+
+// exclusionCount is how many values the schema's `not` excludes.
+func exclusionCount(schema map[string]any) int {
+	not, _ := schema["not"].(map[string]any)
+	members, _ := not["enum"].([]any)
+	return len(members)
+}
+
 func asFloat(value any) (float64, bool) {
 	number, ok := value.(float64)
 	return number, ok
 }
 
 // satisfies is the small validator behind synthesis: does value meet this
-// schema's own constraints? It checks what the subset can express (type, enum,
-// bounds, required properties) and nothing more.
+// schema's own constraints? Each keyword of the subset applies to the values
+// it constrains whether or not the schema declares a type, as a hub applies
+// them (section 6.1): type, enum, the exclusion, numeric bounds, required,
+// properties, and items.
 func satisfies(schema map[string]any, value any) bool {
+	value = normalizeDeep(value)
+	if excluded(schema, value) {
+		return false
+	}
 	if enum, ok := schema["enum"].([]any); ok && len(enum) > 0 {
 		found := false
 		for _, member := range enum {
@@ -118,8 +280,61 @@ func satisfies(schema map[string]any, value any) bool {
 			return false
 		}
 	}
-	schemaType, _ := schema["type"].(string)
-	switch schemaType {
+	if schemaType, ok := schema["type"].(string); ok && !typeMatches(schemaType, value) {
+		return false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		required, _ := schema["required"].([]any)
+		for _, name := range required {
+			if key, isString := name.(string); isString {
+				if _, present := typed[key]; !present {
+					return false
+				}
+			}
+		}
+		// Every property present is held to its schema, required or not.
+		properties, _ := schema["properties"].(map[string]any)
+		for key, member := range typed {
+			if property, isSchema := properties[key].(map[string]any); isSchema && !satisfies(property, member) {
+				return false
+			}
+		}
+	case []any:
+		if items, isSchema := schema["items"].(map[string]any); isSchema {
+			for _, element := range typed {
+				if !satisfies(items, element) {
+					return false
+				}
+			}
+		}
+	case float64:
+		if minimum, has := asFloat(schema["minimum"]); has && typed < minimum {
+			return false
+		}
+		if maximum, has := asFloat(schema["maximum"]); has && typed > maximum {
+			return false
+		}
+		if exclusive, has := asFloat(schema["exclusiveMinimum"]); has && typed <= exclusive {
+			return false
+		}
+		if exclusive, has := asFloat(schema["exclusiveMaximum"]); has && typed >= exclusive {
+			return false
+		}
+	}
+	return true
+}
+
+// typeMatches says whether a decoded JSON value is of a subset type,
+// "integer" being a number with no fraction.
+func typeMatches(name string, value any) bool {
+	switch name {
+	case "object":
+		_, ok := value.(map[string]any)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
 	case "string":
 		_, ok := value.(string)
 		return ok
@@ -128,54 +343,37 @@ func satisfies(schema map[string]any, value any) bool {
 		return ok
 	case "null":
 		return value == nil
-	case "array":
-		_, ok := value.([]any)
+	case "number":
+		_, ok := value.(float64)
 		return ok
-	case "object":
-		object, ok := value.(map[string]any)
-		if !ok {
-			return false
-		}
-		required, _ := schema["required"].([]any)
-		properties, _ := schema["properties"].(map[string]any)
-		for _, name := range required {
-			key, isString := name.(string)
-			if !isString {
-				continue
-			}
-			member, present := object[key]
-			if !present {
-				return false
-			}
-			if property, isSchema := properties[key].(map[string]any); isSchema && !satisfies(property, member) {
-				return false
-			}
-		}
-		return true
-	case "integer", "number":
+	case "integer":
 		number, ok := value.(float64)
-		if !ok {
-			return false
-		}
-		if schemaType == "integer" && number != math.Trunc(number) {
-			return false
-		}
-		if minimum, has := asFloat(schema["minimum"]); has && number < minimum {
-			return false
-		}
-		if maximum, has := asFloat(schema["maximum"]); has && number > maximum {
-			return false
-		}
-		if exclusive, has := asFloat(schema["exclusiveMinimum"]); has && number <= exclusive {
-			return false
-		}
-		if exclusive, has := asFloat(schema["exclusiveMaximum"]); has && number >= exclusive {
-			return false
-		}
-		return true
-	default:
-		return true
+		return ok && number == math.Trunc(number)
 	}
+	return true
+}
+
+// normalizeDeep puts a synthesized value, at every depth, in the shape JSON
+// decoding gives it (numbers as float64), so it compares with schema
+// constants as a hub compares the dispatched JSON.
+func normalizeDeep(value any) any {
+	switch typed := value.(type) {
+	case int64:
+		return float64(typed)
+	case []any:
+		copied := make([]any, len(typed))
+		for i, element := range typed {
+			copied[i] = normalizeDeep(element)
+		}
+		return copied
+	case map[string]any:
+		copied := make(map[string]any, len(typed))
+		for key, member := range typed {
+			copied[key] = normalizeDeep(member)
+		}
+		return copied
+	}
+	return value
 }
 
 // subsetKeywords is the closed keyword set of spec section 6.1, as the
@@ -187,6 +385,7 @@ var subsetKeywords = map[string]bool{
 	"items": true, "minimum": true, "maximum": true,
 	"exclusiveMinimum": true, "exclusiveMaximum": true,
 	"default": true, "context": true, "x-vyshka-widget": true,
+	"not": true,
 }
 
 var subsetTypes = map[string]bool{
@@ -211,6 +410,10 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 			return fmt.Errorf("%s.%s: keyword %q is outside the schema subset this protocol enforces (section 6.1)", path, keyword, keyword)
 		}
 		switch keyword {
+		case "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum":
+			if !exactConstant(value) {
+				return fmt.Errorf("%s.%s: a number beyond 2^53 in magnitude cannot be compared exactly, and a hub rejects the manifest over it (section 6.1)", path, keyword)
+			}
 		case "type":
 			name, ok := value.(string)
 			if !ok || !subsetTypes[name] {
@@ -238,6 +441,14 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 			if err := validateSubset(sub, path+".items", declared); err != nil {
 				return err
 			}
+		case "not":
+			if value == nil {
+				// A JSON null reads as no exclusion (section 6.4).
+				continue
+			}
+			if err := validateExclusion(value, path); err != nil {
+				return err
+			}
 		case "context":
 			if value == nil {
 				// A JSON null reads as no annotation (section 6.4).
@@ -255,6 +466,73 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 		}
 	}
 	return nil
+}
+
+// validateExclusion checks `not`, which the subset admits in one form only:
+// an object whose single keyword is a non-empty `enum` (section 6.1).
+func validateExclusion(value any, path string) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf(`%s.not: must be an object of the form {"enum": [...]}; a hub rejects any other form (section 6.1)`, path)
+	}
+	for keyword := range object {
+		if keyword != "enum" {
+			return fmt.Errorf(`%s.not.%s: not admits only {"enum": [...]}, and a hub rejects the manifest over %q (section 6.4)`, path, keyword, keyword)
+		}
+	}
+	members, ok := object["enum"].([]any)
+	if !ok || len(members) == 0 {
+		return fmt.Errorf("%s.not.enum: must be a non-empty array of the values excluded (section 6.1)", path)
+	}
+	if !exactConstant(members) {
+		return fmt.Errorf("%s.not.enum: a number beyond 2^53 in magnitude cannot be compared exactly, and a hub rejects the manifest over it (section 6.1)", path)
+	}
+	return nil
+}
+
+// exactConstant reports whether every number inside a schema constant (an
+// enum or exclusion member, or a bound) survives float64 exactly: a fraction,
+// or an integer strictly within ±2^53, the rule a hub applies (section 6.1).
+func exactConstant(value any) bool {
+	switch typed := value.(type) {
+	case float64:
+		return typed != math.Trunc(typed) || math.Abs(typed) < 1<<53
+	case []any:
+		for _, element := range typed {
+			if !exactConstant(element) {
+				return false
+			}
+		}
+	case map[string]any:
+		for _, member := range typed {
+			if !exactConstant(member) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// excluded reports whether value is one the schema's `not` excludes.
+func excluded(schema map[string]any, value any) bool {
+	not, _ := schema["not"].(map[string]any)
+	members, _ := not["enum"].([]any)
+	for _, member := range members {
+		if reflect.DeepEqual(member, normalize(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalize puts a synthesized number in the shape JSON decoding gives a
+// schema constant, so the int64 synthesizeNumber builds compares equal to
+// the float64 an excluded member decodes as.
+func normalize(value any) any {
+	if integer, ok := value.(int64); ok {
+		return float64(integer)
+	}
+	return value
 }
 
 // validateContextAnnotation checks one `context` value: a declared context
@@ -303,6 +581,11 @@ func synthesizeInvalidParams(schema map[string]any) (json.RawMessage, string) {
 			for _, name := range required[1:] {
 				key, ok := name.(string)
 				if !ok {
+					continue
+				}
+				// The omitted name stays omitted however often it is
+				// listed, and a repeated one is synthesized once.
+				if _, done := out[key]; done || key == first {
 					continue
 				}
 				property, _ := properties[key].(map[string]any)

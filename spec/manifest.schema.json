@@ -17,7 +17,7 @@
     "paramsSchema": {
       "type": "object",
       "title": "Section 6.1 schema subset",
-      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, the `context` annotation on string schemas, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
+      "description": "JSON Schema (draft 2020-12) restricted to: a single `type`, `enum`, `not` in the one form `{\"enum\": [...]}`, `required`, `properties`, `items`, numeric bounds, annotation-only `default`, the `context` annotation on string schemas, and the vendor UI hint `x-vyshka-widget`. A hub MUST reject a manifest whose schema carries any other keyword, because it validates dispatch payloads against these schemas and cannot enforce what it does not implement. Integer constants (bounds, enum members) MUST lie strictly within ±2^53; a hub rejects what a float64 round-trip would change (section 6.1).",
       "properties": {
         "type": {
           "type": "string",
@@ -27,6 +27,18 @@
           "type": "array",
           "minItems": 1,
           "description": "Allowed values, compared by deep equality."
+        },
+        "not": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["enum"],
+              "properties": { "enum": { "type": "array", "minItems": 1 } },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ],
+          "description": "Values the field must not take, compared by deep equality as enum compares (exactly, so a string's case matters). Enforced like any other keyword: a dispatch naming one fails validation. This is the only form of not the subset admits; any other rejects the manifest (section 6.4). A UI offering values for the field shows a listed one as unavailable and refuses it before dispatch (section 6.1). null reads as no exclusion."
         },
         "required": {
           "type": "array",
