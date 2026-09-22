@@ -68,9 +68,15 @@ func synthesizeValue(schema map[string]any) any {
 		// An object the schema excludes gets an undeclared member more at a
 		// time (the subset has no additionalProperties, so any is allowed);
 		// a name the schema declares is passed over.
-		for extra := 1; !satisfies(schema, out) && extra <= exclusionCount(schema)+len(properties)+1; extra++ {
+		// The bound is fixed before the loop: names skipped as declared or
+		// present, plus one per excluded object, plus one.
+		attempts := exclusionCount(schema) + len(properties) + len(out) + 1
+		for extra := 1; !satisfies(schema, out) && extra <= attempts; extra++ {
 			key := "conformance-" + strconv.Itoa(extra)
 			if _, declared := properties[key]; declared {
+				continue
+			}
+			if _, present := out[key]; present {
 				continue
 			}
 			grown := map[string]any{key: true}
@@ -81,9 +87,17 @@ func synthesizeValue(schema map[string]any) any {
 		}
 		// A schema with no type admits any kind of value its keywords do
 		// not refuse, so when no object will do, another kind may.
+		// Each other kind is synthesized as if the schema declared it, so
+		// its own search steps past whatever the exclusion lists.
 		if _, typed := schema["type"]; !typed && !satisfies(schema, out) {
-			for _, other := range []any{1.0, "conformance", true, nil, []any{}} {
-				if satisfies(schema, other) {
+			for _, kind := range []string{"number", "string", "boolean", "null", "array"} {
+				declared := map[string]any{"type": kind}
+				for keyword, value := range schema {
+					if keyword != "type" {
+						declared[keyword] = value
+					}
+				}
+				if other := synthesizeValue(declared); satisfies(schema, other) {
 					return other
 				}
 			}

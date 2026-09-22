@@ -65,6 +65,14 @@ func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
 		"impossibleObject": {"type": "object", "required": []any{"v"}, "properties": map[string]any{
 			"v": map[string]any{"required": []any{"x"}, "properties": map[string]any{
 				"x": map[string]any{"enum": []any{nil}, "not": map[string]any{"enum": []any{nil}}}}}}},
+		// Round five's cases: required names that collide with the
+		// generated ones, and a fallback list the schema excludes.
+		"requiredCollide": {"type": "object", "required": []any{"conformance-1", "conformance-2"},
+			"not": map[string]any{"enum": []any{map[string]any{"conformance-1": map[string]any{}, "conformance-2": map[string]any{}}}}},
+		"fallbacksExcluded": {"type": "object", "required": []any{"v"}, "properties": map[string]any{
+			"v": map[string]any{"required": []any{"x"},
+				"properties": map[string]any{"x": map[string]any{"type": "null", "not": map[string]any{"enum": []any{nil}}}},
+				"not":        map[string]any{"enum": []any{float64(1), "conformance", true, nil, []any{}}}}}},
 	} {
 		value := synthesizeValue(schema)
 		encoded, _ := json.Marshal(value)
