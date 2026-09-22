@@ -34,11 +34,12 @@ PASS  context.enumerate          Every declared context is enumerated on request
 PASS  telemetry.wellFormed       Any events and snapshots the plugin publishes are well formed
 ...
 PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
+PASS  dispatch.largeParams       A dispatch carrying large params is acked and answered inside its deadline
 PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
 PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
-16 checks, 0 failed
+17 checks, 0 failed
 ```
 
 A stage can also report `PART`: it passed everything it could assert but says, in a note
@@ -87,6 +88,17 @@ Dispatches carry an `expiresAt` of now plus `-check-timeout`, and the harness wa
 past that deadline for the result, so a slow action is never failed while still inside the
 deadline it was given. A candidate whose action legitimately needs longer, or whose
 reconnect backoff is longer than the default window, should raise `-check-timeout`.
+
+One dispatch is large on purpose (`dispatch.largeParams`): the usual params plus one string
+member of 512 KiB that no schema names, which a receiver ignores (spec section 2.1). A hub
+forwards params as an operator gave them, inside its request-body cap (the reference hub's
+is 1 MiB), so a body of this order is one a plugin can meet. What the stage grades is that
+the plugin reads it inside the ordinary deadline: the envelope acked, an `action.result` of
+either outcome, and polling going on afterwards. A plugin whose parser costs the square of
+the body holds its poll cycle for the parse and discards the action as expired (the
+reference DayZ plugin's first parser took about a minute at this size); one whose parser is
+linear answers in well under a second. A plugin that cuts a long string value short without
+a word is beyond what the wire shows, so that is left to the plugin's own tests.
 
 The three error-recovery stages (spec section 2.3) provoke a refusal the way a real hub
 would and watch what the candidate does: a batch refused as `envelope_invalid`, a `200`

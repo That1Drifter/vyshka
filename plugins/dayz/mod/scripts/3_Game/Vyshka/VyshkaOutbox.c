@@ -14,7 +14,7 @@
 // (spikes/dayz-outbox-crash): every record that reached CloseFile was intact
 // on the next boot and delivered, none was torn, and the only loss was the
 // event buffer's unflushed tail (VyshkaEventBuffer: up to 2 s or 200 events,
-// plus the tick that notices the flush is due). A kill inside WriteAll
+// plus the tick that notices the flush is due). A kill inside WriteJson
 // itself would leave an unreadable record, which Load discards and counts,
 // and the batch in it is lost. What a power loss or an OS crash takes from
 // the page cache is not measured and cannot be shortened from script; the
@@ -29,6 +29,7 @@ class VyshkaOutboxEntry
 	string m_Body;   // serialized JSON object, re-emitted verbatim
 	int m_Seq;       // in the current session's space; 0 until numbered
 	int m_Events;    // events carried, for an event.batch; 0 otherwise
+	int m_ManifestRevision;   // the revision a manifest.publish carries; 0 otherwise
 
 	string Path()
 	{
@@ -41,10 +42,18 @@ class VyshkaOutboxEntry
 		return "{\"v\":1,\"id\":" + VyshkaJson.Quote(m_Id) + ",\"type\":" + VyshkaJson.Quote(m_Type) + ",\"seq\":" + m_Seq.ToString() + ",\"ts\":" + VyshkaJson.Quote(m_Ts) + ",\"body\":" + m_Body + "}";
 	}
 
-	// Record is what goes on disk: everything but seq.
-	string Record()
+	// RecordJson is what goes on disk: everything but seq, with the body as
+	// the tree it was appended from, so the file writer can break it across
+	// lines (VyshkaFiles.WriteJson); a record that stayed one line would
+	// fault the next boot's read once a batch grew past 64 KiB (issue #108).
+	VyshkaJsonValue RecordJson(VyshkaJsonValue body)
 	{
-		return "{\"id\":" + VyshkaJson.Quote(m_Id) + ",\"type\":" + VyshkaJson.Quote(m_Type) + ",\"ts\":" + VyshkaJson.Quote(m_Ts) + ",\"body\":" + m_Body + "}";
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("id", VyshkaJsonValue.NewString(m_Id));
+		record.Set("type", VyshkaJsonValue.NewString(m_Type));
+		record.Set("ts", VyshkaJsonValue.NewString(m_Ts));
+		record.Set("body", body);
+		return record;
 	}
 }
 
@@ -132,11 +141,43 @@ class VyshkaOutbox
 			collision++;
 			rejectedPath = rejectedBase + "-" + collision.ToString() + ".json";
 		}
-		string record = "{\"rejected\":" + VyshkaJson.Quote(reason) + ",\"envelope\":" + entry.Record() + "}";
-		if (!VyshkaFiles.WriteAll(rejectedPath, record))
-			VyshkaLog.Warn("outbox: could not write " + rejectedPath + "; the refused envelope is only in this log line: " + entry.Record());
-		if (!DeleteFile(entry.Path()))
-			VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		// The body is kept serialized; it is read back into a tree here, on
+		// this rare path, so the record can be written across lines. A body
+		// the parser will not read back (nested past its depth) is kept as
+		// the text it went out as, so nothing the hub refused is lost.
+		VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
+		VyshkaJsonValue envelope;
+		if (body)
+			envelope = entry.RecordJson(body);
+		else
+		{
+			envelope = entry.RecordJson(VyshkaJsonValue.NewObject());
+			envelope.Set("bodyText", VyshkaJsonValue.NewString(entry.m_Body));
+		}
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("rejected", VyshkaJsonValue.NewString(reason));
+		record.Set("envelope", envelope);
+		// The original record is deleted only once a copy of it exists
+		// under rejected/: the rejected record with the hub's reason, or,
+		// when that cannot be written (a record at the file writer's depth
+		// bound, whose wrapper takes it past), the record file copied as it
+		// is. With neither, the record stays where it is and the next boot
+		// tries again; a refused envelope is set aside, never dropped
+		// (section 9.3).
+		bool setAside = VyshkaFiles.WriteJson(rejectedPath, record);
+		if (!setAside)
+		{
+			setAside = CopyFile(entry.Path(), rejectedPath);
+			if (setAside)
+				VyshkaLog.Warn("outbox: could not write the rejected record for " + entry.m_Id + "; its outbox record was copied to " + rejectedPath + " as it was, without the hub's reason");
+		}
+		if (setAside)
+		{
+			if (!DeleteFile(entry.Path()))
+				VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		}
+		else
+			VyshkaLog.Error("outbox: could not set aside the refused envelope " + entry.m_Id + " under " + VyshkaFiles.REJECTED_DIR + "; its record stays at " + entry.Path() + " and the next boot will try to send it again");
 		m_Entries.RemoveOrdered(index);
 		m_Rejected++;
 
@@ -206,14 +247,8 @@ class VyshkaOutbox
 		for (int i = 0; i < m_Entries.Count(); i++)
 		{
 			VyshkaOutboxEntry entry = m_Entries.Get(i);
-			if (entry.m_Type != "manifest.publish")
-				continue;
-			VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
-			if (!body || !body.IsObject())
-				continue;
-			int revision = body.GetInt("manifestRevision", 0);
-			if (revision > highest)
-				highest = revision;
+			if (entry.m_ManifestRevision > highest)
+				highest = entry.m_ManifestRevision;
 		}
 		return highest;
 	}
@@ -303,6 +338,11 @@ class VyshkaOutbox
 		{
 			entry.m_Body = body.Serialize();
 			VyshkaJsonValue events = body.Get("events");
+			// The revision is read here, from the tree the file gave, so
+			// the outbox never parses a body again with a tighter bound
+			// than the file's (VyshkaJson.MAX_DEPTH against FILE_MAX_DEPTH).
+			if (entry.m_Type == "manifest.publish")
+				entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
 			if (entry.m_Type == "event.batch" && events && events.IsArray())
 				entry.m_Events = events.Count();
 		}
@@ -335,9 +375,10 @@ class VyshkaOutbox
 	}
 
 	// Append persists a new envelope and numbers it into the current session.
-	// The body is a JSON object, already serialized; events is how many
-	// events an event.batch body carries, for the per-poll budget.
-	VyshkaOutboxEntry Append(string envelopeType, string bodyJson, int events = 0)
+	// The body is the JSON object tree: it is serialized compact once for
+	// the wire and written across lines for the record on disk; events is
+	// how many events an event.batch body carries, for the per-poll budget.
+	VyshkaOutboxEntry Append(string envelopeType, VyshkaJsonValue body, int events = 0)
 	{
 		if (m_Entries.Count() >= CAPACITY)
 		{
@@ -360,12 +401,20 @@ class VyshkaOutbox
 		entry.m_Id = VyshkaIds.Next();
 		entry.m_Type = envelopeType;
 		entry.m_Ts = VyshkaClock.NowRfc3339();
-		entry.m_Body = bodyJson;
+		if (body && body.IsObject())
+			entry.m_Body = body.Serialize();
+		else
+		{
+			body = VyshkaJsonValue.NewObject();
+			entry.m_Body = "{}";
+		}
 		entry.m_Events = events;
+		if (envelopeType == "manifest.publish")
+			entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
 		m_NextSeq++;
 		entry.m_Seq = m_NextSeq;
 
-		if (!VyshkaFiles.WriteAll(entry.Path(), entry.Record()))
+		if (!VyshkaFiles.WriteJson(entry.Path(), entry.RecordJson(body)))
 			VyshkaLog.Warn("outbox: could not persist envelope " + entry.m_Id + "; it will be lost if the server restarts before the hub acks it");
 		m_Entries.Insert(entry);
 		return entry;

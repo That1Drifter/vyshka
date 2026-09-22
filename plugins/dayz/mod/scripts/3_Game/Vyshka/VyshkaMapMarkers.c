@@ -327,13 +327,13 @@ class VyshkaMapMarkers
 
 	// Capture builds the state.entities body when there is something to say:
 	// a marker exists, or the last one is gone and the hub has not been told.
-	// Otherwise it returns "" and no snapshot is queued, which is what keeps
+	// Otherwise it returns null and no snapshot is queued, which is what keeps
 	// a server with no markers from publishing an empty list forever.
-	static string Capture()
+	static VyshkaJsonValue Capture()
 	{
 		array<ref VyshkaMapMarker> markers = All();
 		if (markers.Count() == 0 && !s_Removed)
-			return "";
+			return null;
 		VyshkaJsonValue entities = VyshkaJsonValue.NewArray();
 		for (int i = 0; i < markers.Count(); i++)
 		{
@@ -357,9 +357,9 @@ class VyshkaMapMarkers
 		if (bytes > BODY_MAX_BYTES)
 		{
 			VyshkaLog.Error("the state.entities body is " + bytes.ToString() + " bytes, over the " + BODY_MAX_BYTES.ToString() + " a snapshot may carry; not published (the marker budget should have prevented this)");
-			return "";
+			return null;
 		}
-		return text;
+		return body;
 	}
 
 	// Unpublished is the caller's word that the body Capture last built was

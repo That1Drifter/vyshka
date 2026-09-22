@@ -6,6 +6,8 @@
 //	                         build/@VyshkaSample/addons/VyshkaSample.pbo
 //	vyshka-dayz harness      launches a DayZ dedicated server carrying the mod
 //	                         as a candidate for the plugin conformance harness
+//	vyshka-dayz selftest     launches a DayZ dedicated server on a mission that
+//	                         runs the plugin's engine-limit self-test and grades it
 //
 // The harness subcommand is what makes `go run ./conformance/plugin -- go run
 // ./plugins/dayz/cmd/vyshka-dayz harness` work: it takes the hub URL and
@@ -50,7 +52,7 @@ const (
 	sampleModDir  = "@VyshkaSample"
 	samplePboName = "VyshkaSample.pbo"
 	gitIgn        = "*\n"
-	usageTxt      = "usage: vyshka-dayz build|build-sample|version|harness [flags]\n"
+	usageTxt      = "usage: vyshka-dayz build|build-sample|version|harness|selftest [flags]\n"
 	// versionFile is where the plugin states its own version, relative to
 	// the mod source directory. mod.cpp and the release tag both take it
 	// from there, so the manifest, the launcher, and the tag cannot drift.
@@ -212,6 +214,8 @@ func main() {
 		err = runVersion(os.Args[2:])
 	case "harness":
 		err = runHarness(os.Args[2:])
+	case "selftest":
+		err = runSelfTest(os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usageTxt)
 		os.Exit(2)
@@ -497,6 +501,26 @@ func runHarness(args []string) error {
 // fails to compile aborts the server. The copy drops that line and is
 // otherwise the stock mission; it is reused on later runs.
 func prepareMission(serverDir, base string) (string, error) {
+	return deriveMission(serverDir, base, "vyshkaHarness", true, dropLootDebug)
+}
+
+// dropLootDebug is the one edit every derived mission's init.c needs.
+func dropLootDebug(initC string) (string, error) {
+	var kept []string
+	for _, line := range strings.Split(initC, "\n") {
+		if strings.Contains(line, "LootDebug") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n"), nil
+}
+
+// deriveMission copies the stock mission base to <prefix>.<world> under the
+// server's mpmissions with its init.c passed through editInit. With reuse
+// set, a copy already there is used as it is; otherwise it is rebuilt, for
+// a mission whose init.c carries a script that may have changed.
+func deriveMission(serverDir, base, prefix string, reuse bool, editInit func(string) (string, error)) (string, error) {
 	missions := filepath.Join(serverDir, "mpmissions")
 	source := filepath.Join(missions, base)
 	if _, err := os.Stat(filepath.Join(source, "init.c")); err != nil {
@@ -506,13 +530,13 @@ func prepareMission(serverDir, base string) (string, error) {
 	if dot := strings.LastIndex(base, "."); dot >= 0 {
 		world = base[dot+1:]
 	}
-	name := "vyshkaHarness." + world
+	name := prefix + "." + world
 	target := filepath.Join(missions, name)
 	// The target is built in a temp directory and renamed into place, so its
 	// existence normally means a complete copy. Still key completeness off
 	// init.c so a partial directory left by an older build (or an interrupted
 	// non-atomic copy) is rebuilt rather than started against.
-	if _, err := os.Stat(filepath.Join(target, "init.c")); err == nil {
+	if _, err := os.Stat(filepath.Join(target, "init.c")); err == nil && reuse {
 		return name, nil
 	}
 	if err := os.RemoveAll(target); err != nil {
@@ -540,14 +564,11 @@ func prepareMission(serverDir, base string) (string, error) {
 			return err
 		}
 		if rel == "init.c" {
-			var kept []string
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.Contains(line, "LootDebug") {
-					continue
-				}
-				kept = append(kept, line)
+			edited, err := editInit(string(data))
+			if err != nil {
+				return err
 			}
-			data = []byte(strings.Join(kept, "\n"))
+			data = []byte(edited)
 		}
 		return os.WriteFile(dest, data, 0o644)
 	})

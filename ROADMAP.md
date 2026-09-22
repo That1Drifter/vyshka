@@ -1,6 +1,6 @@
 # Roadmap
 
-**As of:** 2026-09-21 (the server binding of #81 landed as protocol draft 0.26; the shape
+**As of:** 2026-09-21 (the server binding of #81 landed as protocol draft 0.26 and the plugin fixes of #108 the same day; the shape
 of #80 settled in its issue, its pull spike measured, and the plugin's string and file
 defects filed as #108; the mod surface and its sample landed 2026-09-18, with the hub side
 of `context.enumerate` staying with #73). Last full review 2026-09-14, at which every proposed item was settled. This document lists
@@ -176,7 +176,10 @@ them early:
   `bans.applied` report, a `capabilities` manifest member, and the closed-set scopes
   `bans:read` and `bans:manage`. The pull is paged because `spikes/dayz-bans-pull-size`
   (2026-09-21) measured the plugin's parser as quadratic on this engine and the file
-  reader as fatal on a 64 KiB line (#108 carries the plugin fixes). Lands after #81.
+  reader as fatal on a 64 KiB line; the plugin fixes landed the same day as #108 (a
+  windowed parser, a chunked writer, files written one element per line, a self-test on a
+  local server, and a large-dispatch stage in the plugin conformance suite). Lands after
+  #81.
 - **Server-scoped token dimension** (#81, protocol section 10.1), landed 2026-09-21 as
   protocol draft 0.26: a token-level `servers` binding that intersects every grant, not a
   per-scope field, so a moderator for server A no longer acts on server B. `admin` and

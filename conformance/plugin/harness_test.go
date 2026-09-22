@@ -381,7 +381,47 @@ type enumerateResponder struct {
 	err      error
 }
 
+// startEnumerateResponder polls and answers every context.enumerate with
+// what reply returns, nothing for nil.
 func startEnumerateResponder(p *testPlugin, nextSeq int64, reply func(requestID, contextID string) map[string]any) *enumerateResponder {
+	return startResponder(p, nextSeq, func(delivered deliverable) []map[string]any {
+		if delivered.Type != "context.enumerate" {
+			return nil
+		}
+		var asked struct {
+			RequestID string `json:"requestId"`
+			Context   string `json:"context"`
+		}
+		_ = json.Unmarshal(delivered.Body, &asked)
+		answer := reply(asked.RequestID, asked.Context)
+		if answer == nil {
+			return nil
+		}
+		return []map[string]any{{"type": "context.entries", "body": answer}}
+	})
+}
+
+// startDispatchResponder polls and answers every action.dispatch with the
+// envelopes reply returns, each a map with type and body; nothing for nil.
+func startDispatchResponder(p *testPlugin, nextSeq int64, reply func(actionID string, params json.RawMessage) []map[string]any) *enumerateResponder {
+	return startResponder(p, nextSeq, func(delivered deliverable) []map[string]any {
+		if delivered.Type != "action.dispatch" {
+			return nil
+		}
+		var body struct {
+			ActionID string          `json:"actionId"`
+			Params   json.RawMessage `json:"params"`
+		}
+		_ = json.Unmarshal(delivered.Body, &body)
+		return reply(body.ActionID, body.Params)
+	})
+}
+
+// startResponder is a hand-driven plugin loop: it polls, acks every
+// delivered envelope in order, keeps what it sends until the hub's ack
+// covers it, and buffers whatever handle returns for a delivery, each
+// entry a map with the envelope type and body.
+func startResponder(p *testPlugin, nextSeq int64, handle func(delivered deliverable) []map[string]any) *enumerateResponder {
 	r := &enumerateResponder{done: make(chan struct{}), finished: make(chan struct{})}
 	go func() {
 		defer close(r.finished)
@@ -440,20 +480,12 @@ func startEnumerateResponder(p *testPlugin, nextSeq int64, reply func(requestID,
 					continue
 				}
 				ack = delivered.Seq
-				if delivered.Type != "context.enumerate" {
-					continue
+				for _, reply := range handle(delivered) {
+					envelopeType, _ := reply["type"].(string)
+					body, _ := reply["body"].(map[string]any)
+					buffer = append(buffer, typedEnvelope(fmt.Sprintf("reply-%d", nextSeq), nextSeq, envelopeType, body))
+					nextSeq++
 				}
-				var asked struct {
-					RequestID string `json:"requestId"`
-					Context   string `json:"context"`
-				}
-				_ = json.Unmarshal(delivered.Body, &asked)
-				answer := reply(asked.RequestID, asked.Context)
-				if answer == nil {
-					continue
-				}
-				buffer = append(buffer, typedEnvelope(fmt.Sprintf("ctx-%d", nextSeq), nextSeq, "context.entries", answer))
-				nextSeq++
 			}
 		}
 	}()
@@ -769,5 +801,130 @@ func TestMalformedSnapshotsAreFaulted(t *testing.T) {
 		if f.Section != "8.3" {
 			t.Errorf("fault %q cites section %s, want 8.3", f.Message, f.Section)
 		}
+	}
+}
+
+// ---- dispatch.largeParams ----
+
+// largeParamsHub is a hub past the manifest stage, with the one action the
+// stage will dispatch.
+func largeParamsHub(t *testing.T) (*mockHub, *testPlugin, *harness) {
+	t.Helper()
+	h, p := enumerateHubDeclaring(t, nil)
+	stageHarness := &harness{hub: h, checkTimeout: 10 * time.Second, action: manifestAction{Code: "test.echo", Context: "world"}}
+	return h, p, stageHarness
+}
+
+func runLargeParamsStage(t *testing.T, stageHarness *harness) Result {
+	t.Helper()
+	results := runStages(stageHarness, []Stage{largeParamsStage})
+	if len(results) != 1 {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	return results[0]
+}
+
+func TestLargeParamsStagePassesWhenTheDispatchIsAckedAndAnswered(t *testing.T) {
+	h, p, stageHarness := largeParamsHub(t)
+	var seen int
+	responder := startDispatchResponder(p, 2, func(actionID string, params json.RawMessage) []map[string]any {
+		seen = len(params)
+		return []map[string]any{
+			{"type": "action.ack", "body": map[string]any{"actionId": actionID}},
+			{"type": "action.result", "body": map[string]any{"actionId": actionID, "ok": false, "error": "the test declines"}},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runLargeParamsStage(t, stageHarness)
+	if !result.Passed {
+		t.Fatalf("an acked and answered large dispatch did not pass: %+v; faults:\n%s", result, faultMessages(h))
+	}
+	if seen < largeParamsBytes {
+		t.Fatalf("the dispatch carried %d bytes of params, want at least %d", seen, largeParamsBytes)
+	}
+}
+
+func TestLargeParamsStageKeepsADeclaredPaddingProperty(t *testing.T) {
+	h, p, stageHarness := largeParamsHub(t)
+	// An action that happens to declare the padding's name as a required
+	// integer: the padding has to go under another name, and the declared
+	// property has to keep its synthesized value.
+	stageHarness.action.Params = map[string]any{
+		"type":     "object",
+		"required": []any{largeParamsKey},
+		"properties": map[string]any{
+			largeParamsKey: map[string]any{"type": "integer", "minimum": 7, "maximum": 7},
+		},
+	}
+	var got map[string]any
+	responder := startDispatchResponder(p, 2, func(actionID string, params json.RawMessage) []map[string]any {
+		_ = json.Unmarshal(params, &got)
+		return []map[string]any{
+			{"type": "action.ack", "body": map[string]any{"actionId": actionID}},
+			{"type": "action.result", "body": map[string]any{"actionId": actionID, "ok": true}},
+		}
+	})
+	defer responder.stop(t)
+
+	result := runLargeParamsStage(t, stageHarness)
+	if !result.Passed {
+		t.Fatalf("the stage did not pass: %+v; faults:\n%s", result, faultMessages(h))
+	}
+	if _, ok := got[largeParamsKey].(float64); !ok {
+		t.Fatalf("the declared property was displaced: %v", got[largeParamsKey])
+	}
+	padding, ok := got[largeParamsKey+"2"].(string)
+	if !ok || len(padding) < largeParamsBytes {
+		t.Fatalf("the padding did not go under the next free name: %d bytes under %q", len(padding), largeParamsKey+"2")
+	}
+}
+
+func TestLargeParamsStageIsUngradedWhenTheSchemaAdmitsNoMember(t *testing.T) {
+	for _, schema := range []map[string]any{
+		{"type": "object", "enum": []any{map[string]any{largeParamsKey: 7}}},
+		{"type": "object", "properties": map[string]any{"amount": map[string]any{"type": "integer"}}, "additionalProperties": false},
+	} {
+		h, _, stageHarness := largeParamsHub(t)
+		stageHarness.action.Params = schema
+		stageHarness.checkTimeout = 500 * time.Millisecond
+		result := runLargeParamsStage(t, stageHarness)
+		if !result.Passed || result.Note == "" || !strings.Contains(result.Note, "no member can be added") {
+			t.Fatalf("a schema that admits no member was not reported ungraded: %+v; faults:\n%s", result, faultMessages(h))
+		}
+		if len(h.outbound) != 0 {
+			t.Fatalf("a dispatch was queued although nothing could be graded")
+		}
+		h.Close()
+	}
+}
+
+func TestLargeParamsStageFailsWhenTheDispatchIsAckedButNeverAnswered(t *testing.T) {
+	_, p, stageHarness := largeParamsHub(t)
+	stageHarness.checkTimeout = 500 * time.Millisecond
+	// The poll ack covers the envelope; nothing else is ever sent, which is
+	// what a plugin that parsed the body past expiresAt does.
+	responder := startDispatchResponder(p, 2, func(string, json.RawMessage) []map[string]any { return nil })
+	defer responder.stop(t)
+
+	result := runLargeParamsStage(t, stageHarness)
+	if result.Passed {
+		t.Fatal("a large dispatch that was never answered passed")
+	}
+	if !strings.Contains(result.Error, "an action.result for the large dispatch") || !strings.Contains(result.Error, "expiresAt") {
+		t.Fatalf("the missing result was not named: %q", result.Error)
+	}
+}
+
+func TestLargeParamsStageFailsWhenTheDispatchIsNeverAcked(t *testing.T) {
+	_, _, stageHarness := largeParamsHub(t)
+	stageHarness.checkTimeout = 500 * time.Millisecond
+	// No responder at all: the plugin never polls the dispatch away.
+	result := runLargeParamsStage(t, stageHarness)
+	if result.Passed {
+		t.Fatal("a large dispatch nobody acked passed")
+	}
+	if !strings.Contains(result.Error, "the plugin to ack the large dispatch") || !strings.Contains(result.Error, "issue #108") {
+		t.Fatalf("the missing ack was not named: %q", result.Error)
 	}
 }

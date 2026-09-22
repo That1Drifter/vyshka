@@ -67,7 +67,7 @@ class VyshkaEventBuffer
 	// TakeBatch returns the event.batch body for the pending events, at most
 	// FLUSH_COUNT of them, and removes them from the buffer. The remainder,
 	// if any, is the next batch.
-	string TakeBatch()
+	VyshkaJsonValue TakeBatch()
 	{
 		VyshkaJsonValue events = VyshkaJsonValue.NewArray();
 		int take = m_Pending.Count();
@@ -84,35 +84,35 @@ class VyshkaEventBuffer
 
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("events", events);
-		return body.Serialize();
+		return body;
 	}
 }
 
 // VyshkaSnapshotSource is what the game side implements to feed state.*
 // snapshots (section 8.3). It lives in the game module so the protocol code
 // can ask for a snapshot without knowing what a player is; the world module
-// subclasses it.
+// subclasses it. Each capture is the body as a tree, or null for none.
 class VyshkaSnapshotSource
 {
-	// CapturePlayers returns a serialized state.players body, or "" when no
+	// CapturePlayers returns the state.players body, or null when no
 	// snapshot can be taken right now.
-	string CapturePlayers()
+	VyshkaJsonValue CapturePlayers()
 	{
-		return "";
+		return null;
 	}
 
-	// CaptureVehicles returns a serialized state.vehicles body, or "" when
-	// no snapshot can be taken right now.
-	string CaptureVehicles()
+	// CaptureVehicles returns the state.vehicles body, or null when no
+	// snapshot can be taken right now.
+	VyshkaJsonValue CaptureVehicles()
 	{
-		return "";
+		return null;
 	}
 
-	// CaptureEntities returns a serialized state.entities body, or "" when
-	// there is nothing to say. Entities are the map markers a mod placed
+	// CaptureEntities returns the state.entities body, or null when there
+	// is nothing to say. Entities are the map markers a mod placed
 	// (VyshkaMapMarker), which the game module holds, so this answers for
 	// every source rather than being left to the world module to override.
-	string CaptureEntities()
+	VyshkaJsonValue CaptureEntities()
 	{
 		return VyshkaMapMarkers.Capture();
 	}

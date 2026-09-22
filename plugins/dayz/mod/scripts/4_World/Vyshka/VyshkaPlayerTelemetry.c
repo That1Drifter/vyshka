@@ -556,7 +556,7 @@ class VyshkaPlayers
 // not, with position and the vitals the heal action reports.
 class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 {
-	override string CapturePlayers()
+	override VyshkaJsonValue CapturePlayers()
 	{
 		array<Man> men = new array<Man>;
 		GetGame().GetPlayers(men);
@@ -592,12 +592,12 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
 		body.Set("players", players);
-		return body.Serialize();
+		return body;
 	}
 
 	// The vehicle list lives with the vehicles (VyshkaVehicles); this is
 	// the one snapshot source the plugin holds, so it answers for both.
-	override string CaptureVehicles()
+	override VyshkaJsonValue CaptureVehicles()
 	{
 		return VyshkaVehicles.Capture();
 	}

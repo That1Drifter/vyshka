@@ -641,9 +641,16 @@ func (d *driver) handle(delivered envelope) {
 			})
 			return
 		}
+		// The params come back as the result, which is what makes the
+		// driver's round trip checkable, unless they would pass the 64 KiB a
+		// hub keeps of a result (section 7): then their size stands in.
+		result := map[string]any{"echo": params}
+		if len(body.Params) > 64<<10 {
+			result = map[string]any{"echoBytes": len(body.Params)}
+		}
 		d.send("action.result", map[string]any{
 			"actionId": body.ActionID, "ok": true,
-			"result": map[string]any{"echo": params}, "durationMs": 1,
+			"result": result, "durationMs": 1,
 		})
 
 	case "context.enumerate":

@@ -213,3 +213,38 @@ and a 100-character window near the end returned 100. No error is raised.
    loop and per-escape appends as well as the outer append, and replaces the per-run
    `Substring` that caps at 8 191. That is a plugin slice of its own, filed with the
    reader fix (#108).
+
+## Follow-up: the plugin after issue #108 (2026-09-21)
+
+The fixes the findings asked for landed the same day as issue #108: the parser reads its
+input through windows cut once (`VyshkaTextCursor`, outer windows of 8 191 characters,
+inner pieces of 256), string values are assembled from pieces `Substring` can return whole,
+the serializer collects pieces and joins once (`VyshkaJsonWriter`), and every JSON file
+the plugin writes goes out one array element and one object member per line, a long
+string value in pieces on lines of their own, refused rather than written when a key would
+still make a line over 60 000 bytes or the document nests deeper than the parser reads.
+The manifest record keeps its content as the manifest object, so its arrays break across
+lines too.
+
+Measured by the plugin's new self-test (`vyshka-dayz selftest`, which runs
+`plugins/dayz/selftest/VyshkaSelfTest.c` on the same server build; its run log is the
+provenance; the numbers are from the run of the final build), on the same host and
+game build as the runs above:
+
+| Check | Input | Result |
+|---|---|---|
+| `json.speed` | the pull shape at 5 000 entries, 1 117 804 bytes | serialize 582 ms, parse 441 ms, write 620 ms, read back 369 ms (series 1 above: 45.4 s and 353 s for 1 206 414 bytes) |
+| `files.bans` | 400 entries, one per line | saved in 71 ms, loaded in 41 ms; the 500-entry read that faulted run 2 is the same shape |
+| `files.manifest` | a 200-action manifest record, 250 718 bytes compact | saved in 125 ms, read back equal in 231 ms |
+| `files.outbox` | a 200-event batch record, 83 902 bytes compact | appended in 80 ms, restored equal in 71 ms |
+| `files.oversizedLine` | one 70 000-character string | refused, not written |
+| `json.longString` | a 100 000-character string value | parsed whole in 19 ms (the first parser returned 8 191 characters) |
+| `json.escapes` | 56 000 characters with an escape every 3.5 | quoted in 46 ms, parsed back equal in 38 ms (210 ms before the decoded text was gathered in pieces) |
+
+The parse is about 0.4 µs a byte, which is the windowed reads plus the script VM's own
+cost per character; the residual quadratic term (one `Substring` on the whole input per
+8 191-character window) is a few tens of milliseconds at this size and would be about 27 s
+for the 32 MiB body of series 3, so a document of that size is still not one to parse in a
+frame. The negative control was run once with the ban list written as plugin 0.8.0 wrote
+it, as one line: the read faulted the server inside `FGets`, and the self-test tool
+reported the exit as the failure.

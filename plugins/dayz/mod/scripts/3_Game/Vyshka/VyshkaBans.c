@@ -250,7 +250,7 @@ class VyshkaBans
 			list.Add(Entries().GetElement(i).ToJson());
 		VyshkaJsonValue root = VyshkaJsonValue.NewObject();
 		root.Set("bans", list);
-		if (VyshkaFiles.WriteAll(VyshkaFiles.BANS_PATH, root.Serialize()))
+		if (VyshkaFiles.WriteJson(VyshkaFiles.BANS_PATH, root))
 			return true;
 		VyshkaLog.Error("could not write " + VyshkaFiles.BANS_PATH);
 		return false;
