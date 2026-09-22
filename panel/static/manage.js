@@ -1383,15 +1383,25 @@ export async function viewAudit(app, route, seq) {
 // opened (section 12.2's compare-and-swap, so a key a plugin or a bot changed
 // meanwhile is never overwritten blind), and delete.
 
-// unsafeNumber finds an integer beyond 2^53 in a value, which this browser's
-// JSON parser has already rounded: saving it back would write a number
-// nobody stored. Answers the path of the first one, or '' when there is none.
-function unsafeNumber(value, path = '', depth = 0) {
-  if (typeof value === 'number') return Number.isInteger(value) && !Number.isSafeInteger(value) ? path || 'the value' : '';
-  if (value === null || typeof value !== 'object' || depth > 64) return '';
-  for (const [key, member] of Object.entries(value)) {
-    const found = unsafeNumber(member, Array.isArray(value) ? path + '[' + key + ']' : (path ? path + '.' : '') + key, depth + 1);
-    if (found) return found;
+// unsafeNumber finds a number this browser's JSON parser could not carry
+// exactly: an integer beyond 2^53, which it rounded, or one beyond the double
+// range, which it made Infinity and which serializes as null. Saving either
+// back would write a value nobody stored. The walk is iterative and has no
+// depth bound, because a stored value is bounded in bytes and not in depth
+// (section 12.2): 16 KiB nests thousands of levels. Answers the path of the
+// first one, or '' when there is none.
+function unsafeNumber(root) {
+  const stack = [[root, '']];
+  while (stack.length > 0) {
+    const [value, path] = stack.pop();
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) return path || 'the value';
+      continue;
+    }
+    if (value === null || typeof value !== 'object') continue;
+    for (const [key, member] of Object.entries(value)) {
+      stack.push([member, Array.isArray(value) ? path + '[' + key + ']' : (path ? path + '.' : '') + key]);
+    }
   }
   return '';
 }
@@ -1410,7 +1420,7 @@ function kvValueOf(text) {
   }
   const unsafe = unsafeNumber(parsed);
   if (unsafe) {
-    throw new ApiError(0, 'bad_value', unsafe + ' is an integer beyond 2^53, which this browser cannot carry exactly; write it as a string, or write the key with the Admin API');
+    throw new ApiError(0, 'bad_value', unsafe + ' is a number this browser cannot carry exactly (an integer beyond 2^53, or beyond the range of a double); write it as a string, or write the key with the Admin API');
   }
   return parsed;
 }
@@ -1550,6 +1560,10 @@ export async function viewKVKeys(app, route, seq) {
   const more = el('button', { type: 'button', id: 'kv-more', hidden: true }, 'Load more');
 
   let cursor = null;
+  // The greatest key the hub's pages have delivered: the walk's boundary,
+  // which a key created here must not move, since the next page starts
+  // after the cursor whatever this page shows.
+  let walked = '';
   // The rows on the page by key, so a save, a create, or a delete updates
   // the list where it stands instead of reloading it.
   const rows = new Map();
@@ -1589,6 +1603,7 @@ export async function viewKVKeys(app, route, seq) {
   };
   const drawKeys = (keys) => {
     for (const entry of keys) {
+      if (entry.key > walked) walked = entry.key;
       if (rows.has(entry.key)) continue;
       const drawn = rowFor(entry);
       tbody.append(drawn.row);
@@ -1610,9 +1625,7 @@ export async function viewKVKeys(app, route, seq) {
       return;
     }
     if (route.prefix && !entry.key.startsWith(route.prefix)) return;
-    const keys = [...rows.keys()];
-    const last = keys.length > 0 ? keys[keys.length - 1] : '';
-    if (cursor && entry.key > last) return;
+    if (cursor && entry.key > walked) return;
     const drawn = rowFor(entry);
     const after = [...tbody.children].find((row) => row.dataset.key > entry.key);
     tbody.insertBefore(drawn.row, after || null);
@@ -1709,7 +1722,7 @@ export async function viewKVKeys(app, route, seq) {
       // and refuses to save it.
       save.disabled = true;
       controls.push(el('p', { class: 'notice', id: 'kv-edit-unsafe' },
-        unsafe + ' is an integer beyond 2^53, which this browser has already rounded, so the value cannot be saved from here; write it with PUT /api/v1/kv/{namespace}/{key}.'));
+        unsafe + ' is a number this browser has already changed (an integer beyond 2^53 rounded, or one beyond the range of a double made infinite), so the value cannot be saved from here; write it with PUT /api/v1/kv/{namespace}/{key}.'));
     }
     value.append(el('div', { class: 'card', id: 'kv-value-card' },
       el('h2', {}, 'Value of ', el('span', { class: 'mono' }, key)),

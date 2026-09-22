@@ -11,7 +11,10 @@
 // of one kind without the others, and without the admin flags the plugin
 // keeps under `vyshka`. Dispatching an apply needs no store grant at all: the
 // plugin reads the record under its own session, so who may apply presets
-// and who may edit them are separate grants. Each action's name param
+// and who may edit them are separate grants. The one exception is capture,
+// which writes a loadout under the plugin's session: a token that may
+// dispatch vyshka.loadout.capture may create loadouts, and with overwrite
+// replace them, whatever store grant it holds. Each action's name param
 // carries the kvNamespace annotation (section 6.1), so a panel offers the
 // names the store holds.
 //
@@ -409,9 +412,18 @@ class VyshkaPresetApply : VyshkaStoreCallback
 		return VyshkaActionOutcome.Pending();
 	}
 
+	// Late says whether the dispatch's own deadline has passed. The plugin
+	// fails an expired dispatch on a tick of its own, so a callback can run
+	// after the deadline while IsPending still answers true; nothing may be
+	// changed in the game then.
+	bool Late()
+	{
+		return VyshkaClock.MonotonicMs() >= m_DeadlineMs + VyshkaPresets.DEADLINE_MARGIN_MS;
+	}
+
 	override void OnStore(VyshkaStoreResult result)
 	{
-		if (!VyshkaPlugin.IsPending(m_ActionId))
+		if (!VyshkaPlugin.IsPending(m_ActionId) || Late())
 		{
 			// Failed while the read was out (its deadline passed, or the
 			// plugin stopped): nothing is applied on its behalf now.
@@ -518,6 +530,14 @@ class VyshkaLoadoutApply : VyshkaPresetApply
 		if (!VyshkaPlugin.IsPending(m_ActionId))
 		{
 			VyshkaLog.Warn("loadout " + m_Name + " for dispatch " + m_ActionId + " was waiting on a drop when the dispatch ended; nothing was created");
+			Release();
+			return;
+		}
+		// The dress happens inside the store's margin before the deadline,
+		// or not at all.
+		if (VyshkaClock.MonotonicMs() >= m_DeadlineMs)
+		{
+			Finish(VyshkaActionOutcome.Failure("the dropped items had not left the character when the dispatch's time ran out; the player was stripped and nothing was created"));
 			Release();
 			return;
 		}
@@ -742,12 +762,19 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 		// autoParts fills every slot the record left empty the way the spawn
 		// action's `auto` does: the first compatible part the engine takes.
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
-		if (record.GetBool("autoParts", false))
+		if (record.GetBool("autoParts", false) && builder.m_Created >= VyshkaPresets.ITEMS_MAX)
+			builder.Problem(car.GetType(), "autoParts was skipped: the preset's own items used the " + VyshkaPresets.ITEMS_MAX.ToString() + " items one preset may create");
+		else if (record.GetBool("autoParts", false))
 		{
+			// Equip lists every part on the car, the preset's own included,
+			// so what it made is counted as the tree's growth. It fills at
+			// most two levels of the car's own slots, a bounded set for any
+			// class, which is why it is let finish once the budget has room.
 			VyshkaJsonValue attached = VyshkaJsonValue.NewArray();
 			VyshkaJsonValue empty = VyshkaJsonValue.NewArray();
+			int before = VyshkaInventory.CountTree(car);
 			VyshkaSpawn.Equip(car, 1, attached, empty);
-			int autoCount = VyshkaSpawn.CountParts(attached);
+			int autoCount = VyshkaInventory.CountTree(car) - before;
 			builder.m_Created += autoCount;
 			result.Set("autoParts", VyshkaJsonValue.NewInt(autoCount));
 			// The slots no part was found for, as the spawn action's `auto`

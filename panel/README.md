@@ -92,7 +92,8 @@ management views).
   suggestion); `object` gets an id field; a declared custom context gets an optional
   reference field fed by that context's enumeration (below).
 - **Key/value suggestions** (protocol section 6.1): a string field annotated with
-  `kvNamespace` suggests the keys stored in that namespace, read with one
+  `kvNamespace`, or an array whose string items are, through the same picker the
+  context-annotated items get, suggests the keys stored in that namespace, read with one
   `GET /kv/{namespace}` page (up to 500 keys) per namespace before the form is built; an
   excluded key is marked as a context entry is, and the hint names the namespace and the
   count. A token without the namespace's `kv:rw` grant gets a plain text field whose hint
@@ -244,8 +245,9 @@ management views).
   than overwritten; Reload shows what the store holds now. The remaining TTL is filled in
   and sent with the save, because a set without `ttlSeconds` makes a key permanent. A
   value that is not JSON, or is `null`, is refused on the page, and a stored value holding
-  an integer beyond 2^53 is shown but cannot be saved: the browser's parser has already
-  rounded it. Delete asks for a confirmation box and treats an already-gone key as done.
+  a number the browser cannot carry exactly (an integer beyond 2^53, which its parser
+  rounds, or one past the double range, which it makes infinite and would write back as
+  `null`), at any depth, is shown but cannot be saved. Delete asks for a confirmation box and treats an already-gone key as done.
   The new-key form creates only (`ifRevision: 0`), so a name already taken is refused
   rather than replaced; a key written here lands in the list in key order.
 

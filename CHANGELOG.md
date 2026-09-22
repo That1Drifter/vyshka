@@ -28,15 +28,19 @@ arrived, since those entries were written for one stream.
   The hub conformance suite gains `plugin.manifest.kvNamespaceAnnotation` (accepted and
   stored verbatim, advisory at dispatch, rejected when undeclared, absent, or on a
   non-string schema), shown to discriminate against a hub that skips the declared check;
-  the plugin suite grades a manifest's annotations the way a hub does.
+  the plugin suite grades a manifest's annotations the way a hub does, in params and in
+  declared event payloads alike.
 - 2026-09-22: the panel's key/value view becomes an editor (issue #76): a new-key form
   that creates only (`ifRevision: 0`, so a taken name is refused rather than replaced),
   and an editor per key whose save is guarded by the revision it opened, so a key a
   plugin or a bot changed meanwhile is refused with `revision_mismatch` and never
   overwritten blind; Reload shows the stored value, the remaining TTL is carried into a
   save (a set defines the key entirely), a delete asks for a confirmation, and a value
-  holding an integer beyond 2^53, which the browser has already rounded, is shown but
-  not saved. A param annotated with `kvNamespace` suggests the namespace's keys in the
+  holding a number the browser could not carry exactly (an integer beyond 2^53, rounded,
+  or one past the double range, made infinite), at any depth, is shown but not saved; a
+  key created inside the walked part of a paged namespace is listed without moving the
+  walk's boundary. A param annotated with `kvNamespace` (a string field, or the string
+  items of an array through the item picker) suggests the namespace's keys in the
   action form, marks one the schema excludes, and tells a token without the namespace's
   `kv:rw` grant why the list is empty rather than showing none. The browser tests cover
   both, and each was shown to discriminate (a save without the revision guard, a form
@@ -220,7 +224,12 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   its radius on the terrain. `vyshka.vehicle.spawn` (world) spawns a car at a position
   or in front of a player with the preset's parts and cargo, `autoParts` filling the
   empty slots the way `vyshka.spawn` `auto` does, and `fluids` filled to their
-  fractions. The strip's work moves to `VyshkaInventory.Strip`, shared by the strip
+  fractions (`autoParts` runs only while the preset's item budget has room, and
+  counts only the parts it made). Every deferred step checks the dispatch's own
+  deadline on the clock as well as whether it is still pending, so nothing is made after
+  it. `vyshka.loadout.capture` writes under the plugin's session, so the README says
+  plainly that its action grant is a grant to create and replace loadouts. The strip's
+  work moves to `VyshkaInventory.Strip`, shared by the strip
   action and the loadout's drop. Verified live on DayZ 1.29 with a retail client: a
   122-item loadout captured to 5062 bytes and applied back to a cleared character as
   the same tree (the inventory read before and after equal in every field but a worn

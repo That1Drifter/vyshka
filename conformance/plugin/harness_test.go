@@ -928,3 +928,51 @@ func TestLargeParamsStageFailsWhenTheDispatchIsNeverAcked(t *testing.T) {
 		t.Fatalf("the missing ack was not named: %q", result.Error)
 	}
 }
+
+// manifestStageResult publishes one manifest to a fresh mock hub and runs the
+// manifest.publish stage over it.
+func manifestStageResult(t *testing.T, manifest map[string]any) Result {
+	t.Helper()
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	p := newTestPlugin(t, h)
+	p.poll(typedEnvelope("manifest-1", 1, "manifest.publish", manifest))
+	var stage Stage
+	for _, candidate := range stages {
+		if candidate.ID == "manifest.publish" {
+			stage = candidate
+		}
+	}
+	results := runStages(&harness{hub: h, checkTimeout: 5 * time.Second}, []Stage{stage})
+	if len(results) != 1 {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	return results[0]
+}
+
+// An event payload schema is compiled like a params schema (section 6.4), so
+// a kvNamespace annotation in one must name a declared namespace too.
+func TestManifestStageGradesEventPayloadAnnotations(t *testing.T) {
+	manifest := func(declared []string) map[string]any {
+		return map[string]any{
+			"game": "conformance", "manifestRevision": 1,
+			"actions":      []map[string]any{{"code": "test.echo", "context": "world"}},
+			"kvNamespaces": declared,
+			"events": []map[string]any{{"id": "test.saved", "payload": map[string]any{
+				"type": "object", "properties": map[string]any{
+					"preset": map[string]any{"type": "string", "kvNamespace": "test.presets"},
+				},
+			}}},
+		}
+	}
+	if result := manifestStageResult(t, manifest([]string{"test.presets"})); !result.Passed {
+		t.Fatalf("a payload annotation naming a declared namespace failed the stage: %+v", result)
+	}
+	result := manifestStageResult(t, manifest([]string{"test"}))
+	if result.Passed || !strings.Contains(result.Error, "events[0].payload") {
+		t.Fatalf("a payload annotation naming an undeclared namespace = %+v, want a failure at events[0].payload", result)
+	}
+}

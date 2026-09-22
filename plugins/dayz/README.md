@@ -594,7 +594,11 @@ like any other key. Each apply action reads its record when it runs, under the p
 session, so an edit takes effect on the next dispatch with no restart, and dispatching an
 apply needs no store grant: who may apply presets (`actions:dispatch`) and who may edit
 them (`kv:rw:vyshka.loadouts`, and so on) are separate grants, and neither reaches the
-admin flags under `vyshka`. The store is installation-wide, so a preset written once is
+admin flags under `vyshka`. `vyshka.loadout.capture` is the exception: it writes under the
+plugin's session, so a token that may dispatch it may create loadouts, and with
+`overwrite` replace them, whatever store grant it holds (and a server binding does not
+narrow that, the store being installation-wide). A token meant only to apply presets is
+granted the apply codes by name rather than `actions:dispatch:vyshka.*`. The store is installation-wide, so a preset written once is
 there on every server enrolled in the hub. Each action's name param carries the
 `kvNamespace` annotation (protocol section 6.1), which is how the panel offers the names
 the store holds to a token that may list them.
@@ -658,7 +662,9 @@ A **vehicle preset** is a car, its parts, and its fluids:
 
 `class` must be a car (`CarScript`). `attachments` and `cargo` are loadout entries;
 `autoParts` then fills every slot still empty with the first compatible part the engine
-accepts, the way `vyshka.spawn` `auto` does (wheels, doors, hood and trunk, battery, spark
+accepts, the way `vyshka.spawn` `auto` does (when the preset's own entries have not used
+the 400-item budget; it fills at most two levels of the car's slots, and `autoParts` in the
+result counts only what it made) (wheels, doors, hood and trunk, battery, spark
 plug, radiator, headlights); `fluids` fills each named fluid to its fraction of the tank,
 and a fluid not named stays as the engine made it, which for a new car is empty. A car
 with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and

@@ -174,6 +174,16 @@ var stages = []Stage{
 					}
 				}
 			}
+			// A declared event's payload schema is compiled like a params
+			// schema, annotations and all (section 6.4).
+			for index, payload := range manifest.EventPayloads {
+				if payload == nil {
+					continue
+				}
+				if err := validateSubset(payload, fmt.Sprintf("events[%d].payload", index), declared); err != nil {
+					return fmt.Errorf("a hub would reject this manifest: %w", err)
+				}
+			}
 			h.action = manifest.Actions[0]
 			return nil
 		},

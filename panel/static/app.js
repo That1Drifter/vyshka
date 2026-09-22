@@ -1520,6 +1520,10 @@ function schemaKVNamespaces(schema, found = new Set(), depth = 0) {
   if (schema.properties && typeof schema.properties === 'object') {
     for (const child of Object.values(schema.properties)) schemaKVNamespaces(child, found, depth + 1);
   }
+  if (schema.type === 'array' && schema.items && typeof schema.items === 'object' && schema.items.type === 'string'
+      && kvNamespaceOf(schema.items) !== '') {
+    found.add(kvNamespaceOf(schema.items));
+  }
   return found;
 }
 
@@ -1754,12 +1758,17 @@ function arrayField(schema, opts) {
   // suggestions, whose chosen value is appended as a line. The textarea
   // stays the value, so anything typed there is sent as typed.
   const itemContexts = items.type === 'string' ? contextRefsOf(items) : [];
+  // String items annotated with a key/value namespace get the same picker,
+  // fed by the namespace's keys, when no context feeds it already.
+  const itemKV = items.type === 'string' && itemContexts.length === 0 ? kvNamespaceOf(items) : '';
   let hint = 'one value per line, ' + kind +
     (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : '');
   let control = textarea;
   let wrapped = null;
-  if (itemContexts.length > 0) {
-    const datalist = contextDatalist(itemContexts, opts.contextEntries, items);
+  if (itemContexts.length > 0 || itemKV !== '') {
+    const datalist = itemKV !== ''
+      ? kvDatalist(itemKV, opts.kvKeys, items)
+      : contextDatalist(itemContexts, opts.contextEntries, items);
     const picker = el('input', {
       type: 'text', id: nextId('pick'), list: datalist ? datalist.id : undefined,
       placeholder: 'add an item from the list', spellcheck: 'false', autocomplete: 'off',
@@ -1779,7 +1788,7 @@ function arrayField(schema, opts) {
       },
     });
     control = el('span', { class: 'stack' }, textarea, el('span', {}, picker, datalist));
-    hint += '; items ' + contextHint(itemContexts, opts.contextEntries);
+    hint += '; items ' + (itemKV !== '' ? kvHint(itemKV, opts.kvKeys) : contextHint(itemContexts, opts.contextEntries));
   }
   wrapped = wrap(opts, control, hint);
   const initial = textarea.value;

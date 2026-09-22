@@ -341,6 +341,10 @@ type manifestInfo struct {
 	Actions      []manifestAction
 	Contexts     []manifestContext
 	KVNamespaces []string
+	// EventPayloads are the declared events' payload schemas by index into
+	// the manifest's events (nil where an event declares none), which a hub
+	// compiles like a params schema (spec section 6.4).
+	EventPayloads []map[string]any
 }
 
 type actionTrack struct {
@@ -1295,6 +1299,9 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 				Name string `json:"name"`
 			} `json:"contexts"`
 			KVNamespaces []string `json:"kvNamespaces"`
+			Events       []struct {
+				Payload map[string]any `json:"payload"`
+			} `json:"events"`
 		}
 		if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 			h.faultLocked("6", "a manifest.publish body could not be decoded as an object")
@@ -1315,6 +1322,9 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		}
 		for _, context := range body.Contexts {
 			info.Contexts = append(info.Contexts, manifestContext{ID: context.ID, Name: context.Name})
+		}
+		for _, event := range body.Events {
+			info.EventPayloads = append(info.EventPayloads, event.Payload)
 		}
 		h.manifest = info
 

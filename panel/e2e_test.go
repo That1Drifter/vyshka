@@ -140,10 +140,13 @@ var e2eManifest = map[string]any{
 				"preset": map[string]any{"type": "string", "kvNamespace": "example-mod.presets",
 					"not": map[string]any{"enum": []string{"retired"}}},
 				"secret": map[string]any{"type": "string", "kvNamespace": "example-mod.locked"},
+				// String items annotated with a namespace get the picker the
+				// context-annotated items get.
+				"batch": map[string]any{"type": "array", "items": map[string]any{"type": "string", "kvNamespace": "example-mod.batches"}},
 			},
 		},
 	}},
-	"kvNamespaces": []string{"example-mod.presets", "example-mod.locked"},
+	"kvNamespaces": []string{"example-mod.presets", "example-mod.locked", "example-mod.batches"},
 }
 
 var e2ePlayers = map[string]any{
@@ -1103,9 +1106,13 @@ func TestPanelEndToEnd(t *testing.T) {
 			t.Fatalf("write preset %s: status %d body %s", key, status, body)
 		}
 	}
+	if status, body := adminRequest(t, http.MethodPut, web.URL+"/api/v1/kv/example-mod.batches/first-wave",
+		map[string]any{"value": map[string]any{"size": 4}}); status != http.StatusOK {
+		t.Fatalf("write the batch key: status %d body %s", status, body)
+	}
 	status, minted := adminRequest(t, http.MethodPost, web.URL+"/api/v1/tokens", map[string]any{
 		"name":   "preset operator",
-		"scopes": []string{"servers:read", "actions:dispatch", "kv:rw:example-mod.presets"},
+		"scopes": []string{"servers:read", "actions:dispatch", "kv:rw:example-mod.presets", "kv:rw:example-mod.batches"},
 	})
 	if status != http.StatusCreated && status != http.StatusOK {
 		t.Fatalf("mint the narrowed token: status %d body %s", status, minted)
@@ -1126,6 +1133,9 @@ func TestPanelEndToEnd(t *testing.T) {
 	}
 	if got := evalString(`document.querySelector('input[name="params.preset"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "example-mod.presets (3 keys)") {
 		t.Errorf("preset hint = %q, want the namespace named with its count", got)
+	}
+	if got := evalString(`(function(){const p=document.querySelector('input[data-picker-for="params.batch"]');const l=p&&document.getElementById(p.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value).join(","):"no datalist"})()`); got != "first-wave" {
+		t.Errorf("batch picker datalist = %q, want the keys of the namespace only the array items name", got)
 	}
 	if got := evalString(`document.querySelector('input[name="params.secret"]').getAttribute("list") || "no list"`); got != "no list" {
 		t.Errorf("the unlistable namespace's field has a datalist %q, want a plain input", got)

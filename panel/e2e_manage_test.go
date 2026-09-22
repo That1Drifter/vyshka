@@ -3,6 +3,7 @@ package panel_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -951,6 +952,43 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 		chromedp.WaitVisible("#kv-edit-unsafe", chromedp.ByQuery))
 	if got := evalString(`document.querySelector("#kv-save").disabled ? "disabled" : "enabled"`); got != "disabled" {
 		t.Fatalf("the save of a value holding an unsafe integer is %s, want disabled", got)
+	}
+	// The same number 70 arrays deep, and one past the range of a double,
+	// which the browser parses as Infinity and would write back as null.
+	deep := strings.Repeat("[", 70) + "9007199254740993" + strings.Repeat("]", 70)
+	for key, raw := range map[string]string{"balance.hugedeep": deep, "balance.infinite": "1e400"} {
+		if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/example-mod/"+key,
+			json.RawMessage(`{"value": `+raw+`}`)); status != http.StatusOK {
+			t.Fatalf("write %s: status %d body %s", key, status, body)
+		}
+		run("open "+key, chromedp.Navigate(hubURL+"/#/kv/example-mod?prefix="+key),
+			chromedp.WaitVisible(`button[data-open-key="`+key+`"]`, chromedp.ByQuery),
+			chromedp.Click(`button[data-open-key="`+key+`"]`, chromedp.ByQuery),
+			chromedp.WaitVisible("#kv-edit-unsafe", chromedp.ByQuery))
+		if got := evalString(`document.querySelector("#kv-save").disabled ? "disabled" : "enabled"`); got != "disabled" {
+			t.Fatalf("the save of %s is %s, want disabled", key, got)
+		}
+	}
+
+	// A key created inside the walked part of a paged namespace does not
+	// move the walk's boundary: a second one that sorts after the first but
+	// inside the page is listed too (the hub's page is 100 keys, so 101 make
+	// a cursor).
+	for i := 0; i <= 100; i++ {
+		key := fmt.Sprintf("k%03d", i)
+		if status, body := adminRequest(t, http.MethodPut, hubURL+"/api/v1/kv/paged/"+key,
+			map[string]any{"value": i}); status != http.StatusOK {
+			t.Fatalf("write paged/%s: status %d body %s", key, status, body)
+		}
+	}
+	run("open the paged namespace", chromedp.Navigate(hubURL+"/#/kv/paged"),
+		chromedp.WaitVisible("#kv-keys", chromedp.ByQuery))
+	waitJS("the first page is listed with more to come",
+		`document.querySelectorAll("#kv-keys tbody tr[data-key]").length === 100 && !document.querySelector("#kv-more").hidden`)
+	for _, key := range []string{"k005a", "k006a"} {
+		run("create "+key, setValue("#kv-new-key", key), setValue("#kv-new-value", `1`),
+			chromedp.Click("#kv-create", chromedp.ByQuery))
+		waitJS(key+" is listed", `!!document.querySelector('tr[data-key="`+key+`"]')`)
 	}
 
 	// 9. Signing out forgets the token, and the nav goes with it.
