@@ -4,10 +4,10 @@ The reference game plugin for DayZ: a server-side Enforce Script mod that enroll
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player and vehicle events a feed
 needs and the `state.players`, `state.vehicles`, and `state.entities` snapshots a live map
-needs. It ships seventeen built-in actions (heal, vitals, stop bleeding, dry, broken legs,
+needs. It ships twenty built-in actions (heal, vitals, stop bleeding, dry, broken legs,
 bloody hands, flags, kick, ban, unban, message, broadcast, teleport, spawn, set time,
-unstuck, delete destroyed vehicles), so an operator can moderate a server, patch a player
-up, and move things around it from the panel or a `curl` against the hub, and a surface
+unstuck, delete destroyed vehicles, and read, strip, and clear a player's inventory), so an
+operator can moderate a server, patch a player up, and move things around it from the panel or a `curl` against the hub, and a surface
 other server mods build on ("Writing a mod against the plugin" below, with a sample under
 `sample/`). Protocol: `spec/protocol.md`.
 
