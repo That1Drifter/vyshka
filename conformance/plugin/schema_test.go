@@ -159,6 +159,29 @@ func TestSynthesizeDuplicateRequiredNamesFinishPromptly(t *testing.T) {
 	}
 }
 
+// Round eight's cases 1 and 5: params are an object even when the root's
+// default or first enum member is not, and the invalid probe omits a
+// required name however often it is listed.
+func TestSynthesizeParamsAreAnObjectTheSchemaAdmits(t *testing.T) {
+	for name, schema := range map[string]map[string]any{
+		"scalarDefault": {"default": float64(1), "required": []any{"x"}},
+		"scalarEnum":    {"enum": []any{float64(1), map[string]any{"x": float64(0)}}, "required": []any{"x"}},
+	} {
+		params := synthesizeParams(schema)
+		encoded, _ := json.Marshal(params)
+		if string(encoded) != `{"x":0}` && !(name == "scalarDefault" && params["x"] != nil) {
+			t.Errorf("%s: synthesized %s, want an object carrying x", name, encoded)
+		}
+	}
+	raw, _ := synthesizeInvalidParams(map[string]any{"type": "object", "required": []any{"x", "x", "y"},
+		"properties": map[string]any{"x": map[string]any{"type": "string"}}})
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if _, present := out["x"]; present {
+		t.Errorf("invalid params %s still carry the required x the probe omits", raw)
+	}
+}
+
 func TestValidateSubsetRejectsInexactConstants(t *testing.T) {
 	for name, schema := range map[string]map[string]any{
 		"notMember":  {"type": "number", "not": map[string]any{"enum": []any{float64(9007199254740993)}}},

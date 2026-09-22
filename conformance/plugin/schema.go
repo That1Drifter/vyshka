@@ -23,6 +23,17 @@ func synthesizeParams(schema map[string]any) map[string]any {
 	if object, ok := synthesizeValue(schema).(map[string]any); ok {
 		return object
 	}
+	// Params are an object whatever the root's default or first enum member
+	// is, so the root is synthesized again as an object.
+	asObject := map[string]any{"type": "object"}
+	for keyword, value := range schema {
+		if keyword != "type" && keyword != "default" {
+			asObject[keyword] = value
+		}
+	}
+	if object, ok := synthesizeValue(asObject).(map[string]any); ok {
+		return object
+	}
 	return map[string]any{}
 }
 
@@ -570,6 +581,11 @@ func synthesizeInvalidParams(schema map[string]any) (json.RawMessage, string) {
 			for _, name := range required[1:] {
 				key, ok := name.(string)
 				if !ok {
+					continue
+				}
+				// The omitted name stays omitted however often it is
+				// listed, and a repeated one is synthesized once.
+				if _, done := out[key]; done || key == first {
 					continue
 				}
 				property, _ := properties[key].(map[string]any)
