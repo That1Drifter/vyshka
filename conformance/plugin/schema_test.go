@@ -45,6 +45,17 @@ func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
 		"compoundEnum": {"enum": []any{map[string]any{"x": "blocked"}, map[string]any{"x": "allowed"}},
 			"properties": map[string]any{"x": map[string]any{"type": "string", "not": blocked}}},
 		"emptyArrayExcluded": {"type": "array", "items": map[string]any{"type": "string"}, "not": map[string]any{"enum": []any{[]any{}}}},
+		// Round three's cases: the sample points excluded, the first
+		// fallback excluded, and keywords that apply without a type.
+		"samplesExcluded": {"type": "number", "minimum": float64(0), "maximum": float64(1),
+			"not": map[string]any{"enum": []any{float64(0), float64(1), 0.5, 0.25, 0.75, 0.125, 0.875}}},
+		"arrayFallbackExcluded": {"type": "array", "items": map[string]any{"enum": []any{"x"}},
+			"not": map[string]any{"enum": []any{[]any{}, []any{"x"}}}},
+		"objectExcluded": {"type": "object", "not": map[string]any{"enum": []any{map[string]any{}}}},
+		"untypedItems": {"enum": []any{[]any{"blocked"}, []any{"allowed"}},
+			"items": map[string]any{"type": "string", "not": blocked}},
+		"untypedBound":    {"enum": []any{float64(0), float64(2)}, "minimum": float64(1)},
+		"untypedRequired": {"enum": []any{map[string]any{}, map[string]any{"x": float64(1)}}, "required": []any{"x"}},
 	} {
 		value := synthesizeValue(schema)
 		encoded, _ := json.Marshal(value)
@@ -52,6 +63,27 @@ func TestSynthesizeSearchesThePermittedDomain(t *testing.T) {
 		_ = json.Unmarshal(encoded, &decoded)
 		if !satisfies(schema, decoded) {
 			t.Errorf("%s: synthesized %s, which the schema refuses", name, encoded)
+		}
+	}
+}
+
+// Keywords apply without a declared type, as a hub applies them, so these
+// are checked against the value a hub accepts rather than against the
+// suite's own validator.
+func TestSynthesizeAppliesKeywordsWithoutAType(t *testing.T) {
+	blocked := map[string]any{"enum": []any{"blocked"}}
+	for name, tc := range map[string]struct {
+		schema map[string]any
+		want   string
+	}{
+		"items":    {map[string]any{"enum": []any{[]any{"blocked"}, []any{"allowed"}}, "items": map[string]any{"type": "string", "not": blocked}}, `["allowed"]`},
+		"bound":    {map[string]any{"enum": []any{float64(0), float64(2)}, "minimum": float64(1)}, `2`},
+		"required": {map[string]any{"enum": []any{map[string]any{}, map[string]any{"x": float64(1)}}, "required": []any{"x"}}, `{"x":1}`},
+		"default":  {map[string]any{"default": []any{"blocked"}, "items": map[string]any{"not": blocked}, "enum": []any{[]any{"blocked"}, []any{"ok"}}}, `["ok"]`},
+	} {
+		encoded, _ := json.Marshal(synthesizeValue(tc.schema))
+		if string(encoded) != tc.want {
+			t.Errorf("%s: synthesized %s, want %s", name, encoded, tc.want)
 		}
 	}
 }

@@ -65,14 +65,28 @@ func synthesizeValue(schema map[string]any) any {
 			property, _ := properties[key].(map[string]any)
 			out[key] = synthesizeValue(property)
 		}
+		// An object the schema excludes gets an undeclared member more at a
+		// time (the subset has no additionalProperties, so any is allowed).
+		for extra := 1; !satisfies(schema, out) && extra <= exclusionCount(schema)+1; extra++ {
+			grown := map[string]any{"conformance-" + strconv.Itoa(extra): true}
+			for key, member := range out {
+				grown[key] = member
+			}
+			out = grown
+		}
 		return out
 	case "array":
-		// Empty unless the schema excludes the empty array; then one item.
-		if satisfies(schema, []any{}) {
-			return []any{}
-		}
+		// The shortest array the schema admits: empty, then one item more at
+		// a time, past however many arrays the schema excludes.
 		items, _ := schema["items"].(map[string]any)
-		return []any{synthesizeValue(items)}
+		candidate := []any{}
+		for length := 0; length <= exclusionCount(schema)+1; length++ {
+			if satisfies(schema, candidate) {
+				return candidate
+			}
+			candidate = append(append([]any{}, candidate...), synthesizeValue(items))
+		}
+		return []any{}
 	case "string":
 		// A value the schema's `not` excludes (section 6.1) is stepped past;
 		// the list is finite, so one more candidate than it has members
@@ -141,8 +155,14 @@ func steppedNumber(schema map[string]any, first any) any {
 		high, hasHigh = exclusive, true
 	}
 	if hasLow && hasHigh {
-		for _, fraction := range []float64{0, 1, 0.5, 0.25, 0.75, 0.125, 0.875} {
-			candidates = append(candidates, low+(high-low)*fraction)
+		// The bounds, then ever finer points between them: every new
+		// denominator adds points no earlier one had, so the search reaches
+		// past any finite list of excluded values inside a real range.
+		candidates = append(candidates, low, high)
+		for denominator := 2; denominator <= 1<<12 && denominator <= 4*(exclusionCount(schema)+2); denominator *= 2 {
+			for numerator := 1; numerator < denominator; numerator += 2 {
+				candidates = append(candidates, low+(high-low)*float64(numerator)/float64(denominator))
+			}
 		}
 	}
 	reach := exclusionCount(schema) + 1
@@ -176,9 +196,12 @@ func asFloat(value any) (float64, bool) {
 }
 
 // satisfies is the small validator behind synthesis: does value meet this
-// schema's own constraints? It checks what the subset can express (type, enum,
-// exclusions, bounds, required properties) and nothing more.
+// schema's own constraints? Each keyword of the subset applies to the values
+// it constrains whether or not the schema declares a type, as a hub applies
+// them (section 6.1): type, enum, the exclusion, numeric bounds, required,
+// properties, and items.
 func satisfies(schema map[string]any, value any) bool {
+	value = normalizeDeep(value)
 	if excluded(schema, value) {
 		return false
 	}
@@ -194,15 +217,61 @@ func satisfies(schema map[string]any, value any) bool {
 			return false
 		}
 	}
-	schemaType, _ := schema["type"].(string)
-	// An untyped schema with properties still holds an object value to
-	// them (a compound enum member, say).
-	if _, isObject := value.(map[string]any); isObject && schemaType == "" {
-		if _, has := schema["properties"]; has {
-			schemaType = "object"
+	if schemaType, ok := schema["type"].(string); ok && !typeMatches(schemaType, value) {
+		return false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		required, _ := schema["required"].([]any)
+		for _, name := range required {
+			if key, isString := name.(string); isString {
+				if _, present := typed[key]; !present {
+					return false
+				}
+			}
+		}
+		// Every property present is held to its schema, required or not.
+		properties, _ := schema["properties"].(map[string]any)
+		for key, member := range typed {
+			if property, isSchema := properties[key].(map[string]any); isSchema && !satisfies(property, member) {
+				return false
+			}
+		}
+	case []any:
+		if items, isSchema := schema["items"].(map[string]any); isSchema {
+			for _, element := range typed {
+				if !satisfies(items, element) {
+					return false
+				}
+			}
+		}
+	case float64:
+		if minimum, has := asFloat(schema["minimum"]); has && typed < minimum {
+			return false
+		}
+		if maximum, has := asFloat(schema["maximum"]); has && typed > maximum {
+			return false
+		}
+		if exclusive, has := asFloat(schema["exclusiveMinimum"]); has && typed <= exclusive {
+			return false
+		}
+		if exclusive, has := asFloat(schema["exclusiveMaximum"]); has && typed >= exclusive {
+			return false
 		}
 	}
-	switch schemaType {
+	return true
+}
+
+// typeMatches says whether a decoded JSON value is of a subset type,
+// "integer" being a number with no fraction.
+func typeMatches(name string, value any) bool {
+	switch name {
+	case "object":
+		_, ok := value.(map[string]any)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
 	case "string":
 		_, ok := value.(string)
 		return ok
@@ -211,66 +280,37 @@ func satisfies(schema map[string]any, value any) bool {
 		return ok
 	case "null":
 		return value == nil
-	case "array":
-		elements, ok := value.([]any)
-		if !ok {
-			return false
-		}
-		if items, isSchema := schema["items"].(map[string]any); isSchema {
-			for _, element := range elements {
-				if !satisfies(items, element) {
-					return false
-				}
-			}
-		}
-		return true
-	case "object":
-		object, ok := value.(map[string]any)
-		if !ok {
-			return false
-		}
-		required, _ := schema["required"].([]any)
-		properties, _ := schema["properties"].(map[string]any)
-		for _, name := range required {
-			key, isString := name.(string)
-			if !isString {
-				continue
-			}
-			if _, present := object[key]; !present {
-				return false
-			}
-		}
-		// Every property present is held to its schema, required or not.
-		for key, member := range object {
-			if property, isSchema := properties[key].(map[string]any); isSchema && !satisfies(property, member) {
-				return false
-			}
-		}
-		return true
-	case "integer", "number":
+	case "number":
+		_, ok := value.(float64)
+		return ok
+	case "integer":
 		number, ok := value.(float64)
-		if !ok {
-			return false
-		}
-		if schemaType == "integer" && number != math.Trunc(number) {
-			return false
-		}
-		if minimum, has := asFloat(schema["minimum"]); has && number < minimum {
-			return false
-		}
-		if maximum, has := asFloat(schema["maximum"]); has && number > maximum {
-			return false
-		}
-		if exclusive, has := asFloat(schema["exclusiveMinimum"]); has && number <= exclusive {
-			return false
-		}
-		if exclusive, has := asFloat(schema["exclusiveMaximum"]); has && number >= exclusive {
-			return false
-		}
-		return true
-	default:
-		return true
+		return ok && number == math.Trunc(number)
 	}
+	return true
+}
+
+// normalizeDeep puts a synthesized value, at every depth, in the shape JSON
+// decoding gives it (numbers as float64), so it compares with schema
+// constants as a hub compares the dispatched JSON.
+func normalizeDeep(value any) any {
+	switch typed := value.(type) {
+	case int64:
+		return float64(typed)
+	case []any:
+		copied := make([]any, len(typed))
+		for i, element := range typed {
+			copied[i] = normalizeDeep(element)
+		}
+		return copied
+	case map[string]any:
+		copied := make(map[string]any, len(typed))
+		for key, member := range typed {
+			copied[key] = normalizeDeep(member)
+		}
+		return copied
+	}
+	return value
 }
 
 // subsetKeywords is the closed keyword set of spec section 6.1, as the
