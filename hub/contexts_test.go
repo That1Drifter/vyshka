@@ -356,6 +356,7 @@ func TestContextEnumerationInvalidReply(t *testing.T) {
 		{"badPosition", []map[string]any{{"referenceKey": "k", "label": "L", "position": []any{1}}}, nil},
 		{"badData", []map[string]any{{"referenceKey": "k", "label": "L", "data": "text"}}, nil},
 		{"wrongContext", []map[string]any{{"referenceKey": "k", "label": "L"}}, map[string]any{"context": "example-mod.other"}},
+		{"contextNotString", []map[string]any{{"referenceKey": "k", "label": "L"}}, map[string]any{"context": 123}},
 		{"badReason", []map[string]any{{"referenceKey": "k", "label": "L"}}, map[string]any{"reason": 5}},
 	}
 	// The plugin's own seq continues after the manifest's 1.
@@ -498,6 +499,47 @@ func TestManifestContextAnnotationMustBeDeclared(t *testing.T) {
 	if getManifest(t, server, created.Server.ID).Revision != 1 {
 		t.Fatal("the rejected manifest replaced the stored one")
 	}
+
+	// A manifest declaring a built-in context as its own is rejected at the
+	// declaration, so the enumeration read can never be talked into asking
+	// for one (section 6.2).
+	builtin := territoryManifest(3)
+	builtin["contexts"] = []map[string]any{
+		{"id": "example-mod.territory", "name": "Territory", "namespace": "example-mod"},
+		{"id": "player", "name": "Players", "namespace": "example-mod"},
+	}
+	result = poll(t, server, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(3, builtin)},
+	})
+	reject = nil
+	for _, delivered := range result.Envelopes {
+		if delivered.Type == "manifest.reject" {
+			reject = delivered.Body
+		}
+	}
+	if reject == nil || !strings.Contains(string(reject), "contexts[1].id") || !strings.Contains(string(reject), "built-in") {
+		t.Fatalf("manifest.reject = %s, want a fault at contexts[1].id naming the built-in context", reject)
+	}
+	if getManifest(t, server, created.Server.ID).Revision != 1 {
+		t.Fatal("the manifest declaring a built-in context replaced the stored one")
+	}
+
+	// A null annotation reads as no annotation (section 6.4).
+	nulled := territoryManifest(4)
+	nulled["actions"].([]map[string]any)[0]["params"] = map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"neighbour": map[string]any{"type": "integer", "context": nil}},
+	}
+	poll(t, server, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(4, nulled)},
+	})
+	if getManifest(t, server, created.Server.ID).Revision != 4 {
+		t.Fatal("a null context annotation was refused; null reads as absent")
+	}
+	// Back to the annotated manifest for the dispatch below.
+	poll(t, server, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(5, territoryManifest(5))},
+	})
 
 	// The annotation never constrains a dispatch.
 	var accepted struct {

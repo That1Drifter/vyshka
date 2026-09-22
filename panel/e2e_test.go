@@ -71,6 +71,12 @@ var e2eManifest = map[string]any{
 				"restoreBlood": map[string]any{"type": "boolean", "default": true},
 				"position":     map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "x-vyshka-widget": "vector"},
 				"item":         map[string]any{"type": "string", "x-vyshka-widget": "itemlist", "context": "example-mod.item"},
+				// A context annotation beside a player widget: the annotation
+				// names the data, so its entries are what the field suggests.
+				"owner": map[string]any{"type": "string", "x-vyshka-widget": "player", "context": "example-mod.item"},
+				// Array items annotated with a context the form does not
+				// otherwise draw on: named in the hint, never fetched.
+				"parts": map[string]any{"type": "array", "items": map[string]any{"type": "string", "context": "example-mod.landmark"}},
 				// Fractional bounds on an integer round inward onto the input.
 				"ticks": map[string]any{"type": "integer", "exclusiveMinimum": 0.5, "maximum": 9.9},
 				// An optional object with a required child: untouched, it is
@@ -315,7 +321,13 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Errorf("item datalist = %q, want the context's entries", got)
 	}
 	if got := plugin.enumerated(); got != 1 {
-		t.Errorf("the plugin answered %d context.enumerate questions for one form, want 1", got)
+		t.Errorf("the plugin answered %d context.enumerate questions for one form, want 1: the item and owner fields share a context and the array items fetch nothing", got)
+	}
+	if got := evalString(`(function(){const i=document.querySelector('input[name="params.owner"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value).join(","):"no datalist"})()`); got != "AKM,Apple" {
+		t.Errorf("owner datalist = %q, want the context's entries over the player widget's", got)
+	}
+	if got := evalString(`document.querySelector('textarea[name="params.parts"]').closest("label").querySelector(".hint").textContent`); !strings.Contains(got, "members of context example-mod.landmark") {
+		t.Errorf("parts hint = %q, want the item context named", got)
 	}
 	if got := attribute(`input[name="params.ticks"]`, "min") + ".." + attribute(`input[name="params.ticks"]`, "max"); got != "1..9" {
 		t.Errorf("ticks bounds = %q, want 1..9 (fractional bounds rounded inward for an integer)", got)

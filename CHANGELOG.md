@@ -34,7 +34,9 @@ arrived, since those entries were written for one stream.
   (one declared custom context id or an array of them) whose enumerated entries a UI
   offers as the field's values, never enforced against a dispatch; a manifest whose
   annotation names an undeclared context, or sits on a non-string schema, is rejected at
-  the annotation's path. `spec/manifest.schema.json` carries the keyword and
+  the annotation's path (a null annotation reads as none), and a manifest declaring a
+  built-in context (`world`, `player`, `vehicle`, `object`) as its own is rejected at the
+  declaration, so the read can never be talked into enumerating one. `spec/manifest.schema.json` carries the keyword and
   `spec/openapi-admin.yaml` (0.10.0) the endpoint. The hub conformance suite gains
   `admin.contexts.enumerate` and `plugin.manifest.contextAnnotation`. The panel enumerates
   every context an action form draws on (its own custom context, every annotated param)

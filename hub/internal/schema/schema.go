@@ -218,7 +218,11 @@ func compile(node any, path string, depth int, faults *[]Fault) *Schema {
 			// author wants to hear about at publish. Whether each id is
 			// declared is the manifest validator's check (ContextRefs); the
 			// type requirement is checked once every keyword is read, since
-			// "context" sorts before "type".
+			// "context" sorts before "type". A JSON null reads as no
+			// annotation (section 6.4).
+			if value == nil {
+				continue
+			}
 			compiled.contexts = compileContextRefs(value, child, faults)
 		case "x-vyshka-widget":
 			// A UI hint, deliberately unconstrained (section 6.1): a widget

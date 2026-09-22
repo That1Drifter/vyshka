@@ -1408,14 +1408,16 @@ function contextRefsOf(schema) {
 }
 
 // schemaContextRefs collects every context id a params schema's annotations
-// name, so the form can fetch each enumeration once before it is built.
+// name on a field the form renders with suggestions, so each enumeration is
+// fetched once before the form is built. Array items are not walked: the
+// one-per-line form has no datalist to feed, so fetching for them would
+// cost latency and show nothing (arrayField says so in its hint instead).
 function schemaContextRefs(schema, found = new Set(), depth = 0) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 32) return found;
-  for (const id of contextRefsOf(schema)) found.add(id);
+  if (schema.type === 'string') for (const id of contextRefsOf(schema)) found.add(id);
   if (schema.properties && typeof schema.properties === 'object') {
     for (const child of Object.values(schema.properties)) schemaContextRefs(child, found, depth + 1);
   }
-  if (schema.items && typeof schema.items === 'object') schemaContextRefs(schema.items, found, depth + 1);
   return found;
 }
 
@@ -1468,7 +1470,16 @@ function stringField(schema, opts) {
   };
   let hint = describe(schema);
   let datalist = null;
-  if (widget === 'player') {
+  if (contextRefs.length > 0) {
+    // A field annotated with a custom context (section 6.1): its values
+    // are the referenceKeys of that context's enumeration (section 6.2),
+    // fetched before the form was built and offered as suggestions. The
+    // annotation names the data, so it wins over a widget hint beside it.
+    datalist = contextDatalist(contextRefs, opts.contextEntries);
+    if (datalist) attrs.list = datalist.id;
+    if (widget === 'itemlist') attrs.placeholder = 'item class name';
+    hint = contextHint(contextRefs, opts.contextEntries);
+  } else if (widget === 'player') {
     datalist = playerDatalist(opts.players);
     if (datalist) attrs.list = datalist.id;
     attrs.placeholder = 'platform player id';
@@ -1480,14 +1491,6 @@ function stringField(schema, opts) {
     if (datalist) attrs.list = datalist.id;
     attrs.placeholder = 'vehicle id';
     hint = 'vehicle id from the latest state.vehicles snapshot' + (datalist ? '; the vehicles in it are suggested' : '');
-  } else if (contextRefs.length > 0) {
-    // A field annotated with a custom context (section 6.1): its values
-    // are the referenceKeys of that context's enumeration (section 6.2),
-    // fetched before the form was built and offered as suggestions.
-    datalist = contextDatalist(contextRefs, opts.contextEntries);
-    if (datalist) attrs.list = datalist.id;
-    if (widget === 'itemlist') attrs.placeholder = 'item class name';
-    hint = contextHint(contextRefs, opts.contextEntries);
   } else if (widget === 'webhook') {
     attrs.inputmode = 'url';
     attrs.placeholder = 'https://';
@@ -1605,8 +1608,13 @@ function arrayField(schema, opts) {
     textarea.value = schema.default.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join('\n');
   }
   const kind = items.type ? items.type + ' items' : 'JSON items';
+  // Items annotated with a custom context are named in the hint: the
+  // one-per-line form has no datalist, so the members are not suggested
+  // here, and the operator is told where they come from instead.
+  const itemContexts = items.type === 'string' ? contextRefsOf(items) : [];
   const wrapped = wrap(opts, textarea, 'one value per line, ' + kind +
-    (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : ''));
+    (items.type === 'string' ? '; whitespace is kept, an empty line is not an item' : '') +
+    (itemContexts.length > 0 ? '; items are members of context ' + itemContexts.join(', ') + ' (not suggested in this form)' : ''));
   const initial = textarea.value;
   return {
     node: wrapped.node, setError: wrapped.setError,

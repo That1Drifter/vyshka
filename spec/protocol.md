@@ -698,7 +698,7 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
   through IEEE doubles somewhere, and a constant that rounds on the way would be enforced
   against a value its author never wrote, so hubs reject what they cannot compare exactly.
 - A string schema MAY carry a `context` annotation naming a custom context the manifest
-  declares (section 6.2), or a non-empty array of at most 16 of them: the values a UI
+  declares (section 6.2), or a non-empty array of at most 16 of them, none repeated: the values a UI
   offers for the field are the entries of those contexts (the `referenceKey` as the value,
   the `label` as what is shown), obtained by enumeration. It is an annotation, not a
   constraint: a hub MUST NOT validate a dispatched value against an enumeration, since an
@@ -706,7 +706,8 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
   to accept what it did not list. A hub MUST reject a manifest whose `context` annotation
   names a context the manifest does not declare, or sits on a schema whose `type` is not
   `string` (section 6.4): both are typos the author wants to hear about at publish, not a
-  dropdown that stays empty. `x-vyshka-widget` remains free-form beside it.
+  dropdown that stays empty. A JSON `null` reads as no annotation, as everywhere else
+  (section 6.4). `x-vyshka-widget` remains free-form beside it.
 - The hub MUST validate dispatch payloads against the schema **before** queueing, so
   schema-invalid input never reaches the game server.
 - `danger` is `none | warning | destructive`, advisory, for UI confirmation prompts.
@@ -839,7 +840,9 @@ reach the game server, so a keyword it accepted but did not enforce (`pattern`, 
 wave through exactly the input the mod author wrote the schema to exclude, with the mod
 trusting a guarantee nobody was providing. A manifest is also rejected when
 `manifestRevision` is missing or outside `[1, 2^53)`, an action `code` is missing or
-duplicated, a `context` annotation (section 6.1) names a context the manifest does not
+duplicated, a declared context `id` is one of the built-in contexts (`world`, `player`,
+`vehicle`, `object`: a manifest cannot declare those as its own, section 6.2), a `context`
+annotation (section 6.1) names a context the manifest does not
 declare or sits on a non-string schema, or a declared field exceeds the hub's length
 limits (counted in Unicode code points, the unit `maxLength` means in the companion
 schema). A JSON `null` where an

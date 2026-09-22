@@ -194,6 +194,8 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 			fault(path+".id", "id is required")
 		case tooLong(declared.ID, maxNamespaceLength):
 			fault(path+".id", "id is longer than %d characters", maxNamespaceLength)
+		case builtinContexts[declared.ID]:
+			fault(path+".id", "id %q names a built-in context, which a manifest cannot declare as its own (section 6.2)", declared.ID)
 		case contextIDs[declared.ID]:
 			fault(path+".id", "id %q appears more than once", declared.ID)
 		default:

@@ -147,7 +147,11 @@ var stages = []Stage{
 			// real hub it meets.
 			seenCodes := map[string]bool{}
 			declared := make(map[string]bool, len(manifest.Contexts))
-			for _, context := range manifest.Contexts {
+			for index, context := range manifest.Contexts {
+				switch context.ID {
+				case "world", "player", "vehicle", "object":
+					return fmt.Errorf("a hub would reject this manifest: contexts[%d].id names the built-in context %q, which a manifest cannot declare as its own (section 6.2)", index, context.ID)
+				}
 				declared[context.ID] = true
 			}
 			for index, action := range manifest.Actions {

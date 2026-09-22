@@ -42,8 +42,8 @@ type contextEnumerateBody struct {
 // can be handed back verbatim and whole; reason is raw because a JSON null
 // there reads as no reason, not as a type error (section 6.4).
 type contextEntriesBody struct {
-	RequestID string          `json:"requestId"`
-	Context   string          `json:"context"`
+	RequestID json.RawMessage `json:"requestId"`
+	Context   json.RawMessage `json:"context"`
 	Entries   json.RawMessage `json:"entries"`
 	Reason    json.RawMessage `json:"reason"`
 }
@@ -126,28 +126,31 @@ func validateContextEntries(e inboundEnvelope, now time.Time) preparedContextEnt
 		return utf8.RuneCountInString(value) > limit
 	}
 
-	if len(e.Body) > maxContextEntriesBytes {
-		// The requestId is still worth reading, so the waiter learns why its
-		// read failed; the body itself is not decoded past the header.
-		var header struct {
-			RequestID string `json:"requestId"`
-		}
-		_ = json.Unmarshal(e.Body, &header)
-		fault("", "a context.entries body is at most %d bytes, got %d", maxContextEntriesBytes, len(e.Body))
-		return preparedContextEntries{requestID: boundRequestID(header.RequestID), faults: faults}
-	}
+	// Every member is decoded raw and typed here one by one, so a reply
+	// whose context (say) is a number still yields its requestId: the
+	// reader waiting on it is then failed with the fault at once rather
+	// than left to time out on a reply the hub could not match.
 	var body contextEntriesBody
 	if len(e.Body) == 0 || json.Unmarshal(e.Body, &body) != nil {
 		fault("", "body does not match the context.entries shape")
 		return preparedContextEntries{faults: faults}
 	}
-	requestID := boundRequestID(body.RequestID)
+	var requestID string
+	if err := json.Unmarshal(body.RequestID, &requestID); err != nil {
+		requestID = ""
+	}
+	requestID = boundRequestID(requestID)
 	if requestID == "" {
 		fault("requestId", "requestId is required, the hub's own of at most %d characters", maxContextRequestID)
 		return preparedContextEntries{faults: faults}
 	}
-	if body.Context == "" || tooLong(body.Context, maxContextIDLength) {
-		fault("context", "context must echo the enumerated context id, at most %d characters", maxContextIDLength)
+	if len(e.Body) > maxContextEntriesBytes {
+		fault("", "a context.entries body is at most %d bytes, got %d", maxContextEntriesBytes, len(e.Body))
+		return preparedContextEntries{requestID: requestID, faults: faults}
+	}
+	var contextID string
+	if err := json.Unmarshal(body.Context, &contextID); err != nil || contextID == "" || tooLong(contextID, maxContextIDLength) {
+		fault("context", "context must echo the enumerated context id, a string of at most %d characters", maxContextIDLength)
 	}
 	if len(body.Entries) == 0 || string(body.Entries) == "null" {
 		fault("entries", "entries is required; an empty array is how a plugin says it has nothing to offer")
@@ -191,7 +194,7 @@ func validateContextEntries(e inboundEnvelope, now time.Time) preparedContextEnt
 	return preparedContextEntries{
 		requestID: requestID,
 		enumeration: &contextEnumeration{
-			Context:      body.Context,
+			Context:      contextID,
 			Entries:      body.Entries,
 			Reason:       reason,
 			EnumeratedAt: now,
@@ -274,7 +277,12 @@ func (e *enumerations) cached(key enumerationKey, now time.Time) *contextEnumera
 func (e *enumerations) join(key enumerationKey, now time.Time) (pending *pendingEnumeration, started bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if current := e.inflight[key]; current != nil && now.Before(current.deadline) {
+	// Every question past its deadline is completed and forgotten first,
+	// this key's included: a reader may have left before its own timer
+	// fired (a cancelled request), and nothing else would ever close a
+	// question nobody is waiting on.
+	e.sweep(now)
+	if current := e.inflight[key]; current != nil {
 		return current, false
 	}
 	pending = &pendingEnumeration{
@@ -283,15 +291,23 @@ func (e *enumerations) join(key enumerationKey, now time.Time) (pending *pending
 		deadline:  now.Add(e.timeout),
 		done:      make(chan struct{}),
 	}
-	// A pending past its deadline is replaced here rather than answered: the
-	// readers that waited on it have long since timed out, and its requestId
-	// stays registered only so a late reply is recognised as one.
-	if stale := e.inflight[key]; stale != nil {
-		delete(e.pending, stale.requestID)
-	}
 	e.pending[pending.requestID] = pending
 	e.inflight[key] = pending
 	return pending, true
+}
+
+// sweep completes every question whose deadline has passed with the
+// timeout, so a reader still on it is answered and its requestId stops
+// being one the hub is waiting on. The caller holds the lock.
+func (e *enumerations) sweep(now time.Time) {
+	for _, stale := range e.pending {
+		if now.Before(stale.deadline) {
+			continue
+		}
+		stale.err = errEnumerationTimeout
+		e.forget(stale)
+		close(stale.done)
+	}
 }
 
 // abandon fails a question that could not be asked, so anyone who joined it
@@ -328,6 +344,7 @@ func (e *enumerations) expire(pending *pendingEnumeration) {
 func (e *enumerations) deliver(serverID string, prepared preparedContextEntries, now time.Time) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.sweep(now)
 	pending := e.pending[prepared.requestID]
 	if pending == nil || pending.key.serverID != serverID {
 		return false
@@ -383,6 +400,12 @@ func (err *enumerationInvalidError) Error() string {
 	return "the plugin's context.entries reply was outside the bounds of section 6.2: " + err.faults[0].String()
 }
 
+// builtinContexts are the contexts every hub knows without a declaration
+// (spec section 6.2). Their members are the state snapshots of section 8.3,
+// so they are never enumerated, and a manifest may not declare one as its
+// own (section 6.4).
+var builtinContexts = map[string]bool{"world": true, "player": true, "vehicle": true, "object": true}
+
 // declaredContext reports whether a stored manifest declares a context id.
 func declaredContext(manifest json.RawMessage, contextID string) bool {
 	var body struct {
@@ -419,7 +442,7 @@ func (s *Server) handleEnumerateContext(w http.ResponseWriter, r *http.Request) 
 		s.writeInternalError(w, r, err)
 		return
 	}
-	if contextID == "" || utf8.RuneCountInString(contextID) > maxContextIDLength || !declaredContext(manifest.Body, contextID) {
+	if contextID == "" || utf8.RuneCountInString(contextID) > maxContextIDLength || builtinContexts[contextID] || !declaredContext(manifest.Body, contextID) {
 		writeError(w, http.StatusNotFound, codeNotFound,
 			"this server's manifest declares no context "+strconv.Quote(contextID)+"; the built-in contexts are read as state snapshots")
 		return

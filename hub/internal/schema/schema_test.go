@@ -54,6 +54,11 @@ func TestCompileContextAnnotation(t *testing.T) {
 		}
 	}
 
+	// A null annotation is no annotation (section 6.4), whatever the type.
+	if nulled := mustCompile(t, `{"type": "integer", "context": null}`); len(nulled.ContextRefs()) != 0 {
+		t.Errorf("a null context annotation produced refs %+v", nulled.ContextRefs())
+	}
+
 	// The annotation never constrains the value: anything the type admits
 	// is accepted, listed or not (section 6.1).
 	if faults := compiled.Validate(json.RawMessage(`{"item": "NotInAnyCatalog", "parts": ["x"]}`)); len(faults) > 0 {

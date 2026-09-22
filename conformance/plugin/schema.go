@@ -239,6 +239,10 @@ func validateSubset(schema map[string]any, path string, declared map[string]bool
 				return err
 			}
 		case "context":
+			if value == nil {
+				// A JSON null reads as no annotation (section 6.4).
+				continue
+			}
 			if err := validateContextAnnotation(value, path, declared); err != nil {
 				return err
 			}

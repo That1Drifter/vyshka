@@ -90,8 +90,11 @@ management views).
   the text, and their hint says which contexts fed them and how many entries each has. A
   context the hub could not enumerate (the plugin did not answer, the link is down) leaves
   a plain input with the error code in the hint; a value typed outside the list is sent as
-  typed, since the annotation never constrains the data model. The hub caches an answer
-  briefly (10 s by default), so reopening a form within that window asks the plugin
+  typed, since the annotation never constrains the data model. The annotation wins over a
+  widget hint beside it (a `player` widget with a `context` suggests the context's
+  entries). Array items annotated with a context are named in the array's hint but not
+  suggested or fetched: the one-per-line form has no datalist to feed. The hub caches an
+  answer briefly (10 s by default), so reopening a form within that window asks the plugin
   nothing.
 - **Danger** (`warning`, `destructive`) requires an explicit confirmation checkbox before the
   Dispatch button does anything.

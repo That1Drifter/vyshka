@@ -290,7 +290,9 @@ var contextChecks = []Check{
 			}
 
 			// Undeclared, and on a non-string schema: each rejected at the
-			// annotation's path, the stored manifest untouched.
+			// annotation's path, the stored manifest untouched. A manifest
+			// declaring a built-in context as its own is rejected too, at
+			// the declaration.
 			undeclared := contextManifest(2)
 			undeclared["contexts"] = []any{}
 			nonString := contextManifest(3)
@@ -298,7 +300,12 @@ var contextChecks = []Check{
 				"type":       "object",
 				"properties": map[string]any{"count": map[string]any{"type": "integer", "context": "example-mod.territory"}},
 			}
-			for _, invalid := range []map[string]any{undeclared, nonString} {
+			builtin := contextManifest(4)
+			builtin["contexts"] = []map[string]any{
+				{"id": "example-mod.territory", "name": "Territory", "namespace": "example-mod"},
+				{"id": "player", "name": "Players", "namespace": "example-mod"},
+			}
+			for _, invalid := range []map[string]any{undeclared, nonString, builtin} {
 				published := plugin.nextOutbound("manifest.publish", invalid)
 				response, err := plugin.pollAndAck(ctx, published)
 				if err != nil {
@@ -332,12 +339,12 @@ var contextChecks = []Check{
 				}
 				named := false
 				for _, fault := range reject.Errors {
-					if strings.HasSuffix(fault.Path, ".context") {
+					if strings.HasSuffix(fault.Path, ".context") || strings.HasPrefix(fault.Path, "contexts[") {
 						named = true
 					}
 				}
 				if !named {
-					return fmt.Errorf("manifest.reject %s names no fault at a .context path; the annotation is what was wrong", truncate(rejects[0].Body))
+					return fmt.Errorf("manifest.reject %s names no fault at a .context path or a contexts[] declaration; that is what was wrong", truncate(rejects[0].Body))
 				}
 			}
 			record, err = env.storedManifest(ctx, serverID)
