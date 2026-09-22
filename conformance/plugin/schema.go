@@ -106,13 +106,23 @@ func synthesizeValue(schema map[string]any) any {
 	case "array":
 		// The shortest array the schema admits: empty, then one item more at
 		// a time, past however many arrays the schema excludes.
+		// The item is synthesized once, and only when the empty array will
+		// not do; one its own schema refuses cannot make a longer array
+		// valid, so the search stops there rather than growing.
 		items, _ := schema["items"].(map[string]any)
 		candidate := []any{}
-		for length := 0; length <= exclusionCount(schema)+1; length++ {
+		if satisfies(schema, candidate) {
+			return candidate
+		}
+		item := synthesizeValue(items)
+		if items != nil && !satisfies(items, item) {
+			return candidate
+		}
+		for length := 1; length <= exclusionCount(schema)+1; length++ {
+			candidate = append(append([]any{}, candidate...), item)
 			if satisfies(schema, candidate) {
 				return candidate
 			}
-			candidate = append(append([]any{}, candidate...), synthesizeValue(items))
 		}
 		return []any{}
 	case "string":

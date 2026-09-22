@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestSynthesizeStaysInsideTheSchemaWhenStepping(t *testing.T) {
@@ -111,6 +112,30 @@ func TestSynthesizeAppliesKeywordsWithoutAType(t *testing.T) {
 		if string(encoded) != tc.want {
 			t.Errorf("%s: synthesized %s, want %s", name, encoded, tc.want)
 		}
+	}
+}
+
+// Round six's case: twenty nested arrays over an item nothing satisfies.
+// Growing each array by re-synthesizing its item cost 3^20 calls; the
+// untyped v still admits a number, which synthesis must reach promptly.
+func TestSynthesizeNestedImpossibleArraysFinishPromptly(t *testing.T) {
+	leaf := map[string]any{"type": "boolean", "not": map[string]any{"enum": []any{true, false}}}
+	nested := leaf
+	for i := 0; i < 20; i++ {
+		nested = map[string]any{"type": "array", "items": nested, "not": map[string]any{"enum": []any{[]any{}}}}
+	}
+	schema := map[string]any{"type": "object", "required": []any{"v"}, "properties": map[string]any{
+		"v": map[string]any{"required": []any{"x"}, "properties": map[string]any{"x": nested}}}}
+	done := make(chan map[string]any, 1)
+	go func() { done <- synthesizeParams(schema) }()
+	select {
+	case params := <-done:
+		encoded, _ := json.Marshal(params)
+		if string(encoded) != `{"v":1}` {
+			t.Fatalf("synthesized %s, want {\"v\":1}", encoded)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("synthesis did not finish within 5 s")
 	}
 }
 
