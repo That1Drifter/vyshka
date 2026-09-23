@@ -86,16 +86,26 @@ func newE2EHarness(t *testing.T, mapsDir string) *e2eHarness {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
 
+	// Two bounds apply to the browser's start alone, and chromedp's defaults
+	// for both are too short on a CI runner where every package's tests run
+	// at once: 20 s for the browser to print its DevTools address and 10 s to
+	// dial it. A whole start that takes 0.25 s idle took 12.4 to 20.5 s beside
+	// a CPU burner, one CI start lost the first bound (issue #125), and a
+	// heavier burner lost the second. Neither bounds anything the panel does.
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, append(
-		chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(browser))...)
+		chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(browser),
+		chromedp.WSURLReadTimeout(90*time.Second))...)
 	t.Cleanup(cancelAlloc)
-	page, cancelPage := chromedp.NewContext(allocCtx)
+	page, cancelPage := chromedp.NewContext(allocCtx,
+		chromedp.WithBrowserOption(chromedp.WithDialTimeout(90*time.Second)))
 	t.Cleanup(cancelPage)
 	// The browser's lifetime is tied to the context of the first Run, so it
 	// is started here on the tab context rather than under a step's deadline.
+	started := time.Now()
 	if err := chromedp.Run(page); err != nil {
-		t.Fatalf("start %s: %v", browser, err)
+		t.Fatalf("start %s after %v: %v", browser, time.Since(started).Round(time.Millisecond), err)
 	}
+	t.Logf("started %s in %v", browser, time.Since(started).Round(time.Millisecond))
 
 	h := &e2eHarness{t: t, Hub: server, web: web, Ctx: ctx, Page: page}
 	// Anything the page logs or throws is kept for the failure report, which

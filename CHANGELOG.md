@@ -299,6 +299,20 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-23: the identity backfill test waits past the millisecond of the boundary it arms
+  before ingesting the event that must lie beyond it (issue #124), reading that
+  millisecond from the boundary id itself. Ids minted in one millisecond sort arbitrarily,
+  so the later event sorted below the boundary about one run in six and the walk counted
+  seven events; 600 runs now pass where 300 lost 48. The same tie in production is
+  harmless: an event stored after the migration in the millisecond of its boundary was
+  indexed at ingest, and the walk's second insert of its rows is absorbed by the index's
+  primary key.
+- 2026-09-23: the panel's browser tests give the browser 90 s to print its DevTools
+  address and 90 s to accept the connection, up from chromedp's 20 s and 10 s (issue
+  #125). One CI start lost the first bound while every package's tests ran at once;
+  locally a whole start that takes 0.25 s idle took 12.4 to 20.5 s beside a CPU burner,
+  and a heavier burner lost the second bound. Both bound the browser's start alone. The harness
+  now logs how long the start took, and a failed start says how long it waited.
 - 2026-09-22: snapshot member names are matched exactly (issue #78's review found it).
   The hub read a `state.*` body, its entries, and a player's identity into Go structs,
   whose decoding matches names without regard to case, so `{"Players": []}` passed for a

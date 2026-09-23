@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/That1Drifter/vyshka/hub/internal/id"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -50,7 +51,19 @@ func TestBackfillIndexesEventsStoredBeforeTheIndex(t *testing.T) {
 		t.Fatalf("arm the backfill: %v", err)
 	}
 	// An event after the migration is indexed at ingest and lies past the
-	// walk's end.
+	// walk's end. Ids minted in one millisecond sort arbitrarily among
+	// themselves, so an id minted in the boundary's millisecond can sort below
+	// it and the walk would read it too (the ingest index absorbs that in
+	// production, where the count is not asserted). The clock is first let
+	// past that millisecond, read from the boundary id itself: an id's first
+	// ten characters are its timestamp.
+	var through string
+	if err := st.DB().QueryRowContext(ctx, `SELECT through_id FROM event_identity_backfill`).Scan(&through); err != nil {
+		t.Fatalf("read the armed boundary: %v", err)
+	}
+	for id.New()[:10] <= through[:10] {
+		time.Sleep(100 * time.Microsecond)
+	}
 	later := event("core.player.disconnect", base.Add(20*time.Second), `{"player":{"platform":"steam","id":"A"}}`)
 	later.Identities = playerOnly(later.Data)
 	ingest(t, st, session.ID, later)
