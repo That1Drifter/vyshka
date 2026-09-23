@@ -7,7 +7,8 @@
 // and watching the result is GET /actions/{id}, the same calls curl makes.
 // The event feed is GET /servers/{id}/events (protocol section 8.5), paged
 // with the hub's own cursor. A player's profile, one identity across every
-// server (section 8.6), is players.js. The live map is GET /servers/{id}/state/players
+// server (section 8.6), is players.js, and the installation ban list (section
+// 13) is bans.js. The live map is GET /servers/{id}/state/players
 // (section 8.3) drawn over a basemap the hub serves from its maps directory,
 // with the map widget itself in map.js.
 //
@@ -28,6 +29,7 @@ import {
   viewKVNamespaces, viewTokens, viewWebhook, viewWebhooks,
 } from './manage.js';
 import { viewPlayer, viewPlayers } from './players.js';
+import { serverBansDetail, viewBans } from './bans.js';
 
 const SERVER_LIST_REFRESH_MS = 5000;
 const ACTION_POLL_MS = 1000;
@@ -130,6 +132,11 @@ function parseRoute() {
     // an id carrying a slash arrives whole.
     return { view: 'player', section: 'players', platform: parts[1], id: parts[2] };
   }
+  if (parts[0] === 'bans' && parts.length === 1) {
+    // The installation ban list (section 13); ?state=all adds the lifted
+    // and the expired, and lives in the route like any other filter.
+    return { view: 'bans', section: 'bans', all: query.get('state') === 'all' };
+  }
   if (parts[0] === 'kv' && parts.length === 2) {
     return { view: 'kv-keys', section: 'kv', namespace: parts[1], prefix: query.get('prefix') || '' };
   }
@@ -173,6 +180,8 @@ async function render() {
       await viewPlayers(app, route, seq);
     } else if (route.view === 'player') {
       await viewPlayer(app, route, seq);
+    } else if (route.view === 'bans') {
+      await viewBans(app, route, seq);
     } else {
       await viewServers(app, seq);
     }
@@ -342,7 +351,10 @@ async function loadServerAndManifest(serverId) {
   return { server, manifest };
 }
 
-function serverSummary(server) {
+// serverSummary is the server page's record. Its installation bans line
+// (section 13) reads the list's current revision after the page is drawn, so
+// it takes the render sequence to drop a late answer.
+function serverSummary(server, seq) {
   const session = server.session;
   return el('div', { class: 'card' },
     el('h1', {}, server.name, ' ', badge(server.linkState || 'unknown', server.linkState)),
@@ -355,6 +367,7 @@ function serverSummary(server) {
         ? 'live, polls held up to ' + session.pollTimeoutSeconds + ' s'
         : 'none'),
       el('dt', {}, 'Queued for delivery'), el('dd', {}, String(server.pendingEnvelopeCount || 0)),
+      el('dt', {}, 'Installation bans'), serverBansDetail(server, seq),
       el('dt', {}, 'Server id'), el('dd', { class: 'mono' }, server.id)));
 }
 
@@ -372,7 +385,7 @@ async function viewServer(app, route, seq) {
   }
   setCrumbs([{ label: 'Servers', href: '#/' }, { label: server.name }]);
   clear(app);
-  app.append(serverSummary(server));
+  app.append(serverSummary(server, seq));
   app.append(el('p', { class: 'view-links' },
     el('a', { class: 'button', href: mapHref(server.id), id: 'map-link' }, 'Live map'),
     ' ',

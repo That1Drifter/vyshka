@@ -643,7 +643,7 @@ export async function viewTokens(app, route, seq) {
     EXPIRY_CHOICES.map((choice) => el('option', { value: choice.value }, choice.label)));
   const customExpiry = numberInput('token-expiry-seconds', { min: '1', placeholder: 'seconds', hidden: true });
   const binding = serverPicker('token-servers', serverList.servers, serverList.allowed, [],
-    'none ticked mints an unbound token, whose grants apply to every server; ticked servers bind every grant to those servers (protocol section 10.1). A bound token cannot carry admin or webhooks:manage, and a kv:rw grant stays installation-wide');
+    'none ticked mints an unbound token, whose grants apply to every server; ticked servers bind every grant to those servers (protocol section 10.1). A bound token cannot carry admin, webhooks:manage, or bans:manage, and the binding does not narrow kv:rw, notes:read, notes:write, or bans:read, which stay installation-wide');
   const warning = el('p', { class: 'notice danger', id: 'dispatch-warning', hidden: true },
     'This list holds an unnarrowed actions:dispatch, which can dispatch anything any plugin declares, on every server the token reaches (every server unless the picker below binds it; protocol section 10.1 asks a UI to warn). Narrow it to {namespace}.* unless you mean it.');
   const bundleNote = el('p', { class: 'muted', id: 'bundle-note' },
