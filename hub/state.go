@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ const (
 	envelopeTypeStatePlayers  = "state.players"
 	envelopeTypeStateVehicles = "state.vehicles"
 	envelopeTypeStateEntities = "state.entities"
+	envelopeTypeStateWorld    = "state.world"
 	envelopeTypeStateReject   = "state.reject"
 )
 
@@ -41,57 +43,69 @@ const (
 	maxStateHistoryPage     = 100
 )
 
-// stateListField maps each state envelope type to the list its body must
-// carry. Membership here is also what makes a type a snapshot at all: any
-// other state.* type takes the forward-compatibility path of section 4, acked
-// and ignored.
+// stateListField maps each state envelope type to the field its body must
+// carry: a list for three of them, the one world object for state.world.
+// Membership here is also what makes a type a snapshot at all: any other
+// state.* type takes the forward-compatibility path of section 4, acked and
+// ignored.
 var stateListField = map[string]string{
 	envelopeTypeStatePlayers:  "players",
 	envelopeTypeStateVehicles: "vehicles",
 	envelopeTypeStateEntities: "entities",
+	envelopeTypeStateWorld:    "world",
 }
 
+// worldTimeForm is the shape of a world's time (section 8.3): the game's
+// calendar with no offset, to the minute or to the second. The form is
+// checked here and the calendar by time.Parse, whose hour field alone would
+// take a single digit.
+var worldTimeForm = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$`)
+
 // stateTypeFor resolves the Admin API's {stateType} path value to the
-// envelope family's list name, which is also what the store keys rows by.
+// envelope family's field name, which is also what the store keys rows by.
 func stateTypeFor(pathValue string) (string, bool) {
 	switch pathValue {
-	case "players", "vehicles", "entities":
+	case "players", "vehicles", "entities", "world":
 		return pathValue, true
 	}
 	return "", false
 }
 
-// snapshotBody is a state.* body as the plugin sends it. Exactly one of the
-// three lists is consulted, by envelope type, so all three are raw here and
-// decoded lazily: a `state.players` body carrying a `vehicles` field of any
-// shape at all is a body with an unknown field, which section 2.1 obliges the
-// hub to tolerate, and a typed field would fail the whole unmarshal before
-// that rule could apply.
-type snapshotBody struct {
-	CapturedAt json.RawMessage `json:"capturedAt"`
-	Players    json.RawMessage `json:"players"`
-	Vehicles   json.RawMessage `json:"vehicles"`
-	Entities   json.RawMessage `json:"entities"`
+// exactFields decodes a JSON object into its members by their exact names, or
+// reports that raw is not an object. A snapshot is read this way at every
+// level rather than into structs, because encoding/json matches struct fields
+// case-insensitively: `{"World": {}}` would pass for a body carrying `world`,
+// and an unknown `WORLD` or `ID` after the real member would overwrite it.
+// Section 2.1 tolerates unknown members; it never lets one stand in for, or
+// replace, a member the protocol names. Only the field the envelope type owns
+// is consulted, so a `state.players` body carrying a `vehicles` field of any
+// shape at all is a body with an unknown field and nothing more.
+func exactFields(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, false
+	}
+	return fields, true
 }
 
-// playerRef is the platform-qualified identity of spec section 8.2.
-type playerRef struct {
-	Platform string `json:"platform"`
-	ID       string `json:"id"`
+// present reports whether a member is there and not null; a JSON null reads
+// as the member being absent (section 6.4).
+func present(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
 }
 
-type playerEntry struct {
-	Player   *playerRef      `json:"player"`
-	Name     string          `json:"name"`
-	Position json.RawMessage `json:"position"`
-	Data     json.RawMessage `json:"data"`
-}
-
-type snapshotEntry struct {
-	ID       string          `json:"id"`
-	Kind     string          `json:"kind"`
-	Position json.RawMessage `json:"position"`
-	Data     json.RawMessage `json:"data"`
+// optionalString reads a string member: "" when absent or null, false when
+// present and not a string.
+func optionalString(fields map[string]json.RawMessage, key string) (string, bool) {
+	raw := fields[key]
+	if !present(raw) {
+		return "", true
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 // preparedSnapshot is one state.* envelope after body validation: either the
@@ -141,10 +155,10 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		return nil, []schema.Fault{{Path: "", Message: fmt.Sprintf(
 			"a snapshot body is at most %d bytes, got %d", maxSnapshotBytes, len(e.Body))}}
 	}
-	var body snapshotBody
-	if err := json.Unmarshal(e.Body, &body); err != nil {
+	body, ok := exactFields(e.Body)
+	if !ok {
 		return nil, []schema.Fault{{Path: "",
-			Message: "body does not match the snapshot shape: " + err.Error()}}
+			Message: "body does not match the snapshot shape: it must be a JSON object"}}
 	}
 
 	var faults []schema.Fault
@@ -155,69 +169,62 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		return utf8.RuneCountInString(value) > limit
 	}
 
-	// Only the list this envelope type owns is decoded. A JSON null reads as
+	// Only the field this envelope type owns is decoded. A JSON null reads as
 	// the field being absent (section 6.4), which for the one required field
 	// means the same refusal as leaving it out.
-	rawList := body.Players
-	switch e.Type {
-	case envelopeTypeStateVehicles:
-		rawList = body.Vehicles
-	case envelopeTypeStateEntities:
-		rawList = body.Entities
-	}
-	if len(rawList) == 0 || string(rawList) == "null" {
+	rawList := body[listField]
+	if !present(rawList) {
 		return nil, []schema.Fault{{Path: listField, Message: listField + " is required"}}
 	}
 
-	switch e.Type {
-	case envelopeTypeStatePlayers:
-		var players []playerEntry
-		if err := json.Unmarshal(rawList, &players); err != nil {
+	if e.Type == envelopeTypeStateWorld {
+		faults = append(faults, validateWorld(rawList, listField)...)
+	} else {
+		var entries []json.RawMessage
+		if err := json.Unmarshal(rawList, &entries); err != nil {
 			return nil, []schema.Fault{{Path: listField,
-				Message: listField + " does not match the snapshot entry shape: " + err.Error()}}
+				Message: listField + " does not match the snapshot shape: it must be a list"}}
 		}
-		if len(players) > maxSnapshotEntries {
+		if len(entries) > maxSnapshotEntries {
 			return nil, []schema.Fault{{Path: listField, Message: fmt.Sprintf(
-				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, len(players))}}
+				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, len(entries))}}
 		}
-		for i, entry := range players {
+		for i, raw := range entries {
 			path := fmt.Sprintf("%s[%d]", listField, i)
-			switch {
-			case entry.Player == nil:
+			entry, ok := exactFields(raw)
+			if !ok {
+				fault(path, "an entry must be a JSON object")
+				continue
+			}
+			if e.Type == envelopeTypeStatePlayers {
 				// The one field enforced deeply: identity is what lets a
 				// reader correlate this entry with events and actions.
-				fault(path+".player", "player is required, the platform-qualified identity of section 8.2")
-			case entry.Player.Platform == "" || tooLong(entry.Player.Platform, maxPlatformLength):
-				fault(path+".player.platform", "platform must be a non-empty string of at most %d characters", maxPlatformLength)
-			case entry.Player.ID == "" || tooLong(entry.Player.ID, maxPlayerIDLength):
-				fault(path+".player.id", "id must be a non-empty string of at most %d characters", maxPlayerIDLength)
+				player, isObject := exactFields(entry["player"])
+				platform, platformOK := optionalString(player, "platform")
+				id, idOK := optionalString(player, "id")
+				switch {
+				case !present(entry["player"]):
+					fault(path+".player", "player is required, the platform-qualified identity of section 8.2")
+				case !isObject:
+					fault(path+".player", "player must be an object, the platform-qualified identity of section 8.2")
+				case !platformOK || platform == "" || tooLong(platform, maxPlatformLength):
+					fault(path+".player.platform", "platform must be a non-empty string of at most %d characters", maxPlatformLength)
+				case !idOK || id == "" || tooLong(id, maxPlayerIDLength):
+					fault(path+".player.id", "id must be a non-empty string of at most %d characters", maxPlayerIDLength)
+				}
+				if name, ok := optionalString(entry, "name"); !ok || tooLong(name, maxEntryNameLength) {
+					fault(path+".name", "name must be a string of at most %d characters", maxEntryNameLength)
+				}
+			} else {
+				if id, ok := optionalString(entry, "id"); !ok || id == "" || tooLong(id, maxEntryIDLength) {
+					fault(path+".id", "id must be a non-empty string of at most %d characters", maxEntryIDLength)
+				}
+				if kind, ok := optionalString(entry, "kind"); !ok || tooLong(kind, maxEntryKindLength) {
+					fault(path+".kind", "kind must be a string of at most %d characters", maxEntryKindLength)
+				}
 			}
-			if tooLong(entry.Name, maxEntryNameLength) {
-				fault(path+".name", "name is longer than %d characters", maxEntryNameLength)
-			}
-			faults = append(faults, validatePosition(entry.Position, path+".position")...)
-			faults = append(faults, validateEntryData(entry.Data, path+".data")...)
-		}
-	default:
-		var items []snapshotEntry
-		if err := json.Unmarshal(rawList, &items); err != nil {
-			return nil, []schema.Fault{{Path: listField,
-				Message: listField + " does not match the snapshot entry shape: " + err.Error()}}
-		}
-		if len(items) > maxSnapshotEntries {
-			return nil, []schema.Fault{{Path: listField, Message: fmt.Sprintf(
-				"a snapshot carries at most %d entries, got %d", maxSnapshotEntries, len(items))}}
-		}
-		for i, entry := range items {
-			path := fmt.Sprintf("%s[%d]", listField, i)
-			if entry.ID == "" || tooLong(entry.ID, maxEntryIDLength) {
-				fault(path+".id", "id must be a non-empty string of at most %d characters", maxEntryIDLength)
-			}
-			if tooLong(entry.Kind, maxEntryKindLength) {
-				fault(path+".kind", "kind is longer than %d characters", maxEntryKindLength)
-			}
-			faults = append(faults, validatePosition(entry.Position, path+".position")...)
-			faults = append(faults, validateEntryData(entry.Data, path+".data")...)
+			faults = append(faults, validatePosition(entry["position"], path+".position")...)
+			faults = append(faults, validateEntryData(entry["data"], path+".data")...)
 		}
 	}
 
@@ -228,7 +235,7 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 	// capturedAt falls back through the envelope's ts to receipt time, each
 	// with the tolerance of section 4: a wrong clock costs precision, never
 	// the snapshot.
-	capturedAt := eventTimestamp(body.CapturedAt, now)
+	capturedAt := eventTimestamp(body["capturedAt"], now)
 	if capturedAt == nil {
 		capturedAt = eventTimestamp(e.TS, now)
 	}
@@ -240,6 +247,39 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		Retention:    s.cfg.StateSnapshotRetention,
 		HistoryDepth: s.cfg.StateHistoryDepth,
 	}, nil
+}
+
+// validateWorld checks the one object of a state.world body: an object, not
+// a list, whose time, when present, is the game's calendar in the form
+// section 8.3 names, and whose data is an object or nothing.
+func validateWorld(raw json.RawMessage, path string) []schema.Fault {
+	var world map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &world); err != nil {
+		return []schema.Fault{{Path: path,
+			Message: "world must be a JSON object: a server has one world, not a list of them"}}
+	}
+	var faults []schema.Fault
+	if rawTime, present := world["time"]; present && string(rawTime) != "null" {
+		var value string
+		if err := json.Unmarshal(rawTime, &value); err != nil || !validWorldTime(value) {
+			faults = append(faults, schema.Fault{Path: path + ".time",
+				Message: "time must be the game's clock as YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS, a valid date and time of day with no offset"})
+		}
+	}
+	return append(faults, validateEntryData(world["data"], path+".data")...)
+}
+
+// validWorldTime reports whether value is a world time of section 8.3.
+func validWorldTime(value string) bool {
+	if !worldTimeForm.MatchString(value) {
+		return false
+	}
+	layout := "2006-01-02T15:04"
+	if len(value) > len(layout) {
+		layout = "2006-01-02T15:04:05"
+	}
+	_, err := time.Parse(layout, value)
+	return err == nil
 }
 
 // validatePosition checks the optional position field: an array of two or
@@ -334,7 +374,7 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"state type must be players, vehicles, or entities")
+			"state type must be players, vehicles, entities, or world")
 		return
 	}
 	server, ok := s.lookupServer(w, r)
@@ -361,7 +401,7 @@ func (s *Server) handleGetStateHistory(w http.ResponseWriter, r *http.Request) {
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"state type must be players, vehicles, or entities")
+			"state type must be players, vehicles, entities, or world")
 		return
 	}
 	limit, ok := parseLimitParam(w, r.URL.Query().Get("limit"),

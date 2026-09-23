@@ -19,6 +19,26 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-22: `state.world` (issue #78, protocol draft 0.30, section 8.3): a fourth
+  snapshot type, the one that is not a list, carrying a server's one world as an object
+  with an optional `time` (the game's clock, `YYYY-MM-DDTHH:MM` or with seconds, a valid
+  calendar date with no offset, never compared with a real clock) and optional `data`.
+  The hub validates it like the lists (an absent, null, or list-shaped `world`, a `time`
+  of any other form, or a `data` that is not an object rejects it whole with
+  `state.reject`), keeps it latest-plus-history like the others, and serves it at
+  `GET /api/v1/servers/{id}/state/world`. `spec/state.schema.json` gains `stateWorld`
+  and the Admin API's `stateType` gains `world`. The hub conformance suite gains
+  `state.world` (refusals acked and stored nowhere, the valid world verbatim, an empty
+  object replacing it), and the plugin suite grades a `state.world` body the way a hub
+  does. The hub unit test and the plugin suite's test were each shown to fail with the
+  world validation removed.
+- 2026-09-22: the panel shows the world (issue #78): a card on the server page, and above
+  the form of every world-context action, with the game's clock as the plugin wrote it,
+  each extra on a row of its own, and the snapshot's age, read once per view with a
+  Reload button. No snapshot yet and a token without the read are each said on the card,
+  not failed. The browser test covers both states and was shown to fail without the card
+  above the form.
+
 - 2026-09-22: the live map badges a vehicle's damage state (issue #77): a vehicle whose
   `data.state` is a string other than `intact` (the DayZ plugin's `destroyed` or
   `exploded`) carries it as a badge beside its kind and leaves it out of the extras, as
@@ -163,6 +183,13 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-22: snapshot member names are matched exactly (issue #78's review found it).
+  The hub read a `state.*` body, its entries, and a player's identity into Go structs,
+  whose decoding matches names without regard to case, so `{"Players": []}` passed for a
+  body carrying `players` and an unknown `ID` after an entry's `id` replaced it. Every
+  level is now read by exact name, as the protocol, the schema, and the plugin suite
+  already did; an unknown member spelt like a known one is tolerated and nothing more.
+  The new hub test fails against the old decoding.
 - 2026-09-22: a number nested inside an `enum` member (an object or array member) beyond
   ±2^53 was accepted and then compared as its rounded value; the ±2^53 rule of protocol
   section 6.1 now applies at every depth of an `enum` or `not` member, and the plugin
@@ -210,6 +237,39 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 ### [Unreleased]
 
 #### Added
+
+- 2026-09-22: the world (issue #78, plugin 0.8.0, protocol draft 0.30). The plugin
+  publishes `state.world` with each poll like the other snapshots: the game's clock as
+  `time`, and in `data` whether the plugin stopped the clock (`timeFrozen`), `night`, the
+  weather's behaviour (`weatherMode`), the overcast, fog, rain, and snowfall, the wind's
+  speed, direction, and maximum, and the dynamic volumetric fog where the world enables it.
+  `vyshka.weather` (world, warning) sets any of the engine's weather knobs in one
+  dispatch, each optional (the four phenomena, the wind, the dynamic fog, the storm, the
+  rain and snowfall thresholds, a linear transition, a hold time, and a mode: `world`, the
+  map's own controller, `engine`, the engine's own weather, or `hold`, nothing changing
+  it), starting from a fixed `preset` (`clear`, `cloudy`, `storm`) or from a record under
+  the new `vyshka.weather` key/value namespace (`name`, annotated with `kvNamespace`),
+  with the dispatch's own knobs winning. A value outside a phenomenon's limits (the
+  wind's included) widens them and says so. In `world` mode a dispatch holds back every
+  phenomenon's next forecast to its hold, because the map's controller re-applies its
+  own settings whenever any phenomenon falls due; the result notes when the map takes
+  over, and rain or snow the engine will stop outside its threshold. A stored preset
+  with a member that is not a knob, at any level, is refused. `vyshka.time.freeze` (world, warning) stops the
+  server's clock and starts it again. `spikes/dayz-world-clock` measured the engine side
+  first: the time multiplier at 0 stops the clock and a time set while stopped holds; a
+  value set under the map's controller lasts its hold time, after which the controller
+  re-applies its own storm, thresholds, wind maximum, and snowfall limits (Chernarus
+  closes snowfall at once); with the update frozen every value holds, the wind included,
+  except rain or snow outside its threshold; the engine's own weather skips the map's
+  controller. The live run found the engine's `string.Split` handling one-character
+  separators only, which had the stored-preset check refuse known knobs; the list is now
+  spelt out. Verified live on DayZ 1.29 against a local hub, no client: the clock held
+  for two minutes frozen and ran again, and a noon set while frozen held; the storm
+  preset, a stored preset with a knob over it, snow widened past Chernarus's closed
+  limits, and the rain note all behaved; a `world`-mode value stood its 45 s hold before
+  the map took the wind maximum back; a restart came back in `world` mode with the clock
+  running; plugin conformance passed 17/17 with 28 actions. Whether a connected client's
+  clock stops with the server's is not measured.
 
 - 2026-09-22: vehicles 2 (issue #77, plugin 0.8.0, no protocol change). Each
   `state.vehicles` entry carries `data.state` (`intact`, `destroyed`, or `exploded`, a

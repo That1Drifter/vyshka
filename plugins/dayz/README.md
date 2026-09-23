@@ -3,12 +3,12 @@
 The reference game plugin for DayZ: a server-side Enforce Script mod that enrolls a DayZ
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player and vehicle events a feed
-needs and the `state.players`, `state.vehicles`, and `state.entities` snapshots a live map
-needs. It ships twenty-six built-in actions (heal, vitals, stop bleeding, dry, broken legs,
-bloody hands, flags, kick, ban, unban, message, broadcast, teleport, spawn, set time,
-unstuck, refuel, and repair a vehicle, delete destroyed vehicles, read, strip, and clear a
-player's inventory, and apply and capture a loadout, teleport to a location, and spawn a
-vehicle preset), so an
+needs and the `state.players`, `state.vehicles`, `state.entities`, and `state.world`
+snapshots a live map and a weather form need. It ships twenty-eight built-in actions (heal,
+vitals, stop bleeding, dry, broken legs, bloody hands, flags, kick, ban, unban, message,
+broadcast, teleport, spawn, set time, freeze time, set the weather, unstuck, refuel, and
+repair a vehicle, delete destroyed vehicles, read, strip, and clear a player's inventory,
+and apply and capture a loadout, teleport to a location, and spawn a vehicle preset), so an
 operator can moderate a server, patch a player up, and move things around it from the panel or a `curl` against the hub, and a surface
 other server mods build on ("Writing a mod against the plugin" below, with a sample under
 `sample/`). Protocol: `spec/protocol.md`.
@@ -74,8 +74,8 @@ server-side, clients never load it, so nothing needs a Workshop id to pair again
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60). `game` is optional
    and defaults to `dayz`. `snapshotIntervalSeconds` is optional (default 10, honored between
-   2 and 600; `0` turns the `state.players`, `state.vehicles`, and `state.entities`
-   snapshots off).
+   2 and 600; `0` turns the `state.players`, `state.vehicles`, `state.entities`, and
+   `state.world` snapshots off).
    `fpsIntervalSeconds` is optional
    (default 60, honored between 5 and 3600; `0` turns `core.server.fps` samples off).
    `spawnBlocklist` is optional: an array of class names `vyshka.spawn` refuses to create
@@ -111,7 +111,7 @@ The `referenceKey` of a player-context action is the player's plain Steam64 id, 
 identity the telemetry publishes; that of a vehicle-context action is the vehicle's `id`
 from the latest `state.vehicles` snapshot. The manifest (declaring the `vyshka` key/value
 namespace for the admin flags and one namespace per preset kind, `vyshka.loadouts`,
-`vyshka.locations`, and `vyshka.vehicles`, plus whatever the mods on the server register;
+`vyshka.locations`, `vyshka.vehicles`, and `vyshka.weather`, plus whatever the mods on the server register;
 its revision is derived from its content, see "Writing a mod against the plugin") declares:
 
 | Code | Context | Danger | Params | Result |
@@ -131,6 +131,8 @@ its revision is derived from its content, see "Writing a mod against the plugin"
 | `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
 | `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names, and excluding the server's `spawnBlocklist`), `into` (`ground`, the default, `inventory`, or `hands`), `quantity` (a stack's count, a container's fill, a magazine's or an ammunition pile's rounds), `health` (0 to 100, a percent of the item's maximum), `attachments` (`none`, the default, or `auto`) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `into`, `placed` (`ground`, `hands`, `attachment`, `cargo`) with `slot` and `container` when it went into the inventory, the condition fields of an inventory read entry (`health`, `state`, and `quantity`, `ammo`, `rounds`, `liquid` where they apply), `position`, `name`; with `auto`, `attachments` (one `{ slot, class }` per part, `ammo` on a magazine, a part's own parts inside), `empty` (`{ slot, on }` per slot left empty), and for a firearm `loaded` (the magazine or round it was loaded with, or null) |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
+| `vyshka.time.freeze` | world | warning | `frozen` (default true; false lets the clock run again at the server config's rate) | `frozen`, `wasFrozen`, `time` (the game's clock, `YYYY-MM-DDTHH:MM`); a time set while the clock is stopped stays set. See "World and weather" below |
+| `vyshka.weather` | world | warning | every one optional: `preset` (`clear`, `cloudy`, or `storm`) or `name` (a key of `vyshka.weather`, annotated so a panel offers the stored names), then any knob, which wins over the preset's: `overcast`, `fog`, `rain`, `snowfall` (0 to 1), `windSpeed` and `windMaxSpeed` (metres a second, 0 to 100), `windDirection` (degrees of the engine's wind angle, -180 to 180), `dynamicFog` (`{ distanceDensity, heightDensity }` 0 to 1, `heightBias` in metres), `storm` (`{ density, threshold, timeoutSeconds }`), `rainThreshold` and `snowfallThreshold` (`{ min, max, stopSeconds }`), `transitionSeconds` (default 0), `holdSeconds` (default 1800), `mode` (`world`, `engine`, or `hold`; absent keeps the current one) | `applied` (the knobs set), `mode` (after), `transitionSeconds`, `holdSeconds`, `widened` (the phenomena whose limits were widened to let the value in), `notes` (what the engine will do to the values), `before` and `after` (the world's conditions, as `state.world` `data` carries them), `preset` or `weather` and `revision`. See "World and weather" below |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
 | `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat only fuel (naming another fails the action), and a helicopter none the plugin can fill |
 | `vyshka.vehicle.repair` | vehicle | none | `parts` (default true) | `vehicle`, `type`, `kind`, `position`, `before` and `after` (each `{ state, health }`), `parts` (how many were repaired or swapped), `replaced` (one `{ slot, from, to }` per ruined wheel swapped back to its intact class), `problems` (one `{ class, slot, reason }` per part that could not be), `replacedCount` and `problemCount` (always complete), `truncated` (true when a list was cut: the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap); the engine's own full-health call on every damage zone, which lifts a destruction, then with `parts` every attached part and the parts on those, three levels down, a swapped-in wheel's own parts included. Fluids are left to the refuel action, and a missing part stays missing |
@@ -428,7 +430,7 @@ player moves it, the hands of a restrained character).
 ## Telemetry
 
 The plugin publishes events (protocol section 8.1) and `state.players`, `state.vehicles`,
-and `state.entities` snapshots (section 8.3) as soon as it is running; nothing needs
+`state.entities`, and `state.world` snapshots (section 8.3) as soon as it is running; nothing needs
 configuring. Player identity everywhere is
 `{ "platform": "steam", "id": "<Steam64>" }` (section 8.2), the same id the heal action
 takes as its `referenceKey`.
@@ -553,6 +555,25 @@ one is removed; a server with no mod that places markers sends one empty snapsho
 boot and nothing after. `id` is whatever the mod chose (the convention is
 `<namespace>:<thing>`), `kind` its label for the kind of thing, and `data.label` the
 display name the panel shows.
+
+```json
+{ "capturedAt": "2026-09-22T21:10:00Z",
+  "world": { "time": "2026-09-22T12:32",
+             "data": { "timeFrozen": false, "night": false, "weatherMode": "world",
+                       "overcast": 0.44, "fog": 0.02, "rain": 0, "snowfall": 0,
+                       "windSpeed": 11.32, "windDirection": -106, "windMaxSpeed": 20,
+                       "dynamicFog": { "distanceDensity": 0.75, "heightDensity": 0.62,
+                                       "heightBias": 50 } } } }
+```
+
+`state.world` is the world as it stands, one object rather than a list. `time` is the
+game's clock to the minute, the calendar the engine keeps and not a real one. In `data`,
+`timeFrozen` is whether this plugin stopped the clock (the engine cannot be asked, so a mod
+that stops it itself is not seen), `night` the engine's own answer, `weatherMode` the
+weather's behaviour (see "World and weather" below), the four phenomena their actual
+values from 0 to 1, the wind in metres a second and degrees of the engine's wind angle, and
+`dynamicFog` present only where the world's config enables it. It is paced like the other
+snapshots, one every interval.
 
 When a poll has room for fewer snapshots than are due (the hub has made the plugin shrink
 its batch), the types take turns: the type that went last time waits for the others, so
@@ -690,6 +711,71 @@ and a fluid not named stays as the engine made it, which for a new car is empty.
 with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and
 `coolant`, which the engine overheats without).
 
+
+## World and weather
+
+`vyshka.time.freeze` stops the server's clock (`frozen: true`, the default) and lets it run
+again at the server config's rate (`frozen: false`). A time set with `vyshka.settime` while
+it is stopped stays set. Measured on DayZ 1.29 in `spikes/dayz-world-clock`: the engine's
+time multiplier at 0 held the clock for two minutes, and at 30 ran thirty game minutes in
+one real minute. The spike ran with no client, so whether a connected client's sky stops
+with the server's clock is the live run's to show.
+
+`vyshka.weather` sets any of the engine's weather knobs in one dispatch, each optional:
+
+- `overcast`, `fog`, `rain`, `snowfall`: the phenomenon's value, 0 to 1. The engine holds
+  each within limits of its own (Chernarus keeps snowfall at 0 to 0); a value outside them
+  is let in by widening the limits, and `widened` names them.
+- `windSpeed`, `windDirection`, `windMaxSpeed`: metres a second and degrees of the engine's
+  wind angle, the frame the snapshot reports. The speed and the direction are phenomena
+  with limits too (the speed's upper limit is the maximum), widened the same way.
+- `dynamicFog`: the volumetric fog's distance and height density and its height bias, only
+  on a world whose config enables it (the action fails otherwise, since the engine would
+  ignore it).
+- `storm`: lightning's density, the overcast it needs, and the least seconds between
+  strikes (default 45).
+- `rainThreshold`, `snowfallThreshold`: the overcast between which rain or snow may fall,
+  and the seconds either takes to stop outside it (default 30).
+- `transitionSeconds`: how long each value takes to reach its target, a straight line
+  (default 0, at once). `holdSeconds`: the least time it stands before the controller may
+  choose the next (default 1800).
+- `mode`: what the weather does afterwards, kept until changed or the server restarts:
+  - `world` (the engine's start): the map's own weather controller. The controller runs
+    whenever any phenomenon is due a new forecast, and each run re-applies its own storm,
+    rain thresholds, wind maximum, and snowfall limits (Chernarus closes snowfall again at
+    once), so a dispatch in this mode holds back every phenomenon's next forecast to its
+    `holdSeconds`, the untouched ones included: what it set stands at least that long
+    (longer when an earlier dispatch held a phenomenon further, which nothing shortens),
+    and the result's note says when the first phenomenon falls due and the map moves on.
+  - `engine`: the engine's own random weather within the limits, the map's controller
+    skipped. Where a mod has set both the engine's weather and the frozen update, the
+    engine's weather wins and the snapshot says `engine`.
+  - `hold`: nothing changes the weather until it is changed again, the wind included. The
+    engine still stops rain or snow when the overcast is outside its threshold (0.6 to 1
+    by the engine's default); `notes` says so when a dispatch asks for rain or snow it
+    will not keep, naming the threshold it judged by: the one the dispatch set, which is
+    in force; else the one last set here, or the engine's default, each with the caveat
+    that the map or a mod may have set another since, because the engine has no way to
+    read a threshold back. A missing note is therefore no promise that the rain or snow
+    stays; the snapshot is what shows it.
+
+`preset` starts from one of three fixed knob sets: `clear` (overcast 0.05, no fog, rain, or
+snow, wind 2 m/s), `cloudy` (overcast 0.55, below the default rain threshold, fog 0.05,
+wind 6 m/s), and `storm` (overcast 1, fog 0.1, rain 1, wind 15 m/s, lightning at an
+overcast of 0.8, at least 20 s between strikes). `name` starts from a record an operator keeps in the
+`vyshka.weather` namespace instead, read under the plugin's own session like the other
+presets (see "Presets" above for the grants): a JSON object of the same knobs, `mode`,
+`transitionSeconds`, and `holdSeconds` included, where a member that is not a knob, at the
+top or inside `storm`, `dynamicFog`, or a threshold, fails the dispatch rather than being
+ignored. Either way the dispatch's own knobs win.
+
+```json
+{ "overcast": 0.8, "fog": 0.3, "rain": 0.4, "windSpeed": 8,
+  "rainThreshold": { "min": 0.5, "max": 1 }, "transitionSeconds": 120, "mode": "hold" }
+```
+
+None of it survives a restart: the engine starts the clock at the config's rate and the
+weather under the map's controller, and the snapshot says so after a restart.
 
 ## Item catalog
 

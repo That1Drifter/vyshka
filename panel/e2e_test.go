@@ -305,6 +305,12 @@ func TestPanelEndToEnd(t *testing.T) {
 	if got := text(`a[data-action-code="example-mod.heal"]`); !strings.Contains(got, "Heal player") || !strings.Contains(got, "warning") {
 		t.Fatalf("action item = %q, want its label and danger", got)
 	}
+	// No state.world has been published yet (section 8.3): the world card
+	// says so rather than failing the page.
+	run("the world card before any world snapshot", chromedp.WaitVisible("#world-empty", chromedp.ByQuery))
+	if got := text("#world-empty"); !strings.Contains(got, "No world snapshot yet") {
+		t.Fatalf("world card before a snapshot = %q", got)
+	}
 
 	// 5. The form is the schema, rendered.
 	run("open the action", chromedp.Click(`a[data-action-code="example-mod.heal"]`, chromedp.ByQuery),
@@ -1111,6 +1117,27 @@ func TestPanelEndToEnd(t *testing.T) {
 		t.Fatalf("token survived sign-out: %q", got)
 	}
 
+	// The world (issue #78) is published now and read back through the
+	// Admin API before any page asks for it, since the fake plugin sends it
+	// on its next poll, not on the queue call.
+	plugin.queue("state.world", map[string]any{
+		"capturedAt": time.Now().UTC().Add(-5 * time.Second).Format("2006-01-02T15:04:05Z"),
+		"world": map[string]any{
+			"time": "2026-09-20T14:32",
+			"data": map[string]any{"overcast": 0.35, "wind": map[string]any{"speed": 4.5, "direction": 270}, "timeFrozen": true},
+		},
+	})
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		status, _ := adminRequest(t, http.MethodGet, web.URL+"/api/v1/servers/"+created.Server.ID+"/state/world", nil)
+		if status == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the world snapshot never reached the hub (last status %d)", status)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// 11. A param annotated with a KV namespace (section 6.1) suggests the
 	// keys stored there. The token here may dispatch and may list one of
 	// the two namespaces, not the other: the listed one suggests its keys,
@@ -1143,6 +1170,23 @@ func TestPanelEndToEnd(t *testing.T) {
 		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#sign-out", chromedp.ByQuery))
 	run("open the preset action", chromedp.Navigate(web.URL+"/panel/#/servers/"+created.Server.ID+"/actions/example-mod.preset"),
 		chromedp.WaitVisible("#action-form", chromedp.ByQuery))
+
+	// The preset action is world-context, so the world as it stands is above
+	// its form: the game's clock as the plugin wrote it (never through the
+	// browser's time zone), and each extra on a row of its own.
+	run("the world above a world-context form", chromedp.WaitVisible("#world-time", chromedp.ByQuery))
+	if got := text("#world-time"); got != "2026-09-20 14:32" {
+		t.Fatalf("world time = %q, want the game's clock as sent", got)
+	}
+	if got := text(`#world dd[data-world-key="overcast"]`) + " | " + text(`#world dd[data-world-key="wind"]`) + " | " + text(`#world dd[data-world-key="timeFrozen"]`); got != `0.35 | {"direction":270,"speed":4.5} | true` {
+		t.Fatalf("world extras = %q", got)
+	}
+	if got := text("#world-captured"); !strings.Contains(got, "s ago, received") {
+		t.Fatalf("world captured = %q, want its age", got)
+	}
+	if evalString(`document.querySelector("#world").compareDocumentPosition(document.querySelector("#action-form")) & Node.DOCUMENT_POSITION_FOLLOWING ? "above" : "below"`) != "above" {
+		t.Fatalf("the world card is not above the form")
+	}
 	if got := evalString(`(function(){const i=document.querySelector('input[name="params.preset"]');const l=document.getElementById(i.getAttribute("list"));return l?Array.from(l.options).map(o=>o.value+"="+o.textContent+(o.dataset.excluded?"!":"")).join(","):"no datalist"})()`); got != "night-raid=night-raid,retired=retired (blocked on this server)!,spawn-kit=spawn-kit" {
 		t.Errorf("preset datalist = %q, want the stored keys, the excluded one marked", got)
 	}

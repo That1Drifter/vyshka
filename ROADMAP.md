@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the vehicles 2 slice of #77 landed with no protocol change, the
+**As of:** 2026-09-22 (the world slice of #78 landed as protocol draft 0.30, `state.world`
+the first snapshot that is not a list, with a weather action carrying every engine knob,
+fixed and stored presets, and freeze time; the vehicles 2 slice of #77 landed with no protocol change, the
 vehicle's damage state, health, and fluids in its snapshot and refuel and repair beside
 unstuck; the presets of #76 landed as protocol draft 0.29, the schema subset
 gaining the `kvNamespace` annotation and the panel's key/value view becoming an editor,
@@ -207,12 +209,20 @@ After the tag, in this order:
     and deletes it), which the slice fixed. No protocol change: the fields ride `data`.
     Delete-all-unclaimed depends on an ownership mod and became a documented mod-surface
     example instead of a plugin action, compiled and dispatched on a live server.
-15. **World** (#78): `state.world` first (the panel needs current time and conditions
-    before a weather form makes sense), then one action with every engine knob optional, a
-    fixed preset enum shipped in the plugin (clear, cloudy, storm), and freeze time, and the
-    operator-defined weather presets moved here from #76 on 2026-09-22 (a `vyshka.weather`
-    namespace applied through the same action, since a preset before the action it feeds
-    would have had to invent the knob set twice).
+15. **World** (#78), landed 2026-09-22: `state.world` (protocol draft 0.30), the first
+    snapshot that is one object rather than a list, carrying the game's clock and whatever
+    the plugin reports about its world, shown on the panel's server page and above every
+    world-context form. The DayZ plugin publishes the weather in it and adds
+    `vyshka.weather`, one action with every engine knob optional (the four phenomena, the
+    wind, the dynamic fog, the storm, the rain and snowfall thresholds, a transition, a
+    hold, and a behaviour mode: the map's own controller, the engine's, or held), a fixed
+    preset enum (clear, cloudy, storm), and operator presets in a `vyshka.weather`
+    namespace applied through the same action; and `vyshka.time.freeze`.
+    `spikes/dayz-world-clock` measured the clock stopping under the engine's time
+    multiplier, a set value lasting only its hold time under the map's controller (which
+    closes Chernarus's snowfall again), and every value holding under the frozen update
+    except rain outside its threshold. Whether a connected client's clock stops with the
+    server's was not measured.
 16. **Hub features an in-game menu cannot offer** (#79): a player profile per identity
     across every server on the installation, honestly a 30-day view until a per-identity
     roll-up exists (event retention is 30 days, chat 90); per-webhook redaction of named

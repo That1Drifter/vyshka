@@ -33,6 +33,10 @@ const (
 
 var eventTypePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$`)
 
+// worldTimePattern is the form of a world's time (section 8.3), the game's
+// calendar with no offset; the calendar itself is checked with time.Parse.
+var worldTimePattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$`)
+
 // telemetryStats counts what the candidate published, for the stage.
 type telemetryStats struct {
 	batches   int
@@ -181,6 +185,39 @@ func (h *mockHub) validateEventBatchLocked(envelope *inboundEnvelope) int {
 	return len(events)
 }
 
+// validateWorldLocked grades the one object of a state.world body (section
+// 8.3): an object, not a list, whose time is the game's calendar in the named
+// form and whose data is an object.
+func (h *mockHub) validateWorldLocked(label string, raw json.RawMessage, present bool) {
+	if !present || isJSONNull(raw) {
+		h.telemetryFaultLocked("8.3", "%s carries no world; an absent world is not a snapshot at all (an empty object is: it reports nothing)", label)
+		return
+	}
+	var world map[string]json.RawMessage
+	if !isJSONObject(raw) || json.Unmarshal(raw, &world) != nil {
+		h.telemetryFaultLocked("8.3", "%s: world is not an object; a server has one world, not a list of them", label)
+		return
+	}
+	if timeRaw, hasTime := world["time"]; hasTime && !isJSONNull(timeRaw) {
+		var value string
+		valid := json.Unmarshal(timeRaw, &value) == nil && worldTimePattern.MatchString(value)
+		if valid {
+			layout := "2006-01-02T15:04"
+			if len(value) > len(layout) {
+				layout = "2006-01-02T15:04:05"
+			}
+			_, err := time.Parse(layout, value)
+			valid = err == nil
+		}
+		if !valid {
+			h.telemetryFaultLocked("8.3", "%s: world.time %s is not the game's clock as YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS, a valid date and time of day with no offset; a hub rejects the snapshot whole over it", label, string(timeRaw))
+		}
+	}
+	if dataRaw, hasData := world["data"]; hasData && !isJSONNull(dataRaw) && !isJSONObject(dataRaw) {
+		h.telemetryFaultLocked("8.3", "%s: world.data is not an object", label)
+	}
+}
+
 // validateSnapshotLocked grades one state.* body (section 8.3).
 func (h *mockHub) validateSnapshotLocked(envelope *inboundEnvelope) {
 	listField := strings.TrimPrefix(envelope.Type, "state.")
@@ -197,6 +234,10 @@ func (h *mockHub) validateSnapshotLocked(envelope *inboundEnvelope) {
 		h.telemetryFaultLocked("8.3", "%s: capturedAt %s is not an RFC 3339 timestamp; a hub would fall back to the envelope ts", label, string(raw))
 	}
 	listRaw, present := fields[listField]
+	if listField == "world" {
+		h.validateWorldLocked(label, listRaw, present)
+		return
+	}
 	if !present {
 		h.telemetryFaultLocked("8.3", "%s carries no %s list; a snapshot is whole, so an absent list is not a snapshot at all (an empty list is: nobody is online)", label, listField)
 		return

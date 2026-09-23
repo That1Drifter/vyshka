@@ -44,6 +44,7 @@ class VyshkaBoot
 		VyshkaModeration.s_Disconnector = new VyshkaMissionDisconnector();
 		VyshkaPlayers.Reset();
 		VyshkaWorld.Reset();
+		VyshkaWeather.Reset();
 		VyshkaVehicles.Reset();
 		VyshkaFlags.Reset();
 		VyshkaMapMarkers.Reset();
@@ -97,6 +98,8 @@ modded class MissionServer
 		registry.Register(new VyshkaTeleportAction());
 		registry.Register(new VyshkaSpawnAction());
 		registry.Register(new VyshkaSetTimeAction());
+		// The world: weather (with its presets' namespace) and freeze time.
+		VyshkaWeather.Register(registry);
 		registry.Register(new VyshkaUnstuckAction());
 		registry.Register(new VyshkaDeleteDestroyedAction());
 		registry.Register(new VyshkaRefuelAction());

@@ -222,6 +222,104 @@ func checkStateRejectWhole(ctx context.Context, env Env) error {
 	return nil
 }
 
+// checkStateWorld drives the one snapshot that is not a list (section 8.3):
+// a server has one world, so `world` is an object, and its `time` is the
+// game's calendar in a named form. Each refusal is acked and stores nothing;
+// the valid world is stored verbatim, and an empty object replaces it.
+func checkStateWorld(ctx context.Context, env Env) error {
+	plugin, err := env.newFakePlugin(ctx, "conformance: state world", 5)
+	if err != nil {
+		return err
+	}
+	serverID := plugin.Creds.ServerID
+	worldPath := "/api/v1/servers/" + serverID + "/state/world"
+
+	// Before any snapshot: a known type with nothing in it, not a bad request.
+	if err := env.expectError(ctx, http.MethodGet, worldPath, env.AdminToken,
+		nil, http.StatusNotFound, "not_found"); err != nil {
+		return fmt.Errorf("world before any snapshot: %w", err)
+	}
+
+	invalid := []struct {
+		name string
+		body map[string]any
+	}{
+		{"a body with no world", map[string]any{"capturedAt": time.Now().UTC().Format(time.RFC3339)}},
+		{"a null world", map[string]any{"world": nil}},
+		{"a world only under another case", map[string]any{"World": map[string]any{}}},
+		{"a world that is a list", map[string]any{"world": []any{map[string]any{"time": "2026-09-20T14:32"}}}},
+		{"a time with an unpadded hour", map[string]any{"world": map[string]any{"time": "2026-09-20T9:05"}}},
+		{"a time on February 30", map[string]any{"world": map[string]any{"time": "2026-02-30T10:00"}}},
+		{"a time with an offset", map[string]any{"world": map[string]any{"time": "2026-09-20T14:32:00Z"}}},
+		{"a time that is a number", map[string]any{"world": map[string]any{"time": 1432}}},
+		{"data that is a list", map[string]any{"world": map[string]any{"data": []any{"rain"}}}},
+	}
+	for _, one := range invalid {
+		sent := plugin.nextOutbound("state.world", one.body)
+		response, err := plugin.send(ctx, sent)
+		if err != nil {
+			return fmt.Errorf("%s: %w", one.name, err)
+		}
+		if response.Ack != sent.Seq {
+			return fmt.Errorf("%s: ack = %d, want %d: a rejection is envelope-level success",
+				one.name, response.Ack, sent.Seq)
+		}
+		if err := env.expectError(ctx, http.MethodGet, worldPath, env.AdminToken,
+			nil, http.StatusNotFound, "not_found"); err != nil {
+			return fmt.Errorf("%s was stored rather than refused whole: %w", one.name, err)
+		}
+	}
+
+	valid := map[string]any{
+		"capturedAt": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+		"world": map[string]any{
+			"time":        "2026-09-20T14:32:05",
+			"data":        map[string]any{"overcast": 0.35, "timeFrozen": true},
+			"x-mod-extra": []any{"kept", "verbatim"},
+		},
+	}
+	if _, err := plugin.send(ctx, plugin.nextOutbound("state.world", valid)); err != nil {
+		return err
+	}
+	record, err := env.latestState(ctx, serverID, "world")
+	if err != nil {
+		return fmt.Errorf("a valid world was not accepted: %w", err)
+	}
+	if record.Type != "world" {
+		return fmt.Errorf("latest type = %q, want world", record.Type)
+	}
+	var sentValue, storedValue any
+	sentEncoded, _ := json.Marshal(valid)
+	if err := json.Unmarshal(sentEncoded, &sentValue); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(record.Snapshot, &storedValue); err != nil {
+		return fmt.Errorf("world %q does not decode: %w", truncate(record.Snapshot), err)
+	}
+	if !reflect.DeepEqual(sentValue, storedValue) {
+		return fmt.Errorf("the stored world is not the sent body verbatim: got %s", truncate(record.Snapshot))
+	}
+
+	// An empty object is a snapshot that reports nothing, and it replaces
+	// the world before it whole.
+	if _, err := plugin.send(ctx, plugin.nextOutbound("state.world",
+		map[string]any{"world": map[string]any{}})); err != nil {
+		return err
+	}
+	record, err = env.latestState(ctx, serverID, "world")
+	if err != nil {
+		return err
+	}
+	var emptied struct {
+		World map[string]any `json:"world"`
+	}
+	if err := json.Unmarshal(record.Snapshot, &emptied); err != nil || emptied.World == nil || len(emptied.World) != 0 {
+		return fmt.Errorf("after the empty push the world is %s, want the empty object that replaced it",
+			truncate(record.Snapshot))
+	}
+	return nil
+}
+
 func checkStateGuards(ctx context.Context, env Env) error {
 	created, err := env.newServer(ctx, "conformance: state guards")
 	if err != nil {

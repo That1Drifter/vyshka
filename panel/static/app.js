@@ -17,7 +17,7 @@
 
 import { createMap, validateManifest, worldPoint } from './map.js';
 import {
-  ApiError, ago, api, append, attempt, badge, beginRender, clear, disclosure, el,
+  ApiError, ago, api, append, attempt, badge, beginRender, clear, compactValue, disclosure, el,
   eventsHref, formatTime, go, mapHref, markNav, onRender, onSignOut, pretty, randomKey,
   renderHeldSecrets, renderSession, serverHref, setCrumbs, setTeardown, showError, signOut,
   stale, summarizeEventData, token, TOKEN_KEY,
@@ -363,6 +363,7 @@ async function viewServer(app, route, seq) {
     el('a', { class: 'button', href: mapHref(server.id), id: 'map-link' }, 'Live map'),
     ' ',
     el('a', { class: 'button', href: eventsHref(server.id), id: 'events-link' }, 'Event feed')));
+  app.append(worldCard(server.id, seq));
   if (target) {
     app.append(el('div', { class: 'notice target', id: 'target-player' },
       el('strong', {}, 'Target player: '),
@@ -394,6 +395,102 @@ async function viewServer(app, route, seq) {
   // The action list, its namespace groups, and the pinned shortlist above
   // them are manage.js's: a pin is a property of the item, not of the page.
   append(app, actionsSection(server, manifest, route.player, route.vehicle));
+}
+
+// ---------------------------------------------------------------------------
+// World
+//
+// The server's latest state.world snapshot (section 8.3): the game's clock
+// and whatever else the plugin reports about its world, such as the weather.
+// It is on the server page, and above the form of any world-context action,
+// so the conditions a form would change are on the page before it is
+// dispatched. It is read once per view, with a reload beside it: the plugin
+// publishes the next snapshot on its own cadence, so a read right after a
+// dispatch would show the world from before it. A server with no world
+// snapshot, or a token that cannot read state, gets a line saying so and the
+// rest of the view is unaffected.
+
+// WORLD_ROWS_MAX bounds the extras drawn one per row; the rest are behind a
+// disclosure, since the snapshot's data is plugin-supplied and bounded only
+// in bytes.
+const WORLD_ROWS_MAX = 40;
+
+async function readWorld(serverId) {
+  try {
+    return { response: await api('GET', '/servers/' + encodeURIComponent(serverId) + '/state/world') };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) throw err;
+    if (err instanceof ApiError && err.status === 404) return { response: null };
+    return { problem: err };
+  }
+}
+
+// worldTime shows the game's clock as the plugin wrote it, with the T turned
+// into a space. It is the game's calendar with no offset, so it never goes
+// through Date, which would read it as the browser's local time.
+function worldTime(value) {
+  return typeof value === 'string' && value !== '' ? value.replace('T', ' ') : '';
+}
+
+function worldDetails(response, problem) {
+  if (problem) {
+    return el('p', { class: 'notice', id: 'world-problem' },
+      problem instanceof ApiError && problem.status === 403
+        ? 'This token cannot read the server’s state (servers:read), so the world is not shown.'
+        : 'The world could not be read: ' + (problem.message || String(problem)));
+  }
+  if (!response) {
+    return el('p', { class: 'notice', id: 'world-empty' },
+      'No world snapshot yet. A plugin that reports its world publishes state.world (protocol section 8.3); until the hub accepts one there is nothing to show.');
+  }
+  const snapshot = response.snapshot && typeof response.snapshot === 'object' ? response.snapshot : {};
+  const world = snapshot.world && typeof snapshot.world === 'object' && !Array.isArray(snapshot.world) ? snapshot.world : {};
+  const data = world.data && typeof world.data === 'object' && !Array.isArray(world.data) ? world.data : {};
+  const time = worldTime(world.time);
+  const rows = [
+    el('dt', {}, 'Game time'),
+    el('dd', { id: 'world-time' }, time || el('span', { class: 'muted' }, 'not reported')),
+  ];
+  const entries = Object.entries(data);
+  for (const [key, value] of entries.slice(0, WORLD_ROWS_MAX)) {
+    rows.push(el('dt', {}, key),
+      el('dd', { 'data-world-key': key }, attempt(() => compactValue(value), 'nested too deeply to show')));
+  }
+  if (entries.length > WORLD_ROWS_MAX) {
+    rows.push(el('dt', {}, 'More'), el('dd', {},
+      disclosure((entries.length - WORLD_ROWS_MAX) + ' more; the whole world as reported', world)));
+  }
+  rows.push(el('dt', {}, 'Captured'),
+    el('dd', { id: 'world-captured' }, ago(response.capturedAt) + ', received ' + ago(response.receivedAt)));
+  return el('dl', { class: 'kv' }, rows);
+}
+
+function worldCard(serverId, seq) {
+  const body = el('div', { id: 'world-body' }, el('p', { class: 'muted' }, 'Loading…'));
+  const reload = el('button', { type: 'button', class: 'small', id: 'world-reload' }, 'Reload');
+  const load = async () => {
+    reload.disabled = true;
+    try {
+      const { response, problem } = await readWorld(serverId);
+      if (stale(seq)) return;
+      clear(body);
+      body.append(worldDetails(response, problem));
+    } catch (err) {
+      if (stale(seq)) return;
+      if (err instanceof ApiError && err.status === 401) {
+        signOut('The hub rejected this token.');
+        return;
+      }
+      clear(body);
+      body.append(worldDetails(null, err));
+    } finally {
+      reload.disabled = false;
+    }
+  };
+  reload.addEventListener('click', load);
+  load();
+  return el('section', { class: 'card world', id: 'world' },
+    el('h2', {}, 'World ', reload), body);
 }
 
 // ---------------------------------------------------------------------------
@@ -2299,7 +2396,9 @@ async function viewAction(app, route, seq) {
   el('div', { class: 'actions-row' }, submit,
     el('span', { class: 'muted' }, 'validated against manifest revision ' + manifest.revision + ' before it is queued')));
 
-  app.append(serverSummaryCompact(server), form, result);
+  // A world-context action changes the world, so the world as it stands is
+  // on the page above the form that would change it.
+  append(app, [serverSummaryCompact(server), action.context === 'world' ? worldCard(server.id, seq) : null, form, result]);
 }
 
 function serverSummaryCompact(server) {

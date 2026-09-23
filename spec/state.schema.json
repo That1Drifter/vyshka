@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vyshka.dev/spec/state.schema.json",
   "title": "Vyshka state snapshot envelope bodies",
-  "description": "Machine-readable companion to spec/protocol.md section 8.3. The prose document is normative: where the two disagree, the prose wins. Like the other schema documents this is a library of definitions with no root constraint: reference `#/$defs/statePlayers`, `#/$defs/stateVehicles`, and `#/$defs/stateEntities` for the plugin -> hub bodies and `#/$defs/stateReject` for the hub -> plugin refusal.",
+  "description": "Machine-readable companion to spec/protocol.md section 8.3. The prose document is normative: where the two disagree, the prose wins. Like the other schema documents this is a library of definitions with no root constraint: reference `#/$defs/statePlayers`, `#/$defs/stateVehicles`, `#/$defs/stateEntities`, and `#/$defs/stateWorld` for the plugin -> hub bodies and `#/$defs/stateReject` for the hub -> plugin refusal.",
   "$defs": {
     "playerRef": {
       "type": "object",
@@ -122,6 +122,37 @@
           "maxItems": 5000,
           "items": { "$ref": "#/$defs/objectEntry" }
         }
+      },
+      "additionalProperties": true
+    },
+    "worldState": {
+      "type": "object",
+      "title": "The world in a state.world snapshot",
+      "description": "One object, not a list: a server has one world. A member absent from it is not reported, never zero or false; an empty object is a snapshot that reports nothing.",
+      "properties": {
+        "time": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$" },
+            { "type": "null" }
+          ],
+          "description": "The game's own clock, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS with no offset, naming a valid calendar date and time of day (the pattern checks the form; the calendar is the prose's). The game's calendar, not a moment on any real clock: the hub checks the form and never compares it with its own clock or with capturedAt. Absent and null both read as not reported.",
+          "examples": ["2026-09-20T14:32"]
+        },
+        "data": {
+          "oneOf": [{ "type": "object", "additionalProperties": true }, { "type": "null" }],
+          "description": "Game- or mod-specific extras (the weather, how fast the clock runs, a season). Absent and null both read as an empty object."
+        }
+      },
+      "additionalProperties": true
+    },
+    "stateWorld": {
+      "type": "object",
+      "title": "state.world body",
+      "description": "Plugin -> hub. The world as it stands; it replaces its predecessor entirely. Applied or rejected whole; cap: 262144 bytes.",
+      "required": ["world"],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/capturedAt" },
+        "world": { "$ref": "#/$defs/worldState" }
       },
       "additionalProperties": true
     },

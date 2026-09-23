@@ -601,6 +601,12 @@ class VyshkaPlayerSnapshots : VyshkaSnapshotSource
 	{
 		return VyshkaVehicles.Capture();
 	}
+
+	// The world's clock and weather (VyshkaWeather), likewise.
+	override VyshkaJsonValue CaptureWorld()
+	{
+		return VyshkaWeather.Capture();
+	}
 }
 
 modded class PlayerBase

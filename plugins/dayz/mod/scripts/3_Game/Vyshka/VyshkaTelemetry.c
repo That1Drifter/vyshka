@@ -9,7 +9,7 @@
 //
 // Snapshots say what is rather than what happened, so they are not
 // buffered at all: the plugin asks a game-side source for the current
-// state.players, state.vehicles and state.entities bodies as it builds the
+// state.players, state.vehicles, state.entities and state.world bodies as it builds the
 // poll that will carry them, no more often than the configured interval,
 // and only when the previous snapshot of that type has been acked (see
 // VyshkaPlugin.PublishSnapshots and VyshkaOutbox.HasUnacked).
@@ -115,5 +115,12 @@ class VyshkaSnapshotSource
 	VyshkaJsonValue CaptureEntities()
 	{
 		return VyshkaMapMarkers.Capture();
+	}
+
+	// CaptureWorld returns the state.world body, or null when no snapshot
+	// can be taken right now.
+	VyshkaJsonValue CaptureWorld()
+	{
+		return null;
 	}
 }
