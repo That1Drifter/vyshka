@@ -129,8 +129,7 @@ function notesSection(platform, id, seq) {
   // The problem box and the saved notice live outside the list, so a token
   // that may write notes but not read them still sees what its writes did.
   const problem = problemBox('notes-error');
-  const saved = el('p', { class: 'notice', id: 'note-saved', hidden: true },
-    'Saved. This token cannot read notes (notes:read), so the note is not listed here.');
+  const saved = el('p', { class: 'notice', id: 'note-saved', hidden: true });
   const older = el('button', { type: 'button', id: 'notes-older', hidden: true }, 'Load older');
   // No maxlength: the browser counts UTF-16 units there, and the hub's bound
   // is 4000 code points, so an emoji would count twice. The submit counts.
@@ -140,7 +139,12 @@ function notesSection(platform, id, seq) {
   const body = el('div', {}, problem.node, saved, listArea);
   let cursor = null;
   let shown = 0;
-  let readable = true;
+  // The list's read state: pending until the first read settles, then
+  // readable or forbidden. A write is confirmed in the list only when the
+  // list is known to be readable; otherwise the saved notice, which lives
+  // outside the list, confirms it, and a refusal landing after the write
+  // cannot take the confirmation with it.
+  let readState = 'pending';
 
   const noteItem = (note) => {
     const author = note.createdBy && typeof note.createdBy === 'object' ? note.createdBy : {};
@@ -178,7 +182,9 @@ function notesSection(platform, id, seq) {
     try {
       const page = await api('GET', identityPath(platform, id, '/notes' + query(from ? { cursor: from } : {})));
       if (stale(seq)) return;
+      readState = 'readable';
       for (const note of Array.isArray(page.notes) ? page.notes : []) {
+        if (list.querySelector('[data-note-id="' + CSS.escape(String(note.id)) + '"]')) continue;
         list.append(noteItem(note));
         shown++;
       }
@@ -188,7 +194,7 @@ function notesSection(platform, id, seq) {
     } catch (err) {
       if (stale(seq) || onUnauthorized(err)) return;
       if (isForbidden(err)) {
-        readable = false;
+        readState = 'forbidden';
         clear(listArea);
         listArea.append(refusedNotice('notes-forbidden', 'notes:read', err));
         return;
@@ -219,11 +225,14 @@ function notesSection(platform, id, seq) {
       try {
         const created = await api('POST', identityPath(platform, id, '/notes'), { text: text.value });
         if (stale(seq) || token() !== owner) return;
-        if (readable) {
+        if (readState === 'readable') {
           list.prepend(noteItem(created.note));
           shown++;
           empty.hidden = true;
         } else {
+          saved.textContent = readState === 'forbidden'
+            ? 'Saved. This token cannot read notes (notes:read), so the note is not listed here.'
+            : 'Saved. The note list had not loaded yet when the hub confirmed it.';
           saved.hidden = false;
         }
         text.value = '';
@@ -243,9 +252,10 @@ function notesSection(platform, id, seq) {
   return el('section', { class: 'card', id: 'notes-section' }, el('h2', {}, 'Notes'), body, form);
 }
 
-// A path segment of exactly "." or "..", however it is encoded, is a dot
-// segment every URL parser removes, so an identity with such a member has no
-// profile route that reaches the hub (protocol section 8.6).
+// A path segment of exactly "." or ".." is a dot segment, and the browser
+// removes it from a fetch URL, its %2e form included, so this page cannot
+// reach the profile of an identity with one; the hub can be asked by a
+// client that sends %2e as written (protocol section 8.6).
 function unaddressable(member) {
   return member === '.' || member === '..';
 }
@@ -258,7 +268,7 @@ export async function viewPlayer(app, route, seq) {
     clear(app);
     app.append(el('p', { class: 'notice', id: 'player-unaddressable' },
       'The identity ', el('span', { class: 'mono' }, identity),
-      ' has a member that is a dot segment ("." or ".."), which no URL path can carry, so the hub cannot be asked for its profile (protocol section 8.6).'));
+      ' has a member that is a dot segment ("." or ".."). Browsers remove such a segment from a URL before sending it, so this page cannot ask the hub for the profile; a client that sends the dots percent-encoded (%2e) can (protocol section 8.6).'));
     return;
   }
   const names = await serverNames();

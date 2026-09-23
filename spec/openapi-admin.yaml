@@ -942,7 +942,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 4000
-                  description: Not empty or whitespace alone; stored as sent.
+                  description: Not empty or whitespace alone, no U+0000, at most 4000 code points; stored as sent.
       responses:
         "201":
           description: The note as stored.
@@ -1303,7 +1303,10 @@ components:
       name: platform
       in: path
       required: true
-      description: The identity's platform (spec section 8.2), one percent-encoded path segment.
+      description: |
+        The identity's platform (spec section 8.2), one percent-encoded path
+        segment, without U+0000. A member of exactly "." or ".." travels as
+        %2e, which browsers and most URL libraries cannot send (spec section 8.6).
       schema:
         type: string
         minLength: 1
@@ -1312,7 +1315,9 @@ components:
       name: playerId
       in: path
       required: true
-      description: The identity's platform id (spec section 8.2), one percent-encoded path segment.
+      description: |
+        The identity's platform id (spec section 8.2), one percent-encoded path
+        segment, without U+0000; dot segments travel as %2e, as for platform.
       schema:
         type: string
         minLength: 1

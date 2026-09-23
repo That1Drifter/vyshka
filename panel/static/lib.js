@@ -377,6 +377,7 @@ export function playersHref() {
 }
 
 const IDENTITY_PLATFORM_MAX = 64;
+const NUL = String.fromCharCode(0);
 const IDENTITY_ID_MAX = 128;
 
 // identityRefs lists the identities an event refers to (protocol section
@@ -391,6 +392,9 @@ export function identityRefs(data) {
     const { platform, id } = value;
     if (typeof platform !== 'string' || typeof id !== 'string' || platform === '' || id === '') continue;
     if ([...platform].length > IDENTITY_PLATFORM_MAX || [...id].length > IDENTITY_ID_MAX) continue;
+    // A member carrying U+0000 is data, not an identity (protocol section
+    // 8.2): the hub indexes no such reference, and refuses such a path.
+    if (platform.includes(NUL) || id.includes(NUL)) continue;
     refs.push({ role, platform, id });
   }
   return refs;

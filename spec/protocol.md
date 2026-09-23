@@ -1488,9 +1488,11 @@ writes under one path:
 path segment, non-empty, within the section 8.3 bounds (at most 64 and 128 code points
 once decoded), and free of U+0000 (section 8.2); anything else is `bad_request`. No
 identity is registered anywhere, so an identity the hub has never heard of has an empty
-profile, never a `not_found`. A member that is exactly `.` or `..` cannot be carried at
-all: URL parsers remove such a segment however it is encoded, so the profile of an
-identity with one is out of this route's reach. No registered platform issues such ids.
+profile, never a `not_found`. A member that is exactly `.` or `..` is a dot segment, and
+browsers and most URL libraries remove one before the request leaves the client, its
+percent-encoded form included. Such an identity is reachable only by a client that sends
+the request target as written, with the dots percent-encoded (`%2e`), which a hub MUST
+then read as the member it encodes. No registered platform issues such ids.
 
 **Events.**
 

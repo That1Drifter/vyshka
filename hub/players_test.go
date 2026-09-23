@@ -644,3 +644,24 @@ func TestNulIsNeverAnIdentity(t *testing.T) {
 		t.Errorf("a note carrying U+0000 answered %s, want bad_request", code)
 	}
 }
+
+// A member that is a dot segment is reachable by a client that sends the
+// request target as written, the dots percent-encoded; it is browsers and
+// most URL libraries that remove it (spec section 8.6).
+func TestDotSegmentIdentityIsReachableEncoded(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "dot identity")
+	pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{eventBatchEnvelope(1, map[string]any{
+			"t": "core.player.connect", "data": map[string]any{"player": identity("..")},
+		})},
+	})
+	var page playerEventPage
+	if status := call(t, server, http.MethodGet, "/api/v1/players/steam/%2e%2e/events", testAdminToken, nil, &page); status != http.StatusOK {
+		t.Fatalf("GET the encoded dot identity: status = %d, want 200", status)
+	}
+	if len(page.Events) != 1 {
+		t.Errorf("the dot identity's profile holds %d events, want 1", len(page.Events))
+	}
+}
