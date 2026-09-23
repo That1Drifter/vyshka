@@ -15,7 +15,8 @@ management views).
   travels to the hub as a bearer token on every request; closing the tab forgets it, and
   "Sign out" forgets it sooner. The hub's own scopes apply unchanged: a token narrowed to
   `servers:read` sees the server list and nothing dispatches.
-- **Top-level nav** across the five sections: Servers, Tokens, Webhooks, Audit, Key/value.
+- **Top-level nav** across the six sections: Servers, Players, Tokens, Webhooks, Audit,
+  Key/value.
   It is in `index.html` because it is the shell rather than any view's output, and it is
   hidden until a token is signed in, since every link behind it needs one.
 - **Server list** with link state, credential state, enrolled plugin, last-seen time, and the
@@ -200,12 +201,13 @@ management views).
   that scope rather than one per call that failed.
 - **Role bundles** are a panel convenience and no part of the protocol: they only fill the
   scope list, which stays editable, and the panel sends exactly what is shown. **Owner** is
-  `admin`. **Moderator** is `servers:read`, `events:read`, and one
+  `admin`. **Moderator** is `servers:read`, `events:read`, one
   `actions:dispatch:{prefix}.*` per action-code prefix found in the hub's stored manifests
   (a server with no manifest narrows nothing), falling back to an unnarrowed
-  `actions:dispatch` with section 10.1's warning when no manifest declares one. **Event
-  host** is the moderator set plus `kv:rw:{namespace}` for every namespace the manifests
-  declare in `kvNamespaces`. The prefix of an action is its manifest `namespace` member when
+  `actions:dispatch` with section 10.1's warning when no manifest declares one, and the
+  player notes, `notes:read` and `notes:write`. **Event host** is the same read and
+  dispatch set, without the notes, plus `kv:rw:{namespace}` for every namespace the
+  manifests declare in `kvNamespaces`. The prefix of an action is its manifest `namespace` member when
   the action's `code` sits under that member (protocol section 6.1 gives the member for
   display and token scoping), and otherwise the code with its last dot-separated segment
   removed; a code with no dot narrows nothing and contributes no line. Taking the first
@@ -217,18 +219,35 @@ management views).
   box, and one overtaken is dropped whole rather than replacing a reviewed list with an
   older, wider one.
 - **Webhooks** at `#/webhooks`, over `GET /webhooks` (protocol section 11): url, events as
-  badges ("every type" when the filter is empty), servers resolved to names through
+  badges ("every type but audit.recorded" when the filter is empty, since the audit
+  notification is opt-in by name, protocol section 11.1), servers resolved to names through
   `GET /servers` when the token may read it and ids otherwise ("every server" when empty),
   template, a paused badge, and created. The register form takes a url, a one-per-line event
-  filter, a server checklist (nothing ticked means every server), and a template; the
-  signing secret is shown once. A row opens the webhook page: the record, an edit form that
-  `PATCH`es url, events, serverIds, and template, a Pause/Resume toggle that `PATCH`es
+  filter, a server checklist (nothing ticked means every server), a template, and the
+  redaction paths, one per line (protocol section 11.2); the signing secret is shown once.
+  A row opens the webhook page: the record with its redaction, an edit form that `PATCH`es
+  url, events, serverIds, template, and redact, a Pause/Resume toggle that `PATCH`es
   `paused`, Delete behind a confirmation, and the deliveries table over
   `GET /webhooks/{id}/deliveries?limit=500` (state badge, type, server, attempts, last
   status and error, created, next attempt, delivered) refreshed every five seconds, with a
   "Dead letter only" filter applied in the page and a Replay button per row. The view needs
   `webhooks:manage`. There is no read of a single webhook in the Admin API, so the page
   finds its record in the list.
+- **Players** at `#/players` and `#/players/{platform}/{id}` (protocol section 8.6). The
+  first is the way in: an identity typed by hand, or picked from who is online on each
+  server the token can read, from each server's latest players snapshot. The second is one
+  identity's profile across every server: its events over
+  `GET /players/{platform}/{id}/events` (when, server, type, the roles it held as badges,
+  and the data behind a disclosure, with "Load older" behind the cursor), the actions
+  against it over `.../actions`, and its notes over `.../notes`, newest first, with a form
+  that writes one under the signed-in token and a Delete per note that does nothing until
+  the tick beside it is set. The title takes the name from the newest event that names the
+  identity as the player, and a notice says the events are a window of the hub's retention
+  rather than a lifetime. Each of the three parts reads on its own grant (`events:read`,
+  `actions:read`, `notes:read`), and a part the token cannot read says which grant it
+  needs in place while the rest of the page carries on. Every identity an event names in the
+  event feed, and every player on the live map, links here, as does the target notice on
+  the server page.
 - **Audit** at `#/audit`, over `GET /audit` (protocol section 10.5): at, token name with its
   id on hover, method and path, a status badge (2xx ok, 4xx refused, 5xx error), source ip,
   server, and the detail as one line with the full JSON behind a disclosure, the same
@@ -346,11 +365,13 @@ panel/
     app.js         // routing, sign-in, the server and action views, the form builder, dispatch and result, the event feed, the map view
     manage.js      // the management views: server registration and credentials, tokens, webhooks and deliveries, audit, key/value, pinned actions
     map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame
+    players.js     // player profiles: one identity's events, actions, and notes across every server, and the way in
     style.css      // one stylesheet, light and dark
   panel_test.go      // the handler: headers, what it serves, what it refuses, the maps surface
   e2e_harness_test.go // the shared browser scaffolding: the hub, the tab, the console capture, the step helpers, the fake plugin
   e2e_test.go        // headless Chrome over sign-in, the action form, dispatch, the event feed, and the live map
   e2e_manage_test.go // headless Chrome over the management views: servers, credentials, pins, tokens, webhooks, audit, key/value
+  e2e_players_test.go // headless Chrome over the player profiles, their notes, and the webhook redaction fields
 ```
 
 No build step: the files are served as written, as ES modules the browser resolves against
@@ -409,6 +430,16 @@ key count, one whose only key has expired absent, a prefix filter in the route, 
 opened with its revision). Every guard gets its negative control in the same run: the
 unconfirmed revoke, the unconfirmed delete, the cancelled token revoke, and the resume that
 makes the paused silence mean something.
+
+A third covers the player profiles (issue #79): a fixture of three events naming two
+identities in two roles, a players snapshot, and a completed heal; the event feed's identity
+links (two on the death, the killer's reading its role and name), the profile reached from
+one (three events newest first, the killer role as a badge, the name in the title, a chat
+line's markup kept as text, the window notice, the heal completed), a note written and then
+refused deletion without its tick and deleted with it, the players page listing who is online
+and a hand-typed lookup landing on the victim's profile with the player role, a token that
+reads events alone seeing them with one notice each for notes and actions, and redaction
+paths registered from the webhook form, shown on the webhook page, and edited.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.

@@ -365,6 +365,53 @@ export function kvHref() {
   return '#/kv';
 }
 
+// playerHref is a player's profile (protocol section 8.6), one identity
+// across every server. Each member is one encoded segment, so a platform or
+// an id carrying a slash stays whole.
+export function playerHref(platform, id) {
+  return '#/players/' + encodeURIComponent(platform) + '/' + encodeURIComponent(id);
+}
+
+export function playersHref() {
+  return '#/players';
+}
+
+const IDENTITY_PLATFORM_MAX = 64;
+const IDENTITY_ID_MAX = 128;
+
+// identityRefs lists the identities an event refers to (protocol section
+// 8.2): the top-level members of its data that hold a { platform, id } object
+// within the bounds, each with its role, the member's name. It is the hub's
+// reading, so a link it draws goes to a profile that holds the event.
+export function identityRefs(data) {
+  const refs = [];
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return refs;
+  for (const [role, value] of Object.entries(data)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const { platform, id } = value;
+    if (typeof platform !== 'string' || typeof id !== 'string' || platform === '' || id === '') continue;
+    if ([...platform].length > IDENTITY_PLATFORM_MAX || [...id].length > IDENTITY_ID_MAX) continue;
+    refs.push({ role, platform, id });
+  }
+  return refs;
+}
+
+// identityLinks draws one profile link per identity an event refers to, with
+// the name the payload gives beside it when it gives one (name for the
+// player role, {role}Name for the others, the reference plugin's shape).
+export function identityLinks(data) {
+  const refs = identityRefs(data);
+  if (refs.length === 0) return null;
+  return el('span', { class: 'identities' }, refs.map((ref) => {
+    const nameKey = ref.role === 'player' ? 'name' : ref.role + 'Name';
+    const name = typeof data[nameKey] === 'string' && data[nameKey] !== '' ? data[nameKey] : '';
+    return el('a', {
+      class: 'identity', href: playerHref(ref.platform, ref.id),
+      'data-profile': ref.platform + ':' + ref.id, title: 'Profile of ' + ref.platform + ':' + ref.id,
+    }, ref.role + ': ' + (name || ref.platform + ':' + ref.id));
+  }));
+}
+
 export function kvNamespaceHref(namespace, prefix = '') {
   return '#/kv/' + encodeURIComponent(namespace) + (prefix ? '?prefix=' + encodeURIComponent(prefix) : '');
 }

@@ -743,6 +743,7 @@ func TestMalformedEventBatchesAreFaulted(t *testing.T) {
 		typedEnvelope("bad-5", 5, "event.batch", map[string]any{"events": []map[string]any{{"t": "core.player.chat", "ts": "yesterday"}}}),
 		typedEnvelope("bad-6", 6, "event.batch", map[string]any{"events": tooMany}),
 		typedEnvelope("bad-7", 7, "event.batch", map[string]any{"events": []map[string]any{{"data": map[string]any{}}}}),
+		typedEnvelope("bad-8", 8, "event.batch", map[string]any{"events": []map[string]any{{"t": "audit.recorded"}}}),
 	)
 
 	faults := faultMessages(h)
@@ -754,6 +755,7 @@ func TestMalformedEventBatchesAreFaulted(t *testing.T) {
 		"bad-5 events[0].ts",
 		"bad-6 carries 201 events",
 		"bad-7 events[0] carries no t",
+		`bad-8 events[0].t "audit.recorded" begins with a namespace reserved`,
 	} {
 		if !strings.Contains(faults, want) {
 			t.Errorf("expected a fault containing %q; recorded faults:\n%s", want, faults)

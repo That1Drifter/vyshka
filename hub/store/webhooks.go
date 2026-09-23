@@ -38,6 +38,9 @@ type Webhook struct {
 	// type. ServerIDs are exact ids; empty means every server.
 	Events    []string
 	ServerIDs []string
+	// Redact are the member paths stripped from every notification's data
+	// before a delivery is rendered (spec section 11.2); empty strips nothing.
+	Redact    []string
 	CreatedAt time.Time
 	// PausedAt is when the webhook was paused, or nil while it is active. A
 	// paused webhook keeps queueing deliveries and attempts none of them
@@ -54,12 +57,14 @@ type WebhookUpdate struct {
 	Template  *string
 	Events    *[]string
 	ServerIDs *[]string
+	Redact    *[]string
 	Paused    *bool
 }
 
 // IsEmpty reports whether an update would change nothing at all.
 func (u WebhookUpdate) IsEmpty() bool {
-	return u.URL == nil && u.Template == nil && u.Events == nil && u.ServerIDs == nil && u.Paused == nil
+	return u.URL == nil && u.Template == nil && u.Events == nil && u.ServerIDs == nil &&
+		u.Redact == nil && u.Paused == nil
 }
 
 // CreateWebhook records one webhook. The caller assigns the id and mints the
@@ -75,11 +80,15 @@ func (s *Store) CreateWebhook(ctx context.Context, webhook Webhook) (Webhook, er
 	if err != nil {
 		return Webhook{}, fmt.Errorf("encode webhook server ids: %w", err)
 	}
+	redact, err := encodeRedact(webhook.Redact)
+	if err != nil {
+		return Webhook{}, err
+	}
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO webhooks (id, url, secret, template, events, server_ids, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO webhooks (id, url, secret, template, events, server_ids, redact, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		webhook.ID, webhook.URL, webhook.Secret, webhook.Template,
-		string(events), string(serverIDs), formatTime(now),
+		string(events), string(serverIDs), redact, formatTime(now),
 	); err != nil {
 		return Webhook{}, fmt.Errorf("insert webhook: %w", err)
 	}
@@ -87,7 +96,20 @@ func (s *Store) CreateWebhook(ctx context.Context, webhook Webhook) (Webhook, er
 	return webhook, nil
 }
 
-const webhookColumns = `id, url, secret, template, events, server_ids, created_at, paused_at`
+const webhookColumns = `id, url, secret, template, events, server_ids, redact, created_at, paused_at`
+
+// encodeRedact stores a redaction list as a JSON array, [] for none, so the
+// column never holds a null a reader would have to special-case.
+func encodeRedact(paths []string) (string, error) {
+	if paths == nil {
+		paths = []string{}
+	}
+	encoded, err := json.Marshal(paths)
+	if err != nil {
+		return "", fmt.Errorf("encode webhook redaction: %w", err)
+	}
+	return string(encoded), nil
+}
 
 // Every transaction locking multiple webhooks uses this order, including
 // fan-out and delivery retention. Both columns are immutable.
@@ -176,6 +198,14 @@ func (s *Store) UpdateWebhook(ctx context.Context, webhookID string, update Webh
 		}
 		assignments = append(assignments, "server_ids = ?")
 		arguments = append(arguments, string(serverIDs))
+	}
+	if update.Redact != nil {
+		redact, err := encodeRedact(*update.Redact)
+		if err != nil {
+			return Webhook{}, err
+		}
+		assignments = append(assignments, "redact = ?")
+		arguments = append(arguments, redact)
 	}
 	if update.Paused != nil {
 		if *update.Paused {
@@ -305,14 +335,17 @@ func (s *Store) DeleteWebhook(ctx context.Context, webhookID string) error {
 
 func scanWebhook(row rowScanner) (Webhook, error) {
 	var (
-		webhook           Webhook
-		events, serverIDs string
-		createdAt         string
-		pausedAt          sql.NullString
+		webhook                   Webhook
+		events, serverIDs, redact string
+		createdAt                 string
+		pausedAt                  sql.NullString
 	)
 	if err := row.Scan(&webhook.ID, &webhook.URL, &webhook.Secret, &webhook.Template,
-		&events, &serverIDs, &createdAt, &pausedAt); err != nil {
+		&events, &serverIDs, &redact, &createdAt, &pausedAt); err != nil {
 		return Webhook{}, err
+	}
+	if err := json.Unmarshal([]byte(redact), &webhook.Redact); err != nil {
+		return Webhook{}, fmt.Errorf("decode webhook redaction: %w", err)
 	}
 	if err := json.Unmarshal([]byte(events), &webhook.Events); err != nil {
 		return Webhook{}, fmt.Errorf("decode webhook events: %w", err)

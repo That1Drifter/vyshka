@@ -20,6 +20,8 @@ const (
 	maxWebhookURLLength     = 2048
 	maxWebhookEventFilters  = 20
 	maxWebhookServerIDs     = 50
+	maxWebhookRedactPaths   = 20
+	maxRedactPathLength     = 128
 	webhookDeliveryPageSize = 100
 	maxWebhookDeliveryPage  = 500
 	// pendingDeliveryBound is the per-webhook pending queue bound of section
@@ -34,6 +36,7 @@ type createWebhookRequest struct {
 	Events    []string `json:"events"`
 	ServerIDs []string `json:"serverIds"`
 	Template  string   `json:"template"`
+	Redact    []string `json:"redact"`
 }
 
 // updateWebhookRequest is the section 11.2 edit: every member is optional and
@@ -45,6 +48,7 @@ type updateWebhookRequest struct {
 	Events    *[]string `json:"events"`
 	ServerIDs *[]string `json:"serverIds"`
 	Template  *string   `json:"template"`
+	Redact    *[]string `json:"redact"`
 	Paused    *bool     `json:"paused"`
 }
 
@@ -56,6 +60,7 @@ type webhookView struct {
 	Events    []string   `json:"events"`
 	ServerIDs []string   `json:"serverIds"`
 	Template  string     `json:"template"`
+	Redact    []string   `json:"redact"`
 	CreatedAt time.Time  `json:"createdAt"`
 	PausedAt  *time.Time `json:"pausedAt"`
 }
@@ -67,8 +72,12 @@ func newWebhookView(webhook store.Webhook) webhookView {
 		Events:    webhook.Events,
 		ServerIDs: webhook.ServerIDs,
 		Template:  webhook.Template,
+		Redact:    webhook.Redact,
 		CreatedAt: webhook.CreatedAt,
 		PausedAt:  webhook.PausedAt,
+	}
+	if view.Redact == nil {
+		view.Redact = []string{}
 	}
 	if view.Events == nil {
 		view.Events = []string{}
@@ -112,6 +121,10 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	redact, ok := validateWebhookRedact(w, request.Redact)
+	if !ok {
+		return
+	}
 
 	webhook, err := s.store.CreateWebhook(r.Context(), store.Webhook{
 		ID:        id.New(),
@@ -120,6 +133,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Template:  template,
 		Events:    events,
 		ServerIDs: serverIDs,
+		Redact:    redact,
 	})
 	if err != nil {
 		s.writeInternalError(w, r, err)
@@ -224,6 +238,50 @@ func validateWebhookTemplate(w http.ResponseWriter, value string) (string, bool)
 	return template, true
 }
 
+// validateWebhookRedact checks the redaction paths of section 11.2: member
+// names from the identifier alphabet joined by dots, at most twenty of them.
+// A path outside the grammar is refused rather than kept as one that could
+// never strip anything, which would look exactly like a redaction that works.
+func validateWebhookRedact(w http.ResponseWriter, values []string) ([]string, bool) {
+	if len(values) > maxWebhookRedactPaths {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"a webhook redacts at most "+strconv.Itoa(maxWebhookRedactPaths)+" paths")
+		return nil, false
+	}
+	paths := make([]string, 0, len(values))
+	for _, value := range values {
+		path := strings.TrimSpace(value)
+		if !validRedactPath(path) {
+			writeError(w, http.StatusBadRequest, codeBadRequest,
+				"redact path "+truncateUTF8(path, 64)+" is not member names of letters, digits, _ and - joined by dots, at most "+
+					strconv.Itoa(maxRedactPathLength)+" characters")
+			return nil, false
+		}
+		paths = append(paths, path)
+	}
+	return paths, true
+}
+
+func validRedactPath(path string) bool {
+	if path == "" || len(path) > maxRedactPathLength {
+		return false
+	}
+	for _, segment := range strings.Split(path, ".") {
+		if segment == "" {
+			return false
+		}
+		for i := range len(segment) {
+			c := segment[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // handleUpdateWebhook edits one registration in place (spec section 11.2). An
 // absent member is left alone and a present one replaces its field whole; the
 // coverage rule is then re-applied to the **resulting** subscription, so an
@@ -241,7 +299,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// malformed edit reads the same whatever id it names.
 	if len(updatedWebhookFields(request)) == 0 {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"an edit names at least one of url, events, serverIds, template, paused")
+			"an edit names at least one of url, events, serverIds, template, redact, paused")
 		return
 	}
 
@@ -332,6 +390,13 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		update.Template = &template
 	}
+	if request.Redact != nil {
+		redact, ok := validateWebhookRedact(w, *request.Redact)
+		if !ok {
+			return
+		}
+		update.Redact = &redact
+	}
 
 	webhook, err := s.store.UpdateWebhook(r.Context(), webhookID, update, authorize)
 	var refused *refusal
@@ -387,7 +452,7 @@ func writeRefusal(w http.ResponseWriter, err error) {
 // record and the log. The values themselves stay out of both: a filter is
 // noise there, and a URL is a credential.
 func updatedWebhookFields(request updateWebhookRequest) []string {
-	fields := make([]string, 0, 5)
+	fields := make([]string, 0, 6)
 	if request.URL != nil {
 		fields = append(fields, "url")
 	}
@@ -399,6 +464,9 @@ func updatedWebhookFields(request updateWebhookRequest) []string {
 	}
 	if request.Template != nil {
 		fields = append(fields, "template")
+	}
+	if request.Redact != nil {
+		fields = append(fields, "redact")
 	}
 	if request.Paused != nil {
 		fields = append(fields, "paused")
@@ -561,15 +629,38 @@ func redactURL(parsed *url.URL) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// subscribesTelemetry reports whether a pattern can match any telemetry type.
-// The section 8.1 reservation of the action and server namespaces is what
-// makes this decidable: a pattern confined to them can only ever match the
-// hub's own lifecycle notifications.
-func subscribesTelemetry(pattern string) bool {
-	if pattern == "*" {
-		return true
+// reservedNamespace reports whether a type, or a pattern, lies in a namespace
+// the hub's own notifications own (spec section 8.1): action, server, and
+// audit. Telemetry may not use them, which is what keeps a plugin from
+// speaking in the hub's voice to every webhook receiver.
+func reservedNamespace(value string) bool {
+	return strings.HasPrefix(value, "action.") || strings.HasPrefix(value, "server.") ||
+		strings.HasPrefix(value, "audit.")
+}
+
+// optInNotification reports whether a notification type is matched only by a
+// pattern that names its namespace, never by the catch-all (spec section
+// 11.1). The audit log is admin-only, and a subscription to everything
+// registered before the notification existed must not start exporting it.
+func optInNotification(notificationType string) bool {
+	return strings.HasPrefix(notificationType, "audit.")
+}
+
+// patternAdmits reports whether one webhook filter pattern matches one
+// notification type, with the opt-in rule applied.
+func patternAdmits(pattern, notificationType string) bool {
+	if pattern == "*" && optInNotification(notificationType) {
+		return false
 	}
-	return !strings.HasPrefix(pattern, "action.") && !strings.HasPrefix(pattern, "server.")
+	return (Scope{Pattern: pattern}).matches(notificationType)
+}
+
+// subscribesTelemetry reports whether a pattern can match any telemetry type.
+// The section 8.1 reservation is what makes this decidable: a pattern
+// confined to the reserved namespaces can only ever match the hub's own
+// notifications.
+func subscribesTelemetry(pattern string) bool {
+	return pattern == "*" || !reservedNamespace(pattern)
 }
 
 // refusal is a coverage decision the handler answers with, carried as an
@@ -606,16 +697,20 @@ func subscriptionCoverage(caller *principal, events []string, namesServers bool)
 	if len(subscribed) == 0 {
 		subscribed = []string{"*"}
 	}
-	needsActions, needsServers := false, namesServers
+	needsActions, needsServers, needsAdmin := false, namesServers, false
 	for _, pattern := range subscribed {
-		matcher := Scope{Pattern: pattern}
-		if matcher.matches(notifyActionCompleted) {
+		if patternAdmits(pattern, notifyActionCompleted) {
 			// The notification carries any code's record, so nothing narrower
 			// than an unnarrowed actions:read can cover it.
 			needsActions = true
 		}
-		if matcher.matches(notifyServerLinkLost) || matcher.matches(notifyServerLinkRestore) {
+		if patternAdmits(pattern, notifyServerLinkLost) || patternAdmits(pattern, notifyServerLinkRestore) {
 			needsServers = true
+		}
+		if patternAdmits(pattern, notifyAuditRecorded) {
+			// The audit log is read under admin alone (spec section 10.5), and
+			// an export of it is a reading of it.
+			needsAdmin = true
 		}
 		if subscribesTelemetry(pattern) {
 			if !caller.covers(resourceEvents, verbRead, pattern) {
@@ -629,6 +724,9 @@ func subscriptionCoverage(caller *principal, events []string, namesServers bool)
 	}
 	if needsServers && !caller.allowsAny(resourceServers, verbRead) {
 		return forbidden("subscribing to the link notifications, or naming serverIds, requires servers:read")
+	}
+	if needsAdmin && !caller.isAdmin() {
+		return forbidden("subscribing to audit.recorded requires admin, the scope that reads the audit log")
 	}
 	return nil
 }
@@ -647,6 +745,10 @@ func notificationCoverage(caller *principal, notificationType string) *refusal {
 	case notificationType == notifyServerLinkLost || notificationType == notifyServerLinkRestore:
 		if !caller.allowsAny(resourceServers, verbRead) {
 			return forbidden("a pending " + notificationType + " delivery requires servers:read to be redirected or replayed")
+		}
+	case optInNotification(notificationType):
+		if !caller.isAdmin() {
+			return forbidden("a delivery of " + notificationType + " requires admin to be redirected or replayed")
 		}
 	default:
 		if !caller.covers(resourceEvents, verbRead, notificationType) {
@@ -674,10 +776,12 @@ func webhookMatches(webhook store.Webhook, notificationType, serverID string) bo
 		}
 	}
 	if len(webhook.Events) == 0 {
-		return true
+		// An empty filter is the catch-all, and the catch-all never admits an
+		// opt-in notification (spec section 11.1).
+		return !optInNotification(notificationType)
 	}
 	for _, pattern := range webhook.Events {
-		if (Scope{Pattern: pattern}).matches(notificationType) {
+		if patternAdmits(pattern, notificationType) {
 			return true
 		}
 	}

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.30 (2026-09-22)
+**Status:** draft 0.31 (2026-09-23)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1134,13 +1134,16 @@ supports): `player.connect`, `player.disconnect`, `player.death`, `player.damage
 `object.placed`, `item.interact`, `server.start`, `server.fps` (periodic performance
 sample), `server.stop`.
 
-**Custom events** are any other type of the same form, with one exception: the `action`
-and `server` namespaces are **reserved** for the hub's own lifecycle notifications
-(section 11.1), and a hub MUST refuse an event whose `t` begins with `action.` or
-`server.` exactly as it refuses one outside the grammar. Without the reservation, a
-plugin's telemetry could impersonate the hub's own word to every webhook receiver, since
-both arrive through the same fan-out. Core `server` telemetry is unaffected: those types
-live under `core.` (`core.server.fps`), not under bare `server.`. Otherwise: same channel,
+**Custom events** are any other type of the same form, with one exception: the `action`,
+`server`, and `audit` namespaces are **reserved** for the hub's own notifications
+(section 11.1), and a hub MUST refuse an event whose `t` begins with `action.`,
+`server.`, or `audit.` exactly as it refuses one outside the grammar. Without the
+reservation, a plugin's telemetry could impersonate the hub's own word to every webhook
+receiver, since both arrive through the same fan-out. Core `server` telemetry is
+unaffected: those types live under `core.` (`core.server.fps`), not under bare `server.`.
+The `audit` namespace joined the reservation in draft 0.31, with the audit notification;
+a plugin that emitted `audit.*` telemetry before then has those batches refused from that
+draft on. Otherwise: same channel,
 same storage, same webhook fan-out; hubs MUST NOT privilege core events over custom events
 in routing or retention capability. A custom event MUST be accepted whether or not the
 manifest declared it (section 6.3).
@@ -1230,6 +1233,27 @@ platform-specific id:
 > plugin for another game adds its platform identifier as an additive change to this
 > section, never by altering the shape. A hub MUST accept any `platform` string within the
 > section 8.3 length bounds, since it cannot know which games will be enrolled.
+
+**Identity references in events.** An event **refers to** an identity when a top-level
+member of its `data` is an identity object: a JSON object whose `platform` and `id`
+members are non-empty strings within the section 8.3 bounds (at most 64 and 128 code
+points), matched by exact member name. Other members beside the two are tolerated. The
+name of the member is the identity's **role** in the event (`player`, `killer`, `attacker`,
+or whatever the plugin calls it), and one event can refer to several identities, or to one
+identity under several roles.
+
+```json
+{ "t": "core.player.death",
+  "data": { "player": { "platform": "steam", "id": "76561198000000001" },
+            "killer": { "platform": "steam", "id": "76561198000000002" },
+            "weapon": "M4A1" } }
+```
+
+This event refers to two identities, one as `player` and one as `killer`. Only the top
+level counts: an identity nested deeper (inside an array of crew members, say) is data
+like any other, and a hub does not look for it. A plugin SHOULD therefore put every
+identity an event is about at the top level of `data`, because that is what the player
+profile of section 8.6 finds an event by.
 
 ### 8.3 State snapshots
 
@@ -1445,6 +1469,125 @@ A token narrowed by an `events:read:{pattern}` scope reads this endpoint through
 intersection rules of section 10.3: an absent `type` is narrowed to what the token may see,
 and an explicit term the grant does not cover is `forbidden` (403).
 
+### 8.6 Player profiles (Admin API)
+
+An identity (section 8.2) is the same person on every server of the installation, and the
+hub is the one party that sees all of them. A player's **profile** is what the hub knows
+about one identity across every server: the events that refer to it, the actions
+dispatched against it, and the notes operators keep on it. It is three reads and two
+writes under one path:
+
+```
+/api/v1/players/{platform}/{playerId}
+```
+
+`{platform}` and `{playerId}` are the identity's two members, each one percent-encoded
+path segment, non-empty and within the section 8.3 bounds (at most 64 and 128 code points
+once decoded); anything else is `bad_request`. No identity is registered anywhere, so an
+identity the hub has never heard of has an empty profile, never a `not_found`.
+
+**Events.**
+
+```
+GET /api/v1/players/steam/76561198000000001/events?type=core.player.*&limit=100
+
+-> 200 OK
+{
+  "events": [
+    { "id": "01J5QK...", "serverId": "01J5Q...", "type": "core.player.death",
+      "occurredAt": "2026-08-16T18:00:00.000Z", "receivedAt": "2026-08-16T18:00:01.000Z",
+      "data": { }, "roles": ["killer"] }
+  ],
+  "nextCursor": "..."
+}
+```
+
+- The answer is every stored event, on any server, that refers to the identity (section
+  8.2), each shaped as in section 8.5 plus `roles`: the roles it holds in that event, in
+  name order.
+- The parameters, the order, the page bounds, the cursor, and the `bad_request` rules are
+  those of section 8.5, and so is scope: the read requires `events:read`, and a narrowed
+  grant reads it through section 10.3, an absent `type` narrowed to the grant and an
+  explicit term it does not cover `forbidden`.
+- A bound token (section 10.1) reads only the events of the servers in its binding. The
+  rest are left out rather than refused, the rule `GET /api/v1/servers` follows, because
+  the caller asked for what it may see.
+- The profile is as deep as retention and no deeper. An event pruned under section 8.4
+  leaves the profile with it, and a hub keeps no per-identity summary that outlives the
+  events, so a reader SHOULD present a profile as the window retention leaves (reference:
+  30 days, `core.player.chat` 90), never as a player's lifetime. A hub SHOULD cover the
+  events it already held when it gained this read, not only those that arrive afterwards;
+  the reference hub indexes them in the background after an upgrade.
+
+**Actions.**
+
+```
+GET /api/v1/players/steam/76561198000000001/actions?limit=100
+
+-> 200 OK
+{ "actions": [ { "id": "01J5QK...", "serverId": "01J5Q...", "code": "vyshka.kick",
+                 "context": "player", "referenceKey": "76561198000000001", ... } ],
+  "nextCursor": "..." }
+```
+
+- The answer is every action, on any server, dispatched with `context: "player"` and a
+  `referenceKey` equal to `{playerId}` (section 7), each shaped as
+  `GET /api/v1/actions/{actionId}` answers it, newest first by `createdAt` with the id as
+  the tiebreak, so the order is total.
+- A player's `referenceKey` is the platform id alone, with no platform beside it, so the
+  match cannot see the platform: one id on two platforms has one action list. With one
+  platform per game server, that is a collision only between games.
+- `limit` and `cursor` follow section 8.5 (reference default 100, cap 500, clamped).
+- The read requires an `actions:read` grant, and the answer holds only the actions whose
+  code the token may read (section 10.2) on the servers its binding admits. The rest are
+  left out, never refused: there is no filter here a refusal could name.
+
+**Notes.**
+
+```
+POST /api/v1/players/steam/76561198000000001/notes
+{ "text": "Warned in direct chat for camping the airfield spawn." }
+
+-> 201 Created
+{ "note": { "id": "01J5QN...",
+            "player": { "platform": "steam", "id": "76561198000000001" },
+            "text": "Warned in direct chat for camping the airfield spawn.",
+            "createdAt": "2026-09-23T18:00:00.000Z",
+            "createdBy": { "tokenId": "01J...", "tokenName": "moderator-anna" } } }
+
+GET /api/v1/players/steam/76561198000000001/notes?limit=100
+-> 200 OK   { "notes": [ ... ], "nextCursor": "..." }
+
+DELETE /api/v1/players/steam/76561198000000001/notes/{noteId}
+-> 204 No Content
+```
+
+- `text` is REQUIRED: a string of at most 4000 code points that is not empty or
+  whitespace alone. It is stored as sent.
+- `createdBy` names the credential that wrote the note, with the token's name **as it was
+  at the time**, as the audit log does (section 10.5); a bootstrap credential has an empty
+  `tokenId`.
+- Notes list newest first by `createdAt` with the id as the tiebreak, paged like section
+  8.5.
+- A note is kept until it is deleted. Notes are an operator's own records rather than
+  telemetry, and no retention applies to them. A hub MAY bound how many notes one identity
+  carries (reference: 1000), and refuses a note past the bound with `conflict` rather than
+  dropping an old one.
+- There is no edit. A note that is wrong is deleted and written again, and the audit log
+  keeps both acts.
+- `DELETE` of a `{noteId}` that names no note, or a note of another identity, is
+  `not_found`.
+- Reading requires `notes:read` and writing (`POST`, `DELETE`) requires `notes:write`
+  (section 10.1). Notes are installation-wide, like the identity they describe, so a
+  server binding does not narrow them.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | `{platform}` or `{playerId}` empty or over its bound; an unparseable `type`, `since`, `until`, `limit`, or `cursor`; a note `text` missing, blank, or over 4000 code points |
+| `forbidden` | 403 | The token lacks the route's grant, or an explicit `type` term its grants do not cover |
+| `not_found` | 404 | A `{noteId}` naming no note of this identity |
+| `conflict` | 409 | The identity already carries as many notes as the hub allows |
+
 ## 9. Delivery guarantees
 
 ### 9.1 Sequence numbers and acks
@@ -1555,6 +1698,8 @@ actions:read:example-mod.heal    one action code
 actions:dispatch                 dispatch anything (dangerous, UIs SHOULD warn)
 actions:dispatch:core.player.*   one namespace of action codes
 kv:rw:example-mod                one KV namespace
+notes:read                       operator notes on player identities (section 8.6)
+notes:write                      writing and deleting those notes
 webhooks:manage                  webhook configuration
 admin                            everything, including token management and server enrollment
 ```
@@ -1611,9 +1756,14 @@ the hub delivers on its own, section 11), and any grant a later draft marks
 installation-wide. `kv:rw` is allowed on a bound token and the binding does not narrow it:
 the store is installation-wide by design (section 12), a value written under one server's
 token is the same value on every server, and a bound token needs the store for exactly the
-things (presets, per-identity flags) that are meant to follow a player across servers. That
-is the one place a binding does not mean what its name suggests, and a UI SHOULD say so
-beside the grant.
+things (presets, per-identity flags) that are meant to follow a player across servers.
+`notes:read` and `notes:write` are allowed and unnarrowed for the same reason: a note is
+about an identity, and an identity is the same person on every server (section 8.6), so a
+moderator bound to one server reads and writes the notes every other moderator keeps.
+Those are the two places a binding does not mean what its name suggests, and a UI SHOULD
+say so beside the grant.
+
+`notes:write` does not imply `notes:read`, and neither takes a `:pattern`.
 
 A hub MUST implement the binding. A hub that stored one and ignored it would hand out a
 credential wider than the operator believes, which is worse than refusing the mint; a hub
@@ -1632,6 +1782,10 @@ in the request, the check MUST run against that value:
 | `POST /api/v1/servers/{id}/actions` | `actions:dispatch:{the request's code}` |
 | `GET /api/v1/actions/{actionId}` | `actions:read:{the action's code}` |
 | `GET /api/v1/servers/{id}/events` | `events:read`, intersected per section 10.3 |
+| `GET /api/v1/players/{platform}/{playerId}/events` | `events:read`, intersected per section 10.3 |
+| `GET /api/v1/players/{platform}/{playerId}/actions` | any `actions:read` grant; the answer holds only the codes it covers (section 8.6) |
+| `GET /api/v1/players/{platform}/{playerId}/notes` | `notes:read` |
+| `POST .../notes`, `DELETE .../notes/{noteId}` | `notes:write` |
 | `/api/v1/kv/{namespace}/{key}`, `POST .../incr`, `GET /api/v1/kv/{namespace}` | `kv:rw:{the path's namespace}` |
 | `GET /api/v1/kv` | any `kv:rw` grant; the namespaces listed are filtered to those the grants cover (section 12.2) |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
@@ -1654,9 +1808,13 @@ the scope:
   caller asked for what it may see, and a filtered list is the token's whole world, the
   rule the narrowed feed of section 10.3 already sets. An empty answer is the honest one
   for a binding whose servers are all it knows about.
-- Routes that name no server (the key/value store, token management, the audit log,
-  webhooks) are not touched by the binding; of those, a bound token can hold a grant only
-  on the key/value store, and section 10.1 says why that grant stays installation-wide.
+- The profile reads of events and actions (section 8.6) name an identity rather than a
+  server, and answer only what the binding admits: the records of other servers are left
+  out, never refused, as `GET /api/v1/servers` leaves them out.
+- Routes that name no server and read no server's records (the key/value store, player
+  notes, token management, the audit log, webhooks) are not touched by the binding; of
+  those, a bound token can hold grants only on the key/value store and on notes, and
+  section 10.1 says why those stay installation-wide.
 
 A hub serving one trust boundary answers `forbidden` here for the same reason it does
 everywhere else in this section: the id in the path is one the caller already holds, and
@@ -1822,6 +1980,12 @@ same opaque-cursor pagination as section 8.5. It accepts `tokenId`, `serverId`, 
 (inclusive), `until` (exclusive), `limit`, and `cursor`. The audit log is not optional and
 not a plugin.
 
+The log is also pushed. Every record written is an `audit.recorded` notification (section
+11.1), delivered to the webhooks that subscribe to it by name, so an operations channel
+sees who did what to whom as it happens rather than when someone next reads the log. The
+push is a copy: the record is written whether or not anything subscribes, and a delivery
+that fails leaves the log as it was.
+
 ### 10.6 Bootstrap credentials
 
 A hub MAY accept one **configured** bootstrap credential carrying `admin`, so that a fresh
@@ -1868,6 +2032,24 @@ same patterns:
 | `action.completed` | An action reaches a terminal state: completed, failed, or expired (section 7) | The action record: `actionId`, `code`, `state`, `ok`, `error`, `durationMs`, `createdAt`, `finishedAt` |
 | `server.link.lost` | A server that was reachable stops being reachable | `lastSeenAt` |
 | `server.link.restored` | A server whose link was lost is reachable again | `lastSeenAt` |
+| `audit.recorded` | An audit record is written (section 10.5) | The record as `GET /api/v1/audit` returns it: `id`, `at`, `tokenId`, `tokenName`, `method`, `path`, `status`, `sourceIp`, `payloadDigest`, `serverId` when there is one, `detail` |
+
+**The audit notification is opt-in by name.** `audit.recorded` matches only a pattern that
+names the `audit` namespace: `audit.*` or `audit.recorded`. The catch-all `*`, and the
+absent or empty filter that means it, match every other notification and never this one.
+Two reasons, either sufficient. The audit log is readable only under `admin` (section
+10.5), so an export of it must be asked for by a token that could read it, and a
+subscription to "everything" is not that request. And a webhook registered before a hub
+gained the notification was granted, checked, and aimed at a target for what `*` meant
+then; a hub upgrade must not start sending that target the installation's access record.
+
+An audit record names a server only when its mutation did (section 10.5). A webhook with a
+non-empty `serverIds` receives the records of those servers; the records that name no
+server (a token minted, a webhook edited) reach only webhooks that observe every server.
+
+Nothing loops: deliveries are not Admin API requests, so delivering a record writes no
+record, while editing the webhook that carries them is a mutation like any other and is
+delivered like any other.
 
 Link semantics: a server is **reachable** while it holds a live session and Plugin API
 traffic from it has arrived recently, where "recently" is derived from the negotiated
@@ -1903,10 +2085,13 @@ MUST also hold grants **covering** what it subscribes to (the coverage rule of s
   notification carries any code's record).
 - A filter that admits the link notifications, and a non-empty `serverIds` list (which can
   otherwise be used to probe which server ids exist), require `servers:read`.
-- An absent or empty `events` filter subscribes to everything and requires all three.
+- A filter that admits `audit.recorded` (one naming `audit.*` or `audit.recorded`, section
+  11.1) requires `admin`, the scope that reads the audit log.
+- An absent or empty `events` filter subscribes to everything but the audit notification
+  and requires the first three.
 
 The namespace reservation of section 8.1 is what makes this decidable: a filter naming
-only reserved lifecycle types can never match telemetry, so it needs no `events:read`. A
+only reserved types can never match telemetry, so it needs no `events:read`. A
 registration the token's grants do not cover is `forbidden` (403).
 
 A bound token (section 10.1) cannot hold `webhooks:manage` at all: a subscription observes
@@ -1923,7 +2108,8 @@ Authorization: Bearer <admin token>
   "url": "https://example.net/hooks/vyshka",
   "events": ["core.player.*", "action.completed"],
   "serverIds": [],
-  "template": "generic-json"
+  "template": "generic-json",
+  "redact": ["position"]
 }
 
 -> 201 Created
@@ -1934,6 +2120,7 @@ Authorization: Bearer <admin token>
     "events": ["core.player.*", "action.completed"],
     "serverIds": [],
     "template": "generic-json",
+    "redact": ["position"],
     "createdAt": "2026-08-20T18:00:00.000Z",
     "pausedAt": null
   },
@@ -1943,14 +2130,18 @@ Authorization: Bearer <admin token>
 
 - `url` is REQUIRED and MUST be `http` or `https`.
 - `events` is OPTIONAL: patterns in the section 10.1 grammar; absent or empty means every
-  type. A pattern outside the grammar is `bad_request`, never a filter that silently
-  matches nothing.
+  type but the opt-in `audit.recorded` (section 11.1). A pattern outside the grammar is
+  `bad_request`, never a filter that silently matches nothing.
 - `serverIds` is OPTIONAL: exact server ids the webhook observes; absent or empty means
   every server. An entry naming no server the hub knows is `not_found`, because a typo
   here would otherwise become a webhook that silently never fires.
 - `template` is OPTIONAL and defaults to `generic-json`, the shape of section 11.3.
   `discord` renders the Discord shape of section 11.3. A template the hub does not
   implement is `bad_request`.
+- `redact` is OPTIONAL: member paths the hub strips from every notification's `data`
+  before it renders the delivery, so one stream can feed an admin channel whole and a
+  public one without, say, positions. Absent or empty strips nothing. The rules follow the
+  list.
 - `secret` is minted by the hub and returned only in this response. Unlike the credentials
   of section 5, the hub cannot store a digest of it, because signing needs the secret
   itself; operators should treat read access to the hub's database as read access to
@@ -1958,6 +2149,27 @@ Authorization: Bearer <admin token>
 - `pausedAt` is the instant the webhook was paused, or `null` while it is active (below).
 - A webhook observes only what lands after it is registered. Registration is not a
   backfill request, and a hub MUST NOT replay stored history into a new webhook.
+
+**Redaction.** A `redact` path is one or more member names joined by `.`, each drawn from
+the identifier alphabet of section 8.1 (letters, digits, `_`, `-`), at most 128 characters
+in all, and a webhook carries at most 20 of them. A path outside that grammar is
+`bad_request`. The first name selects a member of `data`, each further name a member of
+what the path has selected so far, and the member the last name selects is removed. Where
+a step selects an array, the rest of the path applies to every element of it that is an
+object, so `crew.position` strips the position from each crew entry. A path that selects
+nothing in a given notification strips nothing and is not an error, which is what lets one
+list serve every type a webhook subscribes to: `["position", "killerPosition"]` on a kill
+feed takes the coordinates out of deaths and leaves the rest of each payload alone.
+
+- Redaction applies to every notification the webhook receives, lifecycle included, and
+  it applies before the template: the `discord` shape is rendered from the redacted
+  `data`, so what a path removes cannot come back as a line of prose. Only `data` is
+  redacted; the members the hub adds around it (section 11.3) are delivered as they are.
+- It is a filter on what leaves the hub, not on what the hub keeps. Stored events, the
+  event query, and every other webhook are untouched.
+- A member name that contains a `.` cannot be addressed. Paths name the payloads plugins
+  actually write, and a plugin whose payload needs such a name for something an operator
+  must redact has a payload to fix.
 
 | Request | Result |
 |---|---|
@@ -1972,15 +2184,15 @@ or audits one: target URLs routinely embed bearer credentials in exactly those p
 logs outlive and outtravel webhook configuration.
 
 **Editing a registration.** `PATCH /api/v1/webhooks/{webhookId}` takes any subset of `url`,
-`events`, `serverIds`, `template`, and `paused`. An absent member leaves that field
+`events`, `serverIds`, `template`, `redact`, and `paused`. An absent member leaves that field
 unchanged; a present member replaces it whole, so `"events": []` subscribes to every type
 exactly as an empty filter does at registration. A body naming no member this draft knows,
 an empty body included, is `bad_request`: a request that cannot have been meant MUST NOT be
 answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The answer is
 `200` with `{ "webhook": ... }`, the same view registration returns.
 
-- `url`, `events`, `serverIds`, and `template` are validated exactly as at registration and
-  raise exactly the same codes. An edit is not a second, laxer spelling of the same rules.
+- `url`, `events`, `serverIds`, `template`, and `redact` are validated exactly as at
+  registration and raise exactly the same codes. An edit is not a second, laxer spelling of the same rules.
 - The coverage rule above is re-applied to the **resulting** subscription, meaning the
   merged `events` and `serverIds` rather than only the members the request changed. An edit
   therefore can never widen a webhook past what the editing token could have registered
@@ -1998,8 +2210,11 @@ answered as an edit that happened. An unknown `{webhookId}` is `not_found`. The 
   verification survives one. Rotating a secret is a separate act this draft does not define.
 - Deliveries already queued are affected one way but not the other. A delivery's body was
   rendered at enqueue and is byte-stable for its whole life (section 11.3), so a `template`
-  change applies only to deliveries created after the edit. The target URL is read at
-  attempt time, so a delivery already pending goes to the **new** URL on its next attempt.
+  or `redact` change applies only to deliveries created after the edit. The target URL is
+  read at attempt time, so a delivery already pending goes to the **new** URL on its next
+  attempt. An operator who adds a path to keep something out of a channel and needs the
+  deliveries already queued kept out too pauses the webhook first, then deletes it or lets
+  the channel see what was owed.
 
 **Pausing.** `paused: true` sets `pausedAt` to the current instant, and pausing an already
 paused webhook MUST NOT move it: pause is a state, not an event, and an operator who pauses
@@ -2025,7 +2240,7 @@ that its pending deliveries are abandoned.
 
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template, an edit naming no member this draft knows |
+| `bad_request` | 400 | `url` missing or not http(s), a filter pattern outside the grammar, an unknown template, a `redact` path outside its grammar or more than 20 of them, an edit naming no member this draft knows |
 | `forbidden` | 403 | The token's grants do not cover what the filter subscribes to, at registration or after an edit |
 | `not_found` | 404 | Unknown webhook id, or a `serverIds` entry naming no server |
 
@@ -2057,10 +2272,16 @@ X-Vyshka-Signature: sha256=7f1d...
   authoritative one: a receiver that deduplicates SHOULD verify the signature first and
   key on the body's `deliveryId`, because an unsigned header a forger can set must never
   be able to make a receiver discard the genuine delivery.
+- `serverId` names the server the notification concerns. It is absent on an
+  `audit.recorded` delivery whose record names no server (section 11.1), the one
+  notification that can concern none.
 - `eventId` names the stored telemetry event behind a telemetry delivery, so a receiver
   can correlate with the section 8.5 feed; lifecycle deliveries omit it.
 - `occurredAt` is the event's own `occurredAt` for telemetry, the action's `finishedAt`
-  for `action.completed`, and the transition time for the link notifications.
+  for `action.completed`, the transition time for the link notifications, and the
+  record's `at` for `audit.recorded`.
+- `data` is the notification's payload after the webhook's `redact` paths have been
+  applied (section 11.2).
 - The body MUST be byte-for-byte identical on every attempt of one delivery, so its
   signature is too. `X-Vyshka-Attempt` is 1-based and lives in a header precisely so the
   body can stay stable.
@@ -2091,7 +2312,7 @@ the words in a notification come from players:
 What each notification type says is the hub's choice. A hub MUST still render a type it
 has no wording for (a custom event above all) rather than skip the delivery; the reference
 hub uses the type as the title and the payload's top-level members as fields, and words the
-core event types, `action.completed`, and the link notifications itself.
+core event types, `action.completed`, the link notifications, and `audit.recorded` itself.
 
 ### 11.4 Signature
 

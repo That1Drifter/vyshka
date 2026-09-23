@@ -42,9 +42,12 @@ Plugin to hub. The plugin pushes `event.batch` envelopes; core and mod-defined e
 in one append-only store with per-type retention, queryable at
 `GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Whole state
 snapshots (the players, vehicles, and entities lists, and the world's clock and
-conditions) are read at `GET /api/v1/servers/{id}/state/{type}`. Signed webhooks push events and action outcomes
-to other systems with retries and a dead letter, and a per-mod key/value store serves
-both realms.
+conditions) are read at `GET /api/v1/servers/{id}/state/{type}`. A player's profile at
+`/api/v1/players/{platform}/{id}` gathers the events that name one identity on every server,
+the actions against it, and the notes operators keep on it. Signed webhooks push events,
+action outcomes, and, for a webhook that asks by name, audit records to other systems, with
+per-webhook redaction of named fields, retries, and a dead letter, and a per-mod key/value
+store serves both realms.
 
 Everything is behind scoped Admin API tokens. A credential can be narrowed to one action
 code or one event namespace, every route enforces its scope, and every authenticated

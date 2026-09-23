@@ -321,6 +321,9 @@ type Server struct {
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
 	closeOnce  sync.Once
+	// backfilled counts the events the identity backfill has indexed, for the
+	// one log line that says it finished. Only the maintenance loop touches it.
+	backfilled int
 }
 
 // New opens the store, runs migrations, and builds the HTTP handler. The caller
@@ -448,11 +451,23 @@ func (s *Server) runMaintenance() {
 	// so with nothing to gain from running often.
 	prune := time.NewTicker(s.cfg.RetentionInterval)
 	defer prune.Stop()
+	// The identity backfill of spec section 8.6: events stored before the
+	// profile index existed are indexed a batch at a time until none remain,
+	// and the ticker is stopped then. Its channel is nil once it is done, and
+	// a nil channel never fires.
+	backfill := time.NewTicker(time.Second)
+	defer backfill.Stop()
+	backfillTick := backfill.C
 
 	for {
 		select {
 		case <-s.stopSweeper:
 			return
+		case <-backfillTick:
+			if s.backfillIdentities() {
+				backfill.Stop()
+				backfillTick = nil
+			}
 		case <-expiry.C:
 			// Bounded, because Close waits for this loop before closing the
 			// store: a job that could block forever could hang shutdown.
@@ -480,6 +495,38 @@ func (s *Server) runMaintenance() {
 			})
 		}
 	}
+}
+
+// backfillIdentities indexes a few seconds' worth of the events stored before
+// the identity index existed and reports whether none remain. A failure is
+// logged and retried on the next tick: the profile is incomplete until the
+// walk finishes, never wrong.
+func (s *Server) backfillIdentities() bool {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		indexed, done, err := s.store.BackfillEventIdentities(ctx, identityBackfillStep, extractIdentities)
+		cancel()
+		if err != nil {
+			s.log.Error("identity backfill failed", "error", err.Error())
+			return false
+		}
+		if indexed > 0 {
+			s.backfilled += indexed
+		}
+		if done {
+			if s.backfilled > 0 {
+				s.log.Info("identity backfill finished", "events", s.backfilled)
+			}
+			return true
+		}
+		select {
+		case <-s.stopSweeper:
+			return false
+		default:
+		}
+	}
+	return false
 }
 
 // prune runs one retention pass, in bounded batches, until it stops finding
@@ -603,6 +650,28 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/audit", s.admin(resourceAdmin, "", s.handleListAudit))
 	mux.HandleFunc("/api/v1/audit", methodNotAllowed("GET"))
+
+	// Player profiles (spec section 8.6): one identity across every server.
+	// The event and action reads are the server feed's grants, narrowed inside
+	// the handler to what the token may read and the servers its binding
+	// names; the notes carry their own grants and are installation-wide.
+	mux.HandleFunc("GET /api/v1/players/{platform}/{playerId}/events",
+		s.admin(resourceEvents, verbRead, s.handlePlayerEvents))
+	mux.HandleFunc("/api/v1/players/{platform}/{playerId}/events", methodNotAllowed("GET"))
+
+	mux.HandleFunc("GET /api/v1/players/{platform}/{playerId}/actions",
+		s.admin(resourceActions, verbRead, s.handlePlayerActions))
+	mux.HandleFunc("/api/v1/players/{platform}/{playerId}/actions", methodNotAllowed("GET"))
+
+	mux.HandleFunc("GET /api/v1/players/{platform}/{playerId}/notes",
+		s.admin(resourceNotes, verbRead, s.handleListNotes))
+	mux.HandleFunc("POST /api/v1/players/{platform}/{playerId}/notes",
+		s.admin(resourceNotes, verbWrite, s.handleCreateNote))
+	mux.HandleFunc("/api/v1/players/{platform}/{playerId}/notes", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("DELETE /api/v1/players/{platform}/{playerId}/notes/{noteId}",
+		s.admin(resourceNotes, verbWrite, s.handleDeleteNote))
+	mux.HandleFunc("/api/v1/players/{platform}/{playerId}/notes/{noteId}", methodNotAllowed("DELETE"))
 
 	// Webhooks (spec section 11), all behind webhooks:manage: registration can
 	// aim signed POSTs at anything the hub can reach, and the delivery record

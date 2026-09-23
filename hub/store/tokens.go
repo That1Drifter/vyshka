@@ -307,7 +307,15 @@ func (s *Store) RecordAudit(ctx context.Context, request NewAuditRecord) (AuditR
 		Detail:        detail,
 	}
 
-	if _, err := s.db.ExecContext(ctx,
+	// The record and its outbox row commit together, so the audit.recorded
+	// notification (spec section 11.1) can be neither lost nor invented: a
+	// record that exists is owed its fan-out, and nothing else is.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AuditRecord{}, fmt.Errorf("begin audit record: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO audit_records (id, at, token_id, token_name, method, path, status,
 		                            source_ip, payload_digest, server_id, detail, expires_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -317,7 +325,97 @@ func (s *Store) RecordAudit(ctx context.Context, request NewAuditRecord) (AuditR
 	); err != nil {
 		return AuditRecord{}, fmt.Errorf("insert audit record: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO audit_notifications (audit_id) VALUES (?)`, record.ID); err != nil {
+		return AuditRecord{}, fmt.Errorf("queue audit notification: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return AuditRecord{}, fmt.Errorf("commit audit record: %w", err)
+	}
 	return record, nil
+}
+
+const auditColumns = `a.id, a.at, a.token_id, a.token_name, a.method, a.path, a.status,
+	        a.source_ip, a.payload_digest, a.server_id, a.detail`
+
+func scanAuditRecord(row rowScanner) (AuditRecord, error) {
+	var (
+		record     AuditRecord
+		at, detail string
+	)
+	if err := row.Scan(&record.ID, &at, &record.TokenID, &record.Name,
+		&record.Method, &record.Path, &record.Status, &record.SourceIP,
+		&record.PayloadDigest, &record.ServerID, &detail); err != nil {
+		return AuditRecord{}, fmt.Errorf("scan audit record: %w", err)
+	}
+	var err error
+	if record.At, err = parseTime(at); err != nil {
+		return AuditRecord{}, err
+	}
+	record.Detail = json.RawMessage(detail)
+	return record, nil
+}
+
+// NotifyAudit is NotifyEvents for the audit.recorded notification (spec
+// section 11.1): up to limit queued records are fanned out against the
+// webhooks as read inside the transaction, and their outbox rows deleted in
+// the same commit.
+func (s *Store) NotifyAudit(ctx context.Context, limit int,
+	build func([]AuditRecord, []Webhook, map[string]string) []NewWebhookDelivery, pendingBound int) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin notify audit: %w", err)
+	}
+	defer tx.Rollback()
+
+	// The join cannot miss: the outbox row cascades away with its record,
+	// so a queued id always names a record.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+auditColumns+`
+		   FROM audit_notifications n JOIN audit_records a ON a.id = n.audit_id
+		  ORDER BY n.audit_id LIMIT ?`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("read queued audit records: %w", err)
+	}
+	records := make([]AuditRecord, 0, 16)
+	ids := make([]any, 0, 16)
+	for rows.Next() {
+		record, err := scanAuditRecord(rows)
+		if err != nil {
+			rows.Close()
+			return 0, err
+		}
+		records = append(records, record)
+		ids = append(ids, record.ID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("read queued audit records: %w", err)
+	}
+	rows.Close()
+	if len(records) == 0 {
+		return 0, tx.Commit()
+	}
+
+	webhooks, err := webhooksTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	names, err := serverNamesTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if err := insertDeliveries(ctx, tx, build(records, webhooks, names), pendingBound); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM audit_notifications WHERE audit_id IN (`+inList(len(ids))+`)`, ids...); err != nil {
+		return 0, fmt.Errorf("clear queued audit records: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit notify audit: %w", err)
+	}
+	return len(records), nil
 }
 
 // AuditQuery is one page of the audit feed, newest first.
@@ -376,9 +474,8 @@ func (s *Store) AuditRecords(ctx context.Context, query AuditQuery) ([]AuditReco
 
 	args = append(args, query.Limit)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, at, token_id, token_name, method, path, status, source_ip,
-		        payload_digest, server_id, detail
-		   FROM audit_records
+		`SELECT `+auditColumns+`
+		   FROM audit_records a
 		  WHERE `+strings.Join(conditions, " AND ")+`
 		  ORDER BY at DESC, id DESC
 		  LIMIT ?`, args...)
@@ -389,19 +486,10 @@ func (s *Store) AuditRecords(ctx context.Context, query AuditQuery) ([]AuditReco
 
 	records := make([]AuditRecord, 0, min(query.Limit, 128))
 	for rows.Next() {
-		var (
-			record     AuditRecord
-			at, detail string
-		)
-		if err := rows.Scan(&record.ID, &at, &record.TokenID, &record.Name,
-			&record.Method, &record.Path, &record.Status, &record.SourceIP,
-			&record.PayloadDigest, &record.ServerID, &detail); err != nil {
-			return nil, fmt.Errorf("scan audit record: %w", err)
-		}
-		if record.At, err = parseTime(at); err != nil {
+		record, err := scanAuditRecord(rows)
+		if err != nil {
 			return nil, err
 		}
-		record.Detail = json.RawMessage(detail)
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {

@@ -33,6 +33,9 @@ type NewEvent struct {
 	// from OccurredAt, so that a game server with a wrong clock cannot talk its
 	// own telemetry into instant deletion or into immortality.
 	Retention time.Duration
+	// Identities are the player identities the event refers to (spec section
+	// 8.2), indexed with it for the player profile (section 8.6).
+	Identities []EventIdentity
 }
 
 // NewEventBatch is one accepted event.batch envelope's worth of events.
@@ -156,11 +159,18 @@ func insertEvents(ctx context.Context, tx *Tx, serverID string, events []NewEven
 		if len(data) == 0 {
 			data = json.RawMessage(`{}`)
 		}
+		eventID := id.NewAt(now)
 		if _, err := statement.ExecContext(ctx,
-			id.NewAt(now), serverID, event.Type, formatTime(occurredAt), receivedAt,
+			eventID, serverID, event.Type, formatTime(occurredAt), receivedAt,
 			formatTime(now.Add(event.Retention)), string(data),
 		); err != nil {
 			return 0, fmt.Errorf("insert event: %w", err)
+		}
+		// Indexed in the same transaction as the event, so the profile can
+		// never miss an event the feed shows.
+		if err := insertEventIdentities(ctx, tx, eventID, serverID, event.Type,
+			formatTime(occurredAt), event.Identities); err != nil {
+			return 0, err
 		}
 	}
 	return len(events), nil
@@ -212,22 +222,9 @@ func (s *Store) Events(ctx context.Context, query EventQuery) ([]Event, error) {
 	args := []any{query.ServerID}
 
 	if len(query.Types) > 0 {
-		terms := make([]string, 0, len(query.Types))
-		for _, filter := range query.Types {
-			if filter.Prefix == "" {
-				terms = append(terms, "type = ?")
-				args = append(args, filter.Exact)
-				continue
-			}
-			// A half-open range over the index rather than LIKE: `_` is a LIKE
-			// wildcard and a legal namespace character, so `example_mod.%` would
-			// quietly match `exampleXmod.raid` too. The upper bound raises the
-			// prefix's trailing "." to "/", the next byte in ASCII, which the
-			// event type grammar of section 8.1 cannot produce.
-			terms = append(terms, "(type >= ? AND type < ?)")
-			args = append(args, filter.Prefix, prefixUpperBound(filter.Prefix))
-		}
-		conditions = append(conditions, "("+strings.Join(terms, " OR ")+")")
+		condition, terms := typeCondition("type", query.Types)
+		conditions = append(conditions, condition)
+		args = append(args, terms...)
 	}
 	// Both bounds are rounded up to the stored resolution rather than formatted
 	// straight in. Timestamps are stored to the millisecond, so truncating a
@@ -286,6 +283,28 @@ func (s *Store) Events(ctx context.Context, query EventQuery) ([]Event, error) {
 		return nil, fmt.Errorf("read events: %w", err)
 	}
 	return events, nil
+}
+
+// typeCondition renders a set of ORed type filters over one column, with the
+// arguments it binds. filters must not be empty.
+func typeCondition(column string, filters []EventTypeFilter) (string, []any) {
+	terms := make([]string, 0, len(filters))
+	args := make([]any, 0, 2*len(filters))
+	for _, filter := range filters {
+		if filter.Prefix == "" {
+			terms = append(terms, column+" = ?")
+			args = append(args, filter.Exact)
+			continue
+		}
+		// A half-open range over the index rather than LIKE: `_` is a LIKE
+		// wildcard and a legal namespace character, so `example_mod.%` would
+		// quietly match `exampleXmod.raid` too. The upper bound raises the
+		// prefix's trailing "." to "/", the next byte in ASCII, which the
+		// event type grammar of section 8.1 cannot produce.
+		terms = append(terms, "("+column+" >= ? AND "+column+" < ?)")
+		args = append(args, filter.Prefix, prefixUpperBound(filter.Prefix))
+	}
+	return "(" + strings.Join(terms, " OR ") + ")", args
 }
 
 // ceilMillisecond rounds a time up to the resolution timestamps are stored at,

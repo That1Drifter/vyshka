@@ -98,6 +98,11 @@ func renderDiscord(one notification, serverName string) ([]byte, error) {
 	if serverName == "" {
 		serverName = one.ServerID
 	}
+	if serverName == "" {
+		// An audit record of an installation-wide mutation concerns no
+		// server (spec section 11.1).
+		serverName = "installation"
+	}
 	embed.Footer = discordFooter{Text: clipText(serverName+" · "+one.Type, discordFooterMax)}
 	embed = boundDiscordEmbed(embed)
 	return json.Marshal(discordBody{
@@ -169,8 +174,55 @@ func discordEmbedFor(notificationType string, data map[string]any) discordEmbed 
 		return discordEmbed{Title: "Server link lost", Description: lastSeenDescription(data), Color: discordRed}
 	case notifyServerLinkRestore:
 		return discordEmbed{Title: "Server link restored", Description: lastSeenDescription(data), Color: discordGreen}
+	case notifyAuditRecorded:
+		return discordAudit(data)
 	}
 	return discordGeneric(notificationType, data)
+}
+
+// discordAudit words one audit record for an operations channel: who did
+// what, and what the hub answered. Token names and paths are operator text
+// rather than player text, and are escaped all the same. A member the
+// webhook redacted is simply not said.
+func discordAudit(data map[string]any) discordEmbed {
+	who := escapeMarkdown(stringField(data, "tokenName"))
+	if who == "" {
+		who = "an unnamed credential"
+	}
+	request := strings.TrimSpace(stringField(data, "method") + " " + stringField(data, "path"))
+	if request == "" {
+		request = "a mutation"
+	}
+	embed := discordEmbed{
+		Title:       "Audit: " + escapeMarkdown(request),
+		Description: who,
+		Color:       discordGrey,
+	}
+	if status, ok := numberField(data, "status"); ok {
+		code := int(status)
+		embed.Description += " → " + strconv.Itoa(code)
+		switch {
+		case code >= 200 && code < 300:
+			embed.Color = discordGreen
+		case code >= 400 && code < 500:
+			embed.Color = discordOrange
+		case code >= 500:
+			embed.Color = discordRed
+		}
+	}
+	if source := stringField(data, "sourceIp"); source != "" {
+		embed.Fields = append(embed.Fields, discordField{Name: "Source", Value: escapeMarkdown(source), Inline: true})
+	}
+	if tokenID := stringField(data, "tokenId"); tokenID != "" {
+		embed.Fields = append(embed.Fields, discordField{Name: "Token", Value: escapeMarkdown(tokenID), Inline: true})
+	}
+	if detail, ok := data["detail"].(map[string]any); ok && len(detail) > 0 {
+		embed.Fields = append(embed.Fields, discordField{
+			Name:  "Detail",
+			Value: clipText(scalarText(detail), discordFieldValueMax),
+		})
+	}
+	return embed
 }
 
 // discordDeath words a death the way a kill feed does, from the payload the

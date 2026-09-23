@@ -89,25 +89,31 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		found = found[:limit]
 	}
 	for _, record := range found {
-		detail := record.Detail
-		if len(detail) == 0 {
-			detail = json.RawMessage(`{}`)
-		}
-		response.Records = append(response.Records, auditView{
-			ID:            record.ID,
-			At:            record.At,
-			Name:          record.Name,
-			TokenID:       record.TokenID,
-			Method:        record.Method,
-			Path:          record.Path,
-			Status:        record.Status,
-			SourceIP:      record.SourceIP,
-			PayloadDigest: record.PayloadDigest,
-			ServerID:      record.ServerID,
-			Detail:        detail,
-		})
+		response.Records = append(response.Records, newAuditView(record))
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// newAuditView is one record as the Admin API reports it, which is also the
+// data of its audit.recorded notification (spec section 11.1).
+func newAuditView(record store.AuditRecord) auditView {
+	detail := record.Detail
+	if len(detail) == 0 {
+		detail = json.RawMessage(`{}`)
+	}
+	return auditView{
+		ID:            record.ID,
+		At:            record.At,
+		Name:          record.Name,
+		TokenID:       record.TokenID,
+		Method:        record.Method,
+		Path:          record.Path,
+		Status:        record.Status,
+		SourceIP:      record.SourceIP,
+		PayloadDigest: record.PayloadDigest,
+		ServerID:      record.ServerID,
+		Detail:        detail,
+	}
 }
 
 func encodeAuditCursor(record store.AuditRecord) string {

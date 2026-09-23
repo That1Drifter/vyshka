@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.10.0
+  version: 0.11.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.2, 6.5, 7, 8.3, 8.5, 10, 11, and 12).
+    6.2, 6.5, 7, 8.3, 8.5, 8.6, 10, 11, and 12).
 
     Authentication is a bearer token carrying explicit scopes (spec section
     10). The scope each endpoint requires is stated in its description; where
@@ -42,6 +42,10 @@ tags:
     description: Minting, listing, and revoking scoped Admin API credentials.
   - name: audit
     description: Reading the record of every authenticated mutation.
+  - name: players
+    description: |
+      One identity across every server (spec section 8.6): the events that
+      refer to it, the actions dispatched against it, and operator notes.
   - name: kv
     description: |
       The per-mod key/value store (spec section 12), the same operations the
@@ -786,6 +790,202 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/players/{platform}/{playerId}/events:
+    parameters:
+      - $ref: "#/components/parameters/Platform"
+      - $ref: "#/components/parameters/PlayerId"
+    get:
+      tags: [players]
+      operationId: listPlayerEvents
+      summary: Read the events that refer to one identity, across every server.
+      description: |
+        Every stored event on any server whose `data` holds the identity as a
+        top-level member (spec section 8.2), newest first, paged like the
+        server feed (spec section 8.5), each with the `roles` the identity
+        holds in it. Requires `events:read`, narrowed by spec section 10.3; a
+        bound token reads only its servers' events, the rest left out. As deep
+        as event retention and no deeper (spec section 8.6).
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: As on the server feed. Repeatable; terms are ORed.
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: "^(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?)$"
+          style: form
+          explode: true
+        - name: since
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of the identity's events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlayerEventPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/players/{platform}/{playerId}/actions:
+    parameters:
+      - $ref: "#/components/parameters/Platform"
+      - $ref: "#/components/parameters/PlayerId"
+    get:
+      tags: [players]
+      operationId: listPlayerActions
+      summary: Read the actions dispatched against one identity, across every server.
+      description: |
+        Every action with `context: "player"` and a `referenceKey` equal to
+        `{playerId}`, newest first by createdAt then id (spec section 8.6).
+        The referenceKey carries no platform, so neither does the match.
+        Requires an `actions:read` grant; only the codes it covers, on the
+        servers a binding admits, are answered, the rest left out.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of the identity's actions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actions]
+                properties:
+                  actions:
+                    type: array
+                    items: { $ref: "#/components/schemas/ActionRecord" }
+                  nextCursor:
+                    type: string
+                    description: Opaque position to resume from. Absent on the last page.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/players/{platform}/{playerId}/notes:
+    parameters:
+      - $ref: "#/components/parameters/Platform"
+      - $ref: "#/components/parameters/PlayerId"
+    get:
+      tags: [players]
+      operationId: listPlayerNotes
+      summary: Read the operator notes on one identity, newest first.
+      description: Requires `notes:read`. Notes are installation-wide; a binding does not narrow them.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of notes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notes]
+                properties:
+                  notes:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlayerNote" }
+                  nextCursor:
+                    type: string
+                    description: Opaque position to resume from. Absent on the last page.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [players]
+      operationId: createPlayerNote
+      summary: Write a note on one identity.
+      description: |
+        Requires `notes:write`. The note records the credential that wrote it,
+        under the name it had at the time. Kept until deleted; a hub MAY bound
+        the notes per identity (reference 1000) and refuses past it with
+        `conflict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                  description: Not empty or whitespace alone; stored as sent.
+      responses:
+        "201":
+          description: The note as stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [note]
+                properties:
+                  note: { $ref: "#/components/schemas/PlayerNote" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: The identity already carries as many notes as the hub allows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/players/{platform}/{playerId}/notes/{noteId}:
+    parameters:
+      - $ref: "#/components/parameters/Platform"
+      - $ref: "#/components/parameters/PlayerId"
+      - name: noteId
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [players]
+      operationId: deletePlayerNote
+      summary: Delete one note.
+      description: Requires `notes:write`. There is no edit; the audit log keeps the delete.
+      responses:
+        "204":
+          description: Deleted.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such note on this identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/webhooks:
     get:
       tags: [webhooks]
@@ -817,8 +1017,10 @@ paths:
         subscribes to (spec section 11.2): a webhook is a standing export of
         what it matches, so `events:read` coverage is required for telemetry
         patterns, `actions:read` for a filter admitting `action.completed`,
-        and `servers:read` for the link notifications or a named serverIds
-        list. The signing secret is minted by the hub and returned in this
+        `servers:read` for the link notifications or a named serverIds
+        list, and `admin` for a filter naming the opt-in `audit.recorded`
+        notification (`audit.*` or `audit.recorded`; `*` never matches it).
+        The signing secret is minted by the hub and returned in this
         response only; the hub keeps the secret itself, because signing needs
         it, so database access is secret access. A webhook observes only what
         lands after registration.
@@ -851,16 +1053,25 @@ paths:
                     means every server. An id naming no server is refused.
                 template:
                   type: string
-                  enum: [generic-json]
+                  enum: [generic-json, discord]
                   default: generic-json
                   description: |
-                    The delivery body shape. `discord` is reserved for a
-                    future draft; an unimplemented template is refused.
+                    The delivery body shape (spec section 11.3). An
+                    unimplemented template is refused.
+                redact:
+                  type: array
+                  maxItems: 20
+                  items: { $ref: "#/components/schemas/RedactPath" }
+                  description: |
+                    Member paths stripped from every notification's `data`
+                    before the delivery is rendered (spec section 11.2).
+                    Absent or empty strips nothing.
             example:
               url: https://example.net/hooks/vyshka
               events: ["core.player.*", "action.completed"]
               serverIds: []
               template: generic-json
+              redact: ["position"]
       responses:
         "201":
           description: The webhook record and its signing secret.
@@ -1088,6 +1299,24 @@ components:
       description: Hub-assigned server id; opaque to clients.
       schema:
         type: string
+    Platform:
+      name: platform
+      in: path
+      required: true
+      description: The identity's platform (spec section 8.2), one percent-encoded path segment.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    PlayerId:
+      name: playerId
+      in: path
+      required: true
+      description: The identity's platform id (spec section 8.2), one percent-encoded path segment.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     KVNamespace:
       name: namespace
       in: path
@@ -1311,6 +1540,51 @@ components:
           additionalProperties: true
           description: The payload the plugin sent; an empty object when it sent none.
 
+    PlayerEventPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/EventRecord" }
+              - type: object
+                required: [roles]
+                properties:
+                  roles:
+                    type: array
+                    items: { type: string }
+                    description: The members of data that hold the identity, in name order.
+          description: Newest first, by occurredAt, across every server the token may read.
+        nextCursor:
+          type: string
+          description: Opaque position to resume from. Absent on the last page.
+
+    PlayerNote:
+      type: object
+      required: [id, player, text, createdAt, createdBy]
+      properties:
+        id: { type: string }
+        player:
+          type: object
+          required: [platform, id]
+          properties:
+            platform: { type: string }
+            id: { type: string }
+        text: { type: string }
+        createdAt: { type: string, format: date-time }
+        createdBy:
+          type: object
+          required: [tokenId, tokenName]
+          properties:
+            tokenId:
+              type: string
+              description: Empty for a bootstrap credential.
+            tokenName:
+              type: string
+              description: The credential's name as it was when the note was written.
+
     EventPage:
       type: object
       required: [events]
@@ -1332,7 +1606,7 @@ components:
         One grant, `resource:verb` with an optional `:pattern` third field
         (spec section 10.1). Resources and verbs are a closed set; a pattern is
         `*`, a `{prefix}.*` namespace pattern, or an exact value.
-      pattern: "^(admin|servers:read|webhooks:manage|(events:read|actions:read|actions:dispatch|kv:rw)(:(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?))?)$"
+      pattern: "^(admin|servers:read|webhooks:manage|notes:read|notes:write|(events:read|actions:read|actions:dispatch|kv:rw)(:(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?))?)$"
       example: "events:read:example-mod.*"
 
     AdminTokenRecord:
@@ -1427,7 +1701,8 @@ components:
         A notification type pattern in the spec section 10.1 grammar: `*`, a
         `{prefix}.*` namespace pattern where the separating dot belongs to the
         prefix, or an exact type. Matches telemetry types and the lifecycle
-        types (`action.completed`, `server.link.lost`, `server.link.restored`)
+        types (`action.completed`, `server.link.lost`, `server.link.restored`,
+        and `audit.recorded`, which only `audit.*` or its exact name matches)
         alike.
       example: core.player.*
 
@@ -1450,10 +1725,25 @@ components:
           description: Empty means every server.
         template:
           type: string
-          enum: [generic-json]
+          enum: [generic-json, discord]
+        redact:
+          type: array
+          items: { $ref: "#/components/schemas/RedactPath" }
+          description: Paths stripped from every delivery's `data`; empty strips nothing.
         createdAt:
           type: string
           format: date-time
+
+    RedactPath:
+      type: string
+      maxLength: 128
+      pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+      description: |
+        Member names joined by `.`: the first selects a member of the
+        notification's `data`, each further name a member of what is selected
+        so far, arrays applying the rest of the path to each object element
+        (spec section 11.2). A path selecting nothing strips nothing.
+      example: killer.position
 
     WebhookDelivery:
       type: object

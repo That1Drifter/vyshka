@@ -64,13 +64,23 @@ function scopeBadges(scopes) {
   return el('span', { class: 'badges' }, list.map((scope) => badge(scope, scope === 'admin' ? 'destructive' : '')));
 }
 
-// eventBadges renders a webhook's filter: an empty filter is every type, and
-// saying so is not the same as showing nothing.
+// eventBadges renders a webhook's filter: an empty filter is every type but
+// the opt-in audit notification (protocol section 11.1), and saying so is not
+// the same as showing nothing.
 function eventBadges(events) {
   const list = Array.isArray(events) ? events : [];
-  if (list.length === 0) return el('span', { class: 'muted' }, 'every type');
+  if (list.length === 0) return el('span', { class: 'muted' }, 'every type but audit.recorded');
   return el('span', { class: 'badges' }, list.map((type) => badge(type)));
 }
+
+// redactBadges renders a webhook's redaction paths (protocol section 11.2).
+function redactBadges(paths) {
+  const list = Array.isArray(paths) ? paths : [];
+  if (list.length === 0) return el('span', { class: 'muted' }, 'nothing');
+  return el('span', { class: 'badges' }, list.map((path) => badge(path)));
+}
+
+const REDACT_HINT = 'one member path per line, such as position or killer.position; each is stripped from every delivery\'s data before it is rendered, and a path that names nothing strips nothing (protocol section 11.2)';
 
 function serverNames(ids, names) {
   const list = Array.isArray(ids) ? ids : [];
@@ -515,6 +525,11 @@ function bundleScopes(bundle, namespaces) {
   } else {
     for (const namespace of namespaces.actions) scopes.push('actions:dispatch:' + namespace + '.*');
   }
+  if (bundle === 'moderator') {
+    // Player notes (protocol section 8.6): what one moderator knows about a
+    // player is what the next one needs.
+    scopes.push('notes:read', 'notes:write');
+  }
   if (bundle === 'event-host') {
     for (const namespace of namespaces.kv) scopes.push('kv:rw:' + namespace);
   }
@@ -854,6 +869,7 @@ export async function viewWebhooks(app, route, seq) {
   const events = textArea('webhook-events', { placeholder: 'core.player.*\naction.completed' });
   const picker = serverPicker('webhook-servers', servers.servers, servers.allowed, []);
   const template = templateSelect('webhook-template', 'generic-json');
+  const redact = textArea('webhook-redact', { placeholder: 'position\nkiller.position' });
   const submit = el('button', { type: 'submit', class: 'primary', id: 'register-webhook-submit' }, 'Register');
   const form = el('form', {
     class: 'stack card', id: 'register-webhook', novalidate: true,
@@ -872,6 +888,7 @@ export async function viewWebhooks(app, route, seq) {
           events: linesOf(events),
           serverIds: picker.read(),
           template: template.value,
+          redact: linesOf(redact),
         });
         const shown = {
           kind: 'webhook',
@@ -890,6 +907,7 @@ export async function viewWebhooks(app, route, seq) {
         if (!mountSecret(secretSlot, shown)) return;
         url.value = '';
         events.value = '';
+        redact.value = '';
         const latest = await api('GET', '/webhooks');
         if (stale(seq)) return;
         drawWebhooks(latest.webhooks || []);
@@ -909,9 +927,10 @@ export async function viewWebhooks(app, route, seq) {
   el('p', { class: 'muted' },
     'Registration needs grants covering what the filter subscribes to, or webhooks:manage would quietly be an installation-wide read grant (protocol section 11.2).'),
   fieldRow('webhook-url', 'URL', url, 'required, http or https'),
-  fieldRow('webhook-events', 'Events', events, 'one pattern per line, empty for every type; patterns follow protocol section 10.1'),
+  fieldRow('webhook-events', 'Events', events, 'one pattern per line, empty for every type; patterns follow protocol section 10.1; audit records arrive only for audit.* or audit.recorded, which need admin'),
   picker.node,
   fieldRow('webhook-template', 'Template', template, 'generic-json is the shape of protocol section 11.3; discord renders the Discord shape'),
+  fieldRow('webhook-redact', 'Redact', redact, REDACT_HINT),
   el('div', { class: 'actions-row' }, submit));
 
   app.append(problem.node, secretSlot, table, empty, form);
@@ -961,6 +980,7 @@ export async function viewWebhook(app, route, seq) {
       el('dt', {}, 'Events'), el('dd', {}, eventBadges(current.events)),
       el('dt', {}, 'Servers'), el('dd', {}, serverNames(current.serverIds, servers.names)),
       el('dt', {}, 'Template'), el('dd', {}, current.template || 'generic-json'),
+      el('dt', {}, 'Redacted'), el('dd', { id: 'webhook-redact-summary' }, redactBadges(current.redact)),
       el('dt', {}, 'State'), el('dd', { id: 'webhook-state' }, current.pausedAt
         ? [badge('paused', 'expired'), ' since ' + formatTime(current.pausedAt)]
         : badge('active', 'up')),
@@ -1014,6 +1034,8 @@ export async function viewWebhook(app, route, seq) {
   editEvents.value = (current.events || []).join('\n');
   const editPicker = serverPicker('edit-webhook-servers', servers.servers, servers.allowed, current.serverIds || []);
   const editTemplate = templateSelect('edit-webhook-template', current.template);
+  const editRedact = textArea('edit-webhook-redact');
+  editRedact.value = (current.redact || []).join('\n');
   const editSubmit = el('button', { type: 'submit', class: 'primary', id: 'edit-webhook-submit' }, 'Save changes');
   const editForm = el('form', {
     class: 'stack card', id: 'edit-webhook', novalidate: true,
@@ -1026,6 +1048,7 @@ export async function viewWebhook(app, route, seq) {
           events: linesOf(editEvents),
           serverIds: editPicker.read(),
           template: editTemplate.value,
+          redact: linesOf(editRedact),
         });
         await refreshRecord();
       } finally {
@@ -1035,11 +1058,12 @@ export async function viewWebhook(app, route, seq) {
   },
   el('h2', {}, 'Edit'),
   el('p', { class: 'muted' },
-    'A present member replaces that field whole. The secret is never rotated by an edit. A delivery already queued keeps the body it was rendered with, and goes to the new URL on its next attempt.'),
+    'A present member replaces that field whole. The secret is never rotated by an edit. A delivery already queued keeps the body it was rendered with, redaction included, and goes to the new URL on its next attempt.'),
   fieldRow('edit-webhook-url', 'URL', editUrl),
   fieldRow('edit-webhook-events', 'Events', editEvents, 'one pattern per line, empty for every type'),
   editPicker.node,
   fieldRow('edit-webhook-template', 'Template', editTemplate),
+  fieldRow('edit-webhook-redact', 'Redact', editRedact, REDACT_HINT),
   el('div', { class: 'actions-row' }, editSubmit));
 
   const deleteConfirm = confirmation('delete-webhook-confirm',
