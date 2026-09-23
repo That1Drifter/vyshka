@@ -63,47 +63,25 @@ class VyshkaWeather
 	static const float THRESHOLD_STOP_DEFAULT = 30.0;
 
 	// What this plugin set that the engine cannot be asked about: whether it
-	// stopped the clock, and the rain and snowfall thresholds, for the notes
-	// of a later dispatch. A threshold is known only while nothing else can
-	// have replaced it: the map's controller re-applies its own whenever it
-	// runs, which in world mode is when the first phenomenon falls due. Each
-	// dispatch records the mode it left (s_LeftMode) and, for world mode, how
-	// long until the controller could run (s_ControllerDueMs, counted from
-	// s_LeftAtMs). A later dispatch forgets the thresholds once that window has
-	// passed, whatever the mode is by then, or when the mode is not the one
-	// left (a mod switched it, and the controller may have run meanwhile).
-	// The window is compared as elapsed time, a difference of two readings of
-	// the engine's millisecond clock, which stays right across the clock's
-	// wrap for any window shorter than the wrap (about 24 days).
+	// stopped the clock, and the rain and snowfall thresholds it last set,
+	// for the notes of a later dispatch. The engine has no getter for a
+	// threshold, and the map's controller or a mod may replace one at any
+	// time between dispatches, so a threshold set by an earlier dispatch is
+	// only ever named in a note as the one last set here, never as the one
+	// in force.
 	static bool s_TimeFrozen;
-	static bool s_RainKnown;
+	static bool s_RainSet;
 	static float s_RainMin;
 	static float s_RainMax;
-	static bool s_SnowfallKnown;
+	static bool s_SnowfallSet;
 	static float s_SnowfallMin;
 	static float s_SnowfallMax;
-	static string s_LeftMode;
-	static int s_LeftAtMs;
-	static int s_ControllerDueMs;
 
 	static void Reset()
 	{
 		s_TimeFrozen = false;
-		s_RainKnown = false;
-		s_SnowfallKnown = false;
-		s_LeftMode = "";
-	}
-
-	// ThresholdsStale says whether the map's controller, or a mod, may have
-	// replaced the thresholds this plugin set since the last dispatch.
-	static bool ThresholdsStale()
-	{
-		if (s_LeftMode == "" || Mode() != s_LeftMode)
-			return true;
-		if (s_LeftMode != MODE_WORLD)
-			return false;
-		int elapsed = VyshkaClock.MonotonicMs() - s_LeftAtMs;
-		return elapsed < 0 || elapsed >= s_ControllerDueMs;
+		s_RainSet = false;
+		s_SnowfallSet = false;
 	}
 
 	// Register declares the weather presets' namespace and the two actions.
@@ -318,16 +296,22 @@ class VyshkaWeather
 
 	// ThresholdNote says when the overcast being moved to lies outside the
 	// rain or snowfall threshold, where the engine stops that fall over the
-	// threshold's stop time. The threshold is the one set here when that is
-	// still known; otherwise the engine's default, said as such, since the
-	// map or a mod may have set another.
-	static void ThresholdNote(VyshkaJsonValue notes, string fall, float overcast, bool known, float setLow, float setHigh)
+	// threshold's stop time. It judges by the threshold this dispatch set,
+	// which is in force; else by the one an earlier dispatch last set, or the
+	// engine's default, each said with the caveat that the map or a mod may
+	// have set another since, because the engine cannot be asked.
+	static void ThresholdNote(VyshkaJsonValue notes, string fall, float overcast, bool setNow, bool setBefore, float setLow, float setHigh)
 	{
 		float low = setLow;
 		float high = setHigh;
-		string source = "the " + fall + " threshold set here";
+		string source = "the " + fall + " threshold this dispatch set";
 		string caveat = "";
-		if (!known)
+		if (!setNow && setBefore)
+		{
+			source = "the " + fall + " threshold last set here";
+			caveat = " (unless the map or a mod has set another since)";
+		}
+		else if (!setNow)
 		{
 			low = THRESHOLD_MIN_DEFAULT;
 			high = 1;
@@ -362,17 +346,10 @@ class VyshkaWeather
 		if (knobs.m_HasHold)
 			hold = knobs.m_Hold;
 
-		// The map's controller, or a mod, may have put back its own thresholds
-		// since the last dispatch; then what was set here is no longer known.
-		if (ThresholdsStale())
-		{
-			s_RainKnown = false;
-			s_SnowfallKnown = false;
-		}
 		if (knobs.m_HasRainThreshold)
 		{
 			weather.SetRainThresholds(knobs.m_RainMin, knobs.m_RainMax, knobs.m_RainStop);
-			s_RainKnown = true;
+			s_RainSet = true;
 			s_RainMin = knobs.m_RainMin;
 			s_RainMax = knobs.m_RainMax;
 			applied.Add(VyshkaJsonValue.NewString("rainThreshold"));
@@ -380,7 +357,7 @@ class VyshkaWeather
 		if (knobs.m_HasSnowfallThreshold)
 		{
 			weather.SetSnowfallThresholds(knobs.m_SnowfallMin, knobs.m_SnowfallMax, knobs.m_SnowfallStop);
-			s_SnowfallKnown = true;
+			s_SnowfallSet = true;
 			s_SnowfallMin = knobs.m_SnowfallMin;
 			s_SnowfallMax = knobs.m_SnowfallMax;
 			applied.Add(VyshkaJsonValue.NewString("snowfallThreshold"));
@@ -450,20 +427,17 @@ class VyshkaWeather
 			// phenomena longer, and nothing shortens them, so the note says
 			// when the first of them actually falls due.
 			float due = EarliestForecast(weather);
-			s_ControllerDueMs = (int)(due * 1000);
 			int dueSeconds = Math.Ceil(due);
 			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over in " + dueSeconds.ToString() + " s, when the first phenomenon falls due, and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
 		}
-		s_LeftMode = mode;
-		s_LeftAtMs = VyshkaClock.MonotonicMs();
 
 		// What the engine will do to the values just set, where it can be
 		// told from here. The overcast is the one being moved to.
 		float overcast = weather.GetOvercast().GetForecast();
 		if (knobs.m_HasRain && knobs.m_Rain > 0)
-			ThresholdNote(notes, "rain", overcast, s_RainKnown, s_RainMin, s_RainMax);
+			ThresholdNote(notes, "rain", overcast, knobs.m_HasRainThreshold, s_RainSet, s_RainMin, s_RainMax);
 		if (knobs.m_HasSnowfall && knobs.m_Snowfall > 0)
-			ThresholdNote(notes, "snowfall", overcast, s_SnowfallKnown, s_SnowfallMin, s_SnowfallMax);
+			ThresholdNote(notes, "snowfall", overcast, knobs.m_HasSnowfallThreshold, s_SnowfallSet, s_SnowfallMin, s_SnowfallMax);
 
 		string appliedText = applied.Serialize();
 		VyshkaLog.Info("weather set: " + appliedText + ", mode " + mode);
