@@ -134,6 +134,9 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Events:    events,
 		ServerIDs: serverIDs,
 		Redact:    redact,
+		// The coverage check above has already refused a filter admitting
+		// the audit notification to anything but admin.
+		AuditGranted: filterAdmitsAudit(events),
 	})
 	if err != nil {
 		s.writeInternalError(w, r, err)
@@ -315,6 +318,16 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	update := store.WebhookUpdate{Paused: request.Paused}
+	// Every edit re-authorizes the whole subscription, so every edit decides
+	// the audit grant afresh, from the filter as merged on the locked row:
+	// an edit that passed coverage with a filter admitting the audit
+	// notification was made by a token that reads the audit log.
+	update.AuditGranted = func(existing store.Webhook) bool {
+		if update.Events != nil {
+			return filterAdmitsAudit(*update.Events)
+		}
+		return filterAdmitsAudit(existing.Events)
+	}
 
 	var parsedURL *url.URL
 	if request.URL != nil {
@@ -655,6 +668,17 @@ func patternAdmits(pattern, notificationType string) bool {
 	return (Scope{Pattern: pattern}).matches(notificationType)
 }
 
+// filterAdmitsAudit reports whether a webhook filter matches the opt-in audit
+// notification. An empty filter is the catch-all, which never does.
+func filterAdmitsAudit(events []string) bool {
+	for _, pattern := range events {
+		if patternAdmits(pattern, notifyAuditRecorded) {
+			return true
+		}
+	}
+	return false
+}
+
 // subscribesTelemetry reports whether a pattern can match any telemetry type.
 // The section 8.1 reservation is what makes this decidable: a pattern
 // confined to the reserved namespaces can only ever match the hub's own
@@ -774,6 +798,13 @@ func webhookMatches(webhook store.Webhook, notificationType, serverID string) bo
 		if !observed {
 			return false
 		}
+	}
+	if optInNotification(notificationType) && !webhook.AuditGranted {
+		// A filter naming the audit namespace that no token able to read the
+		// audit log ever authorized, one registered while the namespace was
+		// ordinary telemetry above all, is not a request for the access
+		// record (spec section 11.1).
+		return false
 	}
 	if len(webhook.Events) == 0 {
 		// An empty filter is the catch-all, and the catch-all never admits an

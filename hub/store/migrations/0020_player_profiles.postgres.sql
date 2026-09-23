@@ -65,11 +65,15 @@ CREATE INDEX IF NOT EXISTS player_notes_by_player
 
 -- The profile's action read: player-context actions by referenceKey, newest
 -- first. A player's referenceKey is the platform id alone (section 7).
--- Migration 0015 left these three columns alone because nothing ordered or
--- range-scanned them; the profile read orders by created_at.
+-- Migration 0015 left these columns alone because nothing ordered or
+-- range-scanned them; the profile read orders by created_at and narrows code
+-- by prefix.
 ALTER TABLE actions ALTER COLUMN context TYPE TEXT COLLATE "C";
 ALTER TABLE actions ALTER COLUMN reference_key TYPE TEXT COLLATE "C";
 ALTER TABLE actions ALTER COLUMN created_at TYPE TEXT COLLATE "C";
+-- code is range-scanned too, by a namespace grant narrowing the answer
+-- ("example-mod.*" reads as code >= 'example-mod.' AND code < 'example-mod/').
+ALTER TABLE actions ALTER COLUMN code TYPE TEXT COLLATE "C";
 CREATE INDEX IF NOT EXISTS actions_by_reference
     ON actions (context, reference_key, created_at DESC, id DESC);
 
@@ -87,3 +91,11 @@ CREATE TABLE IF NOT EXISTS audit_notifications (
 -- stripped from every notification's data before the delivery is rendered.
 -- Every existing webhook redacts nothing.
 ALTER TABLE webhooks ADD COLUMN redact TEXT NOT NULL DEFAULT '[]';
+
+-- Whether a webhook's filter was authorized for the audit notification
+-- (section 11.1) by a token that reads the audit log. Every existing webhook
+-- starts without it: before this migration the audit namespace was ordinary
+-- telemetry, so a filter naming it was granted with events:read, and an
+-- upgrade must not turn that grant into an export of the access record. An
+-- edit by a token covering the notification sets it again.
+ALTER TABLE webhooks ADD COLUMN audit_granted INTEGER NOT NULL DEFAULT 0;

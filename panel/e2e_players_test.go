@@ -173,11 +173,42 @@ func TestPanelPlayerProfileEndToEnd(t *testing.T) {
 	if got := text("#notes-forbidden"); !strings.Contains(got, "notes:read") {
 		t.Fatalf("the notes notice reads %q, want the grant it needs", got)
 	}
+	// The form stays and says what a refused write was refused for.
+	run("try to write a note narrowed", setValue("#note-text", "not allowed"),
+		chromedp.Click("#note-add", chromedp.ByQuery), chromedp.WaitVisible("#notes-error", chromedp.ByQuery))
+	if got := text("#notes-error"); !strings.Contains(got, "forbidden") {
+		t.Fatalf("a refused note write reads %q, want the hub's forbidden", got)
+	}
+
+	// A token that writes notes without reading them sees its write land.
+	status, body = adminRequest(t, http.MethodPost, hubURL+"/api/v1/tokens", map[string]any{
+		"name": "write only", "scopes": []string{"servers:read", "notes:write"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("mint the write-only token: status %d body %s", status, body)
+	}
+	var writeOnly struct {
+		Secret string `json:"secret"`
+	}
+	_ = json.Unmarshal(body, &writeOnly)
+	run("sign out narrowed", chromedp.Click("#sign-out", chromedp.ByQuery), chromedp.WaitVisible("#login", chromedp.ByQuery))
+	run("sign in write-only", chromedp.SendKeys("#token", writeOnly.Secret, chromedp.ByQuery),
+		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#notes-forbidden", chromedp.ByQuery))
+	run("write a note unread", setValue("#note-text", "Written blind."),
+		chromedp.Click("#note-add", chromedp.ByQuery), chromedp.WaitVisible("#note-saved", chromedp.ByQuery))
+	if stored := notes(); len(stored) != 1 || stored[0]["text"] != "Written blind." {
+		t.Fatalf("the hub holds %+v, want the note the write-only token wrote", stored)
+	}
+
+	// An identity member that is a dot segment has no route to the hub, and
+	// the page says so instead of asking for a different identity's profile.
+	run("open a dot-segment identity", chromedp.Evaluate(`location.hash = "#/players/steam/.."`, nil),
+		chromedp.WaitVisible("#player-unaddressable", chromedp.ByQuery))
 
 	// 6. Redaction paths from the webhook forms (protocol section 11.2).
 	run("sign out again", chromedp.Click("#sign-out", chromedp.ByQuery), chromedp.WaitVisible("#login", chromedp.ByQuery))
 	run("sign back in", chromedp.SendKeys("#token", e2eAdminToken, chromedp.ByQuery),
-		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#player-events-section", chromedp.ByQuery))
+		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#player-unaddressable", chromedp.ByQuery))
 	run("open the webhooks view", chromedp.Click("#nav a[data-nav=webhooks]", chromedp.ByQuery),
 		chromedp.WaitVisible("#register-webhook", chromedp.ByQuery))
 	run("register a redacting webhook",

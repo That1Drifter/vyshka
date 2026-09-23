@@ -14,10 +14,11 @@ import (
 // every element that is an object. A path that selects nothing strips
 // nothing.
 //
-// Only the levels a path actually changed are re-encoded; everything else
-// stays the plugin's own bytes, so a number above 2^53 or a member order the
-// receiver relies on survives everywhere a path did not reach. Data no path
-// touched is returned as it came.
+// Only the levels a path reaches are re-encoded, a level being reached when
+// it carries the member the path names there; everything else stays the
+// plugin's own bytes, so a number above 2^53 or a member order the receiver
+// relies on survives everywhere a path did not reach. Data no path reaches
+// is returned as it came.
 func redactData(data json.RawMessage, paths []string) json.RawMessage {
 	for _, path := range paths {
 		if redacted, changed := redactValue(data, strings.Split(path, ".")); changed {
@@ -43,16 +44,21 @@ func redactValue(raw json.RawMessage, path []string) (json.RawMessage, bool) {
 		}
 		child, present := object[path[0]]
 		if !present {
+			// The decoded map holds every member name the object carries,
+			// duplicates collapsed, so absent here is absent everywhere.
 			return raw, false
 		}
+		// From here the level is re-encoded from the map whether or not the
+		// path went on to remove anything. JSON lets an object repeat a
+		// member, and the map keeps only the last: returning the original
+		// bytes because the last copy held nothing to strip would send the
+		// earlier copies out whole. Re-encoding keeps one copy, the one the
+		// path was applied to.
 		if len(path) == 1 {
 			delete(object, path[0])
 			return encodeRedacted(object)
 		}
-		replaced, changed := redactValue(child, path[1:])
-		if !changed {
-			return raw, false
-		}
+		replaced, _ := redactValue(child, path[1:])
 		object[path[0]] = replaced
 		return encodeRedacted(object)
 	case '[':

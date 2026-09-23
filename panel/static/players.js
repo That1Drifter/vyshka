@@ -126,13 +126,21 @@ function latestName(events) {
 function notesSection(platform, id, seq) {
   const list = el('ul', { class: 'notes', id: 'notes' });
   const empty = el('p', { class: 'muted', id: 'notes-empty', hidden: true }, 'No notes yet.');
+  // The problem box and the saved notice live outside the list, so a token
+  // that may write notes but not read them still sees what its writes did.
   const problem = problemBox('notes-error');
+  const saved = el('p', { class: 'notice', id: 'note-saved', hidden: true },
+    'Saved. This token cannot read notes (notes:read), so the note is not listed here.');
   const older = el('button', { type: 'button', id: 'notes-older', hidden: true }, 'Load older');
-  const text = el('textarea', { id: 'note-text', name: 'note-text', maxlength: String(NOTE_MAX), rows: '3', placeholder: 'What the next moderator should know about this player' });
+  // No maxlength: the browser counts UTF-16 units there, and the hub's bound
+  // is 4000 code points, so an emoji would count twice. The submit counts.
+  const text = el('textarea', { id: 'note-text', name: 'note-text', rows: '3', placeholder: 'What the next moderator should know about this player' });
   const add = el('button', { type: 'submit', class: 'primary', id: 'note-add' }, 'Add note');
-  const body = el('div', {}, problem.node, empty, list, el('div', { class: 'actions-row' }, older));
+  const listArea = el('div', {}, empty, list, el('div', { class: 'actions-row' }, older));
+  const body = el('div', {}, problem.node, saved, listArea);
   let cursor = null;
   let shown = 0;
+  let readable = true;
 
   const noteItem = (note) => {
     const author = note.createdBy && typeof note.createdBy === 'object' ? note.createdBy : {};
@@ -180,8 +188,9 @@ function notesSection(platform, id, seq) {
     } catch (err) {
       if (stale(seq) || onUnauthorized(err)) return;
       if (isForbidden(err)) {
-        clear(body);
-        body.append(refusedNotice('notes-forbidden', 'notes:read', err));
+        readable = false;
+        clear(listArea);
+        listArea.append(refusedNotice('notes-forbidden', 'notes:read', err));
         return;
       }
       problem.show(err);
@@ -196,8 +205,13 @@ function notesSection(platform, id, seq) {
     onsubmit: async (event) => {
       event.preventDefault();
       problem.hide();
+      saved.hidden = true;
       if (text.value.trim() === '') {
         problem.show(new ApiError(0, 'bad_request', 'a note needs some text'));
+        return;
+      }
+      if ([...text.value].length > NOTE_MAX) {
+        problem.show(new ApiError(0, 'bad_request', 'a note holds at most ' + NOTE_MAX + ' characters; this one has ' + [...text.value].length));
         return;
       }
       const owner = token();
@@ -205,9 +219,13 @@ function notesSection(platform, id, seq) {
       try {
         const created = await api('POST', identityPath(platform, id, '/notes'), { text: text.value });
         if (stale(seq) || token() !== owner) return;
-        list.prepend(noteItem(created.note));
-        shown++;
-        empty.hidden = true;
+        if (readable) {
+          list.prepend(noteItem(created.note));
+          shown++;
+          empty.hidden = true;
+        } else {
+          saved.hidden = false;
+        }
         text.value = '';
       } catch (err) {
         if (stale(seq) || onUnauthorized(err)) return;
@@ -225,10 +243,24 @@ function notesSection(platform, id, seq) {
   return el('section', { class: 'card', id: 'notes-section' }, el('h2', {}, 'Notes'), body, form);
 }
 
+// A path segment of exactly "." or "..", however it is encoded, is a dot
+// segment every URL parser removes, so an identity with such a member has no
+// profile route that reaches the hub (protocol section 8.6).
+function unaddressable(member) {
+  return member === '.' || member === '..';
+}
+
 export async function viewPlayer(app, route, seq) {
   const { platform, id } = route;
   const identity = platform + ':' + id;
   setCrumbs([{ label: 'Players', href: playersHref() }, { label: identity }]);
+  if (unaddressable(platform) || unaddressable(id)) {
+    clear(app);
+    app.append(el('p', { class: 'notice', id: 'player-unaddressable' },
+      'The identity ', el('span', { class: 'mono' }, identity),
+      ' has a member that is a dot segment ("." or ".."), which no URL path can carry, so the hub cannot be asked for its profile (protocol section 8.6).'));
+    return;
+  }
   const names = await serverNames();
   if (stale(seq)) return;
   clear(app);
@@ -350,7 +382,9 @@ export async function viewPlayers(app, route, seq) {
         rows.push({ server, platform: entry.player.platform, id: entry.player.id, name: typeof entry.name === 'string' ? entry.name : '' });
       }
     } catch (err) {
-      onUnauthorized(err);
+      // A read from a view that has gone, or under a token since replaced,
+      // must not sign out whoever is signed in now.
+      if (!stale(seq)) onUnauthorized(err);
     }
   }));
   if (stale(seq)) return;

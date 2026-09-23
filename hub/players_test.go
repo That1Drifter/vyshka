@@ -2,6 +2,7 @@ package hub_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub"
+	"github.com/That1Drifter/vyshka/hub/store"
 )
 
 // playerEventRecord mirrors one event of a player profile (spec section 8.6).
@@ -251,6 +253,12 @@ func TestPlayerProfileActions(t *testing.T) {
 	other, _ := mintToken(t, server, "other codes", "actions:read:other-mod.*")
 	if page := read(other, ""); len(page.Actions) != 0 {
 		t.Errorf("a token for other codes reads %d actions, want none", len(page.Actions))
+	}
+	// A namespace grant narrows by prefix, which on Postgres is a range scan
+	// that only byte order gets right (migration 0015).
+	namespace, _ := mintToken(t, server, "example-mod reader", "actions:read:example-mod.*")
+	if page := read(namespace, ""); len(page.Actions) != 2 {
+		t.Errorf("a token reading example-mod.* sees %d actions, want both heals", len(page.Actions))
 	}
 	dispatcher, _ := mintToken(t, server, "healer", "actions:dispatch:example-mod.heal")
 	if page := read(dispatcher, ""); len(page.Actions) != 2 {
@@ -563,5 +571,76 @@ func TestAuditNamespaceIsReserved(t *testing.T) {
 	}
 	if page := queryEvents(t, server, created.Server.ID, nil); len(page.Events) != 0 {
 		t.Errorf("an audit.* event was stored: %+v", page.Events)
+	}
+}
+
+// A filter naming the audit namespace that predates the notification was a
+// telemetry grant, not a request for the access record: a row as migration
+// 0020 leaves it hears no audit record until a token that reads the audit log
+// saves the webhook again (spec section 11.1).
+func TestLegacyAuditFilterIsNotAGrant(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	receiver := newTestReceiver(t, http.StatusOK)
+	legacy, err := server.Store().CreateWebhook(context.Background(), store.Webhook{
+		ID: "01LEGACYAUDITWEBHOOK000000", URL: receiver.server.URL, Secret: "legacy-secret",
+		Template: "generic-json", Events: []string{"audit.*"},
+	})
+	if err != nil {
+		t.Fatalf("seed the legacy webhook: %v", err)
+	}
+	createServer(t, server, "a mutation to audit", "test-game")
+	time.Sleep(2 * time.Second)
+	for i := 0; i < receiver.count(); i++ {
+		if strings.Contains(string(receiver.get(i).Body), "audit.recorded") {
+			t.Fatalf("a legacy audit.* filter received an audit record: %s", receiver.get(i).Body)
+		}
+	}
+
+	// An admin edit re-authorizes it, and from then on it hears the log.
+	if status := call(t, server, http.MethodPatch, "/api/v1/webhooks/"+legacy.ID, testAdminToken,
+		map[string]any{"paused": false}, nil); status != http.StatusOK {
+		t.Fatalf("admin edit: status = %d, want 200", status)
+	}
+	createServer(t, server, "a mutation after the grant", "test-game")
+	receiver.awaitReceived(t, 1, 10*time.Second)
+	if !strings.Contains(string(receiver.get(0).Body), "audit.recorded") {
+		t.Errorf("after the admin edit the webhook received %s, want an audit record", receiver.get(0).Body)
+	}
+}
+
+// U+0000 is legal in a JSON string and illegal in Postgres text. An event
+// whose identity carries one is stored like any other, with that member read
+// as data rather than an identity; a path or a note carrying one is refused.
+func TestNulIsNeverAnIdentity(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "nul identity")
+	nul := string(rune(0))
+	result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{eventBatchEnvelope(1, map[string]any{
+			"t": "core.player.death", "data": map[string]any{
+				"player": identity("A" + nul + "B"), "killer": identity("A"),
+			},
+		})},
+	})
+	if result.Ack != 1 {
+		t.Fatalf("ack = %d, want the batch acked", result.Ack)
+	}
+	if page := queryEvents(t, server, created.Server.ID, nil); len(page.Events) != 1 {
+		t.Fatalf("the feed holds %d events, want the one sent", len(page.Events))
+	}
+	if page := playerEvents(t, server, testAdminToken, "steam", "A", nil); len(page.Events) != 1 ||
+		!reflect.DeepEqual(page.Events[0].Roles, []string{"killer"}) {
+		t.Errorf("the killer's profile is %+v, want the death with the killer role alone", page.Events)
+	}
+	for _, path := range []string{"/api/v1/players/steam/A%00B/events", "/api/v1/players/st%00eam/A/notes"} {
+		if code := errorCode(t, server, http.MethodGet, path, testAdminToken, nil, http.StatusBadRequest); code != "bad_request" {
+			t.Errorf("GET %s answered %s, want bad_request", path, code)
+		}
+	}
+	if code := errorCode(t, server, http.MethodPost, "/api/v1/players/steam/A/notes", testAdminToken,
+		map[string]any{"text": "a" + nul + "b"}, http.StatusBadRequest); code != "bad_request" {
+		t.Errorf("a note carrying U+0000 answered %s, want bad_request", code)
 	}
 }

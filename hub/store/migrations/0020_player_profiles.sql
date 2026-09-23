@@ -79,3 +79,11 @@ CREATE TABLE IF NOT EXISTS audit_notifications (
 -- stripped from every notification's data before the delivery is rendered.
 -- Every existing webhook redacts nothing.
 ALTER TABLE webhooks ADD COLUMN redact TEXT NOT NULL DEFAULT '[]';
+
+-- Whether a webhook's filter was authorized for the audit notification
+-- (section 11.1) by a token that reads the audit log. Every existing webhook
+-- starts without it: before this migration the audit namespace was ordinary
+-- telemetry, so a filter naming it was granted with events:read, and an
+-- upgrade must not turn that grant into an export of the access record. An
+-- edit by a token covering the notification sets it again.
+ALTER TABLE webhooks ADD COLUMN audit_granted INTEGER NOT NULL DEFAULT 0;

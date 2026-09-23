@@ -57,7 +57,10 @@ func identityString(raw json.RawMessage, bound int) (string, bool) {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return "", false
 	}
-	if value == "" || utf8.RuneCountInString(value) > bound {
+	if value == "" || utf8.RuneCountInString(value) > bound || strings.ContainsRune(value, 0) {
+		// U+0000 is a legal JSON string character that Postgres text cannot
+		// hold, so an identity carrying one could never be indexed; it is
+		// data like any other member (spec section 8.2).
 		return "", false
 	}
 	return value, true
@@ -116,9 +119,10 @@ func extractIdentities(data json.RawMessage) []store.EventIdentity {
 func playerIdentity(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	platform, playerID := r.PathValue("platform"), r.PathValue("playerId")
 	check := func(value, name string, bound int) bool {
-		if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > bound {
+		if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > bound ||
+			strings.ContainsRune(value, 0) {
 			writeError(w, http.StatusBadRequest, codeBadRequest,
-				name+" must be a non-empty identity member of at most "+strconv.Itoa(bound)+" characters")
+				name+" must be a non-empty identity member of at most "+strconv.Itoa(bound)+" characters, without U+0000")
 			return false
 		}
 		return true
@@ -433,6 +437,9 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	case strings.TrimSpace(*request.Text) == "":
 		writeError(w, http.StatusBadRequest, codeBadRequest, "text must not be empty or whitespace alone")
+		return
+	case strings.ContainsRune(*request.Text, 0):
+		writeError(w, http.StatusBadRequest, codeBadRequest, "text must not contain U+0000")
 		return
 	case utf8.RuneCountInString(*request.Text) > maxNoteLength:
 		writeError(w, http.StatusBadRequest, codeBadRequest,

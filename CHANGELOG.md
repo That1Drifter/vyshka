@@ -22,7 +22,8 @@ arrived, since those entries were written for one stream.
 - 2026-09-23: player profiles (issue #79, protocol draft 0.31, sections 8.2, 8.6, 10.1,
   and 10.2). An event now **refers to** an identity when a top-level member of its
   `data` holds a `{ platform, id }` object within the section 8.3 bounds, matched by exact
-  member name; the member's name is the identity's role. The hub indexes those references
+  member name, and free of U+0000 (which Postgres text cannot hold); the member's name is
+  the identity's role. The hub indexes those references
   at ingest (migration 0020, `event_identities`), in the same transaction as the event, and
   the index goes with the event when retention takes it. Three reads and two writes hang
   off `/api/v1/players/{platform}/{playerId}`: `events` (every server's events that refer
@@ -31,7 +32,8 @@ arrived, since those entries were written for one stream.
   `actions` (the player-context actions whose `referenceKey` is the id, narrowed to the
   codes and servers the token may read), and `notes` (operator notes, `GET` and `POST`,
   plus `DELETE .../notes/{noteId}`, credited to the writing token by id and by its name at
-  the time, kept until deleted, at most 1000 per identity). Two scopes join the closed
+  the time, kept until deleted, at most 1000 per identity, a bound serialized per identity
+  so concurrent writers cannot overshoot it). Two scopes join the closed
   set, `notes:read` and `notes:write`, neither implying the other and both allowed and
   unnarrowed on a bound token, like `kv:rw`. Events stored before the upgrade are indexed
   by a background walk that stops at the newest event the migration saw. The spec is
@@ -44,7 +46,9 @@ arrived, since those entries were written for one stream.
   before the delivery is rendered, so one `core.player.death` can feed an admin channel
   whole and a public kill feed without positions. Redaction runs before the template, so
   the `discord` embed cannot say what a path removed, and it re-encodes only the levels it
-  changed, so the rest of the payload keeps the plugin's own bytes. It is set at
+  reaches, so the rest of the payload keeps the plugin's own bytes; a level the path
+  reaches is always rebuilt from its decoded members, so a member repeated in the JSON
+  cannot slip an earlier copy past it. It is set at
   registration and by `PATCH`, validated alike, and applies to deliveries created after
   an edit. Stored events and every other webhook are untouched. The hub conformance suite
   gains `webhooks.redact`.
@@ -55,7 +59,11 @@ arrived, since those entries were written for one stream.
   itself is never updated). The notification is opt-in by name: only `audit.*` or
   `audit.recorded` match it, never `*` or an empty filter, so no existing subscription
   starts exporting the access record, and subscribing, redirecting a pending audit
-  delivery, or replaying one needs `admin`. A generic-json delivery of a record that
+  delivery, or replaying one needs `admin`. A webhook also has to have been authorized for
+  it: a new `audit_granted` column is set by a registration or edit that passed the admin
+  rule and starts false on every existing webhook, because before this draft a filter of
+  `audit.*` was ordinary telemetry granted with `events:read`, and an upgrade must not
+  turn it into an export of the access record. A generic-json delivery of a record that
   names no server omits `serverId`, and the `discord` template words it (who, what, and
   the status). The hub conformance suite gains `webhooks.auditRecords`.
 - 2026-09-23: the panel's player profiles (issue #79): a Players section with a lookup by

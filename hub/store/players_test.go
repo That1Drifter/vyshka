@@ -3,6 +3,10 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,5 +115,42 @@ func TestPrunedEventsLeaveTheProfile(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].Type != "core.player.chat" {
 		t.Errorf("after the prune the profile holds %+v, want the chat alone", found)
+	}
+}
+
+// The per-identity note bound holds under concurrent writers: twenty racing
+// for five slots land five notes and refuse fifteen. On SQLite the single
+// connection makes this pass trivially; on Postgres it is the identity lock.
+func TestNoteBoundHoldsUnderConcurrentWriters(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	const bound, writers = 5, 20
+	var wg sync.WaitGroup
+	var stored, refused atomic.Int64
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := st.CreatePlayerNote(ctx, store.PlayerNote{
+				ID: fmt.Sprintf("note-%02d", i), Platform: "steam", PlayerID: "A", Text: "x",
+			}, bound)
+			switch {
+			case err == nil:
+				stored.Add(1)
+			case errors.Is(err, store.ErrNoteLimit):
+				refused.Add(1)
+			default:
+				t.Errorf("writer %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	notes, err := st.PlayerNotes(ctx, "steam", "A", 100, store.NoteCursor{})
+	if err != nil {
+		t.Fatalf("read notes: %v", err)
+	}
+	if stored.Load() != bound || refused.Load() != writers-bound || len(notes) != bound {
+		t.Errorf("stored %d, refused %d, holding %d; want %d, %d, %d",
+			stored.Load(), refused.Load(), len(notes), bound, writers-bound, bound)
 	}
 }

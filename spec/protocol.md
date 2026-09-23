@@ -1237,7 +1237,10 @@ platform-specific id:
 **Identity references in events.** An event **refers to** an identity when a top-level
 member of its `data` is an identity object: a JSON object whose `platform` and `id`
 members are non-empty strings within the section 8.3 bounds (at most 64 and 128 code
-points), matched by exact member name. Other members beside the two are tolerated. The
+points) that contain no U+0000, matched by exact member name. Other members beside the
+two are tolerated. The U+0000 exclusion is a storage fact rather than a taste: JSON
+allows the character in a string and common databases cannot hold it in text, so such a
+member is data like any other and refers to no one. The
 name of the member is the identity's **role** in the event (`player`, `killer`, `attacker`,
 or whatever the plugin calls it), and one event can refer to several identities, or to one
 identity under several roles.
@@ -1482,9 +1485,12 @@ writes under one path:
 ```
 
 `{platform}` and `{playerId}` are the identity's two members, each one percent-encoded
-path segment, non-empty and within the section 8.3 bounds (at most 64 and 128 code points
-once decoded); anything else is `bad_request`. No identity is registered anywhere, so an
-identity the hub has never heard of has an empty profile, never a `not_found`.
+path segment, non-empty, within the section 8.3 bounds (at most 64 and 128 code points
+once decoded), and free of U+0000 (section 8.2); anything else is `bad_request`. No
+identity is registered anywhere, so an identity the hub has never heard of has an empty
+profile, never a `not_found`. A member that is exactly `.` or `..` cannot be carried at
+all: URL parsers remove such a segment however it is encoded, so the profile of an
+identity with one is out of this route's reach. No registered platform issues such ids.
 
 **Events.**
 
@@ -1563,7 +1569,7 @@ DELETE /api/v1/players/steam/76561198000000001/notes/{noteId}
 ```
 
 - `text` is REQUIRED: a string of at most 4000 code points that is not empty or
-  whitespace alone. It is stored as sent.
+  whitespace alone and contains no U+0000. It is stored as sent.
 - `createdBy` names the credential that wrote the note, with the token's name **as it was
   at the time**, as the audit log does (section 10.5); a bootstrap credential has an empty
   `tokenId`.
@@ -1572,7 +1578,7 @@ DELETE /api/v1/players/steam/76561198000000001/notes/{noteId}
 - A note is kept until it is deleted. Notes are an operator's own records rather than
   telemetry, and no retention applies to them. A hub MAY bound how many notes one identity
   carries (reference: 1000), and refuses a note past the bound with `conflict` rather than
-  dropping an old one.
+  dropping an old one. A bound it advertises holds under concurrent writers.
 - There is no edit. A note that is wrong is deleted and written again, and the audit log
   keeps both acts.
 - `DELETE` of a `{noteId}` that names no note, or a note of another identity, is
@@ -1583,7 +1589,7 @@ DELETE /api/v1/players/steam/76561198000000001/notes/{noteId}
 
 | `code` | HTTP | Raised when |
 |---|---|---|
-| `bad_request` | 400 | `{platform}` or `{playerId}` empty or over its bound; an unparseable `type`, `since`, `until`, `limit`, or `cursor`; a note `text` missing, blank, or over 4000 code points |
+| `bad_request` | 400 | `{platform}` or `{playerId}` empty, over its bound, or carrying U+0000; an unparseable `type`, `since`, `until`, `limit`, or `cursor`; a note `text` missing, blank, carrying U+0000, or over 4000 code points |
 | `forbidden` | 403 | The token lacks the route's grant, or an explicit `type` term its grants do not cover |
 | `not_found` | 404 | A `{noteId}` naming no note of this identity |
 | `conflict` | 409 | The identity already carries as many notes as the hub allows |
@@ -2042,6 +2048,13 @@ Two reasons, either sufficient. The audit log is readable only under `admin` (se
 subscription to "everything" is not that request. And a webhook registered before a hub
 gained the notification was granted, checked, and aimed at a target for what `*` meant
 then; a hub upgrade must not start sending that target the installation's access record.
+
+The same holds for a filter that named the namespace outright. Before draft 0.31 `audit`
+was an ordinary telemetry namespace, and a filter of `audit.*` was granted with
+`events:read` coverage of it. A hub MUST therefore deliver `audit.recorded` only to a
+webhook whose registration or latest edit was authorized under the rule of section 11.2
+for a filter admitting it; a webhook registered before the hub gained the notification
+receives it only after a token holding `admin` saves it again.
 
 An audit record names a server only when its mutation did (section 10.5). A webhook with a
 non-empty `serverIds` receives the records of those servers; the records that name no

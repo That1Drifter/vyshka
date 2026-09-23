@@ -325,30 +325,59 @@ type PlayerNote struct {
 var ErrNoteLimit = errors.New("the identity carries as many notes as the hub allows")
 
 // CreatePlayerNote stores one note, refusing with ErrNoteLimit when the
-// identity already carries bound of them. The count and the insert are one
-// statement, so the bound holds on SQLite's single connection; on Postgres two
-// writers racing the last slot can both land, which overshoots a MAY bound by
-// the width of the race and is accepted rather than locked against.
+// identity already carries bound of them. The count and the insert share a
+// transaction serialized per identity (lockIdentity), so two writers racing
+// for the last slot are one answer each: the second counts the first's note.
 func (s *Store) CreatePlayerNote(ctx context.Context, note PlayerNote, bound int) (PlayerNote, error) {
-	now := time.Now().UTC()
-	note.CreatedAt = now.Truncate(time.Millisecond)
-	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO player_notes (id, platform, player_id, text, created_at, token_id, token_name)
-		 SELECT ?, ?, ?, ?, ?, ?, ?
-		  WHERE (SELECT COUNT(*) FROM player_notes WHERE platform = ? AND player_id = ?) < ?`,
-		note.ID, note.Platform, note.PlayerID, note.Text, formatTime(now), note.TokenID, note.TokenName,
-		note.Platform, note.PlayerID, bound)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return PlayerNote{}, fmt.Errorf("insert player note: %w", err)
+		return PlayerNote{}, fmt.Errorf("begin player note: %w", err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return PlayerNote{}, fmt.Errorf("insert player note: %w", err)
+	defer tx.Rollback()
+	if err := lockIdentity(ctx, tx, note.Platform, note.PlayerID); err != nil {
+		return PlayerNote{}, err
 	}
-	if inserted == 0 {
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM player_notes WHERE platform = ? AND player_id = ?`,
+		note.Platform, note.PlayerID).Scan(&count); err != nil {
+		return PlayerNote{}, fmt.Errorf("count player notes: %w", err)
+	}
+	if count >= bound {
 		return PlayerNote{}, ErrNoteLimit
 	}
+	now := time.Now().UTC()
+	note.CreatedAt = now.Truncate(time.Millisecond)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO player_notes (id, platform, player_id, text, created_at, token_id, token_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		note.ID, note.Platform, note.PlayerID, note.Text, formatTime(now), note.TokenID, note.TokenName,
+	); err != nil {
+		return PlayerNote{}, fmt.Errorf("insert player note: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlayerNote{}, fmt.Errorf("commit player note: %w", err)
+	}
 	return note, nil
+}
+
+// lockIdentity serializes the note writers of one identity for the rest of
+// the transaction: on Postgres a transaction-scoped advisory lock in a
+// keyspace of its own (class 2; the key/value store's is class 1), on SQLite
+// nothing, the single connection being the lock. The key is the identity as
+// a JSON array, so no two identities share one.
+func lockIdentity(ctx context.Context, tx *Tx, platform, playerID string) error {
+	if tx.d != dialectPostgres {
+		return nil
+	}
+	key, err := json.Marshal([]string{platform, playerID})
+	if err != nil {
+		return fmt.Errorf("encode identity lock: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(2, hashtext(?))`, string(key)); err != nil {
+		return fmt.Errorf("lock identity: %w", err)
+	}
+	return nil
 }
 
 // NoteCursor is a position in an identity's notes, newest first.
