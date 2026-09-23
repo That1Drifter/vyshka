@@ -216,12 +216,14 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   destruction whose fatal hit was an explosion), `data.health` (a whole percent of the
   vehicle's maximum), and `data.fluids` (a car's fuel, oil, brake fluid, and coolant, a
   boat's fuel, as fractions); a snapshot that would pass the 262144-byte cap is sent
-  without display names and fluids, every vehicle kept. `vyshka.vehicle.refuel`
+  with compact entries (`type`, `state`, and a crew that is not empty), every vehicle
+  kept and each entry smaller than before this change. `vyshka.vehicle.refuel`
   (vehicle, warning) sets the named fluids (`fuel` by default) to a `level` of each tank;
   `vyshka.vehicle.repair` (vehicle, none) runs the engine's full-health call on the
   vehicle, which lifts a destruction, and with `parts` (the default) on every attached
   part, swapping a ruined wheel back to its intact class through the engine's own
-  replacement. `core.vehicle.destroy` gains `state`, and `damageType` and `ammo` from the
+  replacement (the new wheel's own parts walked like any part's), its lists of swaps and
+  problems sharing a byte budget with complete counts beside them. `core.vehicle.destroy` gains `state`, and `damageType` and `ammo` from the
   hit that destroyed the vehicle (a hit hook on the three vehicle bases, which the engine
   runs before the kill hook in the same damage call). The README's mod surface documents
   `VyshkaVehicles` (`Live`, `Find`, `Id`, `State`) with a delete-all-unclaimed action as

@@ -82,15 +82,21 @@ class VyshkaVehicles
 	// recorded and not reported. The list is cleared at every capture as
 	// well, since a load that failed never reaches its closing hook.
 	static ref array<Transport> s_Loading;
-	// The hit that destroyed a vehicle, from its hit hook, until the kill
-	// hook that follows it reads it (OnHit).
-	static ref VyshkaVehicleHit s_FatalHit;
+	// The hits that destroyed vehicles, from their hit hooks, until the kill
+	// hook that follows each reads its own (OnHit, TakeHit). One per
+	// vehicle, so a kill hook another vehicle runs in between (a mod
+	// damaging a second vehicle from its own hit hook) takes nothing from
+	// it; any left over are cleared at every capture, since a kill hook
+	// follows its hit inside the same damage call or not at all.
+	static ref array<ref VyshkaVehicleHit> s_FatalHits;
 	static const int REPORT_BUDGET = 40000;   // serialized bytes the delete-destroyed lists may take together (the hub's result cap is 64 KiB)
 	// A snapshot body is capped at 262144 bytes (section 8.3). A capture
-	// that would pass this is made again without the display names and the
-	// fluids (Capture), which keeps every vehicle in it.
+	// that would pass this is made again with compact entries (Describe),
+	// which keeps every vehicle in it.
 	static const int SNAPSHOT_BUDGET = 260000;
+	static const int SNAPSHOT_MAX = 262144;
 	static bool s_CompactLogged;   // the compact capture is logged once per run, not every poll
+	static bool s_OverLogged;      // and so is a compact one still past the cap
 	static const int PART_DEPTH_MAX = 3;   // levels of parts a repair walks (a car, its door, anything on the door)
 	// The vehicle each seated identity is in, by plain Steam64 id.
 	static ref map<string, ref VyshkaSeat> s_Seated;
@@ -167,8 +173,7 @@ class VyshkaVehicles
 		int exploded = Exploded().Find(vehicle);
 		if (exploded >= 0)
 			Exploded().Remove(exploded);
-		if (s_FatalHit && s_FatalHit.m_Vehicle == vehicle)
-			s_FatalHit = null;
+		TakeHit(vehicle);
 		int loading = Loading().Find(vehicle);
 		if (loading >= 0)
 			Loading().Remove(loading);
@@ -369,7 +374,11 @@ class VyshkaVehicles
 	// Describe is one state.vehicles entry (section 8.3): id and kind at the
 	// top, and under data the engine class, its display name, the seat
 	// count, the crew, the damage state, the health, and the fluids. A
-	// compact entry leaves out the display name and the fluids.
+	// compact entry keeps the class, the state, and a crew that is not
+	// empty, and nothing else under data: always smaller than an entry was
+	// before the state existed (the state's bytes are fewer than the display
+	// name, seat count, and empty crew it replaces), so a server whose
+	// snapshot fitted then still fits.
 	static VyshkaJsonValue Describe(Transport vehicle, bool compact)
 	{
 		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
@@ -380,18 +389,23 @@ class VyshkaVehicles
 			entry.Set("position", position);
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("type", VyshkaJsonValue.NewString(vehicle.GetType()));
-		if (!compact)
-			data.Set("displayName", VyshkaJsonValue.NewString(vehicle.GetDisplayName()));
+		VyshkaJsonValue crew = Crew(vehicle);
+		if (compact)
+		{
+			if (crew.Count() > 0)
+				data.Set("crew", crew);
+			data.Set("state", VyshkaJsonValue.NewString(State(vehicle)));
+			entry.Set("data", data);
+			return entry;
+		}
+		data.Set("displayName", VyshkaJsonValue.NewString(vehicle.GetDisplayName()));
 		data.Set("seats", VyshkaJsonValue.NewInt(vehicle.CrewSize()));
-		data.Set("crew", Crew(vehicle));
+		data.Set("crew", crew);
 		data.Set("state", VyshkaJsonValue.NewString(State(vehicle)));
 		data.Set("health", VyshkaJsonValue.NewInt(Health(vehicle)));
-		if (!compact)
-		{
-			VyshkaJsonValue fluids = Fluids(vehicle);
-			if (fluids)
-				data.Set("fluids", fluids);
-		}
+		VyshkaJsonValue fluids = Fluids(vehicle);
+		if (fluids)
+			data.Set("fluids", fluids);
 		entry.Set("data", data);
 		return entry;
 	}
@@ -410,6 +424,7 @@ class VyshkaVehicles
 				reported.Remove(j);
 		}
 		Loading().Clear();
+		FatalHits().Clear();
 		array<Transport> exploded = Exploded();
 		for (int k = exploded.Count() - 1; k >= 0; k--)
 		{
@@ -425,9 +440,18 @@ class VyshkaVehicles
 			// Every vehicle stays in the snapshot, since one absent from it
 			// is gone (section 8.3); the extras go instead.
 			body = Body(live, true);
+			int compactBytes = body.Serialize().Length();
 			if (!s_CompactLogged)
-				VyshkaLog.Warn("the vehicles snapshot came to " + bytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 262144 a snapshot may carry; sent without display names and fluids (" + body.Serialize().Length().ToString() + " bytes); logged once per run");
+				VyshkaLog.Warn("the vehicles snapshot came to " + bytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 260000 kept under the 262144 a snapshot may carry; sent with compact entries (" + compactBytes.ToString() + " bytes); logged once per run");
 			s_CompactLogged = true;
+			// Past the cap even so, the hub rejects it whole and keeps the
+			// last one it accepted: nothing is left to drop but vehicles,
+			// and a snapshot missing some would say they are gone.
+			if (compactBytes > SNAPSHOT_MAX && !s_OverLogged)
+			{
+				VyshkaLog.Warn("the compact vehicles snapshot is still " + compactBytes.ToString() + " bytes; the hub will reject it while there are this many vehicles; logged once per run");
+				s_OverLogged = true;
+			}
 		}
 		return body;
 	}
@@ -571,10 +595,7 @@ class VyshkaVehicles
 	{
 		if (!vehicle)
 			return;
-		VyshkaVehicleHit hit = s_FatalHit;
-		s_FatalHit = null;
-		if (hit && hit.m_Vehicle != vehicle)
-			hit = null;
+		VyshkaVehicleHit hit = TakeHit(vehicle);
 		if (Destroyed().Find(vehicle) >= 0)
 			return;
 		Destroyed().Insert(vehicle);
@@ -616,7 +637,32 @@ class VyshkaVehicles
 		hit.m_Source = source;
 		hit.m_Type = damageType;
 		hit.m_Ammo = ammo;
-		s_FatalHit = hit;
+		TakeHit(vehicle);
+		FatalHits().Insert(hit);
+	}
+
+	static array<ref VyshkaVehicleHit> FatalHits()
+	{
+		if (!s_FatalHits)
+			s_FatalHits = new array<ref VyshkaVehicleHit>;
+		return s_FatalHits;
+	}
+
+	// TakeHit removes the fatal hit kept for a vehicle and returns it, or
+	// null when none is kept.
+	static VyshkaVehicleHit TakeHit(Transport vehicle)
+	{
+		array<ref VyshkaVehicleHit> hits = FatalHits();
+		for (int i = hits.Count() - 1; i >= 0; i--)
+		{
+			VyshkaVehicleHit hit = hits.Get(i);
+			if (hit.m_Vehicle == vehicle)
+			{
+				hits.Remove(i);
+				return hit;
+			}
+		}
+		return null;
 	}
 
 	static void DescribeKiller(Transport victim, Object killer, VyshkaJsonValue data)
@@ -1165,6 +1211,64 @@ class VyshkaRefuelAction : VyshkaAction
 	}
 }
 
+// VyshkaRepairReport is what a repair lists: the wheels swapped back and
+// the parts it could not repair, sharing one byte budget so the result stays
+// inside the hub's cap (section 7: a result over 64 KiB is dropped whole),
+// with complete counts beside them.
+class VyshkaRepairReport
+{
+	ref VyshkaJsonValue m_Replaced;
+	ref VyshkaJsonValue m_Problems;
+	int m_ReplacedCount;
+	int m_ProblemCount;
+	int m_Budget;
+
+	void VyshkaRepairReport()
+	{
+		m_Replaced = VyshkaJsonValue.NewArray();
+		m_Problems = VyshkaJsonValue.NewArray();
+		m_Budget = VyshkaVehicles.REPORT_BUDGET;
+	}
+
+	void Replaced(string slot, string from, string to)
+	{
+		m_ReplacedCount++;
+		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+		entry.Set("slot", VyshkaJsonValue.NewString(slot));
+		entry.Set("from", VyshkaJsonValue.NewString(from));
+		entry.Set("to", VyshkaJsonValue.NewString(to));
+		Keep(m_Replaced, entry);
+	}
+
+	void Problem(string className, string slot, string reason)
+	{
+		m_ProblemCount++;
+		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+		entry.Set("class", VyshkaJsonValue.NewString(className));
+		entry.Set("slot", VyshkaJsonValue.NewString(slot));
+		entry.Set("reason", VyshkaJsonValue.NewString(reason));
+		Keep(m_Problems, entry);
+	}
+
+	void Keep(VyshkaJsonValue list, VyshkaJsonValue entry)
+	{
+		int bytes = entry.Serialize().Length() + 1;
+		if (bytes > m_Budget)
+			return;
+		list.Add(entry);
+		m_Budget -= bytes;
+	}
+
+	void Report(VyshkaJsonValue result)
+	{
+		result.Set("replaced", m_Replaced);
+		result.Set("problems", m_Problems);
+		result.Set("replacedCount", VyshkaJsonValue.NewInt(m_ReplacedCount));
+		result.Set("problemCount", VyshkaJsonValue.NewInt(m_ProblemCount));
+		result.Set("truncated", VyshkaJsonValue.NewBool(m_ReplacedCount > m_Replaced.Count() || m_ProblemCount > m_Problems.Count()));
+	}
+}
+
 // VyshkaRepairAction brings one vehicle back to full health: every damage
 // zone of the vehicle through the engine's own full-health call, which also
 // lifts a destruction, and with parts (the default) every part attached to
@@ -1216,17 +1320,16 @@ class VyshkaRepairAction : VyshkaAction
 			VyshkaVehicles.OnRepaired(vehicle);
 
 		int repaired = 0;
-		VyshkaJsonValue replaced = VyshkaJsonValue.NewArray();
-		VyshkaJsonValue problems = VyshkaJsonValue.NewArray();
+		VyshkaRepairReport report = new VyshkaRepairReport();
 		if (withParts)
-			repaired = RepairParts(vehicle, 1, replaced, problems);
+			repaired = RepairParts(vehicle, 1, report);
 
 		string stateAfter = VyshkaVehicles.State(vehicle);
 		int healthAfter = VyshkaVehicles.Health(vehicle);
 		// Built in two steps: one expression this long is past what the
 		// script compiler takes ("Formula too complex").
 		string line = "repaired " + vehicle.GetType() + " (" + referenceKey + "): " + stateBefore + " at " + healthBefore.ToString() + "%";
-		line = line + " to " + stateAfter + " at " + healthAfter.ToString() + "%, " + repaired.ToString() + " parts, " + replaced.Count().ToString() + " wheels swapped back";
+		line = line + " to " + stateAfter + " at " + healthAfter.ToString() + "%, " + repaired.ToString() + " parts, " + report.m_ReplacedCount.ToString() + " wheels swapped back";
 		VyshkaLog.Info(line);
 		if (vehicle.IsDamageDestroyed())
 			return VyshkaActionOutcome.Failure("the engine kept " + vehicle.GetType() + " (" + referenceKey + ") destroyed after its full-health call");
@@ -1242,8 +1345,7 @@ class VyshkaRepairAction : VyshkaAction
 		result.Set("before", before);
 		result.Set("after", after);
 		result.Set("parts", VyshkaJsonValue.NewInt(repaired));
-		result.Set("replaced", replaced);
-		result.Set("problems", problems);
+		report.Report(result);
 		return VyshkaActionOutcome.Success(result);
 	}
 
@@ -1251,8 +1353,10 @@ class VyshkaRepairAction : VyshkaAction
 	// those down to PART_DEPTH_MAX levels, to full health, and swaps a
 	// ruined wheel back to its intact class; it returns how many parts it
 	// repaired or swapped. The parts are listed before any is touched, since
-	// a swap changes the attachments.
-	static int RepairParts(EntityAI item, int depth, VyshkaJsonValue replaced, VyshkaJsonValue problems)
+	// a swap changes the attachments; a swapped-in wheel's own parts (which
+	// the replacement carries over from the ruined one) are walked like any
+	// part's.
+	static int RepairParts(EntityAI item, int depth, VyshkaRepairReport report)
 	{
 		if (depth > VyshkaVehicles.PART_DEPTH_MAX || !item.GetInventory())
 			return 0;
@@ -1269,16 +1373,17 @@ class VyshkaRepairAction : VyshkaAction
 			EntityAI current = parts.Get(p);
 			if (CarWheel_Ruined.Cast(current))
 			{
-				if (SwapWheel(item, current, replaced, problems))
-					repaired++;
-				continue;
+				current = SwapWheel(item, current, report);
+				if (!current)
+					continue;
+				repaired++;
 			}
-			if (VyshkaInventory.HasHealth(current))
+			else if (VyshkaInventory.HasHealth(current))
 			{
 				current.SetFullHealth();
 				repaired++;
 			}
-			repaired += RepairParts(current, depth + 1, replaced, problems);
+			repaired += RepairParts(current, depth + 1, report);
 		}
 		return repaired;
 	}
@@ -1287,8 +1392,9 @@ class VyshkaRepairAction : VyshkaAction
 	// comes from (HatchbackWheel_Ruined is a ruined HatchbackWheel), in the
 	// same slot, through the replacement the engine used to ruin it. A
 	// ruined wheel with no intact class to go back to is reported, not
-	// removed.
-	static bool SwapWheel(EntityAI vehicle, EntityAI wheel, VyshkaJsonValue replaced, VyshkaJsonValue problems)
+	// removed. Returns the wheel now in the slot, or null when there is no
+	// intact one there.
+	static EntityAI SwapWheel(EntityAI vehicle, EntityAI wheel, VyshkaRepairReport report)
 	{
 		string ruinedType = wheel.GetType();
 		InventoryLocation location = new InventoryLocation();
@@ -1304,8 +1410,8 @@ class VyshkaRepairAction : VyshkaAction
 			intactType = ruinedType.Substring(0, cut);
 		if (intactType == "" || slotId == InventorySlots.INVALID || !GetGame().IsKindOf(intactType, "CarWheel") || GetGame().IsKindOf(intactType, "CarWheel_Ruined"))
 		{
-			Problem(problems, ruinedType, slot, "no intact wheel class to swap it back to");
-			return false;
+			report.Problem(ruinedType, slot, "no intact wheel class to swap it back to");
+			return null;
 		}
 		ReplaceWheelLambda lambda = new ReplaceWheelLambda(wheel, intactType, null);
 		lambda.SetTransferParams(true, true, false);
@@ -1314,24 +1420,11 @@ class VyshkaRepairAction : VyshkaAction
 		EntityAI now = vehicle.GetInventory().FindAttachment(slotId);
 		if (!now || now.GetType() != intactType)
 		{
-			Problem(problems, ruinedType, slot, "the engine did not put " + intactType + " in its place");
-			return false;
+			report.Problem(ruinedType, slot, "the engine did not put " + intactType + " in its place");
+			return null;
 		}
 		now.SetFullHealth();
-		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
-		entry.Set("slot", VyshkaJsonValue.NewString(slot));
-		entry.Set("from", VyshkaJsonValue.NewString(ruinedType));
-		entry.Set("to", VyshkaJsonValue.NewString(intactType));
-		replaced.Add(entry);
-		return true;
-	}
-
-	static void Problem(VyshkaJsonValue problems, string className, string slot, string reason)
-	{
-		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
-		entry.Set("class", VyshkaJsonValue.NewString(className));
-		entry.Set("slot", VyshkaJsonValue.NewString(slot));
-		entry.Set("reason", VyshkaJsonValue.NewString(reason));
-		problems.Add(entry);
+		report.Replaced(slot, ruinedType, intactType);
+		return now;
 	}
 }
