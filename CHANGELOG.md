@@ -17,6 +17,13 @@ arrived, since those entries were written for one stream.
 
 ### [Unreleased]
 
+### [0.2.0] - 2026-09-23
+
+Everything that landed after 0.1.0: the hub side of the post-release DayZ slices (server
+binding, custom contexts, presets, the world, player profiles, per-webhook redaction,
+audit records as webhook material, and the installation ban list), protocol drafts 0.26
+to 0.32. Tag `hub-v0.2.0`.
+
 #### Added
 
 - 2026-09-23: the installation ban list (issue #80, protocol draft 0.32, new section 13,
@@ -365,6 +372,13 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 ## DayZ plugin
 
 ### [Unreleased]
+
+### [0.8.0] - 2026-09-23
+
+Every plugin slice since 0.7.0: damage telemetry, admin flags, the mod surface, the item
+catalog, inventory, spawning, presets, vehicles 2, the world, the installation ban list,
+and crash-safe rewrites of the plugin's files. Tag `dayz-plugin-v0.8.0`. Pair it with hub
+0.2.0, which carries the hub side of those slices.
 
 #### Added
 

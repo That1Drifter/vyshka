@@ -1,6 +1,6 @@
 # Roadmap
 
-**As of:** 2026-09-23 (the installation ban list of #80 landed as protocol draft 0.32: one
+**As of:** 2026-09-23 (hub 0.2.0 and DayZ plugin 0.8.0 released; the installation ban list of #80 landed as protocol draft 0.32: one
 list for every server, pulled a page at a time by each plugin declaring the new `bans`
 capability, one revision whole, with the revision it enforces reported back; the hub features of #79 landed as protocol draft 0.31: player
 profiles across every server with operator notes, per-webhook redaction, and audit records
@@ -58,7 +58,9 @@ trust. A hosting outfit running servers for other people is out of scope until 1
 
 The first tagged release is out: hub 0.1.0 (`hub-v0.1.0`, static binaries for Linux, macOS,
 and Windows plus the container image) and DayZ plugin 0.7.0 (`dayz-plugin-v0.7.0`), both
-on 2026-09-17 (issue #69). Releases are described in `RELEASING.md`.
+on 2026-09-17 (issue #69). The second followed on 2026-09-23: hub 0.2.0 (`hub-v0.2.0`) and
+DayZ plugin 0.8.0 (`dayz-plugin-v0.8.0`), carrying every Horizon 1 slice that landed after
+the first tag. Releases are described in `RELEASING.md`.
 
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
 custom contexts moved to Horizon 1 with a DayZ customer, `--auto-tls` to Horizon 2, and the

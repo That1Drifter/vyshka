@@ -90,12 +90,12 @@ release carries:
 
 ```
 # The binary, anywhere
-tar -xzf vyshka-hub_0.1.0_linux_amd64.tar.gz && cd vyshka-hub_0.1.0_linux_amd64
+tar -xzf vyshka-hub_0.2.0_linux_amd64.tar.gz && cd vyshka-hub_0.2.0_linux_amd64
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token ./vyshka-hub serve
 
 # The container
 docker run --rm -p 127.0.0.1:8080:8080 -v vyshka-data:/data \
-  -e VYSHKA_ADMIN_TOKEN=vya_local_dev_token ghcr.io/that1drifter/vyshka-hub:0.1.0
+  -e VYSHKA_ADMIN_TOKEN=vya_local_dev_token ghcr.io/that1drifter/vyshka-hub:0.2.0
 
 # From source
 go install github.com/That1Drifter/vyshka/hub/cmd/vyshka-hub@latest
