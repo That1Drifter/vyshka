@@ -975,14 +975,23 @@ async function viewMap(app, route, seq) {
     for (const vehicle of state.vehicles) {
       const point = manifest ? worldPoint(manifest, vehicle.position) : null;
       if (point) vehiclesPlotted++;
+      // A damage state other than intact (the DayZ plugin's data.state,
+      // issue #77: destroyed or exploded) is a badge beside the kind, so a
+      // wreck reads apart at a glance, and is left out of the data summary
+      // that would otherwise repeat it.
+      const wrecked = typeof vehicle.data.state === 'string' && vehicle.data.state !== '' && vehicle.data.state !== 'intact'
+        ? vehicle.data.state : '';
+      const rest = Object.assign({}, vehicle.data);
+      if (wrecked) delete rest.state;
       const row = el('tr', { 'data-vehicle-id': vehicle.id },
-        el('td', {}, vehicleLabel(vehicle), vehicle.kind ? [' ', badge(vehicle.kind)] : null),
+        el('td', {}, vehicleLabel(vehicle), vehicle.kind ? [' ', badge(vehicle.kind)] : null,
+          wrecked ? [' ', badge(wrecked, 'destructive state')] : null),
         el('td', { class: 'mono' }, vehicle.id),
         el('td', { class: 'position' }, Array.isArray(vehicle.position)
           ? positionText(manifest, vehicle.position)
           : el('span', { class: 'muted' }, 'no position')),
-        el('td', { class: 'data' }, Object.keys(vehicle.data).length > 0
-          ? attempt(() => summarizeEventData(vehicle.data), 'The data is nested too deeply to summarize.')
+        el('td', { class: 'data' }, Object.keys(rest).length > 0
+          ? attempt(() => summarizeEventData(rest), 'The data is nested too deeply to summarize.')
           : el('span', { class: 'muted' }, 'none')),
         el('td', { class: 'row-actions' },
           point ? el('button', {

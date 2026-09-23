@@ -4,9 +4,11 @@ The reference game plugin for DayZ: a server-side Enforce Script mod that enroll
 dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest, executes
 dispatched actions, and publishes telemetry: the core player and vehicle events a feed
 needs and the `state.players`, `state.vehicles`, and `state.entities` snapshots a live map
-needs. It ships twenty built-in actions (heal, vitals, stop bleeding, dry, broken legs,
+needs. It ships twenty-six built-in actions (heal, vitals, stop bleeding, dry, broken legs,
 bloody hands, flags, kick, ban, unban, message, broadcast, teleport, spawn, set time,
-unstuck, delete destroyed vehicles, and read, strip, and clear a player's inventory), so an
+unstuck, refuel, and repair a vehicle, delete destroyed vehicles, read, strip, and clear a
+player's inventory, and apply and capture a loadout, teleport to a location, and spawn a
+vehicle preset), so an
 operator can moderate a server, patch a player up, and move things around it from the panel or a `curl` against the hub, and a surface
 other server mods build on ("Writing a mod against the plugin" below, with a sample under
 `sample/`). Protocol: `spec/protocol.md`.
@@ -130,6 +132,8 @@ its revision is derived from its content, see "Writing a mod against the plugin"
 | `vyshka.spawn` | player | warning | `className` (required; annotated with the item catalog's contexts, below, so a panel offers the names, and excluding the server's `spawnBlocklist`), `into` (`ground`, the default, `inventory`, or `hands`), `quantity` (a stack's count, a container's fill, a magazine's or an ammunition pile's rounds), `health` (0 to 100, a percent of the item's maximum), `attachments` (`none`, the default, or `auto`) | `className` (as the engine reports it), `displayName`, `config` (the tree that declares it), `into`, `placed` (`ground`, `hands`, `attachment`, `cargo`) with `slot` and `container` when it went into the inventory, the condition fields of an inventory read entry (`health`, `state`, and `quantity`, `ammo`, `rounds`, `liquid` where they apply), `position`, `name`; with `auto`, `attachments` (one `{ slot, class }` per part, `ammo` on a magazine, a part's own parts inside), `empty` (`{ slot, on }` per slot left empty), and for a firearm `loaded` (the magazine or round it was loaded with, or null) |
 | `vyshka.settime` | world | warning | `hour` (0 to 23, required), `minute` (0 to 59, default 0) | `before` and `after`, each `{ year, month, day, hour, minute }` read from the world clock |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
+| `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat only fuel (naming another fails the action), and a helicopter none the plugin can fill |
+| `vyshka.vehicle.repair` | vehicle | none | `parts` (default true) | `vehicle`, `type`, `kind`, `position`, `before` and `after` (each `{ state, health }`), `parts` (how many were repaired or swapped), `replaced` (one `{ slot, from, to }` per ruined wheel swapped back to its intact class), `problems` (one `{ class, slot, reason }` per part that could not be), `replacedCount` and `problemCount` (always complete), `truncated` (true when a list was cut: the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap); the engine's own full-health call on every damage zone, which lifts a destruction, then with `parts` every attached part and the parts on those, three levels down, a swapped-in wheel's own parts included. Fluids are left to the refuel action, and a missing part stays missing |
 | `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that slot's subtree alone, with the whole result budget to itself) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
 | `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
 | `vyshka.inventory.clear` | player | destructive | none | `name`, `deleted` (one `{ class, name, slot, items }` per item), `deletedCount`, `items` (everything deleted, contents included); each item is deleted through the engine's safe delete, its contents with it |
@@ -456,7 +460,7 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
 | `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
-| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens) | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`) |
+| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens). A wreck saved at shutdown is loaded again at the next boot, runs the kill hook inside its own load, and is deleted by the engine half a second later (measured on DayZ 1.29); that destruction belongs to the earlier run and is not reported | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`), `state` (`destroyed`, or `exploded` when an explosion did it), and when a hit destroyed it `damageType` and `ammo` as the damage event reports them (a scripted health write destroys with no hit). The engine names the vehicle itself as the killer of an explosion (measured: a plastic explosive), so a vehicle that is its own killer is described by what its fatal hit came from, which is how an explosion reads as `explosion` with `weapon` |
 | `vyshka.vehicle.enter` | A player's vehicle command starts: the character takes a seat (a custom type: the core set has no enter) | `player`, `name`, `vehicle`, `type`, `kind`, `position`, `seat` (the crew index), `driver` |
 | `vyshka.vehicle.exit` | The vehicle command finishes (the character got out, or the command gave way to another, a death in the seat included), or a seated player disconnects; a seat switch inside the vehicle is not an exit, and the `seat` and `driver` reported are those of the seat actually left | the same, plus `cause` (`left` or `disconnect`) |
 
@@ -503,7 +507,9 @@ absent when none is; the panel shows them as badges beside the name.
   "vehicles": [ { "id": "0-2147", "kind": "car", "position": [6512.3, 284.6, 7498.1],
                   "data": { "type": "OffroadHatchback", "displayName": "ADA 4x4", "seats": 4,
                             "crew": [ { "player": { "platform": "steam", "id": "7656..." },
-                                        "name": "Survivor", "seat": 0, "driver": true } ] } } ] }
+                                        "name": "Survivor", "seat": 0, "driver": true } ],
+                            "state": "intact", "health": 100,
+                            "fluids": { "fuel": 0.26, "oil": 1, "brake": 1, "coolant": 1 } } } ] }
 ```
 
 A vehicle's `id` is the engine's network id for the object (its high and low halves joined
@@ -513,9 +519,23 @@ scripted base the vehicle extends, and `vehicle` for one that extends none of th
 list is the plugin's own, kept by hooks on those three bases (`CarScript`, `BoatScript`,
 `HelicopterScript`; their common engine parent cannot be modded from script): every vanilla
 vehicle and every modded one built on them is in it, one that extends the engine's `Car`,
-`Boat`, or `Helicopter` directly is not. The damage state (`intact`, `destroyed`,
-`exploded`) and the fluids arrive with the vehicles 2 slice; `vyshka.deletedestroyed` with
-`dryRun` says today which are wrecks.
+`Boat`, or `Helicopter` directly is not.
+
+`data.state` is the vehicle's damage state: `intact`, `destroyed` (its global health is
+zero), or `exploded` (destroyed, and the hit that did it was an explosion, or the killer
+the engine named was an explosive). `exploded` is kept in memory, which loses nothing: a
+wreck does not outlive a restart (the engine deletes one the hive loads). `data.health` is
+the global health as a whole percent of the vehicle's maximum, which differs by class.
+`data.fluids` is each tank's level as a fraction rounded to two decimals: `fuel`, `oil`,
+`brake`, and `coolant` for a car, `fuel` alone for a boat, and absent for a helicopter,
+whose tank the engine does not give script. A repair makes a wreck `intact` again, and its
+next destruction is reported as a new one. A snapshot that would pass the 262144 bytes a
+snapshot may carry (around a thousand vehicles: 52 took 11 464 bytes on a live run) is sent
+with less detail instead, a level at a time until it fits, so every vehicle stays in it:
+compact entries, whose `data` holds only `type`, `state`, and `crew` when someone is aboard
+(smaller than an entry was before the state existed, so a server whose snapshot fitted then
+still fits); then `id`, `kind`, and `position` alone; then `id` alone, which fits the 5000
+entries a snapshot may hold. The plugin logs the level whenever it changes.
 
 ```json
 { "capturedAt": "2026-09-18T10:00:00Z",
@@ -706,7 +726,7 @@ a cut list.
 
 Any server mod loaded after `@Vyshka` can add its own actions, events, contexts, key/value
 namespaces, and map markers, and they arrive at the hub in the same manifest and the same
-telemetry as the plugin's own. The surface is five things, all in Enforce Script and all
+telemetry as the plugin's own. The surface is six things, all in Enforce Script and all
 server-side; `sample/` is a complete mod built on them, which builds and loads with nothing
 installed but the game and the plugin, and is meant to be copied.
 
@@ -797,6 +817,60 @@ build a body the hub rejects. `Place` returns `null` when it refused (a marker a
 the map is then unchanged; `Find` gives it back), and a mod that reports or counts a
 placement checks that before it does. The marker keeps a copy of the `data` it was given,
 so changing the object afterwards changes nothing on the map.
+
+**`VyshkaVehicles`** is the plugin's list of the vehicles on the server (the engine keeps
+none script can read), for a mod whose action works on vehicles: `VyshkaVehicles.Live()`
+returns every vehicle alive and not on its way out, `Find(id)` the one a snapshot id names
+(null when there is none), `Id(vehicle)` the id the snapshot and the vehicle-context
+actions use, and `State(vehicle)` its damage state as the snapshot reports it (`intact`,
+`destroyed`, `exploded`). Deleting every unclaimed vehicle is the example that belongs here
+rather than in the plugin: the game has no notion of a claimed vehicle, so the action
+depends on whichever ownership mod the server runs, and that mod (or a small one beside
+it) registers it with its own check. This exact code was compiled and dispatched on a DayZ
+1.29 server; with `IsClaimed` answering true it deletes nothing, so a copy is safe until
+the check is written:
+
+```c
+#ifdef VYSHKA
+// Deletes every vehicle nobody owns and nobody is sitting in. What "owned"
+// means is the ownership mod's business: IsClaimed stands in for its check
+// (a key, a lock, its own registry of claimed vehicles).
+class MyModDeleteUnclaimedAction : VyshkaAction
+{
+	override string Code()      { return "mymod.deleteunclaimed"; }
+	override string Name()      { return "Delete unclaimed vehicles"; }
+	override string Namespace() { return "mymod"; }
+	override string Danger()    { return "destructive"; }
+
+	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
+	{
+		array<Transport> live = VyshkaVehicles.Live();
+		int deleted = 0;
+		for (int i = 0; i < live.Count(); i++)
+		{
+			Transport vehicle = live.Get(i);
+			if (IsClaimed(vehicle) || vehicle.IsAnyCrewPresent())
+				continue;
+			Print("[MyMod] deleting unclaimed " + vehicle.GetType() + " " + VyshkaVehicles.Id(vehicle) + " (" + VyshkaVehicles.State(vehicle) + ")");
+			vehicle.DeleteSafe();
+			deleted++;
+		}
+		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
+		result.Set("deleted", VyshkaJsonValue.NewInt(deleted));
+		return VyshkaActionOutcome.Success(result);
+	}
+
+	bool IsClaimed(Transport vehicle)
+	{
+		return true;   // the ownership mod's own check goes here
+	}
+}
+#endif
+```
+
+Register it in `VyshkaRegister` like any other action. The count is the whole result on
+purpose: a list of every id deleted can pass the hub's 64 KiB result cap on a large server
+(section 7), which is why `vyshka.deletedestroyed` bounds its lists by bytes.
 
 **Manifest revision.** The hub replaces its stored manifest only for a higher revision
 (protocol section 6.1), and which mods are loaded changes the manifest, so the revision is

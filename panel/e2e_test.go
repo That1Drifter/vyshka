@@ -781,11 +781,12 @@ func TestPanelEndToEnd(t *testing.T) {
 	// The vehicles snapshot (issue #67) rides beside the players: one car
 	// at the centre of a raster quadrant, one with no position at all. Its
 	// markers are drawn apart from the players' and its rows listed apart.
+	// The boat is a wreck (issue #77), the car intact.
 	plugin.queue("state.vehicles", map[string]any{
 		"capturedAt": time.Now().UTC().Add(-15 * time.Second).Format("2006-01-02T15:04:05Z"),
 		"vehicles": []map[string]any{
-			{"id": "0-4242", "kind": "car", "position": []float64{256, 5, 768}, "data": map[string]any{"type": "OffroadHatchback", "displayName": "ADA 4x4", "seats": 4}},
-			{"id": "0-4243", "kind": "boat", "data": map[string]any{"type": "Boat_01"}},
+			{"id": "0-4242", "kind": "car", "position": []float64{256, 5, 768}, "data": map[string]any{"type": "OffroadHatchback", "displayName": "ADA 4x4", "seats": 4, "state": "intact", "health": 100}},
+			{"id": "0-4243", "kind": "boat", "data": map[string]any{"type": "Boat_01", "state": "exploded", "health": 0}},
 		},
 	})
 	marker := func(platform, id string) string {
@@ -817,6 +818,20 @@ func TestPanelEndToEnd(t *testing.T) {
 	}
 	if got := text(vehicleRow("0-4243") + " td.position"); got != "no position" {
 		t.Fatalf("the boat's position cell = %q", got)
+	}
+	// A damage state other than intact is a badge beside the kind and
+	// leaves the data summary; intact is neither badged nor dropped.
+	if got := evalString(`Array.from(document.querySelectorAll(` + strconv.Quote(vehicleRow("0-4243")+" .badge.state") + `)).map(b => b.textContent).join(",")`); got != "exploded" {
+		t.Fatalf("the wrecked boat's state badges = %q, want exploded", got)
+	}
+	if got := text(vehicleRow("0-4243") + " td.data"); strings.Contains(got, "exploded") || !strings.Contains(got, "health") {
+		t.Fatalf("the wrecked boat's data cell = %q, want the health without the badged state", got)
+	}
+	if got := evalString(`String(document.querySelectorAll(` + strconv.Quote(vehicleRow("0-4242")+" .badge.state") + `).length)`); got != "0" {
+		t.Fatalf("the intact car carries %s state badges, want none", got)
+	}
+	if got := text(vehicleRow("0-4242") + " td.data"); !strings.Contains(got, "intact") {
+		t.Fatalf("the intact car's data cell = %q, want its state kept in the summary", got)
 	}
 	playerRow := func(id string) string { return `#players tr[data-player-id="` + id + `"]` }
 	if got := text(playerRow("76561198000000001") + " td.position"); got != "x 384, z 640" {
