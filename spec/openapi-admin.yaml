@@ -538,7 +538,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StateSnapshot" }
         "400":
-          description: "`stateType` is not players, vehicles, or entities (`bad_request`)."
+          description: "`stateType` is not players, vehicles, entities, or world (`bad_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1114,8 +1114,8 @@ components:
       required: true
       schema:
         type: string
-        enum: [players, vehicles, entities]
-      description: Which state list to read (spec section 8.3).
+        enum: [players, vehicles, entities, world]
+      description: Which snapshot to read, one of the three lists or the world (spec section 8.3).
 
   schemas:
     ServerRecord:
@@ -1502,7 +1502,7 @@ components:
       properties:
         type:
           type: string
-          enum: [players, vehicles, entities]
+          enum: [players, vehicles, entities, world]
         capturedAt:
           type: string
           format: date-time
@@ -1517,9 +1517,9 @@ components:
           type: object
           additionalProperties: true
           description: |
-            The accepted state.* body, verbatim. Its list shapes are the
-            `statePlayers`, `stateVehicles`, and `stateEntities` definitions
-            of spec/state.schema.json.
+            The accepted state.* body, verbatim. Its shapes are the
+            `statePlayers`, `stateVehicles`, `stateEntities`, and `stateWorld`
+            definitions of spec/state.schema.json.
 
     KVEntry:
       type: object

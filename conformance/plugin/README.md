@@ -134,7 +134,8 @@ Telemetry (spec section 8) is graded on arrival rather than by provocation: ever
 checked against the bounds a conformant hub enforces (the `{namespace}.{name}` grammar and
 the reserved `action.` and `server.` namespaces for event types, the 200-event batch, the
 16 KiB `data` cap, the required list field and the deeply enforced player identity of a
-snapshot, the shape of `position`), and a violation is a fault against the stage it landed
+snapshot, the shape of `position`, and a `state.world` body's one `world` object with its
+`time` in the game-calendar form), and a violation is a fault against the stage it landed
 in. The `telemetry.wellFormed` stage itself only waits, for `-check-timeout`, for the first
 batch or snapshot to arrive; a candidate that publishes telemetry on a slower cadence
 should raise that flag rather than accept the `PART`.

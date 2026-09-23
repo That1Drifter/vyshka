@@ -334,6 +334,11 @@ func TestWellFormedTelemetryIsNotFaulted(t *testing.T) {
 		typedEnvelope("tel-6", 6, "state.players", map[string]any{"capturedAt": nil, "players": []map[string]any{
 			{"player": map[string]any{"platform": "steam", "id": "1"}, "position": nil},
 		}}),
+		typedEnvelope("tel-7", 7, "state.world", map[string]any{"world": map[string]any{
+			"time": "2026-09-20T14:32", "data": map[string]any{"overcast": 0.4}, "x-mod-extra": 1,
+		}}),
+		typedEnvelope("tel-8", 8, "state.world", map[string]any{"world": map[string]any{"time": "2026-09-20T14:32:05", "data": nil}}),
+		typedEnvelope("tel-9", 9, "state.world", map[string]any{"world": map[string]any{}}),
 	)
 
 	if faults := faultMessages(h); faults != "" {
@@ -342,8 +347,8 @@ func TestWellFormedTelemetryIsNotFaulted(t *testing.T) {
 	h.mu.Lock()
 	stats := h.telemetry
 	h.mu.Unlock()
-	if stats.batches != 2 || stats.events != 4 || stats.snapshots != 4 {
-		t.Fatalf("telemetry counted as %+v, want 2 batches, 4 events, 4 snapshots", stats)
+	if stats.batches != 2 || stats.events != 4 || stats.snapshots != 7 {
+		t.Fatalf("telemetry counted as %+v, want 2 batches, 4 events, 7 snapshots", stats)
 	}
 }
 
@@ -779,6 +784,11 @@ func TestMalformedSnapshotsAreFaulted(t *testing.T) {
 		typedEnvelope("snap-7", 7, "state.players", map[string]any{"capturedAt": 12345, "players": []any{}}),
 		typedEnvelope("snap-8", 8, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "data": []any{}}}}),
 		typedEnvelope("snap-9", 9, "state.players", map[string]any{"players": []map[string]any{{"player": map[string]any{"platform": "steam", "id": "1"}, "position": []any{nil, 2}}}}),
+		typedEnvelope("snap-10", 10, "state.world", map[string]any{"capturedAt": "2026-09-11T10:00:00Z"}),
+		typedEnvelope("snap-11", 11, "state.world", map[string]any{"world": []any{}}),
+		typedEnvelope("snap-12", 12, "state.world", map[string]any{"world": map[string]any{"time": "2026-02-30T10:00"}}),
+		typedEnvelope("snap-13", 13, "state.world", map[string]any{"world": map[string]any{"time": "2026-09-20T14:32Z"}}),
+		typedEnvelope("snap-14", 14, "state.world", map[string]any{"world": map[string]any{"data": "clear"}}),
 	)
 
 	faults := faultMessages(h)
@@ -792,6 +802,11 @@ func TestMalformedSnapshotsAreFaulted(t *testing.T) {
 		"snap-7: capturedAt 12345 is not an RFC 3339 timestamp",
 		"snap-8 players[0].data is not an object",
 		"snap-9 players[0].position[0] is not a number",
+		"snap-10 carries no world",
+		"snap-11: world is not an object",
+		"snap-12: world.time \"2026-02-30T10:00\" is not the game's clock",
+		"snap-13: world.time \"2026-09-20T14:32Z\" is not the game's clock",
+		"snap-14: world.data is not an object",
 	} {
 		if !strings.Contains(faults, want) {
 			t.Errorf("expected a fault containing %q; recorded faults:\n%s", want, faults)

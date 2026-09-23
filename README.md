@@ -40,9 +40,9 @@ is observable at `GET /api/v1/actions/{id}`, with idempotent retries and TTL exp
 
 Plugin to hub. The plugin pushes `event.batch` envelopes; core and mod-defined events land
 in one append-only store with per-type retention, queryable at
-`GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Full-list
-state snapshots (players, vehicles, entities) are read at
-`GET /api/v1/servers/{id}/state/{type}`. Signed webhooks push events and action outcomes
+`GET /api/v1/servers/{id}/events` with type patterns and cursor pagination. Whole state
+snapshots (the players, vehicles, and entities lists, and the world's clock and
+conditions) are read at `GET /api/v1/servers/{id}/state/{type}`. Signed webhooks push events and action outcomes
 to other systems with retries and a dead letter, and a per-mod key/value store serves
 both realms.
 

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.29 (2026-09-22)
+**Status:** draft 0.30 (2026-09-22)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1233,14 +1233,16 @@ platform-specific id:
 
 ### 8.3 State snapshots
 
-Where events say what happened, snapshots say what *is*: the data feed for a live map.
-Three plugin -> hub envelope types each carry the full current list of one kind of thing:
+Where events say what happened, snapshots say what *is*: the data feed for a live map and
+for anything else that shows a server as it stands. Three plugin -> hub envelope types each
+carry the full current list of one kind of thing, and a fourth the one world they share:
 
-| `type` | List field | One entry |
+| `type` | Field | Shape |
 |---|---|---|
-| `state.players` | `players` | `{ "player": { "platform", "id" }, "name"?, "position"?, "data"? }` |
-| `state.vehicles` | `vehicles` | `{ "id", "kind"?, "position"?, "data"? }` |
-| `state.entities` | `entities` | `{ "id", "kind"?, "position"?, "data"? }` |
+| `state.players` | `players` | a list of `{ "player": { "platform", "id" }, "name"?, "position"?, "data"? }` |
+| `state.vehicles` | `vehicles` | a list of `{ "id", "kind"?, "position"?, "data"? }` |
+| `state.entities` | `entities` | a list of `{ "id", "kind"?, "position"?, "data"? }` |
+| `state.world` | `world` | one object, `{ "time"?, "data"? }` |
 
 ```json
 {
@@ -1279,6 +1281,35 @@ There is no diff form in this draft; the open question below stays open.
   entry are tolerated everywhere, per section 2.1.
 - A snapshot body is capped at 262144 bytes (256 KiB) and 5000 entries. A hub MAY lower
   neither: these are the floor a plugin may rely on.
+
+`state.world` is the one snapshot that is not a list, because a server has one world. Its
+`world` field MUST be a JSON object, whole in the same sense as a list: it replaces its
+predecessor, and a member absent from it is not reported, never zero or false. An absent
+or null `world` is not a snapshot and rejects the body, as an absent list does; an empty
+object is a snapshot that reports nothing.
+
+```json
+{
+  "type": "state.world",
+  "body": {
+    "capturedAt": "2026-08-25T18:00:00Z",
+    "world": {
+      "time": "2026-09-20T14:32",
+      "data": { "timeFrozen": false, "overcast": 0.35, "rain": 0 }
+    }
+  }
+}
+```
+
+- `time` is OPTIONAL: the game's own clock, a string `YYYY-MM-DDTHH:MM` or
+  `YYYY-MM-DDTHH:MM:SS` naming a valid calendar date and time of day, with no offset. It
+  is the game's calendar, not a moment on any real clock, so the hub checks its form and
+  never compares it with its own clock or with `capturedAt`. A `time` of any other form
+  rejects the snapshot. A game without a calendar leaves it out.
+- `data` is OPTIONAL, a JSON object of game- or mod-specific extras (the weather, how fast
+  the clock runs, a season), as on a list entry. Unknown members of `world` are tolerated,
+  per section 2.1.
+- The 262144-byte cap applies; the entry cap has nothing to count.
 
 A snapshot that breaks these rules is rejected **whole**: acked like any envelope (the
 durable effect is that the stored state did not change), answered with a `state.reject`
@@ -1332,8 +1363,8 @@ GET /api/v1/servers/{serverId}/state/{stateType}
   "receivedAt": "2026-08-25T18:00:01.000Z", "snapshot": { } }
 ```
 
-`{stateType}` is `players`, `vehicles`, or `entities`; anything else is `bad_request`,
-never an empty answer. `snapshot` is the accepted body, verbatim: the hub adds its
+`{stateType}` is `players`, `vehicles`, `entities`, or `world`; anything else is
+`bad_request`, never an empty answer. `snapshot` is the accepted body, verbatim: the hub adds its
 metadata beside what the plugin published rather than rewriting it. `not_found` covers an
 unknown server and a server that has never had a snapshot of that type accepted alike.
 

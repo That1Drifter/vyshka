@@ -56,6 +56,16 @@ management views).
   A pinned code the current manifest no longer declares stays listed, dimmed, saying which
   manifest revision dropped it, and can be unpinned. The presets slice (issue #76) may move
   them into the store.
+- **World** on the server page, over `GET /api/v1/servers/{id}/state/world` (protocol
+  section 8.3): the game's clock as the plugin wrote it (never through the browser's time
+  zone, since it is the game's calendar), each of the snapshot's extras on a row of its
+  own (the DayZ plugin's weather, wind, and whether it stopped the clock), and the
+  snapshot's age. The same card sits above the form of every world-context action, so the
+  conditions a weather form would change are on the page before it is dispatched. It is
+  read once per view with a Reload button beside it, because the plugin publishes the next
+  snapshot on its own cadence and a read right after a dispatch would show the world from
+  before it. A server with no world snapshot says so, and a token that cannot read state
+  is told why, without failing the rest of the page.
 - **Actions** from the server's stored manifest, grouped by namespace, with context and
   danger badges.
 - **Forms generated from the manifest schema** (protocol section 6.1's JSON Schema subset):

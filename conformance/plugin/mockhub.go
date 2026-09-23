@@ -1375,7 +1375,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		h.telemetry.batches++
 		h.telemetry.events += h.validateEventBatchLocked(envelope)
 
-	case "state.players", "state.vehicles", "state.entities":
+	case "state.players", "state.vehicles", "state.entities", "state.world":
 		h.telemetry.snapshots++
 		h.validateSnapshotLocked(envelope)
 	}

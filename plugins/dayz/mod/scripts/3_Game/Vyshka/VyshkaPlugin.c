@@ -19,7 +19,7 @@
 // hub acks and keeps them separately (spec section 8.3).
 class VyshkaSnapshotChannel
 {
-	string m_Type;      // state.players, state.vehicles, state.entities
+	string m_Type;      // state.players, state.vehicles, state.entities, state.world
 	int m_LastMs;       // monotonic time of the last capture; 0 before the first
 	int m_Held;         // consecutive polls sent without a capture: the last snapshot unacked, or no room in the batch
 
@@ -72,6 +72,9 @@ class VyshkaPlugin : VyshkaResponseSink
 	// The map markers a mod placed (VyshkaMapMarker); the third snapshot
 	// type of spec section 8.3, paced like the other two.
 	static const string SNAPSHOT_ENTITIES = "state.entities";
+	// The world's clock and weather (issue #78): one object, not a list,
+	// paced like the rest.
+	static const string SNAPSHOT_WORLD = "state.world";
 
 	// A context.enumerate requestId is hub-assigned and opaque, at most this
 	// many code points (spec section 6.2); the reply echoes it.
@@ -257,6 +260,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_PLAYERS));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_VEHICLES));
 		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_ENTITIES));
+		m_SnapshotChannels.Insert(new VyshkaSnapshotChannel(SNAPSHOT_WORLD));
 	}
 
 	void Boot(VyshkaRegistry actions, VyshkaSnapshotSource snapshots)
@@ -315,7 +319,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Tick, TICK_MS, true);
 		string snapshotNote = "snapshots off";
 		if (m_SnapshotsOn)
-			snapshotNote = "state.players, state.vehicles and state.entities with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
+			snapshotNote = "state.players, state.vehicles, state.entities and state.world with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
 		string fpsNote = "fps samples off";
 		if (m_Config.m_FpsIntervalSeconds > 0)
 			fpsNote = "core.server.fps every " + m_Config.m_FpsIntervalSeconds.ToString() + " s";
@@ -725,6 +729,8 @@ class VyshkaPlugin : VyshkaResponseSink
 			body = m_Snapshots.CaptureVehicles();
 		else if (channel.m_Type == SNAPSHOT_ENTITIES)
 			body = m_Snapshots.CaptureEntities();
+		else if (channel.m_Type == SNAPSHOT_WORLD)
+			body = m_Snapshots.CaptureWorld();
 		if (!body)
 			return false;
 		if (!m_Outbox.Append(channel.m_Type, body))

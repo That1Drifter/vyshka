@@ -3,6 +3,7 @@ package hub_test
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -269,6 +270,127 @@ func TestStateValidationEdges(t *testing.T) {
 			testAdminToken, nil, http.StatusNotFound); code != "not_found" {
 			t.Errorf("%s stored something from an invalid snapshot (code %q)", stateType, code)
 		}
+	}
+}
+
+// state.world is one object, not a list (section 8.3): a list, a string, or
+// null in its place rejects the body, and a time that is not the game's
+// calendar in the named form rejects it too. Every refusal is acked and
+// stores nothing; then a valid world is stored verbatim, unknown members
+// included, and an empty object replaces it as a snapshot that reports
+// nothing.
+func TestStateWorldSnapshot(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "state world")
+	worldPath := "/api/v1/servers/" + created.Server.ID + "/state/world"
+
+	if code := errorCode(t, server, http.MethodGet, worldPath,
+		testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+		t.Errorf("world before any snapshot: code = %q, want not_found", code)
+	}
+
+	invalid := []struct {
+		name string
+		body map[string]any
+		path string
+	}{
+		{"missing world", map[string]any{"capturedAt": "2026-08-25T12:00:00Z"}, "world"},
+		{"null world", map[string]any{"world": nil}, "world"},
+		{"world as a list", map[string]any{"world": []any{map[string]any{"time": "2026-09-20T14:32"}}}, "world"},
+		{"world as a string", map[string]any{"world": "sunny"}, "world"},
+		{"time without zero padding", map[string]any{"world": map[string]any{"time": "2026-09-20T9:05"}}, "world.time"},
+		{"time on a date that does not exist", map[string]any{"world": map[string]any{"time": "2026-02-30T10:00"}}, "world.time"},
+		{"hour 24", map[string]any{"world": map[string]any{"time": "2026-09-20T24:00"}}, "world.time"},
+		{"time with an offset", map[string]any{"world": map[string]any{"time": "2026-09-20T14:32Z"}}, "world.time"},
+		{"time as a number", map[string]any{"world": map[string]any{"time": 1432}}, "world.time"},
+		{"data as a list", map[string]any{"world": map[string]any{"data": []any{1}}}, "world.data"},
+	}
+	seq := int64(0)
+	var reject *wireEnvelope
+	var delivered int64
+	for _, one := range invalid {
+		seq++
+		result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+			"ack":       delivered,
+			"envelopes": []map[string]any{stateEnvelope(seq, "state.world", one.body)},
+		})
+		if result.Ack != seq {
+			t.Fatalf("%s: ack = %d, want %d (a rejection is envelope-level success)", one.name, result.Ack, seq)
+		}
+		if code := errorCode(t, server, http.MethodGet, worldPath,
+			testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+			t.Fatalf("%s: a rejected world was stored (code %q)", one.name, code)
+		}
+		// The notice names the fault's path; read it back from whichever
+		// poll delivered it.
+		notices := result.Envelopes
+		if len(notices) == 0 {
+			notices = poll(t, server, live.SessionToken, map[string]any{"ack": delivered}).Envelopes
+		}
+		reject = nil
+		for i := range notices {
+			delivered = max(delivered, notices[i].Seq)
+			if notices[i].Type == "state.reject" {
+				reject = &notices[i]
+			}
+		}
+		if reject == nil {
+			t.Fatalf("%s: no state.reject was delivered", one.name)
+		}
+		var notice struct {
+			EnvelopeID string `json:"envelopeId"`
+			Errors     []struct {
+				Path string `json:"path"`
+			} `json:"errors"`
+		}
+		if err := json.Unmarshal(reject.Body, &notice); err != nil {
+			t.Fatalf("%s: decode state.reject: %v", one.name, err)
+		}
+		if notice.EnvelopeID != "state-"+strconv.FormatInt(seq, 10) || len(notice.Errors) == 0 || notice.Errors[0].Path != one.path {
+			t.Errorf("%s: state.reject = %s, want envelope state-%d with the fault at %s", one.name, reject.Body, seq, one.path)
+		}
+	}
+
+	valid := map[string]any{
+		"capturedAt": "2026-08-25T12:00:00Z",
+		"world": map[string]any{
+			"time":        "2026-09-20T14:32:05",
+			"data":        map[string]any{"overcast": 0.35, "timeFrozen": false},
+			"x-mod-extra": []any{"kept", "verbatim"},
+		},
+	}
+	seq++
+	if result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"ack":       delivered,
+		"envelopes": []map[string]any{stateEnvelope(seq, "state.world", valid)},
+	}); result.Ack != seq {
+		t.Fatalf("ack = %d after a valid world, want %d", result.Ack, seq)
+	}
+	view := getState(t, server, created.Server.ID, "world")
+	if view.Type != "world" {
+		t.Errorf("type = %q, want world", view.Type)
+	}
+	var sent, stored any
+	encoded, _ := json.Marshal(valid)
+	_ = json.Unmarshal(encoded, &sent)
+	if err := json.Unmarshal(view.Snapshot, &stored); err != nil {
+		t.Fatalf("decode world: %v", err)
+	}
+	if !reflect.DeepEqual(sent, stored) {
+		t.Errorf("world = %s, want the sent body verbatim", view.Snapshot)
+	}
+
+	seq++
+	if result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{stateEnvelope(seq, "state.world", map[string]any{"world": map[string]any{}})},
+	}); result.Ack != seq {
+		t.Fatalf("ack = %d after an empty world, want %d", result.Ack, seq)
+	}
+	view = getState(t, server, created.Server.ID, "world")
+	var emptied map[string]map[string]any
+	if err := json.Unmarshal(view.Snapshot, &emptied); err != nil || emptied["world"] == nil || len(emptied["world"]) != 0 {
+		t.Errorf("world after the empty push = %s, want the empty object that replaced it", view.Snapshot)
 	}
 }
 

@@ -3804,6 +3804,12 @@ var checks = []Check{
 		Run:     checkStateRejectWhole,
 	},
 	{
+		ID:      "state.world",
+		Title:   "state.world is one object with the game's clock, refused whole when it is not",
+		Section: "8.3",
+		Run:     checkStateWorld,
+	},
+	{
 		ID:      "state.retransmitDedup",
 		Title:   "A snapshot replayed across a session change is stored once",
 		Section: "8.3",

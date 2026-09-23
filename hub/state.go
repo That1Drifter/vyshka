@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ const (
 	envelopeTypeStatePlayers  = "state.players"
 	envelopeTypeStateVehicles = "state.vehicles"
 	envelopeTypeStateEntities = "state.entities"
+	envelopeTypeStateWorld    = "state.world"
 	envelopeTypeStateReject   = "state.reject"
 )
 
@@ -41,28 +43,36 @@ const (
 	maxStateHistoryPage     = 100
 )
 
-// stateListField maps each state envelope type to the list its body must
-// carry. Membership here is also what makes a type a snapshot at all: any
-// other state.* type takes the forward-compatibility path of section 4, acked
-// and ignored.
+// stateListField maps each state envelope type to the field its body must
+// carry: a list for three of them, the one world object for state.world.
+// Membership here is also what makes a type a snapshot at all: any other
+// state.* type takes the forward-compatibility path of section 4, acked and
+// ignored.
 var stateListField = map[string]string{
 	envelopeTypeStatePlayers:  "players",
 	envelopeTypeStateVehicles: "vehicles",
 	envelopeTypeStateEntities: "entities",
+	envelopeTypeStateWorld:    "world",
 }
 
+// worldTimeForm is the shape of a world's time (section 8.3): the game's
+// calendar with no offset, to the minute or to the second. The form is
+// checked here and the calendar by time.Parse, whose hour field alone would
+// take a single digit.
+var worldTimeForm = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$`)
+
 // stateTypeFor resolves the Admin API's {stateType} path value to the
-// envelope family's list name, which is also what the store keys rows by.
+// envelope family's field name, which is also what the store keys rows by.
 func stateTypeFor(pathValue string) (string, bool) {
 	switch pathValue {
-	case "players", "vehicles", "entities":
+	case "players", "vehicles", "entities", "world":
 		return pathValue, true
 	}
 	return "", false
 }
 
 // snapshotBody is a state.* body as the plugin sends it. Exactly one of the
-// three lists is consulted, by envelope type, so all three are raw here and
+// four fields is consulted, by envelope type, so all four are raw here and
 // decoded lazily: a `state.players` body carrying a `vehicles` field of any
 // shape at all is a body with an unknown field, which section 2.1 obliges the
 // hub to tolerate, and a typed field would fail the whole unmarshal before
@@ -72,6 +82,7 @@ type snapshotBody struct {
 	Players    json.RawMessage `json:"players"`
 	Vehicles   json.RawMessage `json:"vehicles"`
 	Entities   json.RawMessage `json:"entities"`
+	World      json.RawMessage `json:"world"`
 }
 
 // playerRef is the platform-qualified identity of spec section 8.2.
@@ -155,7 +166,7 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		return utf8.RuneCountInString(value) > limit
 	}
 
-	// Only the list this envelope type owns is decoded. A JSON null reads as
+	// Only the field this envelope type owns is decoded. A JSON null reads as
 	// the field being absent (section 6.4), which for the one required field
 	// means the same refusal as leaving it out.
 	rawList := body.Players
@@ -164,12 +175,16 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		rawList = body.Vehicles
 	case envelopeTypeStateEntities:
 		rawList = body.Entities
+	case envelopeTypeStateWorld:
+		rawList = body.World
 	}
 	if len(rawList) == 0 || string(rawList) == "null" {
 		return nil, []schema.Fault{{Path: listField, Message: listField + " is required"}}
 	}
 
 	switch e.Type {
+	case envelopeTypeStateWorld:
+		faults = append(faults, validateWorld(rawList, listField)...)
 	case envelopeTypeStatePlayers:
 		var players []playerEntry
 		if err := json.Unmarshal(rawList, &players); err != nil {
@@ -240,6 +255,39 @@ func (s *Server) validateSnapshot(e inboundEnvelope, now time.Time) (*store.NewS
 		Retention:    s.cfg.StateSnapshotRetention,
 		HistoryDepth: s.cfg.StateHistoryDepth,
 	}, nil
+}
+
+// validateWorld checks the one object of a state.world body: an object, not
+// a list, whose time, when present, is the game's calendar in the form
+// section 8.3 names, and whose data is an object or nothing.
+func validateWorld(raw json.RawMessage, path string) []schema.Fault {
+	var world map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &world); err != nil {
+		return []schema.Fault{{Path: path,
+			Message: "world must be a JSON object: a server has one world, not a list of them"}}
+	}
+	var faults []schema.Fault
+	if rawTime, present := world["time"]; present && string(rawTime) != "null" {
+		var value string
+		if err := json.Unmarshal(rawTime, &value); err != nil || !validWorldTime(value) {
+			faults = append(faults, schema.Fault{Path: path + ".time",
+				Message: "time must be the game's clock as YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS, a valid date and time of day with no offset"})
+		}
+	}
+	return append(faults, validateEntryData(world["data"], path+".data")...)
+}
+
+// validWorldTime reports whether value is a world time of section 8.3.
+func validWorldTime(value string) bool {
+	if !worldTimeForm.MatchString(value) {
+		return false
+	}
+	layout := "2006-01-02T15:04"
+	if len(value) > len(layout) {
+		layout = "2006-01-02T15:04:05"
+	}
+	_, err := time.Parse(layout, value)
+	return err == nil
 }
 
 // validatePosition checks the optional position field: an array of two or
@@ -334,7 +382,7 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"state type must be players, vehicles, or entities")
+			"state type must be players, vehicles, entities, or world")
 		return
 	}
 	server, ok := s.lookupServer(w, r)
@@ -361,7 +409,7 @@ func (s *Server) handleGetStateHistory(w http.ResponseWriter, r *http.Request) {
 	stateType, ok := stateTypeFor(r.PathValue("stateType"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
-			"state type must be players, vehicles, or entities")
+			"state type must be players, vehicles, entities, or world")
 		return
 	}
 	limit, ok := parseLimitParam(w, r.URL.Query().Get("limit"),

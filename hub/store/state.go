@@ -31,7 +31,7 @@ type NewSnapshot struct {
 	// the history row itself, so a replay cannot regress "latest" after its
 	// row was pruned.
 	EnvelopeID string
-	// Type is the list kind: "players", "vehicles", or "entities".
+	// Type is the snapshot kind: "players", "vehicles", "entities", or "world".
 	Type string
 	// CapturedAt is when the game says it sampled the state. Nil means no
 	// usable timestamp reached the hub and receipt time stands in.
