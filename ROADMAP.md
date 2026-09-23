@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-23 (the hub features of #79 landed as protocol draft 0.31: player
+**As of:** 2026-09-23 (the installation ban list of #80 landed as protocol draft 0.32: one
+list for every server, pulled a page at a time by each plugin declaring the new `bans`
+capability, one revision whole, with the revision it enforces reported back; the hub features of #79 landed as protocol draft 0.31: player
 profiles across every server with operator notes, per-webhook redaction, and audit records
 as opt-in webhook material, with the `audit` namespace reserved; the world slice of #78 landed as protocol draft 0.30, `state.world`
 the first snapshot that is not a list, with a weather action carrying every engine knob,
@@ -64,7 +66,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.29 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.32 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -234,24 +236,30 @@ After the tag, in this order:
     coordinates and a public kill feed without them; and audit records as the
     `audit.recorded` notification, opt-in by name and behind `admin`, so no existing
     catch-all subscription starts exporting the access record.
+17. **Installation-wide ban list** (#80), landed 2026-09-23 as protocol draft 0.32 (new
+    section 13): the hub holds one list for every server, with its own revision, under two
+    new scopes, `bans:read` and `bans:manage` (which a server-bound token cannot hold); the
+    per-server `vyshka.ban` stays the primitive and a server enforces the union of the
+    two. A plugin declares it enforces the list with `bans` in a new manifest
+    `capabilities` member, is nudged by `bans.changed` (sent to such plugins only, one
+    unsent notice per server however many changes), reads the list a page at a time over
+    plain HTTP with every page of a walk served at the revision the walk began at, and
+    reports what it applied with `bans.applied`, which the server record shows beside
+    whether the plugin supports the list. Records are kept after a lift or an expiry and
+    are the identity's ban history on its profile. The pull is paged because
+    `spikes/dayz-bans-pull-size` (2026-09-21) measured the plugin's parser as quadratic on
+    this engine and the file reader as fatal on a 64 KiB line; the plugin fixes landed as
+    #108 first. The DayZ plugin keeps the applied list on disk one entry per line and
+    enforces it from boot, disconnects anyone online on a new revision, and names the
+    installation ban when a server-side unban leaves one standing.
 
-Two protocol discussions run alongside, because both change the spec and the persona needs
-them early:
+One protocol discussion ran alongside, because it changed the spec and the persona needed
+it early:
 
-- **Installation-wide ban list** (#80): hub-managed, with the per-server `vyshka.ban`
-  staying the primitive. Shape settled in the issue on 2026-09-21: a hub-owned list with
-  its own revision, a `bans.changed` notification, a paged pull over plain HTTP, a
-  `bans.applied` report, a `capabilities` manifest member, and the closed-set scopes
-  `bans:read` and `bans:manage`. The pull is paged because `spikes/dayz-bans-pull-size`
-  (2026-09-21) measured the plugin's parser as quadratic on this engine and the file
-  reader as fatal on a 64 KiB line; the plugin fixes landed the same day as #108 (a
-  windowed parser, a chunked writer, files written one element per line, a self-test on a
-  local server, and a large-dispatch stage in the plugin conformance suite). Lands after
-  #81.
 - **Server-scoped token dimension** (#81, protocol section 10.1), landed 2026-09-21 as
   protocol draft 0.26: a token-level `servers` binding that intersects every grant, not a
   per-scope field, so a moderator for server A no longer acts on server B. `admin` and
-  `webhooks:manage` are refused on a bound token (and `bans:manage` will be, with #80);
+  `webhooks:manage` are refused on a bound token (and `bans:manage` is too, since #80);
   `kv:rw` is allowed with the store stated as installation-wide. A bound token is refused
   at the headers on every route naming a server outside the binding, on the action read
   once the action's server is known, and sees a filtered server list. The hub conformance

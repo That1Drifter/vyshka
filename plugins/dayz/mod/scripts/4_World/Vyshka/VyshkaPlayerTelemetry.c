@@ -119,28 +119,41 @@ class VyshkaPlayers
 		// connect above is reported first so the feed shows the attempt and
 		// the refusal in order. The kick runs on the next tick rather than
 		// inside the engine's connect event, which still has work to do for
-		// the new character after this hook returns.
-		if (VyshkaBans.Find(id))
+		// the new character after this hook returns. Either list refuses:
+		// the server's own and the hub's installation list (spec section
+		// 13.4) are enforced as their union.
+		if (VyshkaBans.Find(id) || VyshkaInstallationBans.Find(id))
 			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(KickBanned, 100, false, player);
 	}
 
-	// KickBanned is the deferred half of the ban check above. The ban is
-	// looked up again here: one that expired or was lifted in the meantime
-	// is no ban, and the entry's current reason is the one to report.
+	// KickBanned is the deferred half of the ban check above, and what an
+	// applied installation list runs for each player online on it. The bans
+	// are looked up again here: one that expired or was lifted in the
+	// meantime is no ban, and the entry's current reason is the one to
+	// report. The server's own ban is named first when both apply.
 	static void KickBanned(PlayerBase player)
 	{
 		if (!player || !player.GetIdentity())
 			return;
 		string id = player.GetIdentity().GetPlainId();
-		VyshkaBanEntry ban = VyshkaBans.Find(id);
-		if (!ban)
-			return;
 		string reason = "banned";
-		if (ban.m_Reason != "")
-			reason = "banned: " + ban.m_Reason;
 		string error;
-		if (!VyshkaModeration.Kick(player, reason, "ban", ban.m_ActionId, error))
-			VyshkaLog.Error("banned player " + id + " connected and could not be kicked: " + error);
+		VyshkaBanEntry ban = VyshkaBans.Find(id);
+		if (ban)
+		{
+			if (ban.m_Reason != "")
+				reason = "banned: " + ban.m_Reason;
+			if (!VyshkaModeration.KickFor(player, reason, "ban", ban.m_ActionId, "server", "", error))
+				VyshkaLog.Error("banned player " + id + " could not be kicked: " + error);
+			return;
+		}
+		VyshkaInstallationBanEntry installation = VyshkaInstallationBans.Find(id);
+		if (!installation)
+			return;
+		if (installation.m_Reason != "")
+			reason = "banned: " + installation.m_Reason;
+		if (!VyshkaModeration.KickFor(player, reason, "ban", "", "installation", installation.m_BanId, error))
+			VyshkaLog.Error("player " + id + " under installation ban " + installation.m_BanId + " could not be kicked: " + error);
 	}
 
 	// OnChat runs from the server mission's chat event: channel is the

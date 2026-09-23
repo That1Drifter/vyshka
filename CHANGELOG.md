@@ -19,6 +19,41 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-23: the installation ban list (issue #80, protocol draft 0.32, new section 13,
+  with sections 5.1, 5.3, 5.5, 6.4, 6.7, 8.6, 10.1, and 10.2 touched; the old sections 13
+  and 14 are now 14 and 15). One list for every server of the installation, held by the
+  hub (migration 0021): `POST /api/v1/bans` places a ban on an identity with a required
+  reason, an optional `durationSeconds` counted by the hub's clock, an optional name, and
+  an optional provenance `serverId` that lands the ban in that server's audit view; a
+  second ban of an identity already under one is `409 conflict` naming it;
+  `POST /api/v1/bans/{banId}/lift` lifts one, and a repeated lift changes nothing, its
+  time included; `GET /api/v1/bans` lists the active bans newest first, or every state
+  with `state=all`, or one identity's with `platform` and `playerId`, which is that
+  identity's ban history; `GET /api/v1/bans/{banId}` reads one. Records are kept after a
+  lift or an expiry, with the placing and lifting credential under the name it had then.
+  Two scopes join the closed set: `bans:read` and `bans:manage`, which implies it; neither
+  takes a pattern, a server binding does not narrow `bans:read`, and `bans:manage` is
+  refused on a bound token at mint. The active list carries a revision, moved by every
+  change and by nothing else, under a lock so concurrent changes are distinct revisions;
+  expired bans leave it within 5 s (the spec allows 60), each sweep one change. A plugin
+  reads the list at `GET /plugin/v1/bans` or its POST spelling `/plugin/v1/bans/get`,
+  bounded pages in identity order, and every page reached through a walk's cursors is
+  served at the revision the walk began at, so a list that changes faster than a plugin
+  can page is still read whole; a cursor naming a revision the hub has not reached is
+  `409 conflict`, and a cursor is drawn from the base64url alphabet so an engine with no
+  URL encoder sends it back as it came. A new manifest member, `capabilities` (at most 32
+  strings of at most 64 code points, unknown entries ignored), says which optional parts a
+  plugin implements, and `bans` is the first: a change to the list queues `bans.changed`
+  for the servers declaring it and no other, refreshing an unsent notice in place rather
+  than queueing one per change; the session response reports `server.bansRevision`; and a
+  plugin's `bans.applied` report lands on the server record as `bans.appliedRevision` and
+  `appliedAt`, beside `bans.supported`. The raw envelope endpoint refuses the `bans.*`
+  family. The hub conformance suite gains `admin.bans.lifecycle`, `admin.bans.scopes`,
+  `plugin.bans.pull`, `plugin.bans.changed`, `plugin.bans.applied`,
+  `plugin.bans.expiry`, and `plugin.manifest.capabilities` (105 checks); the plugin
+  suite gains `bans.sync`, graded for a candidate declaring the capability, and the
+  reference driver declares it. The companion schemas and both OpenAPI documents carry
+  the new shapes.
 - 2026-09-23: player profiles (issue #79, protocol draft 0.31, sections 8.2, 8.6, 10.1,
   and 10.2). An event now **refers to** an identity when a top-level member of its
   `data` holds a `{ platform, id }` object within the section 8.3 bounds, matched by exact
@@ -302,6 +337,26 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-23: the installation ban list (issue #80, plugin 0.8.0, protocol draft 0.32).
+  The manifest declares the `bans` capability. The plugin walks the hub's list whenever
+  the revision the hub reports (on the session response or in a `bans.changed`) differs
+  from the one it holds, lower included, on a transport of its own so a walk never waits
+  behind the held poll: pages back to back through the POST spelling, held to the
+  revision the first page was served at, started over on a conflict, and on any other
+  failure retried after 30 s with the previous list still in force. A whole revision is
+  written to `$profile:Vyshka/installation-bans.json` one entry per line, then put in
+  force, then reported with `bans.applied`; a session that begins with the revision
+  already held reports it too. The applied list is enforced from boot, before any
+  session. Only `steam` entries apply, an entry past its `expiresAt` is no ban by the
+  server's clock, and a server enforces the union of its own list and the installation
+  list: an identity on either is refused at connect, and every player online on a newly
+  applied revision is disconnected. `core.player.kick` over a ban now says whose ban it
+  was, `scope: "server"` or `scope: "installation"` with the hub's `banId`. `vyshka.unban`
+  lifts the server's own ban only: with none to lift and an installation ban standing it
+  fails naming that ban, and a lift that leaves one standing says so in its result
+  (`installationBan`); `vyshka.ban`'s result counts the installation bans in force
+  (`installationBans`). Graded live by the plugin conformance suite's `bans.sync` against
+  a DayZ 1.29 server.
 - 2026-09-22: the world (issue #78, plugin 0.8.0, protocol draft 0.30). The plugin
   publishes `state.world` with each poll like the other snapshots: the game's clock as
   `time`, and in `data` whether the plugin stopped the clock (`timeFrozen`), `night`, the
@@ -632,7 +687,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.31 (2026-09-23). The document's header carries the draft number and date; each
+Draft 0.32 (2026-09-23). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

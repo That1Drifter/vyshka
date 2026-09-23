@@ -50,6 +50,12 @@ class VyshkaBoot
 		VyshkaMapMarkers.Reset();
 		VyshkaBans.Reset();
 		VyshkaBans.Load();
+		// The hub's installation ban list as last applied, enforced from
+		// here on whether or not a hub is in reach (spec section 13.4), and
+		// the world-side hook that disconnects whoever a new revision bans.
+		VyshkaInstallationBans.Reset();
+		VyshkaInstallationBans.Load();
+		VyshkaInstallationBans.s_Enforcer = new VyshkaInstallationBanEnforcer();
 		VyshkaCatalog.Reset();
 		// Read before the actions register, so the spawn action's schema
 		// carries the blocklist from the first manifest.

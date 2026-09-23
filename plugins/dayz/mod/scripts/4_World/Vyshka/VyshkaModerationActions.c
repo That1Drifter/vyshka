@@ -10,7 +10,10 @@
 // Everything here uses what the engine gives every server: DisconnectPlayer
 // is the only way script removes a client, the notification RPC and the
 // chat line are vanilla client features, and a ban is the plugin's own
-// record (VyshkaBans) because the engine has no scripted ban list.
+// record (VyshkaBans) because the engine has no scripted ban list. The
+// hub's installation ban list (VyshkaInstallationBans, spec section 13) is
+// enforced beside it, and these actions touch only the server's own: an
+// installation ban is lifted through the hub.
 
 // VyshkaDisconnector is how a kick removes the client. The bare engine call
 // drops the connection and nothing else: measured on DayZ 1.29 (issue #59),
@@ -48,6 +51,14 @@ class VyshkaModeration
 	// banned identity refused at connect.
 	static bool Kick(PlayerBase player, string reason, string cause, string actionId, out string error)
 	{
+		return KickFor(player, reason, cause, actionId, "", "", error);
+	}
+
+	// KickFor is Kick naming the ban it enforces (spec section 13.4): scope
+	// "server" for the server's own list, "installation" with the hub's ban
+	// id for the installation list, both empty for a kick that is no ban's.
+	static bool KickFor(PlayerBase player, string reason, string cause, string actionId, string scope, string banId, out string error)
+	{
 		PlayerIdentity identity = player.GetIdentity();
 		if (!identity)
 		{
@@ -60,6 +71,10 @@ class VyshkaModeration
 		if (reason != "")
 			data.Set("reason", VyshkaJsonValue.NewString(reason));
 		data.Set("cause", VyshkaJsonValue.NewString(cause));
+		if (scope != "")
+			data.Set("scope", VyshkaJsonValue.NewString(scope));
+		if (banId != "")
+			data.Set("banId", VyshkaJsonValue.NewString(banId));
 		if (actionId != "")
 			data.Set("actionId", VyshkaJsonValue.NewString(actionId));
 		VyshkaPlugin.Emit("core.player.kick", data);
@@ -303,7 +318,7 @@ class VyshkaBanAction : VyshkaAction
 			if (reason != "")
 				kickReason = "banned: " + reason;
 			string kickError;
-			kicked = VyshkaModeration.Kick(player, kickReason, "ban", actionId, kickError);
+			kicked = VyshkaModeration.KickFor(player, kickReason, "ban", actionId, "server", "", kickError);
 		}
 
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
@@ -316,6 +331,7 @@ class VyshkaBanAction : VyshkaAction
 		else
 			result.Set("expiresAt", VyshkaJsonValue.NewString(VyshkaClock.FormatRfc3339(entry.m_ExpiresEpoch)));
 		result.Set("activeBans", VyshkaJsonValue.NewInt(VyshkaBans.Count()));
+		result.Set("installationBans", VyshkaJsonValue.NewInt(VyshkaInstallationBans.Count()));
 		return VyshkaActionOutcome.Success(result);
 	}
 }
@@ -331,10 +347,20 @@ class VyshkaUnbanAction : VyshkaAction
 	{
 		if (referenceKey == "")
 			return VyshkaActionOutcome.Failure("a player-context action needs the player's identity as referenceKey");
-		VyshkaBanEntry removed;
 		string error;
-		if (!VyshkaBans.Remove(referenceKey, removed, error))
+		if (!VyshkaBans.Writable(error))
 			return VyshkaActionOutcome.Failure(error);
+		// The unban lifts the server's own ban and nothing else (spec section
+		// 13.4); an installation ban on the identity is named, so nobody
+		// takes a lift here for a lift everywhere.
+		VyshkaInstallationBanEntry installation = VyshkaInstallationBans.Find(referenceKey);
+		VyshkaBanEntry removed;
+		if (!VyshkaBans.Remove(referenceKey, removed, error))
+		{
+			if (installation && !VyshkaBans.Find(referenceKey))
+				error = "player " + referenceKey + " has no ban of this server's own to lift; installation ban " + installation.m_BanId + " (" + installation.m_Reason + ") applies to every server and is lifted through the hub";
+			return VyshkaActionOutcome.Failure(error);
+		}
 
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("player", VyshkaPlayers.Identity(removed.m_Id));
@@ -346,7 +372,39 @@ class VyshkaUnbanAction : VyshkaAction
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
 		result.Set("removed", removed.ToJson());
 		result.Set("activeBans", VyshkaJsonValue.NewInt(VyshkaBans.Count()));
+		if (installation)
+		{
+			// Lifted here, still banned everywhere: the result says so.
+			VyshkaJsonValue still = VyshkaJsonValue.NewObject();
+			still.Set("id", VyshkaJsonValue.NewString(installation.m_BanId));
+			still.Set("reason", VyshkaJsonValue.NewString(installation.m_Reason));
+			result.Set("installationBan", still);
+		}
 		return VyshkaActionOutcome.Success(result);
+	}
+}
+
+// VyshkaInstallationBanEnforcer disconnects the players online on a newly
+// applied installation ban list (spec section 13.4). The players are gathered
+// first and kicked after, since a kick finalizes a logout and the players
+// list is not one to change while walking it.
+class VyshkaInstallationBanEnforcer : VyshkaBanEnforcer
+{
+	override void OnApplied()
+	{
+		array<Man> men = new array<Man>;
+		GetGame().GetPlayers(men);
+		array<PlayerBase> banned = new array<PlayerBase>;
+		for (int i = 0; i < men.Count(); i++)
+		{
+			PlayerBase player = PlayerBase.Cast(men.Get(i));
+			if (!player || !player.GetIdentity())
+				continue;
+			if (VyshkaInstallationBans.Find(player.GetIdentity().GetPlainId()))
+				banned.Insert(player);
+		}
+		for (int j = 0; j < banned.Count(); j++)
+			VyshkaPlayers.KickBanned(banned.Get(j));
 	}
 }
 

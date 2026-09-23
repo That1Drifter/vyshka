@@ -1,5 +1,5 @@
 // Command conformance-plugin grades a candidate plugin against the Vyshka
-// protocol. It is the mock hub spec section 14 promises: the candidate points
+// protocol. It is the mock hub spec section 15 promises: the candidate points
 // at it instead of a real hub, and it drives the plugin through enrollment,
 // sessions, manifest publish, action round-trips, forced re-delivery, a
 // transport outage, a session change with envelopes still unacked, and a
@@ -121,7 +121,7 @@ func main() {
 		hub.mu.Unlock()
 		if exitedEarly {
 			results = append(results, Result{
-				ID: "candidate.exit", Title: "The candidate outlives the run", Section: "14",
+				ID: "candidate.exit", Title: "The candidate outlives the run", Section: "15",
 				Error: "the candidate exited before the suite finished (" + exitMessage + ")",
 			})
 		}

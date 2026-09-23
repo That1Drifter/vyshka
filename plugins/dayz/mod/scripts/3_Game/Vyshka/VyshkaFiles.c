@@ -13,6 +13,9 @@
 //                                      aside with the hub's reason for the operator
 //                                      (section 2.3); never sent again
 //   $profile:Vyshka/bans.json          the plugin's ban list (VyshkaBans); operator-editable
+//   $profile:Vyshka/installation-bans.json
+//                                      the hub's installation ban list as last applied
+//                                      (VyshkaInstallationBans); overwritten on every apply
 //   $profile:Vyshka/manifest.json      the manifest revision last published and the content
 //                                      it went with (VyshkaManifestRecord)
 //
@@ -38,6 +41,7 @@ class VyshkaFiles
 	static const string REJECTED_DIR = "$profile:Vyshka/rejected";
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 	static const string BANS_PATH = "$profile:Vyshka/bans.json";
+	static const string INSTALLATION_BANS_PATH = "$profile:Vyshka/installation-bans.json";
 	static const string MANIFEST_PATH = "$profile:Vyshka/manifest.json";
 
 	// The longest line a file written here may carry. The engine's reader

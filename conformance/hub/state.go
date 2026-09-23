@@ -471,7 +471,7 @@ func checkStateReplayAfterPrune(ctx context.Context, env Env) error {
 	return nil
 }
 
-// checkStateRetransmitDedup drives the one case section 14 singles out: a
+// checkStateRetransmitDedup drives the one case section 15 singles out: a
 // session change with a snapshot the plugin believes unacked. The replay is
 // renumbered into the new session (section 9.1), so only the envelope id can
 // reveal it was already stored; a hub that stores it again puts the same

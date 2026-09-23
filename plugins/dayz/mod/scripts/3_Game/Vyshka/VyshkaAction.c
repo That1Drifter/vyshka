@@ -125,6 +125,11 @@ class VyshkaRegistry
 	// list before the hub does.
 	static const string KV_NAMESPACE = "vyshka";
 
+	// The optional parts of the protocol the plugin implements, declared in
+	// the manifest (spec section 6.7): the installation ban list (section 13,
+	// VyshkaInstallationBans).
+	static const string CAPABILITY_BANS = "bans";
+
 	// The manifest's length bounds, counted in code points as the companion
 	// schema counts them (spec sections 6.2 and 6.3).
 	static const int CONTEXT_ID_MAX = 64;
@@ -446,6 +451,9 @@ class VyshkaRegistry
 		for (int n = 0; n < declared.Count(); n++)
 			namespaces.Add(VyshkaJsonValue.NewString(declared.Get(n)));
 		body.Set("kvNamespaces", namespaces);
+		VyshkaJsonValue capabilities = VyshkaJsonValue.NewArray();
+		capabilities.Add(VyshkaJsonValue.NewString(CAPABILITY_BANS));
+		body.Set("capabilities", capabilities);
 		return body;
 	}
 
