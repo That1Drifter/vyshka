@@ -123,6 +123,18 @@ type driver struct {
 	bansDue      bool
 	bansNextTry  time.Time
 	bans         []banEntry
+
+	// The walk in progress, one page per turn of the run loop: the revision
+	// its first page was served at (-1 before it), the cursor of the next
+	// page, what it has read, and whether the hub reported a revision while
+	// it ran.
+	walking        bool
+	walkRevision   int64
+	walkCursor     string
+	walkPages      int
+	walkRestarts   int
+	walked         []banEntry
+	toldDuringWalk bool
 }
 
 // banEntry is one entry of the installation ban list as the driver keeps it.
@@ -402,6 +414,7 @@ func (d *driver) startSession(game string) error {
 	// walked. A hub that reports none serves no list.
 	if session.Server.BansRevision != nil {
 		d.bansKnown = *session.Server.BansRevision
+		d.toldDuringWalk = d.walking
 		if d.bansKnown == d.bansEnforced {
 			d.send("bans.applied", map[string]any{"revision": d.bansEnforced})
 		} else {
@@ -775,6 +788,7 @@ func (d *driver) handle(delivered envelope) {
 			return
 		}
 		d.bansKnown = *body.Revision
+		d.toldDuringWalk = d.toldDuringWalk || d.walking
 		if d.bansKnown != d.bansEnforced {
 			d.bansDue = true
 			d.bansNextTry = time.Time{}
@@ -785,82 +799,96 @@ func (d *driver) handle(delivered envelope) {
 	}
 }
 
-// walkBans reads the installation ban list from its first page to its last
-// (spec section 13.4), holding the walk to the revision the first page was
-// served at, and applies and reports it only once it is whole. A conflict
-// starts the walk over at once; any other failure keeps the list the driver
-// holds and tries again later.
+// walkBans reads one page of the installation ban list (spec section 13.4)
+// per turn of the run loop, so the driver keeps polling while it walks, as a
+// plugin on an engine that cannot block its main loop must: a bans.changed
+// can then arrive in the middle of a walk, and the walk's end must not take
+// its own revision for the latest one. The walk is held to the revision its
+// first page was served at, and applied and reported only once it is whole. A
+// conflict starts it over at once; any other failure keeps the list the
+// driver holds and tries again later.
 func (d *driver) walkBans() {
-	for restarts := 0; restarts < 3; restarts++ {
-		var (
-			walked   []banEntry
-			revision int64 = -1
-			cursor   string
-		)
-		conflict := false
-		for pages := 0; ; pages++ {
-			if pages > 10000 {
-				log.Println("bans: a walk did not end; trying again later")
-				d.bansNextTry = time.Now().Add(2 * time.Second)
-				return
-			}
-			query := "limit=100"
-			if cursor != "" {
-				query += "&cursor=" + cursor
-			}
-			status, body, err := d.get("/plugin/v1/bans", query, d.sessionToken)
-			if err != nil {
-				log.Println("bans: walk failed:", err)
-				d.bansNextTry = time.Now().Add(2 * time.Second)
-				return
-			}
-			if ok, failure := d.classify(status, body); !ok {
-				if failure.Code == "conflict" || (failure.Code == "" && failure.Status == http.StatusConflict) {
-					log.Println("bans: the hub cannot serve the walk's revision any more; starting over")
-					conflict = true
-					break
-				}
-				log.Printf("bans: walk refused: %s (status %d): %s; trying again later", failure.Code, failure.Status, failure.Message)
-				d.bansNextTry = time.Now().Add(2 * time.Second)
-				return
-			}
-			var page struct {
-				Revision   int64      `json:"revision"`
-				Bans       []banEntry `json:"bans"`
-				NextCursor string     `json:"nextCursor"`
-			}
-			if err := json.Unmarshal(body, &page); err != nil {
-				log.Println("bans: unusable page:", err)
-				d.bansNextTry = time.Now().Add(2 * time.Second)
-				return
-			}
-			if revision < 0 {
-				revision = page.Revision
-			} else if page.Revision != revision {
-				log.Printf("bans: a page came at revision %d in a walk of %d; starting over", page.Revision, revision)
-				conflict = true
-				break
-			}
-			walked = append(walked, page.Bans...)
-			if page.NextCursor == "" {
-				break
-			}
-			cursor = page.NextCursor
+	if !d.walking {
+		d.walking = true
+		d.walkRevision = -1
+		d.walkCursor = ""
+		d.walkPages = 0
+		d.walked = nil
+		d.toldDuringWalk = false
+	}
+	fail := func(why string) {
+		log.Printf("bans: %s; trying again later", why)
+		d.walking = false
+		d.bansNextTry = time.Now().Add(2 * time.Second)
+	}
+	restart := func(why string) {
+		d.walkRestarts++
+		if d.walkRestarts > 3 {
+			d.walkRestarts = 0
+			fail(why + ", and the walk has started over three times")
+			return
 		}
-		if conflict {
-			continue
-		}
-		// Whole: apply, then report. The first page was served at the hub's
-		// current revision, which is the freshest word the driver has.
-		d.bans = walked
-		d.bansEnforced = revision
-		d.bansKnown = revision
-		d.bansDue = false
-		log.Printf("bans: applied revision %d (%d entries)", revision, len(walked))
-		d.send("bans.applied", map[string]any{"revision": revision})
+		log.Printf("bans: %s; starting the walk over", why)
+		d.walking = false
+	}
+	if d.walkPages > 10000 {
+		fail("a walk did not end")
 		return
 	}
-	d.bansNextTry = time.Now().Add(2 * time.Second)
+	query := "limit=100"
+	if d.walkCursor != "" {
+		query += "&cursor=" + d.walkCursor
+	}
+	status, body, err := d.get("/plugin/v1/bans", query, d.sessionToken)
+	if err != nil {
+		fail("walk failed: " + err.Error())
+		return
+	}
+	if ok, failure := d.classify(status, body); !ok {
+		if failure.Code == "conflict" || (failure.Code == "" && failure.Status == http.StatusConflict) {
+			restart("the hub cannot serve the walk's revision any more")
+			return
+		}
+		fail(fmt.Sprintf("walk refused: %s (status %d): %s", failure.Code, failure.Status, failure.Message))
+		return
+	}
+	var page struct {
+		Revision   int64      `json:"revision"`
+		Bans       []banEntry `json:"bans"`
+		NextCursor string     `json:"nextCursor"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		fail("unusable page: " + err.Error())
+		return
+	}
+	if d.walkRevision < 0 {
+		d.walkRevision = page.Revision
+	} else if page.Revision != d.walkRevision {
+		restart(fmt.Sprintf("a page came at revision %d in a walk of %d", page.Revision, d.walkRevision))
+		return
+	}
+	d.walked = append(d.walked, page.Bans...)
+	d.walkPages++
+	if page.NextCursor != "" {
+		d.walkCursor = page.NextCursor
+		return
+	}
+
+	// Whole: apply, then report. The first page was served at the hub's
+	// current revision, fresher than anything the driver was told before the
+	// walk; a revision it was told during the walk is fresher still, and one
+	// that differs is another walk owed at once.
+	revision := d.walkRevision
+	d.bans = d.walked
+	d.bansEnforced = revision
+	d.walking = false
+	d.walkRestarts = 0
+	if !d.toldDuringWalk {
+		d.bansKnown = revision
+	}
+	d.bansDue = d.bansKnown != revision
+	log.Printf("bans: applied revision %d (%d entries)", revision, len(d.walked))
+	d.send("bans.applied", map[string]any{"revision": revision})
 }
 
 func (d *driver) markExecuted(actionID string) {

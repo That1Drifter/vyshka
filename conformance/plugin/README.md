@@ -150,11 +150,18 @@ declares the `bans` capability (section 6.7); the mock serves `GET /plugin/v1/ba
 `server.bansRevision` on every session response. The `bans.sync` stage then publishes a
 list of several pages under a `bans.changed` and waits for the `bans.applied` of its
 revision; moves the list to a new revision the moment a walk has read its first page, so
-the walk must finish at the revision it began at and walk again; answers `409 conflict` on a
-cursor partway through a walk, which must start the walk over; ends the session, and waits
+the walk must finish at the revision it began at, holding the rest of that walk until the
+candidate has taken the `bans.changed` of the new revision (acked it, or, for a candidate
+with no poll open, been delivered it) so the notice lands in the middle of the walk and
+the walk's end must not overwrite it (a candidate that cannot take it within 8 s gets a
+`PART` for that ordering); answers `409 conflict` on a cursor partway through a walk and
+on every later cursor of that walk, so only a walk begun again gets past it; ends the
+session, and waits
 for the new session to report the revision the candidate already holds; and moves the list
 to a lower revision, as a hub restored from a backup would, which must be walked too,
-since a revision that differs is enough. Throughout, a `bans.applied` of a revision the
+since a revision that differs is enough. The stage's revisions are drawn from the clock,
+so a candidate holding a list from an earlier run never mistakes them for its own, and
+revision 0, the empty list every hub starts from, counts as applied without a walk. Throughout, a `bans.applied` of a revision the
 candidate has not been served every page of is a fault: the report is the only evidence of
 enforcement a hub gets. Each wait allows `-check-timeout` plus 35 s, one retry at the
 reference DayZ plugin's 30 s cadence.
@@ -190,8 +197,9 @@ enumerates the one custom context it declares (`driver.zone`, two members, one w
 position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
 outages, renumbers them across session changes, keeps the installation ban list (it declares
-`bans`, walks the list whenever the revision it is told of differs from the one it holds,
-and reports what it applied), and follows the recovery table of spec
+`bans`, walks the list a page per turn of its loop, polling in between, whenever the
+revision it is told of differs from the one it holds, and reports what it applied), and
+follows the recovery table of spec
 section 2.3. It asks for inline errors unless started
 with `-inline=false`, and with `-opaque` it discards the status and body of every non-2xx,
 keeping only the class, which is what an engine like DayZ's leaves a plugin with. CI runs

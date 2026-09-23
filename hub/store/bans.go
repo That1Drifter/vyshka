@@ -24,8 +24,9 @@ const BanChangedType = "bans.changed"
 const CapabilityBans = "bans"
 
 // ErrBanRevisionGone is returned for a walk of a revision the store cannot
-// serve: one above the current revision, which only a cursor minted before a
-// restore from an older backup can name (spec section 13.3).
+// serve: one above the current revision, or one this hub never minted, which
+// only a cursor minted before a restore from an older backup can name (spec
+// section 13.3).
 var ErrBanRevisionGone = errors.New("the ban list cannot be served at that revision")
 
 // BanActiveError is returned when an identity already carries an active ban;
@@ -142,9 +143,28 @@ func lockBanList(ctx context.Context, tx *Tx) (int64, error) {
 	return revision, nil
 }
 
-func setBanRevision(ctx context.Context, tx *Tx, revision int64) error {
+// nextBanRevision mints the revision a change takes: one more than the last,
+// or the clock in milliseconds since the epoch when that is larger. The clock
+// is what keeps a hub restored from a backup from handing out a revision it
+// already handed out before the restore for a different list (spec section
+// 13.1): the restored hub's last revision is behind the ones it minted since,
+// but the clock is not, so its next change lands above all of them and a
+// plugin still holding a pre-restore revision sees it differ. Milliseconds
+// stay far inside the protocol's 2^53 bound.
+func nextBanRevision(current int64, now time.Time) int64 {
+	return max(current+1, now.UnixMilli())
+}
+
+// setBanRevision records a change's revision as the current one and in the
+// register of revisions this hub has minted, which is what a walk's cursor
+// is checked against (BanListAt).
+func setBanRevision(ctx context.Context, tx *Tx, revision int64, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE ban_list SET revision = ? WHERE id = 1`, revision); err != nil {
 		return fmt.Errorf("record ban list revision: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO ban_revisions (revision, minted_at) VALUES (?, ?)`, revision, formatTime(now)); err != nil {
+		return fmt.Errorf("register ban list revision: %w", err)
 	}
 	return nil
 }
@@ -184,7 +204,7 @@ func (s *Store) CreateBan(ctx context.Context, request NewBan, queueLimit int) (
 		return BanChange{}, err
 	}
 	now := time.Now().UTC()
-	next := current + 1
+	next := nextBanRevision(current, now)
 	if _, err := delistExpired(ctx, tx, next, now); err != nil {
 		return BanChange{}, err
 	}
@@ -226,7 +246,7 @@ func (s *Store) CreateBan(ctx context.Context, request NewBan, queueLimit int) (
 	); err != nil {
 		return BanChange{}, fmt.Errorf("insert ban: %w", err)
 	}
-	if err := setBanRevision(ctx, tx, next); err != nil {
+	if err := setBanRevision(ctx, tx, next, now); err != nil {
 		return BanChange{}, err
 	}
 	change := BanChange{Ban: ban, Revision: next, Changed: true}
@@ -260,7 +280,7 @@ func (s *Store) LiftBan(ctx context.Context, banID, tokenID, tokenName string, q
 		return BanChange{}, err
 	}
 	now := time.Now().UTC()
-	next := current + 1
+	next := nextBanRevision(current, now)
 	swept, err := delistExpired(ctx, tx, next, now)
 	if err != nil {
 		return BanChange{}, err
@@ -291,7 +311,7 @@ func (s *Store) LiftBan(ctx context.Context, banID, tokenID, tokenName string, q
 		change.Changed = true
 	}
 	if change.Changed || swept > 0 {
-		if err := setBanRevision(ctx, tx, next); err != nil {
+		if err := setBanRevision(ctx, tx, next, now); err != nil {
 			return BanChange{}, err
 		}
 		change.Revision = next
@@ -333,14 +353,14 @@ func (s *Store) SweepExpiredBans(ctx context.Context, queueLimit int) (BanChange
 	if err != nil {
 		return BanChange{}, 0, err
 	}
-	next := current + 1
+	next := nextBanRevision(current, now)
 	swept, err := delistExpired(ctx, tx, next, now)
 	if err != nil {
 		return BanChange{}, 0, err
 	}
 	change := BanChange{Revision: current}
 	if swept > 0 {
-		if err := setBanRevision(ctx, tx, next); err != nil {
+		if err := setBanRevision(ctx, tx, next, now); err != nil {
 			return BanChange{}, 0, err
 		}
 		change.Revision = next
@@ -397,10 +417,7 @@ func queueBanNotices(ctx context.Context, tx *Tx, revision int64, queueLimit int
 	}
 	sort.Strings(targets)
 
-	body, err := json.Marshal(map[string]int64{"revision": revision})
-	if err != nil {
-		return nil, nil, fmt.Errorf("encode bans.changed: %w", err)
-	}
+	runHook(testHooks.afterBanTargets)
 	var notified, dropped []string
 	for _, serverID := range targets {
 		switch err := lockServer(ctx, tx, serverID); {
@@ -409,29 +426,49 @@ func queueBanNotices(ctx context.Context, tx *Tx, revision int64, queueLimit int
 		case err != nil:
 			return nil, nil, fmt.Errorf("lock server to notify of a ban change: %w", err)
 		}
-		result, err := tx.ExecContext(ctx,
-			`UPDATE outbound_envelopes SET body = ?
-			  WHERE server_id = ? AND type = ? AND session_id IS NULL AND acked_at IS NULL`,
-			string(body), serverID, BanChangedType)
+		queued, err := noticeBanRevision(ctx, tx, serverID, revision, queueLimit)
 		if err != nil {
-			return nil, nil, fmt.Errorf("refresh bans.changed: %w", err)
+			return nil, nil, err
 		}
-		refreshed, err := result.RowsAffected()
-		if err != nil {
-			return nil, nil, fmt.Errorf("refresh bans.changed: %w", err)
-		}
-		if refreshed == 0 {
-			switch _, err := queueOutbound(ctx, tx, serverID, BanChangedType, body, queueLimit); {
-			case errors.Is(err, ErrOutboundQueueFull):
-				dropped = append(dropped, serverID)
-				continue
-			case err != nil:
-				return nil, nil, err
-			}
+		if !queued {
+			dropped = append(dropped, serverID)
+			continue
 		}
 		notified = append(notified, serverID)
 	}
 	return notified, dropped, nil
+}
+
+// noticeBanRevision queues one bans.changed carrying revision for a server
+// whose row the transaction holds, refreshing a notice already queued and not
+// yet sent rather than adding another; false when the server's queue is at
+// its bound, which drops the notice (spec section 13.3).
+func noticeBanRevision(ctx context.Context, tx *Tx, serverID string, revision int64, queueLimit int) (bool, error) {
+	body, err := json.Marshal(map[string]int64{"revision": revision})
+	if err != nil {
+		return false, fmt.Errorf("encode bans.changed: %w", err)
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE outbound_envelopes SET body = ?
+		  WHERE server_id = ? AND type = ? AND session_id IS NULL AND acked_at IS NULL`,
+		string(body), serverID, BanChangedType)
+	if err != nil {
+		return false, fmt.Errorf("refresh bans.changed: %w", err)
+	}
+	refreshed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("refresh bans.changed: %w", err)
+	}
+	if refreshed > 0 {
+		return true, nil
+	}
+	switch _, err := queueOutbound(ctx, tx, serverID, BanChangedType, body, queueLimit); {
+	case errors.Is(err, ErrOutboundQueueFull):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
 }
 
 // decodeCapabilities reads a stored manifest's capabilities: the column when
@@ -524,8 +561,49 @@ type BanQuery struct {
 	After    BanCursor
 }
 
+// BansWithRevision answers one page of ban records and the active list's
+// revision as one read: on Postgres both come from one repeatable-read
+// snapshot, on SQLite from one transaction on the single connection, so the
+// revision is the one the records belong to (spec section 13.2).
+func (s *Store) BansWithRevision(ctx context.Context, query BanQuery) (int64, []Ban, error) {
+	var options *sql.TxOptions
+	if s.driver == dialectPostgres {
+		options = &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+	}
+	tx, err := s.db.BeginTx(ctx, options)
+	if err != nil {
+		return 0, nil, fmt.Errorf("begin read bans: %w", err)
+	}
+	defer tx.Rollback()
+	var revision int64
+	if err := tx.QueryRowContext(ctx, `SELECT revision FROM ban_list WHERE id = 1`).Scan(&revision); err != nil {
+		return 0, nil, fmt.Errorf("read ban list revision: %w", err)
+	}
+	bans, err := readBans(ctx, tx, query)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, fmt.Errorf("commit read bans: %w", err)
+	}
+	return revision, bans, nil
+}
+
 // Bans answers one page of ban records, newest first by (created_at, id).
 func (s *Store) Bans(ctx context.Context, query BanQuery) ([]Ban, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin read bans: %w", err)
+	}
+	defer tx.Rollback()
+	bans, err := readBans(ctx, tx, query)
+	if err != nil {
+		return nil, err
+	}
+	return bans, tx.Commit()
+}
+
+func readBans(ctx context.Context, tx *Tx, query BanQuery) ([]Ban, error) {
 	var conditions []string
 	var args []any
 	if !query.All {
@@ -546,7 +624,7 @@ func (s *Store) Bans(ctx context.Context, query BanQuery) ([]Ban, error) {
 		where = "WHERE " + strings.Join(conditions, " AND ")
 	}
 	args = append(args, query.Limit)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		`SELECT `+banColumns+` FROM bans `+where+`
 		  ORDER BY created_at DESC, id DESC
 		  LIMIT ?`, args...)
@@ -597,6 +675,19 @@ func (s *Store) BanListAt(ctx context.Context, revision int64, after BanListPosi
 	}
 	if revision > current {
 		return 0, nil, ErrBanRevisionGone
+	}
+	if revision != current && revision != 0 {
+		// A cursor names a revision this hub minted, or it comes from another
+		// history (a hub restored from a backup older than the cursor) and
+		// the list it would describe was never this hub's.
+		var known int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM ban_revisions WHERE revision = ?`, revision).Scan(&known); err != nil {
+			return 0, nil, fmt.Errorf("read ban list revision register: %w", err)
+		}
+		if known == 0 {
+			return 0, nil, ErrBanRevisionGone
+		}
 	}
 	conditions := []string{"listed_revision <= ?", "(delisted_revision IS NULL OR delisted_revision > ?)"}
 	args := []any{revision, revision}

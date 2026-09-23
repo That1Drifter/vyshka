@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS ban_list (
 );
 INSERT INTO ban_list (id, revision) VALUES (1, 0);
 
+-- Every revision this hub has minted (section 13.3): a walk's cursor names
+-- one, and a cursor naming one missing here comes from another history (a
+-- restore from a backup older than the cursor) and is refused rather than
+-- answered with a list that was never that revision.
+CREATE TABLE IF NOT EXISTS ban_revisions (
+    revision  BIGINT PRIMARY KEY,
+    minted_at TEXT NOT NULL
+);
+
 -- What each server's plugin last reported enforcing (section 13.4): the
 -- plugin's word, kept as said, NULL until its first report.
 ALTER TABLE servers ADD COLUMN bans_applied_revision BIGINT;

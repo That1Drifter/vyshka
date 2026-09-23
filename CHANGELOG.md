@@ -34,8 +34,12 @@ arrived, since those entries were written for one stream.
   Two scopes join the closed set: `bans:read` and `bans:manage`, which implies it; neither
   takes a pattern, a server binding does not narrow `bans:read`, and `bans:manage` is
   refused on a bound token at mint. The active list carries a revision, moved by every
-  change and by nothing else, under a lock so concurrent changes are distinct revisions;
-  expired bans leave it within 5 s (the spec allows 60), each sweep one change. A plugin
+  change and by nothing else, under a lock so concurrent changes are distinct revisions,
+  and minted as the larger of one more than the last and the clock in milliseconds, so a
+  hub restored from a backup never hands a revision out again for a different list; every
+  minted revision is registered, and a cursor naming one this hub never minted is
+  refused. Expired bans leave the list within 5 s (the spec allows 60), each sweep one
+  change, on a sweeper of their own so the retention passes cannot hold it up. A plugin
   reads the list at `GET /plugin/v1/bans` or its POST spelling `/plugin/v1/bans/get`,
   bounded pages in identity order, and every page reached through a walk's cursors is
   served at the revision the walk began at, so a list that changes faster than a plugin
@@ -45,7 +49,10 @@ arrived, since those entries were written for one stream.
   strings of at most 64 code points, unknown entries ignored), says which optional parts a
   plugin implements, and `bans` is the first: a change to the list queues `bans.changed`
   for the servers declaring it and no other, refreshing an unsent notice in place rather
-  than queueing one per change; the session response reports `server.bansRevision`; and a
+  than queueing one per change, and accepting a manifest that declares it queues one
+  carrying the current revision, under the ban list's lock so a change landing between
+  the plugin's first read and its publish cannot reach nobody; the Admin list reads its
+  revision and its records in one snapshot; the session response reports `server.bansRevision`; and a
   plugin's `bans.applied` report lands on the server record as `bans.appliedRevision` and
   `appliedAt`, beside `bans.supported`. The raw envelope endpoint refuses the `bans.*`
   family. The hub conformance suite gains `admin.bans.lifecycle`, `admin.bans.scopes`,
@@ -343,10 +350,14 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   from the one it holds, lower included, on a transport of its own so a walk never waits
   behind the held poll: pages back to back through the POST spelling, held to the
   revision the first page was served at, started over on a conflict, and on any other
-  failure retried after 30 s with the previous list still in force. A whole revision is
-  written to `$profile:Vyshka/installation-bans.json` one entry per line, then put in
-  force, then reported with `bans.applied`; a session that begins with the revision
-  already held reports it too. The applied list is enforced from boot, before any
+  failure retried after 30 s with the previous list still in force; a `bans.changed` that
+  arrives during a walk is not overwritten by the walk's end, which a live run caught. A
+  whole revision is written to `$profile:Vyshka/installation-bans.next.json` and then to
+  `installation-bans.json`, one entry per line, before the staging copy is deleted, so a
+  crash partway through a write never loses the list in force (a staging copy that parses
+  wins at boot, one cut short is discarded); then it is put in force and reported with
+  `bans.applied`, and a session that begins with the revision already held reports it
+  too. The applied list is enforced from boot, before any
   session. Only `steam` entries apply, an entry past its `expiresAt` is no ban by the
   server's clock, and a server enforces the union of its own list and the installation
   list: an identity on either is refused at connect, and every player online on a newly

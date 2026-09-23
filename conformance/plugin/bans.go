@@ -22,6 +22,13 @@ import (
 // several pages.
 const banPageCap = 2
 
+// banHoldBound is how long the mock holds the rest of a walk, once the list
+// has moved on under it, for the bans.changed of the new revision to reach
+// the plugin first. A plugin that polls while it walks gets the notice inside
+// it; one that walks between polls cannot, and the stage says it could not
+// grade that ordering rather than failing a correct plugin.
+var banHoldBound = 8 * time.Second
+
 type mockBanEntry struct {
 	ID        string  `json:"id"`
 	Player    banWho  `json:"player"`
@@ -58,10 +65,25 @@ type mockBans struct {
 	// lands a change in the middle of a walk.
 	bumpAfterFirstPage map[int64]int64
 	// conflictArmed answers the next request carrying a cursor with 409
-	// conflict, as a hub that can no longer serve the cursor's revision does.
-	conflictArmed bool
-	conflicts     int
-	reports       []banReport
+	// conflict, as a hub that can no longer serve the cursor's revision does,
+	// and every later request carrying a cursor of the same walk as well: the
+	// cursor stays unservable, so only a walk begun again gets past it.
+	conflictArmed  bool
+	conflictedWalk int
+	conflicts      int
+	reports        []banReport
+	// walks numbers the walks begun, and each cursor carries its walk's
+	// number, so a conflict can be made to stick to the walk it hit.
+	walks int
+	// The walk held while the list moves on under it: the revision it reads,
+	// the notice of the new revision, and until when it is held. ordered says
+	// the notice was acked before the walk went on, which is the ordering
+	// the stage means to grade; held says the hold ran out first.
+	holdRevision int64
+	holdNotice   *outboundItem
+	holdUntil    time.Time
+	ordered      bool
+	heldOut      bool
 }
 
 func newMockBans() *mockBans {
@@ -70,12 +92,20 @@ func newMockBans() *mockBans {
 		served:             map[int64]map[int]bool{},
 		firstPages:         map[int64]int{},
 		bumpAfterFirstPage: map[int64]int64{},
+		conflictedWalk:     -1,
+		holdRevision:       -1,
 	}
 }
 
-// complete reports whether every entry of a revision has been served; an
-// empty revision is complete once a walk of it has begun.
+// complete reports whether every entry of a revision has been served. The
+// empty list of revision 0 is complete from the start: revision 0 is the list
+// before any change, the same empty list on every hub, so a plugin holding it
+// from an earlier run holds it rightly without walking it again (section
+// 13.1).
 func (b *mockBans) complete(revision int64) bool {
+	if revision == 0 {
+		return true
+	}
 	list, known := b.lists[revision]
 	if !known {
 		return false
@@ -112,29 +142,37 @@ func (h *mockHub) setBanListLocked(revision int64, list []mockBanEntry) {
 	h.signalLocked()
 }
 
-// banCursor is the mock's cursor: the revision and the offset of the next
-// entry, in the alphabet section 13.3 requires.
-func banCursor(revision int64, offset int) string {
-	return "r" + strconv.FormatInt(revision, 10) + "o" + strconv.Itoa(offset)
+// banCursor is the mock's cursor: the revision, the offset of the next entry,
+// and the walk it belongs to, in the alphabet section 13.3 requires.
+func banCursor(revision int64, offset, walk int) string {
+	return "r" + strconv.FormatInt(revision, 10) + "o" + strconv.Itoa(offset) + "w" + strconv.Itoa(walk)
 }
 
-func parseBanCursor(value string) (int64, int, bool) {
+func parseBanCursor(value string) (int64, int, int, bool) {
 	if !strings.HasPrefix(value, "r") {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	revisionText, offsetText, found := strings.Cut(value[1:], "o")
+	revisionText, rest, found := strings.Cut(value[1:], "o")
 	if !found {
-		return 0, 0, false
+		return 0, 0, 0, false
+	}
+	offsetText, walkText, found := strings.Cut(rest, "w")
+	if !found {
+		return 0, 0, 0, false
 	}
 	revision, err := strconv.ParseInt(revisionText, 10, 64)
 	if err != nil || revision < 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	offset, err := strconv.Atoi(offsetText)
 	if err != nil || offset < 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	return revision, offset, true
+	walk, err := strconv.Atoi(walkText)
+	if err != nil || walk < 0 {
+		return 0, 0, 0, false
+	}
+	return revision, offset, walk, true
 }
 
 // handleBans serves one page of the list on either spelling (section 13.3).
@@ -164,28 +202,61 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	revision, offset := h.bans.revision, 0
+	revision, offset, walk := h.bans.revision, 0, 0
 	cursor := query.Get("cursor")
 	if cursor != "" {
 		var ok bool
-		revision, offset, ok = parseBanCursor(cursor)
+		revision, offset, walk, ok = parseBanCursor(cursor)
 		if !ok {
 			h.faultLocked("13.3", "a ban list read carried cursor %q, which this harness never issued; a plugin sends back the nextCursor it was given, as it came", cursor)
 			h.mu.Unlock()
 			answer(w, inline, http.StatusBadRequest, "bad_request", "cursor is not one this hub issued", nil)
 			return
 		}
-		if h.bans.conflictArmed || revision > h.bans.revision {
-			if h.bans.conflictArmed {
-				h.bans.conflictArmed = false
-				h.bans.conflicts++
-			}
+		if h.bans.conflictArmed {
+			h.bans.conflictArmed = false
+			h.bans.conflictedWalk = walk
+			h.bans.conflicts++
+		}
+		if walk == h.bans.conflictedWalk || revision > h.bans.revision {
 			h.signalLocked()
 			h.mu.Unlock()
 			answer(w, inline, http.StatusConflict, "conflict",
 				"this harness will not serve the revision the cursor names; start the walk over", nil)
 			return
 		}
+		// The rest of a walk the list has moved on under waits until the
+		// plugin has taken the notice of the new revision, so it holds a
+		// fresher revision than the walk's when the walk ends. Taken means
+		// acked, the proof for a plugin that polls while it walks; or
+		// delivered with no poll open, which is proof enough for one that
+		// walks and polls in turn, since it has handled a poll's answer
+		// before it asks for the next page.
+		taken := func() bool {
+			notice := h.bans.holdNotice
+			return notice.acked || (notice.seq != 0 && h.pollsInFlight.Load() == 0)
+		}
+		if revision == h.bans.holdRevision && h.bans.holdNotice != nil {
+			for !taken() && time.Now().Before(h.bans.holdUntil) && h.sessionToken == token && h.sessionLive {
+				ch := h.changed
+				h.mu.Unlock()
+				select {
+				case <-ch:
+				case <-time.After(50 * time.Millisecond):
+				}
+				h.mu.Lock()
+			}
+			if taken() {
+				h.bans.ordered = true
+			} else {
+				h.bans.heldOut = true
+			}
+			h.bans.holdRevision = -1
+			h.bans.holdNotice = nil
+		}
+	} else {
+		h.bans.walks++
+		walk = h.bans.walks
 	}
 	list := h.bans.lists[revision]
 	if offset > len(list) {
@@ -194,7 +265,7 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 	end := min(offset+banPageCap, len(list))
 	page := map[string]any{"revision": revision, "bans": append([]mockBanEntry{}, list[offset:end]...)}
 	if end < len(list) {
-		page["nextCursor"] = banCursor(revision, end)
+		page["nextCursor"] = banCursor(revision, end, walk)
 	}
 	if h.bans.served[revision] == nil {
 		h.bans.served[revision] = map[int]bool{}
@@ -207,7 +278,9 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 		if target, armed := h.bans.bumpAfterFirstPage[revision]; armed {
 			delete(h.bans.bumpAfterFirstPage, revision)
 			h.bans.revision = target
-			h.queueBansChangedLocked(target)
+			h.bans.holdRevision = revision
+			h.bans.holdNotice = h.queueBansChangedLocked(target)
+			h.bans.holdUntil = time.Now().Add(banHoldBound)
 		}
 	}
 	h.signalLocked()
@@ -216,15 +289,17 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 }
 
 // queueBansChangedLocked queues the section 13.3 nudge.
-func (h *mockHub) queueBansChangedLocked(revision int64) {
+func (h *mockHub) queueBansChangedLocked(revision int64) *outboundItem {
 	encoded, _ := json.Marshal(map[string]int64{"revision": revision})
 	h.hubEnvCounter++
-	h.outbound = append(h.outbound, &outboundItem{
+	item := &outboundItem{
 		id:   fmt.Sprintf("conformance-hub-%d", h.hubEnvCounter),
 		typ:  "bans.changed",
 		ts:   time.Now().UTC().Format(time.RFC3339),
 		body: encoded,
-	})
+	}
+	h.outbound = append(h.outbound, item)
+	return item
 }
 
 // interpretBansAppliedLocked records one report and faults a revision the
@@ -318,45 +393,54 @@ var bansStage = Stage{
 		}
 		var since int
 		mark := func() { hub.view(func() { since = len(hub.bans.reports) }) }
+		// Revisions of this run's own, above anything a plugin could hold from
+		// an earlier run against this harness (whose revisions it would
+		// otherwise take for the same list).
+		base := time.Now().UnixMilli()
+		first, before, after, conflicted, lower := base+10, base+11, base+12, base+13, base+5
 
 		// A list of several pages, announced by a nudge.
 		mark()
 		hub.mu.Lock()
-		hub.setBanListLocked(10, banEntries("a", 5))
-		hub.queueBansChangedLocked(10)
+		hub.setBanListLocked(first, banEntries("a", 5))
+		hub.queueBansChangedLocked(first)
 		hub.mu.Unlock()
-		if err := h.awaitBanReport(10, 0, since, "a list of several pages announced by bans.changed"); err != nil {
+		if err := h.awaitBanReport(first, 0, since, "a list of several pages announced by bans.changed"); err != nil {
 			return fmt.Errorf("%w; a plugin declaring bans walks the list when the revision it learns differs from the one it enforces, and reports it once applied (section 13.4)", err)
 		}
 
-		// A change lands in the middle of a walk: the walk of 11 is served
-		// at 11 to its end while the list moves to 12, and the plugin ends
-		// up reporting 12.
+		// A change lands in the middle of a walk: the walk of the second
+		// revision is served at it to its end while the list moves to the
+		// third, whose bans.changed reaches the plugin before the walk ends,
+		// and the plugin ends up reporting the third.
 		mark()
 		hub.mu.Lock()
-		hub.prepareBanListLocked(12, banEntries("c", 4))
-		hub.setBanListLocked(11, banEntries("b", 5))
-		hub.bans.bumpAfterFirstPage[11] = 12
-		hub.queueBansChangedLocked(11)
+		hub.prepareBanListLocked(after, banEntries("c", 4))
+		hub.setBanListLocked(before, banEntries("b", 5))
+		hub.bans.bumpAfterFirstPage[before] = after
+		hub.queueBansChangedLocked(before)
 		hub.mu.Unlock()
-		if err := h.awaitBanReport(12, 0, since, "the list moved on while a walk was under way"); err != nil {
-			return fmt.Errorf("%w; the list moved from 11 to 12 while the plugin was walking 11, a bans.changed of 12 followed, and the plugin walks again (section 13.4)", err)
+		if err := h.awaitBanReport(after, 0, since, "the list moved on while a walk was under way"); err != nil {
+			return fmt.Errorf("%w; the list moved from %d to %d while the plugin was walking %d, the bans.changed of %d reached it before that walk ended, and a plugin walks again when the walk it finishes is not the revision it was last told of (section 13.4)", err, before, after, before, after)
 		}
 
-		// A conflict partway through a walk: the plugin starts over.
+		// A conflict partway through a walk: the cursor stays refused, so
+		// only a walk begun again reaches the report.
 		mark()
+		var walksBefore int
 		hub.mu.Lock()
-		hub.setBanListLocked(13, banEntries("d", 5))
+		hub.setBanListLocked(conflicted, banEntries("d", 5))
 		hub.bans.conflictArmed = true
-		hub.queueBansChangedLocked(13)
+		walksBefore = hub.bans.firstPages[conflicted]
+		hub.queueBansChangedLocked(conflicted)
 		hub.mu.Unlock()
-		if err := h.awaitBanReport(13, 0, since, "after a conflict partway through the walk"); err != nil {
+		if err := h.awaitBanReport(conflicted, 0, since, "after a conflict partway through the walk"); err != nil {
 			return fmt.Errorf("%w; a 409 conflict on a cursor restarts the walk from the first page (sections 13.3 and 13.4)", err)
 		}
-		var conflicts int
-		hub.view(func() { conflicts = hub.bans.conflicts })
-		if conflicts != 1 {
-			return fmt.Errorf("the harness armed a conflict for the walk of revision 13 and it was never met: the plugin applied 13 without following a cursor, over a list longer than one page")
+		var conflicts, walks int
+		hub.view(func() { conflicts, walks = hub.bans.conflicts, hub.bans.firstPages[conflicted]-walksBefore })
+		if conflicts != 1 || walks < 2 {
+			return fmt.Errorf("the harness armed a conflict for the walk of revision %d: it was met %d time(s), and the plugin began %d walk(s) of that revision; a walk that meets a conflict starts over from the first page (section 13.4)", conflicted, conflicts, walks)
 		}
 
 		// A new session that begins with the revision the plugin already
@@ -370,7 +454,7 @@ var bansStage = Stage{
 			return err
 		}
 		hub.view(func() { ordinal = hub.sessionOrdinal })
-		if err := h.awaitBanReport(13, ordinal, since, "a session that began with the revision already enforced"); err != nil {
+		if err := h.awaitBanReport(conflicted, ordinal, since, "a session that began with the revision already enforced"); err != nil {
 			return fmt.Errorf("%w; a plugin reports on a session that begins with the revision it already enforces (section 13.4)", err)
 		}
 
@@ -378,11 +462,17 @@ var bansStage = Stage{
 		// enough to walk.
 		mark()
 		hub.mu.Lock()
-		hub.setBanListLocked(5, banEntries("e", 3))
-		hub.queueBansChangedLocked(5)
+		hub.setBanListLocked(lower, banEntries("e", 3))
+		hub.queueBansChangedLocked(lower)
 		hub.mu.Unlock()
-		if err := h.awaitBanReport(5, 0, since, "a revision lower than the one enforced"); err != nil {
+		if err := h.awaitBanReport(lower, 0, since, "a revision lower than the one enforced"); err != nil {
 			return fmt.Errorf("%w; a plugin walks whenever the revision differs from the one it enforces, not only when it exceeds it (section 13.4)", err)
+		}
+
+		var ordered bool
+		hub.view(func() { ordered = hub.bans.ordered })
+		if !ordered {
+			return ungraded{fmt.Sprintf("the plugin did not take the bans.changed of revision %d within %s of the list moving on under its walk (it walks the whole list between two polls), so a notice arriving during a walk was not graded", after, banHoldBound)}
 		}
 		return nil
 	},

@@ -330,15 +330,11 @@ func (s *Server) handleListBans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The revision is read before the page, so a reader comparing it with the
-	// servers' reports never sees a revision older than the page it came with.
-	revision, err := s.store.BanRevision(r.Context())
-	if err != nil {
-		s.writeInternalError(w, r, err)
-		return
-	}
+	// The revision and the page are one read, so the revision is the one the
+	// records belong to and a reader comparing it with the servers' reports
+	// compares like with like.
 	now := time.Now().UTC()
-	found, err := s.store.Bans(r.Context(), store.BanQuery{
+	revision, found, err := s.store.BansWithRevision(r.Context(), store.BanQuery{
 		All:      all,
 		Now:      now,
 		Platform: platform,
@@ -494,10 +490,28 @@ func prepareBansApplied(envelopes []inboundEnvelope) map[int]int64 {
 	return prepared
 }
 
-// sweepBans takes expired bans off the active list, once per maintenance
-// tick. A failure is logged and the next tick tries again: an expired ban the
-// hub still serves costs nothing but a stale entry, which every plugin drops
-// by its own clock (spec section 13.4).
+// runBanSweeper takes expired bans off the active list on its own ticker. It
+// is not a case of the maintenance loop because that loop's retention passes
+// can each run for half a minute, and section 13.1 bounds how long an expired
+// ban may stay on the served list at 60 s whatever else the hub is doing.
+func (s *Server) runBanSweeper() {
+	defer close(s.banSweeperDone)
+	ticker := time.NewTicker(s.cfg.BanSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopSweeper:
+			return
+		case <-ticker.C:
+			s.sweepBans()
+		}
+	}
+}
+
+// sweepBans takes expired bans off the active list, once per sweeper tick.
+// A failure is logged and the next tick tries again: an expired ban the hub
+// still serves costs nothing but a stale entry, which every plugin drops by
+// its own clock (spec section 13.4).
 func (s *Server) sweepBans() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

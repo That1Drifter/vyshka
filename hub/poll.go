@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -128,7 +129,17 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// its effect is already durable (spec section 9.3).
 	var batch inboundBatch
 	var unusableActionBodies, rejectedManifests, refusedEventBatches, refusedSnapshots, suppressedNotices int
-	applied, err := s.store.ApplyInbound(r.Context(), session.ID, func(ack int64) store.InboundApplication {
+	// A manifest declaring the bans capability is applied under the ban
+	// list's lock, which is what keeps a change of the list from falling
+	// between the plugin's walk and the manifest that makes it a recipient
+	// (spec section 13.3).
+	apply := s.store.ApplyInbound
+	for _, prepared := range manifests {
+		if prepared.publish != nil && slices.Contains(prepared.publish.Capabilities, store.CapabilityBans) {
+			apply = s.store.ApplyInboundDeclaringBans
+		}
+	}
+	applied, err := apply(r.Context(), session.ID, func(ack int64) store.InboundApplication {
 		batch = classifyInbound(ack, request.Envelopes)
 		unusableActionBodies = 0
 		rejectedManifests = 0

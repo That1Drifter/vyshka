@@ -15,7 +15,9 @@
 //   $profile:Vyshka/bans.json          the plugin's ban list (VyshkaBans); operator-editable
 //   $profile:Vyshka/installation-bans.json
 //                                      the hub's installation ban list as last applied
-//                                      (VyshkaInstallationBans); overwritten on every apply
+//                                      (VyshkaInstallationBans); overwritten on every apply,
+//                                      through installation-bans.next.json so a crash
+//                                      mid-write never loses the list in force
 //   $profile:Vyshka/manifest.json      the manifest revision last published and the content
 //                                      it went with (VyshkaManifestRecord)
 //
@@ -42,6 +44,7 @@ class VyshkaFiles
 	static const string EXECUTED_PATH = "$profile:Vyshka/executed.log";
 	static const string BANS_PATH = "$profile:Vyshka/bans.json";
 	static const string INSTALLATION_BANS_PATH = "$profile:Vyshka/installation-bans.json";
+	static const string INSTALLATION_BANS_NEXT_PATH = "$profile:Vyshka/installation-bans.next.json";
 	static const string MANIFEST_PATH = "$profile:Vyshka/manifest.json";
 
 	// The longest line a file written here may carry. The engine's reader

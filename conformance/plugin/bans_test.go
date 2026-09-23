@@ -123,6 +123,9 @@ func TestBanReportWithoutAWalkIsFaulted(t *testing.T) {
 // The mock serves a walk at the revision it began at while the list moves,
 // and answers an armed conflict once (section 13.3).
 func TestMockBanListPinsWalksAndArmsConflicts(t *testing.T) {
+	held := banHoldBound
+	banHoldBound = 100 * time.Millisecond
+	t.Cleanup(func() { banHoldBound = held })
 	h, err := startMockHub("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -151,10 +154,15 @@ func TestMockBanListPinsWalksAndArmsConflicts(t *testing.T) {
 	if status != http.StatusConflict {
 		t.Fatalf("an armed conflict answered %d: %v", status, body)
 	}
+	// The conflict sticks to the walk it hit: the same cursor again is
+	// refused again, so only a walk begun anew gets past it.
+	if status, _ := p.page(first["nextCursor"].(string)); status != http.StatusConflict {
+		t.Fatalf("the conflicted cursor sent again answered %d, want 409 again", status)
+	}
 	if revision, _ := p.walk(); revision != 13 {
 		t.Fatalf("the walk after the conflict read revision %d, want 13", revision)
 	}
-	status, _ = p.page("r99o0")
+	status, _ = p.page("r99o0w1")
 	if status != http.StatusConflict {
 		t.Errorf("a cursor at a revision above the current one answered %d, want 409", status)
 	}
@@ -189,7 +197,7 @@ func TestBansStageGradesOnlyADeclaringPlugin(t *testing.T) {
 	p.poll(typedEnvelope("manifest-2", 2, "manifest.publish", manifest))
 	results = runStages(&harness{hub: h, checkTimeout: 200 * time.Millisecond, banAllowance: 100 * time.Millisecond},
 		[]Stage{bansStage})
-	if len(results) != 1 || results[0].Passed || !strings.Contains(results[0].Error, "bans.applied of revision 10") {
+	if len(results) != 1 || results[0].Passed || !strings.Contains(results[0].Error, "a list of several pages announced by bans.changed") {
 		t.Fatalf("a declaring plugin that never walks = %+v, want a failure naming the report it owed", results)
 	}
 }

@@ -2,6 +2,7 @@ package panel_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -77,6 +78,21 @@ func TestPanelBansEndToEnd(t *testing.T) {
 		t.Helper()
 		return bansOf(url.Values{"platform": {"steam"}, "playerId": {playerID}})
 	}
+	// listRevision is the list's revision as the hub reports it: revisions
+	// are minted from the clock (protocol section 13.1), so the test reads
+	// them rather than counting.
+	listRevision := func() int64 {
+		t.Helper()
+		status, body := adminRequest(t, http.MethodGet, hubURL+"/api/v1/bans?limit=1", nil)
+		if status != http.StatusOK {
+			t.Fatalf("read the list revision: status %d body %s", status, body)
+		}
+		var page struct {
+			Revision int64 `json:"revision"`
+		}
+		_ = json.Unmarshal(body, &page)
+		return page.Revision
+	}
 	expiresIn := func(ban panelBan, want time.Duration) {
 		t.Helper()
 		if ban.ExpiresAt == nil {
@@ -130,8 +146,8 @@ func TestPanelBansEndToEnd(t *testing.T) {
 	if got := evalString(`String(document.querySelectorAll("#bans b").length)`); got != "0" {
 		t.Fatal("a ban reason's markup reached the page as markup")
 	}
-	if got := text("#bans-revision"); got != "List revision 1" {
-		t.Fatalf("the revision reads %q after one ban, want List revision 1", got)
+	if got, want := text("#bans-revision"), fmt.Sprintf("List revision %d", listRevision()); got != want {
+		t.Fatalf("the revision reads %q after one ban, want %s", got, want)
 	}
 	if got := h.attribute(`#bans tr[data-ban-id="`+annaBan+`"] a[data-profile]`, "href"); got != "#/players/steam/"+anna {
 		t.Fatalf("the player cell links %q, want the profile", got)
@@ -194,8 +210,8 @@ func TestPanelBansEndToEnd(t *testing.T) {
 	if len(activeOf(anna)) != 0 {
 		t.Fatal("the confirmed lift did not reach the hub")
 	}
-	if got := text("#bans-revision"); got != "List revision 4" {
-		t.Fatalf("the revision reads %q after three bans and a lift, want List revision 4", got)
+	if got, want := text("#bans-revision"), fmt.Sprintf("List revision %d", listRevision()); got != want {
+		t.Fatalf("the revision reads %q after three bans and a lift, want %s", got, want)
 	}
 
 	// 6. Every state, behind the toggle, which lives in the route.
@@ -223,7 +239,8 @@ func TestPanelBansEndToEnd(t *testing.T) {
 		t.Fatalf("the capable server's bans line reads %q before a report, want no report yet", got)
 	}
 	waitJS("the unreported server names the list's revision", `(document.querySelector("#server-bans-sync") || {dataset: {}}).dataset.sync === "unreported"`)
-	plugin.queue("bans.applied", map[string]any{"revision": 4})
+	current := listRevision()
+	plugin.queue("bans.applied", map[string]any{"revision": current})
 	h.waitUntil("the hub recorded the report", 30*time.Second, func() bool {
 		status, body := adminRequest(t, http.MethodGet, hubURL+"/api/v1/servers/"+capable.Server.ID, nil)
 		var record struct {
@@ -232,13 +249,13 @@ func TestPanelBansEndToEnd(t *testing.T) {
 			} `json:"bans"`
 		}
 		_ = json.Unmarshal(body, &record)
-		return status == http.StatusOK && record.Bans.AppliedRevision != nil && *record.Bans.AppliedRevision == 4
+		return status == http.StatusOK && record.Bans.AppliedRevision != nil && *record.Bans.AppliedRevision == current
 	})
 	run("reload the server page", chromedp.Reload(), chromedp.WaitVisible("#server-bans-sync", chromedp.ByQuery))
 	if got := h.attribute("#server-bans-sync", "data-sync"); got != "current" {
 		t.Fatalf("a server enforcing the current revision reads %q, want current", got)
 	}
-	if got := text("#server-bans"); !strings.Contains(got, "enforcing revision 4") || !strings.Contains(got, "up to date") {
+	if got := text("#server-bans"); !strings.Contains(got, fmt.Sprintf("enforcing revision %d", current)) || !strings.Contains(got, "up to date") {
 		t.Fatalf("the caught-up bans line reads %q", got)
 	}
 	if status, body := adminRequest(t, http.MethodPost, hubURL+"/api/v1/bans", map[string]any{
@@ -250,8 +267,8 @@ func TestPanelBansEndToEnd(t *testing.T) {
 	if got := h.attribute("#server-bans-sync", "data-sync"); got != "behind" {
 		t.Fatalf("a server a revision behind reads %q, want behind", got)
 	}
-	if got := text("#server-bans"); !strings.Contains(got, "revision 5") {
-		t.Fatalf("the behind bans line reads %q, want the list's revision 5", got)
+	if next := listRevision(); !strings.Contains(text("#server-bans"), fmt.Sprintf("revision %d", next)) {
+		t.Fatalf("the behind bans line reads %q, want the list's revision %d", text("#server-bans"), next)
 	}
 	run("open the plain server", chromedp.Evaluate(`location.hash = `+strconv.Quote("#/servers/"+plain.Server.ID), nil),
 		chromedp.WaitVisible("#no-manifest", chromedp.ByQuery))
@@ -379,7 +396,7 @@ func TestPanelBansEndToEnd(t *testing.T) {
 	}
 	run("open the capable server without bans", chromedp.Evaluate(`location.hash = `+strconv.Quote(serverHash), nil),
 		chromedp.WaitVisible("#server-bans", chromedp.ByQuery))
-	if got := text("#server-bans"); !strings.Contains(got, "enforcing revision 4") {
+	if got := text("#server-bans"); !strings.Contains(got, fmt.Sprintf("enforcing revision %d", current)) {
 		t.Fatalf("the bans line reads %q without bans:read, want the server's own report", got)
 	}
 	// The comparison is one read; the refusal must leave it out rather than

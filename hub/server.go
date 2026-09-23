@@ -319,9 +319,11 @@ type Server struct {
 	started      time.Time
 	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
 	// Close never races the loop against the store it is closing. The webhook
-	// dispatcher shares the stop channel and confirms through dispatcherDone.
-	stopSweeper chan struct{}
-	sweeperDone chan struct{}
+	// dispatcher shares the stop channel and confirms through dispatcherDone,
+	// and the ban expiry sweep through banSweeperDone.
+	stopSweeper    chan struct{}
+	sweeperDone    chan struct{}
+	banSweeperDone chan struct{}
 	// webhookWake nudges the webhook dispatcher when fresh work landed;
 	// webhookClient makes its delivery attempts.
 	webhookWake    chan struct{}
@@ -419,6 +421,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		started:        time.Now(),
 		stopSweeper:    make(chan struct{}),
 		sweeperDone:    make(chan struct{}),
+		banSweeperDone: make(chan struct{}),
 		webhookWake:    make(chan struct{}, 1),
 		dispatcherDone: make(chan struct{}),
 		webhookClient: &http.Client{
@@ -438,6 +441,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	s.handler = s.routes()
 	go s.runMaintenance()
 	go s.runWebhookDispatcher()
+	go s.runBanSweeper()
 	return s, nil
 }
 
@@ -469,10 +473,6 @@ func (s *Server) runMaintenance() {
 	backfill := time.NewTicker(time.Second)
 	defer backfill.Stop()
 	backfillTick := backfill.C
-	// The ban expiry sweep of spec section 13.1: expired bans leave the
-	// active list the plugins are served, and the revision moves with them.
-	banSweep := time.NewTicker(s.cfg.BanSweepInterval)
-	defer banSweep.Stop()
 
 	for {
 		select {
@@ -483,8 +483,7 @@ func (s *Server) runMaintenance() {
 				backfill.Stop()
 				backfillTick = nil
 			}
-		case <-banSweep.C:
-			s.sweepBans()
+
 		case <-expiry.C:
 			// Bounded, because Close waits for this loop before closing the
 			// store: a job that could block forever could hang shutdown.
@@ -884,6 +883,7 @@ func (s *Server) Close() error {
 		s.baseCancel()
 		<-s.sweeperDone
 		<-s.dispatcherDone
+		<-s.banSweeperDone
 		err = s.store.Close()
 	})
 	return err

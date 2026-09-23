@@ -70,7 +70,7 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 16;
+	static const int PLAN = 17;
 	static const int SETTLE_MS = 3000;
 	// The gap between checks: each runs in a frame of its own, so the
 	// engine's frame clock advances between them and the finished line
@@ -160,6 +160,8 @@ class VyshkaSelfTest
 			CheckSpeed();
 		else if (step == 15)
 			CheckExecutedKey();
+		else if (step == 16)
+			CheckInstallationBans();
 		if (m_Step < PLAN)
 		{
 			GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Next, GAP_MS, false);
@@ -537,6 +539,85 @@ class VyshkaSelfTest
 		VyshkaBans.Entries().Clear();
 		VyshkaBans.Save();
 		VyshkaBans.Reset();
+	}
+
+	// ---- files.installationBans: the installation ban list written through
+	// its staging copy and read back whole, and both crash windows of that
+	// write: a staging copy cut short beside a whole list (discarded, the
+	// list kept) and a whole staging copy beside a main file cut short (the
+	// staging copy wins and the main file is written again) ----
+	void CheckInstallationBans()
+	{
+		string mainPath = VyshkaFiles.INSTALLATION_BANS_PATH;
+		string nextPath = VyshkaFiles.INSTALLATION_BANS_NEXT_PATH;
+		string reason = Repeat("installation-banned by the self-test; ", 5);
+		array<ref VyshkaInstallationBanEntry> first = InstallationEntries(BAN_COUNT - 100, reason);
+		string error;
+		bool applied = VyshkaInstallationBans.Apply("1790000000001", first, error);
+		bool staged = FileExist(nextPath);
+
+		// The staging copy cut short beside a whole list.
+		// Built from a quote alone: a literal combining escapes can fail to
+		// parse on this engine (dayz-kb 09).
+		string q = "\"";
+		VyshkaFiles.WriteAll(nextPath, "{" + q + "revision" + q + ": 1790000000002, " + q + "bans" + q + ": [ { " + q + "id" + q + ": " + q + "cut");
+		VyshkaInstallationBans.Reset();
+		string keptRevision = VyshkaInstallationBans.Revision();
+		int kept = VyshkaInstallationBans.Count();
+		bool discarded = !FileExist(nextPath);
+
+		// A whole staging copy beside a main file cut short.
+		array<ref VyshkaInstallationBanEntry> second = InstallationEntries(BAN_COUNT - 200, reason);
+		map<string, ref VyshkaInstallationBanEntry> secondMap = new map<string, ref VyshkaInstallationBanEntry>;
+		for (int i = 0; i < second.Count(); i++)
+		{
+			VyshkaInstallationBanEntry one = second.Get(i);
+			secondMap.Set(one.m_Id, one);
+		}
+		bool wroteNext = VyshkaInstallationBans.WriteStored(nextPath, "1790000000003", secondMap);
+		VyshkaFiles.WriteAll(mainPath, "{" + q + "revision" + q + ": 17900");
+		VyshkaInstallationBans.Reset();
+		string finishedRevision = VyshkaInstallationBans.Revision();
+		int finished = VyshkaInstallationBans.Count();
+		bool finishedClean = !FileExist(nextPath);
+		VyshkaInstallationBans.Reset();
+		string rereadRevision = VyshkaInstallationBans.Revision();
+		VyshkaInstallationBanEntry back = VyshkaInstallationBans.Find(SyntheticId(42));
+		bool intact = back && back.m_Reason == reason && back.m_BanId == "selftest-installation-42";
+
+		bool ok = applied && !staged && keptRevision == "1790000000001" && kept == first.Count() && discarded;
+		ok = ok && wroteNext && finishedRevision == "1790000000003" && finished == second.Count() && finishedClean;
+		ok = ok && rereadRevision == "1790000000003" && intact;
+		string detail = "applied=" + applied;
+		detail += "\tstagingLeft=" + staged;
+		detail += "\tkept=" + keptRevision + "/" + kept;
+		detail += "\tdiscarded=" + discarded;
+		detail += "\tfinished=" + finishedRevision + "/" + finished;
+		detail += "\tfinishedClean=" + finishedClean;
+		detail += "\treread=" + rereadRevision;
+		detail += "\tintact=" + intact;
+		Report("files.installationBans", ok, detail);
+		DeleteFile(mainPath);
+		DeleteFile(nextPath);
+		VyshkaInstallationBans.Reset();
+	}
+
+	static array<ref VyshkaInstallationBanEntry> InstallationEntries(int count, string reason)
+	{
+		array<ref VyshkaInstallationBanEntry> entries = new array<ref VyshkaInstallationBanEntry>;
+		for (int i = 0; i < count; i++)
+		{
+			VyshkaInstallationBanEntry entry = new VyshkaInstallationBanEntry();
+			entry.m_BanId = "selftest-installation-" + i;
+			entry.m_Id = SyntheticId(i);
+			entry.m_Reason = reason;
+			entry.m_Name = "Survivor " + i;
+			entry.m_Permanent = true;
+			entry.m_ExpiresEpoch = 0;
+			entry.m_ExpiresText = "";
+			entries.Insert(entry);
+		}
+		return entries;
 	}
 
 	// ---- files.manifest: a manifest record whose content, as one string,

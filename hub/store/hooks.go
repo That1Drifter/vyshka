@@ -29,6 +29,9 @@ var testHooks struct {
 	// writing the new row; afterKVWrite runs after the write, before commit.
 	afterKVRead  func()
 	afterKVWrite func()
+	// afterBanTargets runs in a ban list change between choosing the servers
+	// its bans.changed goes to and queueing them.
+	afterBanTargets func()
 }
 
 func runHook(hook func()) {

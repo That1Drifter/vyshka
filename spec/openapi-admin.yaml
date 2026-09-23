@@ -1838,7 +1838,7 @@ components:
         revision:
           type: integer
           minimum: 0
-          description: The current revision of the active list, to compare with the servers' reports.
+          description: The revision of the active list read together with the records, to compare with the servers' reports.
         bans:
           type: array
           items: { $ref: "#/components/schemas/Ban" }

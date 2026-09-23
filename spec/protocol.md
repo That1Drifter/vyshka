@@ -2774,9 +2774,15 @@ retention applies to them.
 
 **The active list** is what the plugins enforce: every ban the hub holds as active. Its
 **revision** is an integer in `[0, 2^53)`, `0` before the list has ever changed, that the
-hub increases every time the active list changes and at no other time (reference: by one
-per change). A change is a ban created, an active ban lifted, or expired bans taken off
-the list.
+hub increases every time the active list changes and at no other time. A change is a ban
+created, an active ban lifted, or expired bans taken off the list.
+
+A revision names one list for good: a hub MUST NOT report a revision it has reported
+before for a different active list, which is the case a hub restored from a backup meets
+(its revision goes back, and the next change would otherwise take a number a plugin
+already holds for the list the restore undid). The reference hub mints each revision as
+the larger of one more than the last and its clock in milliseconds since the epoch, so a
+restored hub's next change lands above everything it handed out before the restore.
 
 **Expiry.** The hub is the truth on expiry too. It MUST take a ban off the active list no
 later than 60 s after its `expiresAt` (reference: within 5 s), increasing the revision as
@@ -2821,11 +2827,17 @@ GET /api/v1/bans?platform=steam&playerId=76561198000000001&state=all
 | `state` | `active` (the default) or `all`. `active` answers the bans in that state; `all` adds the lifted and the expired. |
 | `platform`, `playerId` | Together or not at all: the bans of one identity, each within the bounds of section 13.1. One without the other is `bad_request`. |
 | `limit` | Page size. The hub bounds it (reference default 100, cap 500) and clamps rather than refusing, as in section 8.5. |
-| `cursor` | An opaque `nextCursor` from a previous page, with the contract of section 8.5. |
+| `cursor` | An opaque `nextCursor` from a previous page. |
 
 Bans come back newest first by `createdAt`, with the id as the tiebreak so the order is
-total. `revision` is the current revision of the active list, so a reader can tell
-whether the servers' reports (section 13.4) have caught up with it.
+total. `revision` is the revision of the active list the page was read with, one read
+with the records, so a reader comparing it with the servers' reports (section 13.4)
+compares the list it is shown. The cursor follows section 8.5: opaque, absent on the last
+page, and a walk never returns a record twice. With `state=all` a walk also never skips a
+record present when it began, since records are kept. With `state=active` each page is
+judged as the list stands when it is read, so a ban lifted or expired between two pages
+is left out of the later one: an active walk is a live view, not a snapshot, and a reader
+that needs one list as it stood uses the plugin read of section 13.3.
 
 `GET /api/v1/bans/{banId}` answers `{ "ban": { ... } }`, or `not_found`.
 
@@ -2874,6 +2886,12 @@ A plugin learns the current revision two ways, and reads the list itself one way
   for a server whose manifest does not: an old plugin acks an envelope it does not
   understand (section 4), and a hub that sent it one would have nothing but that ack to go
   on. A hub MAY skip a server whose credentials are revoked or were never issued.
+- A hub MUST also queue one, carrying the current revision, when it accepts a manifest
+  that declares the capability, and the acceptance and any change of the list MUST be
+  ordered: either the change sees the capability stored and notifies the server, or the
+  notice queued with the acceptance carries the change's revision. A plugin reads the
+  list at session start, before its manifest is necessarily accepted, and a change landing
+  between the two would otherwise reach nobody.
 - The notice is a nudge, not the list: its revision may already be stale when it
   arrives, and a plugin reads the list rather than trusting the number. A hub SHOULD
   therefore replace a `bans.changed` it has queued for a server and not yet sent with one
@@ -2921,10 +2939,13 @@ Authorization: Bearer <sessionToken>
 - `nextCursor` is absent on the last page. A cursor is opaque (section 2.1), but a hub
   MUST draw it from letters, digits, `-`, and `_` alone, so a plugin on an engine with no
   URL-encoding library can put it in the query string as it came.
-- A hub that can no longer serve the revision a cursor names (one that pruned the history
-  it needs, or one restored from a backup older than the cursor) answers `409 conflict`,
-  and the plugin starts the walk over from the first page. The reference hub keeps every
-  ban record and so can always serve a revision it has passed through.
+- A hub that can no longer serve the revision a cursor names answers `409 conflict`, and
+  the plugin starts the walk over from the first page. That covers a hub that pruned the
+  history it needs, and a cursor from another history: one naming a revision this hub
+  never minted, or one above its current revision, as a cursor minted before a restore
+  from an older backup does. The reference hub keeps every ban record and a register of
+  the revisions it minted, so it can serve every revision of its own history and refuses
+  any other.
 
 **POST spelling.** For the engines of section 12.2 that carry their credential on a
 `POST` alone, the Plugin API also offers the read as `POST /plugin/v1/bans/get`, taking

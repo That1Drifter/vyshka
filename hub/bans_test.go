@@ -134,12 +134,25 @@ func banManifest(revision int64, capable bool) map[string]any {
 // bans capability or without, and returns it with its session and the next
 // seq its fake plugin would use.
 func banServer(t *testing.T, server *hub.Server, name string, capable bool) (createdServer, session) {
+	created, live, _ := banServerAcked(t, server, name, capable)
+	return created, live
+}
+
+// banServerAcked is banServer returning the highest seq the publish's poll
+// delivered, which a test that counts notices acks first: accepting a
+// manifest that declares the capability queues a notice of its own (spec
+// section 13.3).
+func banServerAcked(t *testing.T, server *hub.Server, name string, capable bool) (createdServer, session, int64) {
 	t.Helper()
 	created, live := enrolledSession(t, server, name)
-	pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+	result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
 		"envelopes": []map[string]any{publishEnvelope(1, banManifest(1, capable))},
 	})
-	return created, live
+	var highest int64
+	for _, envelope := range result.Envelopes {
+		highest = max(highest, envelope.Seq)
+	}
+	return created, live, highest
 }
 
 type serverBans struct {
@@ -168,8 +181,8 @@ func TestBanLifecycle(t *testing.T) {
 	server := newTestServer(t)
 
 	first := createBan(t, server, testAdminToken, banBody("A", "speed hack", map[string]any{"name": "Anna"}))
-	if first.Revision != 1 || first.Ban.State != "active" || first.Ban.ID == "" {
-		t.Fatalf("first ban = %+v at revision %d, want an active ban at revision 1", first.Ban, first.Revision)
+	if first.Revision <= 0 || first.Ban.State != "active" || first.Ban.ID == "" {
+		t.Fatalf("first ban = %+v at revision %d, want an active ban above revision 0", first.Ban, first.Revision)
 	}
 	if first.Ban.Name != "Anna" || first.Ban.Reason != "speed hack" || first.Ban.ExpiresAt != nil || first.Ban.ServerID != nil {
 		t.Errorf("first ban carries %+v", first.Ban)
@@ -192,30 +205,30 @@ func TestBanLifecycle(t *testing.T) {
 		t.Errorf("second ban of A answered %+v, want conflict naming %s", failure.Error, first.Ban.ID)
 	}
 
-	if page := listBans(t, server, testAdminToken, nil); page.Revision != 1 || len(page.Bans) != 1 {
-		t.Fatalf("the active list is %+v at revision %d, want the one ban at revision 1", page.Bans, page.Revision)
+	if page := listBans(t, server, testAdminToken, nil); page.Revision != first.Revision || len(page.Bans) != 1 {
+		t.Fatalf("the active list is %+v at revision %d, want the one ban at revision %d", page.Bans, page.Revision, first.Revision)
 	}
 
 	lifted := liftBan(t, server, testAdminToken, first.Ban.ID)
-	if lifted.Revision != 2 || lifted.Ban.State != "lifted" || lifted.Ban.LiftedAt == nil || lifted.Ban.LiftedBy == nil {
-		t.Fatalf("lift answered %+v at revision %d, want a lifted ban at revision 2", lifted.Ban, lifted.Revision)
+	if lifted.Revision <= first.Revision || lifted.Ban.State != "lifted" || lifted.Ban.LiftedAt == nil || lifted.Ban.LiftedBy == nil {
+		t.Fatalf("lift answered %+v at revision %d, want a lifted ban above revision %d", lifted.Ban, lifted.Revision, first.Revision)
 	}
 	again := liftBan(t, server, testAdminToken, first.Ban.ID)
-	if again.Revision != 2 || again.Ban.LiftedAt == nil || *again.Ban.LiftedAt != *lifted.Ban.LiftedAt {
+	if again.Revision != lifted.Revision || again.Ban.LiftedAt == nil || *again.Ban.LiftedAt != *lifted.Ban.LiftedAt {
 		t.Errorf("a second lift answered %+v at revision %d; it must change nothing, the lift time included",
 			again.Ban, again.Revision)
 	}
 
-	if page := listBans(t, server, testAdminToken, nil); len(page.Bans) != 0 || page.Revision != 2 {
-		t.Errorf("after the lift the active list is %+v at revision %d, want empty at 2", page.Bans, page.Revision)
+	if page := listBans(t, server, testAdminToken, nil); len(page.Bans) != 0 || page.Revision != lifted.Revision {
+		t.Errorf("after the lift the active list is %+v at revision %d, want empty at %d", page.Bans, page.Revision, lifted.Revision)
 	}
 	if page := listBans(t, server, testAdminToken, url.Values{"state": {"all"}}); len(page.Bans) != 1 || page.Bans[0].State != "lifted" {
 		t.Errorf("state=all lists %+v, want the lifted ban", page.Bans)
 	}
 
 	second := createBan(t, server, testAdminToken, banBody("A", "again", nil))
-	if second.Revision != 3 || second.Ban.ID == first.Ban.ID {
-		t.Errorf("a ban after the lift = %+v at revision %d, want a new ban at revision 3", second.Ban, second.Revision)
+	if second.Revision <= lifted.Revision || second.Ban.ID == first.Ban.ID {
+		t.Errorf("a ban after the lift = %+v at revision %d, want a new ban above %d", second.Ban, second.Revision, lifted.Revision)
 	}
 	createBan(t, server, testAdminToken, banBody("B", "griefing", nil))
 	history := listBans(t, server, testAdminToken, url.Values{"state": {"all"}, "platform": {"steam"}, "playerId": {"A"}})
@@ -392,17 +405,18 @@ func TestBanScopes(t *testing.T) {
 func TestBanPullWalksOneRevision(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)
+	var three int64
 	for _, playerID := range []string{"C", "A", "B"} {
-		createBan(t, server, testAdminToken, banBody(playerID, "reason "+playerID, map[string]any{"name": "name " + playerID}))
+		three = createBan(t, server, testAdminToken, banBody(playerID, "reason "+playerID, map[string]any{"name": "name " + playerID})).Revision
 	}
 	_, live := enrolledSession(t, server, "puller")
-	if live.Server.BansRevision == nil || *live.Server.BansRevision != 3 {
-		t.Fatalf("session response bansRevision = %v, want 3", live.Server.BansRevision)
+	if live.Server.BansRevision == nil || *live.Server.BansRevision != three {
+		t.Fatalf("session response bansRevision = %v, want %d", live.Server.BansRevision, three)
 	}
 
 	first := pullBans(t, server, live.SessionToken, http.MethodGet, url.Values{"limit": {"1"}})
-	if first.Revision != 3 || len(first.Bans) != 1 || first.Bans[0].Player.ID != "A" || first.NextCursor == "" {
-		t.Fatalf("first page = %+v, want A at revision 3 with a cursor", first)
+	if first.Revision != three || len(first.Bans) != 1 || first.Bans[0].Player.ID != "A" || first.NextCursor == "" {
+		t.Fatalf("first page = %+v, want A at revision %d with a cursor", first, three)
 	}
 	for _, c := range first.NextCursor {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
@@ -414,7 +428,7 @@ func TestBanPullWalksOneRevision(t *testing.T) {
 	}
 
 	// The list changes under the walk: B is lifted and D banned. The walk
-	// still reads revision 3, B included and D not, on either spelling: the
+	// still reads its revision, B included and D not, on either spelling: the
 	// pages after the first alternate between them.
 	var b string
 	for _, ban := range listBans(t, server, testAdminToken, nil).Bans {
@@ -423,7 +437,7 @@ func TestBanPullWalksOneRevision(t *testing.T) {
 		}
 	}
 	liftBan(t, server, testAdminToken, b)
-	createBan(t, server, testAdminToken, banBody("D", "late", nil))
+	five := createBan(t, server, testAdminToken, banBody("D", "late", nil)).Revision
 
 	cursor := first.NextCursor
 	walked := []string{"A"}
@@ -433,8 +447,8 @@ func TestBanPullWalksOneRevision(t *testing.T) {
 			t.Fatal("the walk did not end")
 		}
 		page := pullBans(t, server, live.SessionToken, methods[turn%2], url.Values{"limit": {"1"}, "cursor": {cursor}})
-		if page.Revision != 3 {
-			t.Fatalf("a page of the walk was served at revision %d, want 3", page.Revision)
+		if page.Revision != three {
+			t.Fatalf("a page of the walk was served at revision %d, want %d", page.Revision, three)
 		}
 		for _, ban := range page.Bans {
 			walked = append(walked, ban.Player.ID)
@@ -442,7 +456,7 @@ func TestBanPullWalksOneRevision(t *testing.T) {
 		cursor = page.NextCursor
 	}
 	if strings.Join(walked, "") != "ABC" {
-		t.Errorf("the walk of revision 3 met %v, want A B C", walked)
+		t.Errorf("the walk of revision %d met %v, want A B C", three, walked)
 	}
 
 	// A new walk reads the list as it stands now.
@@ -451,8 +465,8 @@ func TestBanPullWalksOneRevision(t *testing.T) {
 	for _, ban := range fresh.Bans {
 		ids = append(ids, ban.Player.ID)
 	}
-	if fresh.Revision != 5 || strings.Join(ids, "") != "ACD" || fresh.NextCursor != "" {
-		t.Errorf("a fresh walk = %v at revision %d, want A C D at 5 in one page", ids, fresh.Revision)
+	if fresh.Revision != five || strings.Join(ids, "") != "ACD" || fresh.NextCursor != "" {
+		t.Errorf("a fresh walk = %v at revision %d, want A C D at %d in one page", ids, fresh.Revision, five)
 	}
 
 	// Refusals: a cursor this hub never issued, a limit that is not a
@@ -511,14 +525,14 @@ func TestBanPullSpellingsAgree(t *testing.T) {
 func TestBanChangedNotifiesCapableServers(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)
-	capable, capableLive := banServer(t, server, "capable", true)
-	plain, plainLive := banServer(t, server, "plain", false)
+	capable, capableLive, delivered := banServerAcked(t, server, "capable", true)
+	plain, plainLive, plainDelivered := banServerAcked(t, server, "plain", false)
 
 	createBan(t, server, testAdminToken, banBody("A", "x", nil))
 	createBan(t, server, testAdminToken, banBody("B", "x", nil))
 	third := createBan(t, server, testAdminToken, banBody("C", "x", nil))
 
-	result := poll(t, server, capableLive.SessionToken, map[string]any{"ack": 1})
+	result := poll(t, server, capableLive.SessionToken, map[string]any{"ack": delivered})
 	var notices []wireEnvelope
 	for _, envelope := range result.Envelopes {
 		if envelope.Type == "bans.changed" {
@@ -548,7 +562,7 @@ func TestBanChangedNotifiesCapableServers(t *testing.T) {
 
 	// The server without the capability was sent nothing: its queue holds
 	// only the nudge pollNow puts there.
-	nudged := pollNow(t, server, plain.Server.ID, plainLive.SessionToken, map[string]any{"ack": 1})
+	nudged := pollNow(t, server, plain.Server.ID, plainLive.SessionToken, map[string]any{"ack": plainDelivered})
 	for _, envelope := range nudged.Envelopes {
 		if envelope.Type == "bans.changed" {
 			t.Errorf("a server whose manifest does not declare bans was sent %s", envelope.Body)
@@ -560,6 +574,45 @@ func TestBanChangedNotifiesCapableServers(t *testing.T) {
 		map[string]any{"type": "bans.changed", "body": map[string]any{"revision": 99}}, http.StatusConflict); code != "conflict" {
 		t.Errorf("queueing a raw bans.changed answered %s, want conflict", code)
 	}
+}
+
+// Spec section 13.3: accepting a manifest that declares the capability queues
+// a bans.changed carrying the revision as it stands, so a change that landed
+// between the plugin's walk and its publish is not lost to it.
+func TestBanCapabilityAcceptanceNotifies(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	current := createBan(t, server, testAdminToken, banBody("A", "before the publish", nil)).Revision
+	created, live := enrolledSession(t, server, "late capability")
+	result := poll(t, server, live.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(1, banManifest(1, true))},
+	})
+	var notice *wireEnvelope
+	for i := range result.Envelopes {
+		if result.Envelopes[i].Type == "bans.changed" {
+			notice = &result.Envelopes[i]
+		}
+	}
+	if notice == nil {
+		t.Fatalf("accepting a manifest declaring bans queued %+v, want a bans.changed", result.Envelopes)
+	}
+	var body struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := json.Unmarshal(notice.Body, &body); err != nil || body.Revision != current {
+		t.Errorf("the notice carries %s, want revision %d", notice.Body, current)
+	}
+	// A manifest without the capability gets none.
+	plain, plainLive := enrolledSession(t, server, "no capability")
+	nudged := pollNow(t, server, plain.Server.ID, plainLive.SessionToken, map[string]any{
+		"envelopes": []map[string]any{publishEnvelope(1, banManifest(1, false))},
+	})
+	for _, envelope := range nudged.Envelopes {
+		if envelope.Type == "bans.changed" {
+			t.Errorf("a manifest without the capability was sent %s", envelope.Body)
+		}
+	}
+	_ = created
 }
 
 // Spec section 13.4: a bans.applied report lands on the server record, the

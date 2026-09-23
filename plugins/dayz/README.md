@@ -200,10 +200,16 @@ own, so the read never waits behind the held poll. Pages of 100 go back to back,
 of them at the revision the first was served at, since the hub pins a walk to it; a
 `409 conflict` starts the walk over, and any other failure keeps the list already in force
 and tries again 30 s later. A whole revision is written to
+`<profiles>/Vyshka/installation-bans.next.json` and then to
 `<profiles>/Vyshka/installation-bans.json`, one entry and one member per line like
-everything else, then put in force, then reported to the hub with `bans.applied`, which the
-server record shows; a session that begins with the revision already held reports it
-again. The stored copy is enforced from boot, before any session exists, so a hub outage
+everything else, and the staging copy is deleted: the engine has no rename and a rewrite
+truncates first, so this is what keeps a crash in the middle of a write from losing the
+list in force (at boot a staging copy that parses is the newest list and is finished,
+and one cut short is discarded). The list is then put in force and reported to the hub
+with `bans.applied`, which the server record shows; a session that begins with the
+revision already held reports it again. A revision the hub reports while a walk is under
+way is kept: the walk's end does not take its own revision for the latest one, and walks
+again when they differ. The stored copy is enforced from boot, before any session exists, so a hub outage
 never lifts an installation ban. It is the hub's list: an edit to the file is lost at the
 next revision, and a file that does not parse enforces nothing until the next read, which
 the log says. Only `steam` entries apply (one list can serve several games), and an entry
@@ -1056,7 +1062,10 @@ go run ./plugins/dayz/cmd/vyshka-dayz selftest
 `selftest` derives a mission whose `init.c` carries `selftest/VyshkaSelfTest.c`, boots a
 server on it under `plugins/dayz/build/selftest-profile` with the plugin idle (no config),
 and grades the lines the script prints, one per check, the way the conformance suites
-report: a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
+report: the installation ban list written through its staging copy and read back, with
+both crash windows of that write (a staging copy cut short beside a whole list, which is
+discarded and the list kept, and a whole staging copy beside a main file cut short, which
+wins and is written again); a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
 limit as one line); a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than

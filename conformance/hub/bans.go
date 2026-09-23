@@ -135,11 +135,36 @@ func (e Env) pullBans(ctx context.Context, sessionToken string, post bool, param
 	return page, nil
 }
 
+// banKey is one entry's identity as a walk meets it, platform and id, which
+// is what a walk is ordered by (section 13.3).
+type banKey struct{ platform, id string }
+
+func (k banKey) String() string { return k.platform + ":" + k.id }
+
+// before reports whether k comes before other in the byte order of platform
+// then id.
+func (k banKey) before(other banKey) bool {
+	if k.platform != other.platform {
+		return k.platform < other.platform
+	}
+	return k.id < other.id
+}
+
+// containsSteam reports whether a walk met the steam identity id.
+func containsSteam(met []banKey, id string) bool {
+	for _, key := range met {
+		if key.platform == "steam" && key.id == id {
+			return true
+		}
+	}
+	return false
+}
+
 // walkBans reads the list from the first page (or from cursor) to the end,
 // holding the walk to one revision: every page must say the revision the
 // first one did. It returns that revision and the identities met, in order.
-func (e Env) walkBans(ctx context.Context, sessionToken string, post bool, cursor string, revision int64, limit int) (int64, []string, error) {
-	var met []string
+func (e Env) walkBans(ctx context.Context, sessionToken string, post bool, cursor string, revision int64, limit int) (int64, []banKey, error) {
+	var met []banKey
 	for pages := 0; ; pages++ {
 		if pages > 10000 {
 			return 0, nil, fmt.Errorf("a walk of the ban list did not end after %d pages", pages)
@@ -159,24 +184,13 @@ func (e Env) walkBans(ctx context.Context, sessionToken string, post bool, curso
 				revision, page.Revision)
 		}
 		for _, entry := range page.Bans {
-			if entry.Player.Platform == "steam" {
-				met = append(met, entry.Player.ID)
-			}
+			met = append(met, banKey{entry.Player.Platform, entry.Player.ID})
 		}
 		if page.NextCursor == "" {
 			return revision, met, nil
 		}
 		cursor = page.NextCursor
 	}
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func checkBanLifecycle(ctx context.Context, env Env) error {
@@ -438,9 +452,9 @@ func checkBanPull(ctx context.Context, env Env) error {
 			return err
 		}
 
-		var met []string
+		var met []banKey
 		for _, entry := range first.Bans {
-			met = append(met, entry.Player.ID)
+			met = append(met, banKey{entry.Player.Platform, entry.Player.ID})
 		}
 		if first.NextCursor != "" {
 			_, rest, err := env.walkBans(ctx, plugin.Session.SessionToken, post, first.NextCursor, first.Revision, 500)
@@ -450,16 +464,16 @@ func checkBanPull(ctx context.Context, env Env) error {
 			met = append(met, rest...)
 		}
 		for _, subject := range subjects {
-			if !contains(met, subject) {
+			if !containsSteam(met, subject) {
 				return fmt.Errorf("%s: a walk that began at revision %d did not meet %s, which was on the list then; a walk reads its revision whole (section 13.3)",
 					spelling, first.Revision, subject)
 			}
 		}
-		if contains(met, late) {
+		if containsSteam(met, late) {
 			return fmt.Errorf("%s: a walk that began at revision %d met %s, banned after it began", spelling, first.Revision, late)
 		}
 		for i := 1; i < len(met); i++ {
-			if met[i-1] >= met[i] {
+			if !met[i-1].before(met[i]) {
 				return fmt.Errorf("%s: the walk met %q after %q; entries come in byte order of platform then id (section 13.3)",
 					spelling, met[i], met[i-1])
 			}
@@ -469,9 +483,9 @@ func checkBanPull(ctx context.Context, env Env) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", spelling, err)
 		}
-		if revision <= first.Revision || contains(fresh, subjects[1]) || !contains(fresh, late) {
+		if revision <= first.Revision || containsSteam(fresh, subjects[1]) || !containsSteam(fresh, late) {
 			return fmt.Errorf("%s: a fresh walk read revision %d (the earlier walk %d), met the lifted %s: %v, met the late %s: %v",
-				spelling, revision, first.Revision, subjects[1], contains(fresh, subjects[1]), late, contains(fresh, late))
+				spelling, revision, first.Revision, subjects[1], containsSteam(fresh, subjects[1]), late, containsSteam(fresh, late))
 		}
 		// Put the lifted subject back for the other spelling's walk.
 		if _, err := env.createBan(ctx, env.AdminToken, banRequest(subjects[1], "conformance: back", nil)); err != nil {
@@ -650,7 +664,7 @@ func checkBanExpiry(ctx context.Context, env Env) error {
 		if err != nil {
 			return err
 		}
-		if !contains(met, subject) {
+		if !containsSteam(met, subject) {
 			if revision <= placed.Revision {
 				return fmt.Errorf("the expired ban left the list without the revision moving (%d, placed at %d)", revision, placed.Revision)
 			}
