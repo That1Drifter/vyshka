@@ -66,8 +66,11 @@ class VyshkaWeather
 	// stopped the clock, and the rain and snowfall thresholds, for the notes
 	// of a later dispatch. A threshold is known only while nothing else can
 	// have replaced it: the map's controller re-applies its own whenever it
-	// runs, so every dispatch that finds the weather in world mode forgets
-	// them.
+	// runs, which in world mode is when the first phenomenon falls due. A
+	// dispatch that leaves the weather in world mode records that moment
+	// (s_ControllerDueMs, monotonic), and a later one forgets the thresholds
+	// once it has passed, or when it finds world mode with no moment recorded
+	// (a mod switched the mode).
 	static bool s_TimeFrozen;
 	static bool s_RainKnown;
 	static float s_RainMin;
@@ -75,12 +78,15 @@ class VyshkaWeather
 	static bool s_SnowfallKnown;
 	static float s_SnowfallMin;
 	static float s_SnowfallMax;
+	static bool s_ControllerDueKnown;
+	static int s_ControllerDueMs;
 
 	static void Reset()
 	{
 		s_TimeFrozen = false;
 		s_RainKnown = false;
 		s_SnowfallKnown = false;
+		s_ControllerDueKnown = false;
 	}
 
 	// Register declares the weather presets' namespace and the two actions.
@@ -277,6 +283,22 @@ class VyshkaWeather
 			phenomenon.SetNextChange(seconds);
 	}
 
+	// EarliestForecast is the seconds until the first of the six phenomena is
+	// due a new forecast, which in world mode is when the map's controller
+	// next runs.
+	static float EarliestForecast(Weather weather)
+	{
+		float due = weather.GetOvercast().GetNextChange();
+		due = Math.Min(due, weather.GetFog().GetNextChange());
+		due = Math.Min(due, weather.GetRain().GetNextChange());
+		due = Math.Min(due, weather.GetSnowfall().GetNextChange());
+		due = Math.Min(due, weather.GetWindMagnitude().GetNextChange());
+		due = Math.Min(due, weather.GetWindDirection().GetNextChange());
+		if (due < 0)
+			return 0;
+		return due;
+	}
+
 	// ThresholdNote says when the overcast being moved to lies outside the
 	// rain or snowfall threshold, where the engine stops that fall over the
 	// threshold's stop time. The threshold is the one set here when that is
@@ -324,9 +346,9 @@ class VyshkaWeather
 			hold = knobs.m_Hold;
 
 		// In world mode the map's controller may have run since a threshold
-		// was set here, putting back its own, so what was set is no longer
-		// known.
-		if (Mode() == MODE_WORLD)
+		// was set here, putting back its own: once the moment recorded for it
+		// has passed, or when none was, what was set is no longer known.
+		if (Mode() == MODE_WORLD && (!s_ControllerDueKnown || VyshkaClock.MonotonicMs() >= s_ControllerDueMs))
 		{
 			s_RainKnown = false;
 			s_SnowfallKnown = false;
@@ -408,8 +430,18 @@ class VyshkaWeather
 			HoldBack(weather.GetSnowfall(), hold);
 			HoldBack(weather.GetWindMagnitude(), hold);
 			HoldBack(weather.GetWindDirection(), hold);
-			int holdSeconds = hold;
-			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over in " + holdSeconds.ToString() + " s (no phenomenon is due a new forecast before then) and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
+			// The hold is a floor: an earlier dispatch may have held the
+			// phenomena longer, and nothing shortens them, so the note says
+			// when the first of them actually falls due.
+			float due = EarliestForecast(weather);
+			s_ControllerDueKnown = true;
+			s_ControllerDueMs = VyshkaClock.MonotonicMs() + (int)(due * 1000);
+			int dueSeconds = Math.Ceil(due);
+			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over in " + dueSeconds.ToString() + " s, when the first phenomenon falls due, and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
+		}
+		else
+		{
+			s_ControllerDueKnown = false;
 		}
 
 		// What the engine will do to the values just set, where it can be

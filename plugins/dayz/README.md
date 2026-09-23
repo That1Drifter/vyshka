@@ -744,8 +744,9 @@ with the server's clock is the live run's to show.
     whenever any phenomenon is due a new forecast, and each run re-applies its own storm,
     rain thresholds, wind maximum, and snowfall limits (Chernarus closes snowfall again at
     once), so a dispatch in this mode holds back every phenomenon's next forecast to its
-    `holdSeconds`, the untouched ones included: what it set stands that long, then the map
-    moves on.
+    `holdSeconds`, the untouched ones included: what it set stands at least that long
+    (longer when an earlier dispatch held a phenomenon further, which nothing shortens),
+    and the result's note says when the first phenomenon falls due and the map moves on.
   - `engine`: the engine's own random weather within the limits, the map's controller
     skipped. Where a mod has set both the engine's weather and the frozen update, the
     engine's weather wins and the snapshot says `engine`.
