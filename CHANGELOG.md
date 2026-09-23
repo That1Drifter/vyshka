@@ -19,6 +19,63 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-23: player profiles (issue #79, protocol draft 0.31, sections 8.2, 8.6, 10.1,
+  and 10.2). An event now **refers to** an identity when a top-level member of its
+  `data` holds a `{ platform, id }` object within the section 8.3 bounds, matched by exact
+  member name, and free of U+0000 (which Postgres text cannot hold); the member's name is
+  the identity's role. The hub indexes those references
+  at ingest (migration 0020, `event_identities`), in the same transaction as the event, and
+  the index goes with the event when retention takes it. Three reads and two writes hang
+  off `/api/v1/players/{platform}/{playerId}`: `events` (every server's events that refer
+  to the identity, newest first with `roles`, paged, filtered, and narrowed exactly like
+  the server feed, and confined to a bound token's servers rather than refused),
+  `actions` (the player-context actions whose `referenceKey` is the id, narrowed to the
+  codes and servers the token may read), and `notes` (operator notes, `GET` and `POST`,
+  plus `DELETE .../notes/{noteId}`, credited to the writing token by id and by its name at
+  the time, kept until deleted, at most 1000 per identity, a bound serialized per identity
+  so concurrent writers cannot overshoot it). Two scopes join the closed
+  set, `notes:read` and `notes:write`, neither implying the other and both allowed and
+  unnarrowed on a bound token, like `kv:rw`. Events stored before the upgrade are indexed
+  by a background walk that stops at the newest event the migration saw. The spec is
+  honest about depth: a profile is a window of event retention (reference 30 days, chat
+  90), not a lifetime record. The hub conformance suite gains `admin.players.events`,
+  `admin.players.actions`, and `admin.players.notes`.
+- 2026-09-23: per-webhook redaction (issue #79, protocol draft 0.31, section 11.2). A
+  webhook's `redact` is up to 20 member paths (names joined by `.`, an array applying the
+  rest of the path to each object element) stripped from every notification's `data`
+  before the delivery is rendered, so one `core.player.death` can feed an admin channel
+  whole and a public kill feed without positions. Redaction runs before the template, so
+  the `discord` embed cannot say what a path removed, and it re-encodes only the levels it
+  reaches, so the rest of the payload keeps the plugin's own bytes; a level the path
+  reaches is always rebuilt from its decoded members, so a member repeated in the JSON
+  cannot slip an earlier copy past it. It is set at
+  registration and by `PATCH`, validated alike, and applies to deliveries created after
+  an edit. Stored events and every other webhook are untouched. The hub conformance suite
+  gains `webhooks.redact`.
+- 2026-09-23: audit records as webhook material (issue #79, protocol draft 0.31, sections
+  10.5, 11.1, and 11.2). Every audit record written is an `audit.recorded` notification
+  carrying the record as `GET /api/v1/audit` returns it, fanned out from an outbox table
+  filled in the record's own transaction (`audit_notifications`, so the append-only log
+  itself is never updated). The notification is opt-in by name: only `audit.*` or
+  `audit.recorded` match it, never `*` or an empty filter, so no existing subscription
+  starts exporting the access record, and subscribing, redirecting a pending audit
+  delivery, or replaying one needs `admin`. A webhook also has to have been authorized for
+  it: a new `audit_granted` column is set by a registration or edit that passed the admin
+  rule and starts false on every existing webhook, because before this draft a filter of
+  `audit.*` was ordinary telemetry granted with `events:read`, and an upgrade must not
+  turn it into an export of the access record. A generic-json delivery of a record that
+  names no server omits `serverId`, and the `discord` template words it (who, what, and
+  the status). The hub conformance suite gains `webhooks.auditRecords`.
+- 2026-09-23: the panel's player profiles (issue #79): a Players section with a lookup by
+  identity and the players online on every server the token can read, and a profile page
+  with the events on every server (roles as badges, the name from the newest event that
+  names the identity as the player), the actions against it, and its notes, written under
+  the signed-in token and deleted only behind a tick. Each part that the token cannot read
+  says which grant it needs, in place. Every identity an event names in the event feed,
+  and every player on the live map, links to the profile. The webhook forms gain the
+  redaction paths, one per line, and the moderator bundle gains `notes:read` and
+  `notes:write`. The browser test covers the profile, the notes, the narrowed token, and
+  the redaction fields, and was shown to fail with the note delete's tick removed.
 - 2026-09-22: `state.world` (issue #78, protocol draft 0.30, section 8.3): a fourth
   snapshot type, the one that is not a list, carrying a server's one world as an object
   with an optional `time` (the game's clock, `YYYY-MM-DDTHH:MM` or with seconds, a valid
@@ -172,6 +229,13 @@ arrived, since those entries were written for one stream.
 
 #### Changed
 
+- 2026-09-23: the `audit` namespace is reserved for the hub's own notifications beside
+  `action` and `server` (issue #79, protocol draft 0.31, section 8.1). A batch carrying an
+  `audit.*` event is refused whole with `event.reject`, as one carrying `server.*` always
+  was; a plugin that emitted such telemetry before this draft has those batches refused
+  from now on. The plugin conformance suite flags an `audit.*` event, and the hub suite
+  gains `plugin.events.reservedNamespaces`, the first check of the reservation on the hub
+  side.
 - 2026-09-17: CI runs as three parallel jobs instead of one sequence: the Go suite on both
   databases with the spec validation, the hub conformance suite on SQLite with the three
   plugin-suite runs, and the hub conformance suite on Postgres. The last runs on pushes to
@@ -568,7 +632,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.29 (2026-09-22). The document's header carries the draft number and date; each
+Draft 0.31 (2026-09-23). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the world slice of #78 landed as protocol draft 0.30, `state.world`
+**As of:** 2026-09-23 (the hub features of #79 landed as protocol draft 0.31: player
+profiles across every server with operator notes, per-webhook redaction, and audit records
+as opt-in webhook material, with the `audit` namespace reserved; the world slice of #78 landed as protocol draft 0.30, `state.world`
 the first snapshot that is not a list, with a weather action carrying every engine knob,
 fixed and stored presets, and freeze time; the vehicles 2 slice of #77 landed with no protocol change, the
 vehicle's damage state, health, and fluids in its snapshot and refuel and repair beside
@@ -223,11 +225,15 @@ After the tag, in this order:
     closes Chernarus's snowfall again), and every value holding under the frozen update
     except rain outside its threshold. Whether a connected client's clock stops with the
     server's was not measured.
-16. **Hub features an in-game menu cannot offer** (#79): a player profile per identity
-    across every server on the installation, honestly a 30-day view until a per-identity
-    roll-up exists (event retention is 30 days, chat 90); per-webhook redaction of named
-    fields so one death event feeds an admin channel with coordinates and a public kill
-    feed without them; audit entries as webhook material.
+16. **Hub features an in-game menu cannot offer** (#79), landed 2026-09-23 as protocol
+    draft 0.31: a player profile per identity across every server on the installation
+    (the events that name it at the top level of their data, with the role it held, the
+    player actions against its id, and operator notes under two new scopes), honestly a
+    window of event retention (30 days, chat 90) since no per-identity roll-up exists;
+    per-webhook redaction paths, so one death event feeds an admin channel with
+    coordinates and a public kill feed without them; and audit records as the
+    `audit.recorded` notification, opt-in by name and behind `admin`, so no existing
+    catch-all subscription starts exporting the access record.
 
 Two protocol discussions run alongside, because both change the spec and the persona needs
 them early:

@@ -575,3 +575,15 @@ dl.kv dd { margin: 0; word-break: break-all; }
   max-width: 28rem;
   margin: 3rem auto;
 }
+
+/* Player profiles (protocol section 8.6): the identities an event names,
+   linked to their profiles, and the notes operators keep on one. */
+.identities { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; margin-top: 0.25rem; font-size: 0.9em; }
+#player-events td.data, #player-actions td.data { width: 45%; word-break: break-word; }
+#player-events td.data details > summary, #player-actions td.data details > summary { cursor: pointer; }
+.notes { list-style: none; padding: 0; margin: 0.5rem 0; }
+.note { border-top: 1px solid var(--line); padding: 0.5rem 0; }
+.note:first-child { border-top: none; }
+.note-text { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.note-meta { margin: 0.25rem 0 0; font-size: 0.85em; }
+.note-meta .field.inline { display: inline-flex; margin: 0; }

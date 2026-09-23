@@ -32,21 +32,24 @@ const (
 	linkGrace         = 10 * time.Second
 )
 
-// Lifecycle notification types (spec section 11.1).
+// Lifecycle notification types (spec section 11.1). The audit notification is
+// opt-in: only a filter naming the audit namespace matches it.
 const (
 	notifyActionCompleted   = "action.completed"
 	notifyServerLinkLost    = "server.link.lost"
 	notifyServerLinkRestore = "server.link.restored"
+	notifyAuditRecorded     = "audit.recorded"
 )
 
 // webhookPayload is the generic-json delivery body (spec section 11.3). It is
 // rendered once per delivery and stored, so every attempt sends the same bytes
-// under the same signature.
+// under the same signature. ServerID is omitted only for an audit record that
+// names no server, the one notification that can concern none.
 type webhookPayload struct {
 	DeliveryID string          `json:"deliveryId"`
 	WebhookID  string          `json:"webhookId"`
 	Type       string          `json:"type"`
-	ServerID   string          `json:"serverId"`
+	ServerID   string          `json:"serverId,omitempty"`
 	EventID    string          `json:"eventId,omitempty"`
 	OccurredAt string          `json:"occurredAt"`
 	Data       json.RawMessage `json:"data"`
@@ -88,8 +91,12 @@ func fanOut(webhooks []store.Webhook, notifications []notification, serverNames 
 			if !webhookMatches(webhook, one.Type, one.ServerID) {
 				continue
 			}
+			// Redaction runs before the template, so what a path strips
+			// cannot come back as a line of prose (spec section 11.2).
+			rendered := one
+			rendered.Data = redactData(one.Data, webhook.Redact)
 			deliveryID := id.New()
-			body, err := renderDeliveryBody(webhook, one, deliveryID, serverNames[one.ServerID])
+			body, err := renderDeliveryBody(webhook, rendered, deliveryID, serverNames[one.ServerID])
 			if err != nil {
 				// Strings and raw JSON all the way down; this cannot happen.
 				continue
@@ -201,13 +208,44 @@ func (s *Server) dispatchPass(ctx context.Context, lastLinkCheck *time.Time) boo
 		return false
 	}
 
+	// audit.recorded fan-out: every audit record written, from the outbox
+	// its insert filled in the same transaction (spec section 11.1).
+	auditMarked, err := s.store.NotifyAudit(ctx, notifyBatch, func(records []store.AuditRecord, webhooks []store.Webhook, names map[string]string) []store.NewWebhookDelivery {
+		notifications := make([]notification, 0, len(records))
+		for _, record := range records {
+			notifications = append(notifications, notification{
+				Type:       notifyAuditRecorded,
+				ServerID:   record.ServerID,
+				OccurredAt: record.At,
+				LandedAt:   record.At,
+				Data:       auditNotificationData(record),
+			})
+		}
+		return fanOut(webhooks, notifications, names)
+	}, pendingDeliveryBound)
+	if err != nil {
+		s.log.Error("webhook pass could not fan out audit records", "error", err.Error())
+		return false
+	}
+
 	if time.Since(*lastLinkCheck) >= linkCheckInterval {
 		*lastLinkCheck = time.Now()
 		s.checkLinks(ctx)
 	}
 
 	attempted := s.deliverDue(ctx)
-	return eventsMarked == notifyBatch || actionsMarked == notifyBatch || attempted == deliverBatch
+	return eventsMarked == notifyBatch || actionsMarked == notifyBatch || auditMarked == notifyBatch ||
+		attempted == deliverBatch
+}
+
+// auditNotificationData is the data of an audit.recorded notification: the
+// record exactly as GET /api/v1/audit answers it (spec section 11.1).
+func auditNotificationData(record store.AuditRecord) json.RawMessage {
+	encoded, err := json.Marshal(newAuditView(record))
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
 }
 
 // finishedAt is the action's terminal instant, with its deadline standing in

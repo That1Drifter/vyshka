@@ -70,6 +70,7 @@ func TestHandlerServesEmbeddedFilesWithSecurityHeaders(t *testing.T) {
 		{"/lib.js", "text/javascript", "export const API = '/api/v1'"},
 		{"/manage.js", "text/javascript", "export async function viewTokens"},
 		{"/map.js", "text/javascript", "export function createMap"},
+		{"/players.js", "text/javascript", "export async function viewPlayer"},
 		{"/style.css", "text/css", ":root"},
 	} {
 		recorder := serve(t, http.MethodGet, tc.path)
@@ -133,7 +134,7 @@ func TestIndexHasNoInlineScriptOrStyle(t *testing.T) {
 	// Every module builds its nodes through createElement and text nodes; a
 	// markup sink would let a plugin's manifest label, a player's name, a
 	// webhook URL, or a stored value become script.
-	for _, file := range []string{"/app.js", "/lib.js", "/manage.js", "/map.js"} {
+	for _, file := range []string{"/app.js", "/lib.js", "/manage.js", "/map.js", "/players.js"} {
 		script := serve(t, http.MethodGet, file).Body.String()
 		for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("} {
 			if strings.Contains(script, sink) {

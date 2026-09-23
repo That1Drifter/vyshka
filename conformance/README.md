@@ -30,7 +30,7 @@ PASS  kv.confinement                 Namespace access is confined on both realms
 ...
 PASS  plugin.errors.inlineSupersededHold A held poll that opted in is answered inline the moment its session is superseded
 
-76 checks, 0 failed
+98 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

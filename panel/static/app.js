@@ -6,7 +6,8 @@
 // plus the x-vyshka-widget hint). Dispatching is POST /servers/{id}/actions
 // and watching the result is GET /actions/{id}, the same calls curl makes.
 // The event feed is GET /servers/{id}/events (protocol section 8.5), paged
-// with the hub's own cursor. The live map is GET /servers/{id}/state/players
+// with the hub's own cursor. A player's profile, one identity across every
+// server (section 8.6), is players.js. The live map is GET /servers/{id}/state/players
 // (section 8.3) drawn over a basemap the hub serves from its maps directory,
 // with the map widget itself in map.js.
 //
@@ -18,14 +19,15 @@
 import { createMap, validateManifest, worldPoint } from './map.js';
 import {
   ApiError, ago, api, append, attempt, badge, beginRender, clear, compactValue, disclosure, el,
-  eventsHref, formatTime, go, mapHref, markNav, onRender, onSignOut, pretty, randomKey,
-  renderHeldSecrets, renderSession, serverHref, setCrumbs, setTeardown, showError, signOut,
-  stale, summarizeEventData, token, TOKEN_KEY,
+  eventsHref, formatTime, go, identityLinks, mapHref, markNav, onRender, onSignOut, playerHref,
+  pretty, randomKey, renderHeldSecrets, renderSession, serverHref, setCrumbs, setTeardown,
+  showError, signOut, stale, summarizeEventData, token, TOKEN_KEY,
 } from './lib.js';
 import {
   actionsSection, registerServerForm, serverCredentials, viewAudit, viewKVKeys,
   viewKVNamespaces, viewTokens, viewWebhook, viewWebhooks,
 } from './manage.js';
+import { viewPlayer, viewPlayers } from './players.js';
 
 const SERVER_LIST_REFRESH_MS = 5000;
 const ACTION_POLL_MS = 1000;
@@ -120,6 +122,14 @@ function parseRoute() {
   if (parts[0] === 'kv' && parts.length === 1) {
     return { view: 'kv', section: 'kv' };
   }
+  if (parts[0] === 'players' && parts.length === 1) {
+    return { view: 'players', section: 'players' };
+  }
+  if (parts[0] === 'players' && parts.length === 3) {
+    // Each member of the identity is one encoded segment, so a platform or
+    // an id carrying a slash arrives whole.
+    return { view: 'player', section: 'players', platform: parts[1], id: parts[2] };
+  }
   if (parts[0] === 'kv' && parts.length === 2) {
     return { view: 'kv-keys', section: 'kv', namespace: parts[1], prefix: query.get('prefix') || '' };
   }
@@ -159,6 +169,10 @@ async function render() {
       await viewKVNamespaces(app, route, seq);
     } else if (route.view === 'kv-keys') {
       await viewKVKeys(app, route, seq);
+    } else if (route.view === 'players') {
+      await viewPlayers(app, route, seq);
+    } else if (route.view === 'player') {
+      await viewPlayer(app, route, seq);
     } else {
       await viewServers(app, seq);
     }
@@ -370,6 +384,7 @@ async function viewServer(app, route, seq) {
       target.name ? target.name + ' ' : '',
       el('span', { class: 'mono' }, (target.platform ? target.platform + ':' : '') + target.id),
       '. Player actions below open with this target filled in. ',
+      target.platform ? [el('a', { href: playerHref(target.platform, target.id), id: 'target-profile' }, 'Profile'), ' '] : null,
       el('a', { href: serverHref(server.id), id: 'target-clear' }, 'Clear')));
   } else if (route.vehicle) {
     // The vehicle is labelled from the latest snapshot when it is still
@@ -578,7 +593,7 @@ function eventRow(event, names) {
       el('span', { class: 'mono type' }, type), ' ',
       badge(custom ? 'custom' : 'core', custom ? 'custom' : 'core'),
       name ? el('span', { class: 'muted' }, ' ', name) : null),
-    el('td', { class: 'data' }, hasData ? details : el('span', { class: 'muted' }, 'no data')));
+    el('td', { class: 'data' }, hasData ? details : el('span', { class: 'muted' }, 'no data'), identityLinks(data)));
 }
 
 // A row that cannot be built for any reason is one row's problem, not the
@@ -1047,7 +1062,9 @@ async function viewMap(app, route, seq) {
       const row = el('tr', { 'data-player-key': player.key, 'data-player-id': player.id },
         el('td', {}, player.name || el('span', { class: 'muted' }, 'unnamed'),
           flags.length > 0 ? [' ', el('span', { class: 'badges flags' }, flags.map((flag) => badge(flag, 'warning flag')))] : null),
-        el('td', { class: 'mono' }, player.identity),
+        el('td', { class: 'mono' }, player.platform
+          ? el('a', { href: playerHref(player.platform, player.id), 'data-profile': player.identity }, player.identity)
+          : player.identity),
         el('td', { class: 'position' }, Array.isArray(player.position)
           ? positionText(manifest, player.position)
           : el('span', { class: 'muted' }, 'no position')),

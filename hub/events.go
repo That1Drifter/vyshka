@@ -323,22 +323,22 @@ func (s *Server) validateEventBatch(body json.RawMessage, now time.Time) ([]stor
 				maxEventType, truncateUTF8(event.T, 64))
 			continue
 		}
-		// The action and server namespaces belong to the hub's own lifecycle
+		// The action, server, and audit namespaces belong to the hub's own
 		// notifications (spec sections 8.1 and 11.1). Telemetry admitted there
 		// would reach webhook receivers looking exactly like the hub's word.
-		if strings.HasPrefix(event.T, "action.") || strings.HasPrefix(event.T, "server.") {
+		if reservedNamespace(event.T) {
 			fault(path+".t",
-				"the action and server namespaces are reserved for the hub's lifecycle notifications; core server telemetry lives under core.server.*")
+				"the action, server, and audit namespaces are reserved for the hub's own notifications; core server telemetry lives under core.server.*")
 			continue
 		}
 
 		data := json.RawMessage(`{}`)
+		var object map[string]json.RawMessage
 		if len(event.Data) > 0 && string(event.Data) != "null" {
 			if len(event.Data) > maxEventDataBytes {
 				fault(path+".data", "data is larger than the %d byte cap", maxEventDataBytes)
 				continue
 			}
-			var object map[string]json.RawMessage
 			if err := json.Unmarshal(event.Data, &object); err != nil {
 				fault(path+".data", "data must be a JSON object")
 				continue
@@ -351,6 +351,7 @@ func (s *Server) validateEventBatch(body json.RawMessage, now time.Time) ([]stor
 			OccurredAt: eventTimestamp(event.TS, now),
 			Data:       data,
 			Retention:  s.retentionFor(event.T),
+			Identities: identitiesOf(object),
 		})
 	}
 
@@ -509,16 +510,7 @@ func (s *Server) eventFilters(w http.ResponseWriter, r *http.Request, requested 
 
 	// patternsFor is empty exactly when the grant is unnarrowed, because the
 	// route gate has already established that some events:read grant exists.
-	granted := caller.patternsFor(resourceEvents, verbRead)
-	narrowed := make([]store.EventTypeFilter, 0, len(granted))
-	for _, pattern := range granted {
-		if prefix, isPrefix := strings.CutSuffix(pattern, ".*"); isPrefix {
-			narrowed = append(narrowed, store.EventTypeFilter{Prefix: prefix + "."})
-			continue
-		}
-		narrowed = append(narrowed, store.EventTypeFilter{Exact: pattern})
-	}
-	return narrowed, true
+	return patternFilters(caller.patternsFor(resourceEvents, verbRead)), true
 }
 
 // parseEventTypeFilters turns the repeated `type` parameter into query terms.

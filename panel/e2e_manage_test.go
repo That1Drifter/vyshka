@@ -302,8 +302,8 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	}
 	run("sign in", chromedp.SendKeys("#token", e2eAdminToken, chromedp.ByQuery),
 		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#servers", chromedp.ByQuery))
-	if got := evalString(`Array.from(document.querySelectorAll("#nav a[data-nav]")).map(a => a.dataset.nav).join(",")`); got != "servers,tokens,webhooks,audit,kv" {
-		t.Fatalf("nav links = %q, want the five sections", got)
+	if got := evalString(`Array.from(document.querySelectorAll("#nav a[data-nav]")).map(a => a.dataset.nav).join(",")`); got != "servers,players,tokens,webhooks,audit,kv" {
+		t.Fatalf("nav links = %q, want the six sections", got)
 	}
 	if got := attribute("#nav a[data-nav=servers]", "aria-current"); got != "page" {
 		t.Fatalf("the servers link carries aria-current %q, want page", got)
@@ -437,8 +437,11 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	if got := attribute("#nav a[data-nav=tokens]", "aria-current"); got != "page" {
 		t.Fatalf("the tokens link carries aria-current %q, want page", got)
 	}
-	moderatorScopes := "servers:read\nevents:read\nactions:dispatch:arena.*\nactions:dispatch:example-mod.*"
-	eventHostScopes := moderatorScopes + "\nkv:rw:example-mod\nkv:rw:zeta-store"
+	// Both bundles share the read and dispatch grants; the moderator adds the
+	// player notes (protocol section 8.6), the event host the stores.
+	sharedScopes := "servers:read\nevents:read\nactions:dispatch:arena.*\nactions:dispatch:example-mod.*"
+	moderatorScopes := sharedScopes + "\nnotes:read\nnotes:write"
+	eventHostScopes := sharedScopes + "\nkv:rw:example-mod\nkv:rw:zeta-store"
 	run("choose the moderator bundle", selectOption("#token-bundle", "moderator"))
 	waitJS("the moderator bundle narrowed itself to the declared action namespaces",
 		`document.querySelector("#token-scopes").value === `+strconv.Quote(moderatorScopes))

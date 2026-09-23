@@ -165,7 +165,7 @@ func (h *mockHub) validateEventBatchLocked(envelope *inboundEnvelope) int {
 			h.telemetryFaultLocked("8.1", "%s.t is not a string", path)
 		case len(eventType) > maxEventTypeLength || !eventTypePattern.MatchString(eventType):
 			h.telemetryFaultLocked("8.1", "%s.t %q is outside the {namespace}.{name} grammar: two or more non-empty segments of letters, digits, _ and - separated by dots, at most %d characters", path, eventType, maxEventTypeLength)
-		case strings.HasPrefix(eventType, "action.") || strings.HasPrefix(eventType, "server."):
+		case strings.HasPrefix(eventType, "action.") || strings.HasPrefix(eventType, "server.") || strings.HasPrefix(eventType, "audit."):
 			h.telemetryFaultLocked("8.1", "%s.t %q begins with a namespace reserved for the hub's own notifications; a hub refuses it (core server telemetry lives under core.server.*)", path, eventType)
 		}
 		// A present ts is a sender obligation (RFC 3339); a null one is an

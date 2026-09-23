@@ -15,6 +15,8 @@ import (
 //	actions:dispatch                 every action (dangerous)
 //	actions:dispatch:core.player.*   one namespace of action codes
 //	kv:rw:example-mod
+//	notes:read                       operator notes on identities
+//	notes:write
 //	webhooks:manage
 //	admin                            everything, including token management
 //
@@ -27,6 +29,7 @@ const (
 	resourceEvents   = "events"
 	resourceActions  = "actions"
 	resourceKV       = "kv"
+	resourceNotes    = "notes"
 	resourceWebhooks = "webhooks"
 	resourceAdmin    = "admin"
 
@@ -34,6 +37,7 @@ const (
 	verbDispatch = "dispatch"
 	verbRW       = "rw"
 	verbManage   = "manage"
+	verbWrite    = "write"
 )
 
 // Scope limits. A token carrying hundreds of grants would make every request
@@ -73,6 +77,10 @@ var scopeKinds = []scopeKind{
 	{resource: resourceActions, verb: verbRead, patterned: true},
 	{resource: resourceActions, verb: verbDispatch, patterned: true},
 	{resource: resourceKV, verb: verbRW, patterned: true},
+	// Notes (spec section 8.6) take no pattern: there is no namespace of
+	// identities to narrow by, and writing does not imply reading.
+	{resource: resourceNotes, verb: verbRead},
+	{resource: resourceNotes, verb: verbWrite},
 	{resource: resourceWebhooks, verb: verbManage},
 	{resource: resourceAdmin, verb: ""},
 }
