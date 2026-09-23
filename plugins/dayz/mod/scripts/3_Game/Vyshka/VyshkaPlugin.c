@@ -1801,58 +1801,81 @@ class VyshkaPlugin : VyshkaResponseSink
 
 	// LoadExecuted repopulates the LRU from disk on boot, keeping the most
 	// recent ids up to the cap, and compacts an oversized log once, at boot,
-	// where a truncating rewrite is safest.
+	// before anything is appended to it. A compaction a crash interrupted is
+	// finished first (VyshkaFiles.TryReadReplacedLines): its staging copy may
+	// hold records the log itself lost, and the records come back oldest
+	// first whatever order the recovery left them in on disk.
 	void LoadExecuted()
 	{
-		if (FileExist(VyshkaFiles.EXECUTED_PATH))
+		array<string> lines;
+		bool whole = VyshkaFiles.TryReadReplacedLines(VyshkaFiles.EXECUTED_PATH, lines);
+		if (!whole)
+			VyshkaLog.Warn("the executed-action log could not be read whole; dedup history is limited to the " + lines.Count().ToString() + " record(s) that could, a re-delivered action may run again, and the log is not compacted this boot");
+		// The newest records are the ones a re-delivery can repeat, so the
+		// LRU is filled from the end of the log, each key once, up to its
+		// capacity.
+		array<string> newestFirst = new array<string>;
+		map<string, bool> seen = new map<string, bool>;
+		for (int i = lines.Count() - 1; i >= 0 && newestFirst.Count() < EXECUTED_LRU_CAPACITY; i--)
 		{
-			FileHandle probe = OpenFile(VyshkaFiles.EXECUTED_PATH, FileMode.READ);
-			if (probe == 0)
-			{
-				VyshkaLog.Warn("executed-action log exists but could not be read; dedup history is unavailable and a re-delivered action may run again");
-				return;
-			}
-			CloseFile(probe);
-		}
-		array<string> lines = VyshkaFiles.ReadLines(VyshkaFiles.EXECUTED_PATH);
-		int start = 0;
-		if (lines.Count() > EXECUTED_LRU_CAPACITY)
-			start = lines.Count() - EXECUTED_LRU_CAPACITY;
-		for (int i = start; i < lines.Count(); i++)
-		{
-			// Records are JSON-quoted strings. A line that does not parse as
-			// one is tolerated as a bare id, so a log written in an earlier
-			// raw-line format still deduplicates rather than being discarded.
 			string line = lines.Get(i);
 			VyshkaJsonValue parsed = VyshkaJson.Parse(line);
 			string id = line;
 			if (parsed && parsed.IsString())
 				id = parsed.m_Text;
+			else if (IsTornRecord(line))
+				continue;
+			// A line that does not parse as a JSON string and is not torn
+			// is a bare id from the earlier raw-line format, still honored.
 			// A record from before the key form is a bare id, which is
 			// turned into the key the lookups use; one already in the key
 			// form (a fingerprint, or a marker-escaped id) is kept as it is.
 			string key = id;
 			if (!IsExecutedKey(id))
 				key = ExecutedKey(id);
-			if (!m_Executed.Contains(key))
-			{
-				m_Executed.Set(key, true);
-				m_ExecutedOrder.Insert(key);
-			}
+			if (seen.Contains(key))
+				continue;
+			seen.Set(key, true);
+			newestFirst.Insert(key);
 		}
-		if (lines.Count() > 2 * EXECUTED_LRU_CAPACITY)
+		for (int j = newestFirst.Count() - 1; j >= 0; j--)
+		{
+			string kept = newestFirst.Get(j);
+			m_Executed.Set(kept, true);
+			m_ExecutedOrder.Insert(kept);
+		}
+		// A log that could not be read whole is not compacted: the rewrite
+		// would drop whatever it holds that was not read.
+		if (whole && lines.Count() > 2 * EXECUTED_LRU_CAPACITY)
 			RewriteExecuted();
 		if (m_ExecutedOrder.Count() > 0)
 			VyshkaLog.Info("restored " + m_ExecutedOrder.Count().ToString() + " executed action id(s) from disk");
 	}
 
+	// IsTornRecord says whether a log line that does not parse as a JSON
+	// string is what a crash left of a record, not an id: every record this
+	// plugin writes begins with a quote, and every line the file layer adds
+	// (VyshkaFiles.LINES_END, RESTORED) with a '#', while an id of the
+	// earlier raw-line format was written bare. That format never shipped
+	// in a release (it lived for part of 2026-09-03, before the first review
+	// of this plugin quoted the records), so a bare id that itself begins
+	// with a quote or a '#', or spells a RESTORED line, is not told apart
+	// from what this file layer writes; any other bare id still counts.
+	static bool IsTornRecord(string line)
+	{
+		string first = line.Get(0);
+		return first == "\"" || first == "#";
+	}
+
 	// RewriteExecuted replaces the log with exactly the current LRU contents,
-	// each id JSON-quoted. Called only at boot.
+	// each id JSON-quoted, through a staging copy (VyshkaFiles.ReplaceLines),
+	// so a crash partway cannot cut the history short. Called only at boot.
 	void RewriteExecuted()
 	{
 		array<string> lines = new array<string>;
 		for (int i = 0; i < m_ExecutedOrder.Count(); i++)
-			lines.Insert(VyshkaJson.Quote(m_ExecutedOrder.Get(i)) + "\n");
-		VyshkaFiles.WriteAll(VyshkaFiles.EXECUTED_PATH, VyshkaJsonWriter.JoinPieces(lines));
+			lines.Insert(VyshkaJson.Quote(m_ExecutedOrder.Get(i)));
+		if (!VyshkaFiles.ReplaceLines(VyshkaFiles.EXECUTED_PATH, lines))
+			VyshkaLog.Warn("could not compact " + VyshkaFiles.EXECUTED_PATH + "; it keeps growing until a boot can");
 	}
 }

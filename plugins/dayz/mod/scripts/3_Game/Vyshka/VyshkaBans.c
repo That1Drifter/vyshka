@@ -11,6 +11,12 @@
 //                 "bannedAt": "2026-09-14T10:00:00Z", "expiresAt": null,
 //                 "actionId": "01M2..." } ] }
 //
+// The plugin rewrites it through a staging copy, bans.next.json
+// (VyshkaFiles.ReplaceJson), so a crash mid-write never loses the list. A
+// whole staging copy found at boot is a write a crash interrupted and
+// replaces the file, hand edits included; an operator who finds one while
+// the server is down deletes it before editing.
+//
 // A file that does not parse is left alone: the list is read as empty, the
 // ban and unban actions refuse to run rather than overwrite what the
 // operator wrote, and the log says so. Expired entries are dropped when the
@@ -114,9 +120,9 @@ class VyshkaBans
 		s_Loaded = true;
 		s_Unwritable = false;
 		Entries().Clear();
-		if (!FileExist(VyshkaFiles.BANS_PATH))
+		VyshkaJsonValue root = VyshkaFiles.ReadReplacedJson(VyshkaFiles.BANS_PATH);
+		if (!root && !FileExist(VyshkaFiles.BANS_PATH))
 			return;
-		VyshkaJsonValue root = VyshkaFiles.ReadJson(VyshkaFiles.BANS_PATH);
 		VyshkaJsonValue list;
 		if (root && root.IsObject())
 			list = root.Get("bans");
@@ -250,7 +256,7 @@ class VyshkaBans
 			list.Add(Entries().GetElement(i).ToJson());
 		VyshkaJsonValue root = VyshkaJsonValue.NewObject();
 		root.Set("bans", list);
-		if (VyshkaFiles.WriteJson(VyshkaFiles.BANS_PATH, root))
+		if (VyshkaFiles.ReplaceJson(VyshkaFiles.BANS_PATH, root))
 			return true;
 		VyshkaLog.Error("could not write " + VyshkaFiles.BANS_PATH);
 		return false;

@@ -186,7 +186,10 @@ or absent `expiresAt` is permanent, a timestamp is honored whatever it says (one
 lifts the ban), one that does not parse is treated as permanent so a typo cannot lift a ban,
 and every text member is cut to the same bounds a dispatch gets. A file that does not parse
 is left alone, enforces nothing, and makes the ban and unban actions refuse until it is
-fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
+fixed or removed, which the log says at boot. The plugin rewrites the file through a
+staging copy (see "Files rewritten in place" below), so a `bans.next.json` beside it while
+the server is down is a write a crash interrupted: delete it before editing by hand, or
+the next boot puts it back over the edit. The plugin's clock is a 32-bit epoch: a
 duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
 as that instant rather than wrapped into the past.
 
@@ -200,12 +203,10 @@ own, so the read never waits behind the held poll. Pages of 100 go back to back,
 of them at the revision the first was served at, since the hub pins a walk to it; a
 `409 conflict` starts the walk over, and any other failure keeps the list already in force
 and tries again 30 s later. A whole revision is written to
-`<profiles>/Vyshka/installation-bans.next.json` and then to
 `<profiles>/Vyshka/installation-bans.json`, one entry and one member per line like
-everything else, and the staging copy is deleted: the engine has no rename and a rewrite
-truncates first, so this is what keeps a crash in the middle of a write from losing the
-list in force (at boot a staging copy that parses is the newest list and is finished,
-and one cut short is discarded). The list is then put in force and reported to the hub
+everything else, through its staging copy `installation-bans.next.json` (see "Files
+rewritten in place" below), so a crash in the middle of a write never loses the list in
+force. The list is then put in force and reported to the hub
 with `bans.applied`, which the server record shows; a session that begins with the
 revision already held reports it again. A revision the hub reports while a walk is under
 way is kept: the walk's end does not take its own revision for the latest one, and walks
@@ -1062,10 +1063,13 @@ go run ./plugins/dayz/cmd/vyshka-dayz selftest
 `selftest` derives a mission whose `init.c` carries `selftest/VyshkaSelfTest.c`, boots a
 server on it under `plugins/dayz/build/selftest-profile` with the plugin idle (no config),
 and grades the lines the script prints, one per check, the way the conformance suites
-report: the installation ban list written through its staging copy and read back, with
-both crash windows of that write (a staging copy cut short beside a whole list, which is
-discarded and the list kept, and a whole staging copy beside a main file cut short, which
-wins and is written again); a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
+report: every file the plugin rewrites in place (the installation ban list, the local
+ban list, the manifest record, the credentials, and the executed-action log) replaced
+through its staging copy and read back through its own loader, with both crash windows
+of that write (a staging copy cut short beside a whole file, which is discarded and the
+file kept, and a whole staging copy beside a file cut short, which wins and is written
+again), a credentials delete that takes a staging copy with it, and a replace whose file
+cannot be opened, which leaves the disk as it was; a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
 limit as one line); a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than
@@ -1201,6 +1205,36 @@ at them.
   absorbs by deduplicating: if a file deletion fails (an antivirus or backup lock), an acked
   envelope may be re-sent after a restart and the hub drops it as a duplicate; and if the OS
   loses the tail of `executed.log` in a crash, a re-delivered action may run twice.
+- **Files rewritten in place.** `FileMode.WRITE` truncates a file before a byte of the new
+  content is in it and the engine has no rename, so a process killed partway through a
+  rewrite would leave the file cut short (issue #121). Every file the plugin rewrites
+  (`credentials.json`, `bans.json`, `installation-bans.json`, `manifest.json`, and
+  `executed.log` when a boot compacts it) is therefore replaced through a staging copy:
+  the whole new content goes to `<name>.next.<ext>` (`bans.next.json`,
+  `executed.next.log`), then to the file, and then the staging copy is deleted, so a kill
+  in either write leaves one whole copy. The engine reports no error from a write, a full
+  disk included, so each copy is read back before the next step destroys the other.
+  Before the plugin reads such a file it finishes an interrupted replace: a staging copy
+  that parses is the newest content and is written over the file, and one cut short is
+  discarded. The log's staging copy is whole when it ends with its `#vyshka:end` line.
+  The log is never truncated by a recovery, since it may hold ids appended after the
+  compaction, which are the newest there are: when it lacks some of the staged ids, the
+  staged history is appended to it with each line marked `#vyshka:restored `, and every
+  read puts the marked ids back behind the log's newer ones, so the order survives a crash
+  at any point before the next compaction rewrites the log plainly. A line a crash tore
+  from a record takes none of the 512 places the plugin remembers (a bare id from the
+  earliest raw-line format still does, and a compaction keeps it), and every append starts
+  on a line of its own, so it cannot run into a last line a crash left unfinished. A
+  replace whose file
+  cannot be opened leaves the disk as it was and fails the operation that asked for it, as
+  before; one whose file is written short (a full disk) fails too, and keeps the staging
+  copy, which the next read restores. A staging copy that cannot be read, or a whole one
+  that cannot be written over its file, is kept (it may be the only whole copy), and
+  nothing new is written to that file until it can be. When a replace fails and its staging
+  copy can be neither deleted nor emptied, the error says the next boot will take the new
+  content from it anyway; delete it before a restart to keep the old. The outbox is not affected: each
+  record is written once, to a file of its own. The same page-cache caveat as above
+  applies, since the order of the two writes is only as durable as the OS makes it.
 - **Whole-second clock.** The engine's UTC clock is whole-second, so an action's `expiresAt`
   is compared at second granularity. The plugin discards an action once the current second
   reaches the deadline second, which never runs an action past its deadline but can discard one
