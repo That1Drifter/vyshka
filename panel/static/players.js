@@ -143,20 +143,28 @@ function notesSection(platform, id, seq) {
   // read that ran after the write committed), so both place notes through
   // place(), which draws each id once.
   const rendered = new Map();
+  // deleted holds the id of every note deleted from this view, for the
+  // view's lifetime: a read or a write answering after the delete may still
+  // carry the note, and must not draw it back.
+  const deleted = new Set();
   // The list's read state: pending until the first read settles, then
   // readable or forbidden. A write while it is readable or pending is placed
   // in the list at once; a refusal clears the list, and the saved notice,
-  // which lives outside it, then confirms every write that was made.
+  // which lives outside it, then confirms the writes still standing.
   let readState = 'pending';
-  let written = 0;
+  const written = new Set();
   const showSaved = () => {
+    if (written.size === 0) {
+      saved.hidden = true;
+      return;
+    }
     saved.textContent = 'Saved. This token cannot read notes (notes:read), so ' +
-      (written === 1 ? 'the note is' : 'the notes are') + ' not listed here.';
+      (written.size === 1 ? 'the note is' : 'the ' + written.size + ' notes are') + ' not listed here.';
     saved.hidden = false;
   };
   const place = (note, atTop) => {
     const key = String(note.id);
-    if (rendered.has(key)) return;
+    if (rendered.has(key) || deleted.has(key)) return;
     const item = noteItem(note);
     rendered.set(key, item);
     if (atTop) list.prepend(item); else list.append(item);
@@ -182,6 +190,8 @@ function notesSection(platform, id, seq) {
         if (stale(seq)) return;
         item.remove();
         rendered.delete(String(note.id));
+        deleted.add(String(note.id));
+        written.delete(String(note.id));
         empty.hidden = rendered.size > 0;
         problem.hide();
       } catch (err) {
@@ -215,7 +225,7 @@ function notesSection(platform, id, seq) {
         listArea.append(refusedNotice('notes-forbidden', 'notes:read', err));
         // A write that landed while the read was out was drawn in the list
         // this refusal just cleared; the notice keeps its confirmation.
-        if (written > 0) showSaved();
+        showSaved();
         return;
       }
       problem.show(err);
@@ -244,7 +254,7 @@ function notesSection(platform, id, seq) {
       try {
         const created = await api('POST', identityPath(platform, id, '/notes'), { text: text.value });
         if (stale(seq) || token() !== owner) return;
-        written++;
+        written.add(String(created.note.id));
         if (readState === 'forbidden') {
           showSaved();
         } else {

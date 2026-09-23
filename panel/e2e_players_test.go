@@ -252,34 +252,55 @@ func TestPanelPlayerProfileEndToEnd(t *testing.T) {
 	}
 
 	// 7. A note list's read and a write can answer in either order. A fetch
-	// wrapper in the page schedules both orderings: a read answered after a
-	// write with the empty list it saw before the write, and a read that saw
-	// the write answered before the write's own answer. Either way the note
-	// is on the page exactly once.
-	schedule := func(readDelay, writeDelay, readHold int) string {
-		return `(function(){const real=window.__realFetch||window.fetch;window.__realFetch=real;` +
+	// wrapper in the page holds the read's request or its answer, and the
+	// write's answer, and records the order the answers reached the view in,
+	// so each case asserts its schedule happened rather than hoping so:
+	//   - a read that saw the list empty, answered after the write: the note
+	//     stays listed once;
+	//   - a read that saw the write, answered before the write's answer: the
+	//     note is listed once, not twice;
+	//   - a read that saw the write, answered after the note was deleted:
+	//     the deleted note is not drawn back.
+	schedule := func(readHold, readDelay, writeDelay int) string {
+		return `(function(){const real=window.__realFetch||window.fetch;window.__realFetch=real;window.__order=[];` +
 			`const sleep=(ms)=>new Promise((r)=>setTimeout(r,ms));` +
 			`window.fetch=async function(url,init){const notes=String(url).includes("/notes");` +
 			`const method=(init&&init.method)||"GET";` +
-			`if(notes&&method==="GET"){await sleep(` + strconv.Itoa(readHold) + `);const r=await real(url,init);await sleep(` + strconv.Itoa(readDelay) + `);return r;}` +
-			`if(notes&&method==="POST"){const r=await real(url,init);await sleep(` + strconv.Itoa(writeDelay) + `);return r;}` +
+			`if(notes&&method==="GET"){await sleep(` + strconv.Itoa(readHold) + `);const r=await real(url,init);await sleep(` + strconv.Itoa(readDelay) + `);window.__order.push("read");return r;}` +
+			`if(notes&&method==="POST"){const r=await real(url,init);await sleep(` + strconv.Itoa(writeDelay) + `);window.__order.push("write");return r;}` +
+			`if(notes&&method==="DELETE"){const r=await real(url,init);window.__order.push("delete");return r;}` +
 			`return real(url,init);};return true})()`
 	}
 	for _, order := range []struct {
 		name, id                        string
-		readDelay, writeDelay, readHold int
+		readHold, readDelay, writeDelay int
+		deleteAfter                     bool
+		want                            string
+		notes                           string
 	}{
-		{"a stale empty read answering after the write", "76561198000000021", 2000, 0, 0},
-		{"a read that saw the write answering before it", "76561198000000022", 0, 2500, 800},
+		{"a stale empty read answering after the write", "76561198000000021", 0, 2000, 0, false, "write,read", "1"},
+		{"a read that saw the write answering before it", "76561198000000022", 800, 0, 2500, false, "read,write", "1"},
+		{"a read that saw the write answering after its delete", "76561198000000023", 800, 3000, 0, true, "write,delete,read", "0"},
 	} {
-		run("schedule "+order.name, chromedp.Evaluate(schedule(order.readDelay, order.writeDelay, order.readHold), nil),
+		run("schedule "+order.name, chromedp.Evaluate(schedule(order.readHold, order.readDelay, order.writeDelay), nil),
 			chromedp.Evaluate(`location.hash = `+strconv.Quote("#/players/steam/"+order.id), nil),
 			chromedp.WaitVisible("#note-text", chromedp.ByQuery))
 		run("write under "+order.name, setValue("#note-text", "Written while the list loaded."),
 			chromedp.Click("#note-add", chromedp.ByQuery))
-		time.Sleep(3500 * time.Millisecond)
-		if got := evalString(`String(document.querySelectorAll("#notes li.note").length) + (document.querySelector("#notes-empty").hidden ? "" : " and empty")`); got != "1" {
-			t.Fatalf("under %s the list holds %s notes, want the one written", order.name, got)
+		if order.deleteAfter {
+			waitJS("the written note is listed", `document.querySelectorAll("#notes li.note").length === 1`)
+			// Past the read's hold, so the read has seen the note.
+			time.Sleep(1200 * time.Millisecond)
+			run("delete it while the read is out",
+				chromedp.Click(`#notes li.note input[type=checkbox]`, chromedp.ByQuery),
+				chromedp.Click(`#notes li.note button[data-note-delete]`, chromedp.ByQuery))
+		}
+		waitJS("the schedule ran out under "+order.name, `window.__order.length === `+strconv.Itoa(len(strings.Split(order.want, ","))))
+		if got := evalString(`window.__order.join(",")`); got != order.want {
+			t.Fatalf("under %s the answers arrived %s, want %s; the schedule did not happen", order.name, got, order.want)
+		}
+		if got := evalString(`String(document.querySelectorAll("#notes li.note").length)`); got != order.notes {
+			t.Fatalf("under %s the list holds %s notes, want %s", order.name, got, order.notes)
 		}
 	}
 	run("restore fetch", chromedp.Evaluate(`(function(){if(window.__realFetch)window.fetch=window.__realFetch;return true})()`, nil))
