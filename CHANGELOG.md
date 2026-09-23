@@ -21,7 +21,7 @@ arrived, since those entries were written for one stream.
 
 Everything that landed after 0.1.0: the hub side of the post-release DayZ slices (server
 binding, custom contexts, presets, the world, player profiles, per-webhook redaction,
-audit records as webhook material, and the installation ban list), protocol drafts 0.26
+audit records as webhook material, and the installation ban list), protocol drafts 0.24
 to 0.32. Tag `hub-v0.2.0`.
 
 #### Added
