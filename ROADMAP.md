@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-23 (hub 0.2.0 and DayZ plugin 0.8.0 released; the installation ban list of #80 landed as protocol draft 0.32: one
+**As of:** 2026-09-23 (hub 0.2.0 and DayZ plugin 0.8.0 released; the backlog signal of #91
+landed as protocol draft 0.33: a poll saying `more` is answered at once, so a backlog
+drains a batch per round trip; the installation ban list of #80 landed as protocol draft 0.32: one
 list for every server, pulled a page at a time by each plugin declaring the new `bans`
 capability, one revision whole, with the revision it enforces reported back; the hub features of #79 landed as protocol draft 0.31: player
 profiles across every server with operator notes, per-webhook redaction, and audit records
@@ -68,7 +70,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.32 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.33 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ## Horizon 1: close M4 and ship the first release
 
@@ -308,7 +310,7 @@ spec reader is not surprised.
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
 | Server-scoped token dimension | 10.1 | Shipped 2026-09-21 (#81, draft 0.26): a token-level `servers` binding |
 | Cursor over webhook deliveries | 11.3 | Parked. Trigger: a delivery list exceeds the maximum `limit` in practice. Today the remedies are a wider `limit` and shorter retention |
-| A poll that says "more queued" is answered at once | 3.1 | Committed (#91), post-release. Today a backlog drains at the per-poll event budget per poll cycle (40 events/s at `pollTimeout` 25), because the hub holds a poll it has nothing to answer with even when the plugin cut its batch at the budget. Measured in `spikes/dayz-outbox-crash` |
+| A poll that says "more queued" is answered at once | 3.1.2 | Shipped 2026-09-23 (#91, draft 0.33): a plugin that cut its batch short sets `more`, and a hub answers that poll as soon as it is applied when its ack covers something the poll carried, so a backlog drains a batch per round trip instead of a batch per `pollTimeout` (40 events/s at 25 s, measured in `spikes/dayz-outbox-crash`). Graded by `plugin.poll.more` in the hub suite and `poll.more` in the plugin suite; DayZ plugin 0.9.0 sets it |
 | Snapshot diffs after the first full snapshot per session | 8.3 | Parked. Trigger: a real plugin hits the 256 KiB body cap. Unknown-type tolerance makes a diff form a backward-safe addition |
 | Platform registry (player identity) | 8.2 | Shape frozen at draft 0.22; the registry stays open and a new game adds its platform identifier additively |
 | Multi-instance hub (claims or leases for sweeps and the webhook dispatcher) | design notes 12 | Parked. Trigger: a single installation exceeds the capacity measured in #87. One hub per database is the supported deployment on both engines until then; the hub is one process however many boxes the game servers occupy |

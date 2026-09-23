@@ -17,6 +17,30 @@ arrived, since those entries were written for one stream.
 
 ### [Unreleased]
 
+#### Added
+
+- 2026-09-23: a backlog drains at the link's pace (issue #91, protocol draft 0.33,
+  section 3.1.2). A poll request may carry `more: true`, saying the plugin cut its batch
+  short and holds envelopes behind it; the hub answers such a poll as soon as it has
+  applied it, without holding, when the ack it answers with covers at least one envelope
+  the poll carried, and holds it as usual otherwise (a batch above a gap, or no envelopes),
+  since the next poll would carry the same batch and answering at once would only loop.
+  The test is made against the ack as it stands on every pass of the hold, so a concurrent
+  poll that closes the gap releases a held one. Before this a backlog drained one batch
+  per `pollTimeout`, 40 events/s at the default 25 s (`spikes/dayz-outbox-crash`, finding
+  5). A `more` that is not a boolean, `null` included, is `bad_request`. The hub suite
+  grades it with `plugin.poll.more` (answered at once when the batch landed, held at the
+  gap and with no envelopes). A plugin that set `more` MUST carry envelopes on its next
+  poll of the session once the answer has arrived, if any it left behind are still
+  unacked. The plugin suite's mock hub honors
+  `more`, faults it on an empty poll, and faults a claim whose answer acked exactly the
+  batch when the next poll carried no envelopes (a resend of the same batch is allowed,
+  since the answer may have been lost; the check stands down for a candidate that
+  overlaps polls), and a new `poll.more` stage dispatches 150 actions in one response so
+  a candidate has 300 envelopes to send, not failing dispatches a slow candidate discards
+  past their deadline and naming the shortfall when no poll said `more`; the reference
+  driver sets it.
+
 ### [0.2.0] - 2026-09-23
 
 Everything that landed after 0.1.0: the hub side of the post-release DayZ slices (server
@@ -372,6 +396,14 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 ## DayZ plugin
 
 ### [Unreleased]
+
+#### Added
+
+- 2026-09-23: a poll that leaves envelopes behind says so (issue #91, plugin 0.9.0,
+  protocol draft 0.33). When the outbox holds more than the batch a poll carries (past
+  200 envelopes or 1000 events), the poll sets `more: true`, and a hub from draft 0.33 on
+  answers it at once, so a backlog after an outage drains a batch per round trip instead
+  of a batch per `pollTimeout`. An older hub ignores the member.
 
 ### [0.8.0] - 2026-09-23
 
@@ -769,7 +801,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.32 (2026-09-23). The document's header carries the draft number and date; each
+Draft 0.33 (2026-09-23). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

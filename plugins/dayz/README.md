@@ -481,7 +481,10 @@ the outbox was delivered after the restart, none was torn, and the loss ran from
 write of a batch would lose that batch too; it did not happen in those trials and the
 restart discards the unreadable record. A poll carries at most 1000 events across its batches, the
 reference hub's per-poll budget, so a backlog flushed after an outage is never refused
-over it. A batch or snapshot the hub does refuse (`event.reject`, `state.reject`) is gone;
+over it. A poll that leaves envelopes behind (past that budget, or past 200 envelopes) says
+`"more": true` (section 3.1.2), and a hub from draft 0.33 on answers it at once instead of
+holding it, so a backlog drains a batch per round trip rather than a batch per
+`pollTimeout` (40 events/s at the default 25 s, which is what an older hub still gives). A batch or snapshot the hub does refuse (`event.reject`, `state.reject`) is gone;
 the plugin logs the hub's reasons as `ERROR` lines and carries on.
 
 | Type | When | `data` |

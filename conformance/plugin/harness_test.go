@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -232,6 +233,152 @@ func TestAChangedRetransmissionIsFaulted(t *testing.T) {
 	faults := faultMessages(h)
 	if !strings.Contains(faults, "retransmission") || !strings.Contains(faults, "section 9.1") {
 		t.Fatalf("a changed retransmission was not faulted; recorded faults:\n%s", faults)
+	}
+}
+
+// ---- a backlog (spec section 3.1.2) ----
+
+func TestMoreOnAPollCarryingNothingIsFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.post("/plugin/v1/poll", p.sessionToken, map[string]any{"more": true}, http.StatusOK, nil)
+
+	faults := faultMessages(h)
+	if !strings.Contains(faults, "said more while carrying no envelopes") || !strings.Contains(faults, "section 3.1.2") {
+		t.Fatalf("more on an empty poll was not faulted; recorded faults:\n%s", faults)
+	}
+}
+
+func TestMoreThatIsNotABooleanIsFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.post("/plugin/v1/poll", p.sessionToken, map[string]any{
+		"more": "yes", "envelopes": []map[string]any{testEnvelope("evt-1", 1, nil)},
+	}, http.StatusOK, nil)
+
+	if faults := faultMessages(h); !strings.Contains(faults, "more is a boolean") {
+		t.Fatalf("a more that is not a boolean was not faulted; recorded faults:\n%s", faults)
+	}
+}
+
+// A plugin that says more and then has nothing behind the batch has told
+// the hub to answer at once for nothing.
+func TestMoreWithNothingBehindItIsFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	started := time.Now()
+	p.post("/plugin/v1/poll", p.sessionToken, map[string]any{
+		"more": true, "envelopes": []map[string]any{testEnvelope("evt-1", 1, nil)},
+	}, http.StatusOK, nil)
+	// The mock holds an idle poll for a second; one saying more whose batch
+	// landed is answered at once, as a hub answers it.
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Errorf("the mock held a poll saying more for %s", elapsed)
+	}
+	p.poll()
+
+	faults := faultMessages(h)
+	if !strings.Contains(faults, "the next poll carried no envelopes") || !strings.Contains(faults, "section 3.1.2") {
+		t.Fatalf("a false more was not faulted; recorded faults:\n%s", faults)
+	}
+}
+
+// An answer the plugin never received has it send the same batch again,
+// still saying more. The mock cannot tell that from a plugin that read the
+// answer, so the resend must not be faulted.
+func TestAResendAfterMoreIsNotFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	batch := map[string]any{
+		"more": true, "envelopes": []map[string]any{testEnvelope("evt-1", 1, nil)},
+	}
+	p.post("/plugin/v1/poll", p.sessionToken, batch, http.StatusOK, nil)
+	p.post("/plugin/v1/poll", p.sessionToken, batch, http.StatusOK, nil)
+	p.poll(testEnvelope("evt-1", 1, nil), testEnvelope("evt-2", 2, nil))
+
+	if faults := faultMessages(h); faults != "" {
+		t.Fatalf("a resend after more was faulted:\n%s", faults)
+	}
+}
+
+// Two polls open at once: the first says more and carries seq 1, the second
+// carries seq 1 and 2. Both are answered with ack 2, which covers what the
+// first left behind, so the plugin rightly has nothing left, and its next
+// poll carries nothing. That is no false claim.
+func TestMoreSettledByAnOverlappingPollIsNotFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	// Frozen at 0, so neither poll is answered before both are open.
+	h.freezeAck()
+	var polls sync.WaitGroup
+	polls.Add(2)
+	go func() {
+		defer polls.Done()
+		p.post("/plugin/v1/poll", p.sessionToken, map[string]any{
+			"more": true, "envelopes": []map[string]any{testEnvelope("evt-1", 1, nil)},
+		}, http.StatusOK, nil)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	go func() {
+		defer polls.Done()
+		p.poll(testEnvelope("evt-1", 1, nil), testEnvelope("evt-2", 2, nil))
+	}()
+	time.Sleep(200 * time.Millisecond)
+	h.releaseAck()
+	polls.Wait()
+	p.poll()
+
+	if faults := faultMessages(h); faults != "" {
+		t.Fatalf("a more whose backlog an overlapping poll carried was faulted:\n%s", faults)
+	}
+}
+
+func TestAnHonestMoreIsNotFaulted(t *testing.T) {
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	p := newTestPlugin(t, h)
+	p.post("/plugin/v1/poll", p.sessionToken, map[string]any{
+		"more": true, "envelopes": []map[string]any{testEnvelope("evt-1", 1, nil)},
+	}, http.StatusOK, nil)
+	p.poll(testEnvelope("evt-2", 2, nil))
+
+	if faults := faultMessages(h); faults != "" {
+		t.Fatalf("an honest more was faulted:\n%s", faults)
+	}
+	h.mu.Lock()
+	said, carried := h.pollsSayingMore, h.pollsCarryingFresh
+	h.mu.Unlock()
+	if said != 1 || carried != 2 {
+		t.Fatalf("pollsSayingMore = %d and pollsCarryingFresh = %d, want 1 and 2", said, carried)
 	}
 }
 

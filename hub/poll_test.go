@@ -335,6 +335,148 @@ func TestPollAcksInboundEnvelopesContiguously(t *testing.T) {
 	}
 }
 
+func TestPollSayingMoreIsAnsweredOnlyWhenItMadeProgress(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+
+	inbound := func(seq int64) map[string]any {
+		return map[string]any{
+			"v": 1, "id": "test-backlog-" + strconv.FormatInt(seq, 10), "type": "test.backlog",
+			"seq": seq, "ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{},
+		}
+	}
+	// Every case holds for the session's 5 s unless the hub answers at once.
+	cases := []struct {
+		name string
+		// primed is sent first, answered at once by a queued nudge, so the
+		// case's own poll can repeat what the hub has already acked.
+		primed  []map[string]any
+		request map[string]any
+		prompt  bool
+		wantAck int64
+	}{
+		{
+			name:    "a batch that lands",
+			request: map[string]any{"more": true, "envelopes": []map[string]any{inbound(1), inbound(2)}},
+			prompt:  true, wantAck: 2,
+		},
+		{
+			name:    "a batch already acked, sent again",
+			primed:  []map[string]any{inbound(1)},
+			request: map[string]any{"more": true, "envelopes": []map[string]any{inbound(1)}},
+			prompt:  true, wantAck: 1,
+		},
+		{
+			name:    "a batch above a gap",
+			request: map[string]any{"more": true, "envelopes": []map[string]any{inbound(3)}},
+			prompt:  false, wantAck: 0,
+		},
+		{
+			name:    "no envelopes at all",
+			request: map[string]any{"more": true},
+			prompt:  false, wantAck: 0,
+		},
+		{
+			name:    "a batch that lands without more",
+			request: map[string]any{"envelopes": []map[string]any{inbound(1)}},
+			prompt:  false, wantAck: 1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			created, live := enrolledSession(t, server, "backlog: "+c.name)
+			if c.primed != nil {
+				primer := pollNow(t, server, created.Server.ID, live.SessionToken,
+					map[string]any{"envelopes": c.primed})
+				// The nudge is acked, or it would be delivered again and
+				// answer the case's poll at once for a reason of its own.
+				c.request["ack"] = primer.Envelopes[len(primer.Envelopes)-1].Seq
+			}
+
+			started := time.Now()
+			result := poll(t, server, live.SessionToken, c.request)
+			elapsed := time.Since(started)
+
+			if result.Ack != c.wantAck {
+				t.Errorf("ack = %d, want %d", result.Ack, c.wantAck)
+			}
+			if len(result.Envelopes) != 0 {
+				t.Errorf("got %d envelopes with nothing queued", len(result.Envelopes))
+			}
+			if c.prompt && elapsed > 2*time.Second {
+				t.Errorf("the hub held for %s; a poll saying more whose batch landed is answered at once", elapsed)
+			}
+			if !c.prompt && elapsed < 4*time.Second {
+				t.Errorf("the hub answered after %s; a poll that made no progress, or did not say more, is held", elapsed)
+			}
+		})
+	}
+}
+
+func TestPollRefusesAMoreThatIsNotABoolean(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	_, live := enrolledSession(t, server, "more not a boolean")
+
+	// A null is refused too: decoded into a bool it would pass for false.
+	for _, value := range []any{"yes", nil, 1} {
+		if code := errorCode(t, server, http.MethodPost, "/plugin/v1/poll", live.SessionToken,
+			map[string]any{"more": value}, http.StatusBadRequest); code != "bad_request" {
+			t.Errorf("more = %v: error code = %q, want bad_request", value, code)
+		}
+	}
+}
+
+// A poll saying more whose batch sits above a gap is held, but a second poll
+// that closes the gap commits an ack covering the first poll's batch, and
+// from then on the first poll is one the hub answers at once (spec section
+// 3.1.2): the rule is judged against the ack it answers with, not the one it
+// saw on arrival.
+func TestPollSayingMoreIsReleasedWhenAnotherPollClosesTheGap(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	_, live := enrolledSession(t, server, "backlog gap closed")
+
+	inbound := func(seq int64) map[string]any {
+		return map[string]any{
+			"v": 1, "id": "test-gap-" + strconv.FormatInt(seq, 10), "type": "test.backlog",
+			"seq": seq, "ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{},
+		}
+	}
+	type answered struct {
+		result  pollResult
+		elapsed time.Duration
+	}
+	held := make(chan answered, 1)
+	started := time.Now()
+	go func() {
+		result := poll(t, server, live.SessionToken, map[string]any{
+			"more": true, "envelopes": []map[string]any{inbound(2)},
+		})
+		held <- answered{result, time.Since(started)}
+	}()
+	time.Sleep(250 * time.Millisecond)
+	closer := make(chan struct{})
+	go func() {
+		defer close(closer)
+		poll(t, server, live.SessionToken, map[string]any{
+			"envelopes": []map[string]any{inbound(1), inbound(2)},
+		})
+	}()
+	// The closing poll says nothing of more, so it is held to term; the test
+	// waits for it rather than leave it running past its own end.
+	defer func() { <-closer }()
+
+	first := <-held
+	if first.result.Ack != 2 {
+		t.Errorf("ack = %d, want 2 once the gap was closed", first.result.Ack)
+	}
+	if first.elapsed > 3*time.Second {
+		t.Errorf("the poll saying more was held %s after another poll committed an ack covering its batch", first.elapsed)
+	}
+}
+
 func TestPollRejectsMalformedEnvelopes(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)

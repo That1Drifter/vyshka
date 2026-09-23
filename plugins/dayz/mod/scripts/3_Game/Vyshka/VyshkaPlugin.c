@@ -46,7 +46,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.8.0";
+	static const string PLUGIN_VERSION = "0.9.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -951,7 +951,10 @@ class VyshkaPlugin : VyshkaResponseSink
 		// The snapshots are captured here, not on the tick, so they ride this
 		// very request rather than waiting behind a held poll.
 		PublishSnapshots();
-		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson() + "}";
+		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson();
+		if (m_Outbox.HasMore())
+			body += ",\"more\":true";
+		body += "}";
 		// The hub answers within pollTimeout; the engine's read timeout is
 		// pollTimeout + 5 s; the watchdog sits behind both.
 		m_Transport.Post(REQUEST_POLL, "poll" + INLINE_ERRORS, m_SessionToken, body, (m_PollTimeoutSeconds + 10) * 1000);

@@ -213,7 +213,8 @@ paths:
         queued for the plugin.
 
         The hub holds the request up to the session's `pollTimeoutSeconds` and
-        answers early as soon as anything is queued. An empty batch is the
+        answers early as soon as anything is queued, or at once when the
+        request says `more` and its batch landed. An empty batch is the
         normal answer to a hold that expired with nothing to send, and the
         plugin re-polls immediately either way.
 
@@ -246,6 +247,15 @@ paths:
                     Envelopes the plugin is sending, in ascending `seq` order. A
                     hub accepts at least 200 per request.
                   items: { $ref: "#/components/schemas/PluginEnvelope" }
+                more:
+                  type: boolean
+                  default: false
+                  description: |
+                    True when the plugin holds envelopes beyond the ones this
+                    request carries. The hub then answers as soon as it has
+                    applied the request, without holding, when its ack covers at
+                    least one envelope the request carried (spec section 3.1.2).
+                    Never set on a request carrying no envelopes.
             example:
               ack: 4181
               envelopes:
