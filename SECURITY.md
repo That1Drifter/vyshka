@@ -3,7 +3,8 @@
 ## Supported versions
 
 The hub and the DayZ plugin are released independently (`RELEASING.md`); the first tags
-are hub 0.1.0 and DayZ plugin 0.7.0 (2026-09-17). Before 1.0, only the latest release of
+were hub 0.1.0 and DayZ plugin 0.7.0 (2026-09-17), and the latest are hub 0.2.0 and DayZ
+plugin 0.8.0 (2026-09-23). Before 1.0, only the latest release of
 each artifact receives security fixes, as a new patch or minor release; there are no
 backports to earlier 0.x versions. The protocol document is a draft and fixes to it land
 in the next draft.

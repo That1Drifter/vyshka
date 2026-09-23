@@ -2,7 +2,7 @@
 
 Thanks for your interest. Vyshka is **spec-first**: the protocol document and its
 conformance suites are the product, and the hub and the DayZ plugin are reference
-implementations of it, released since 2026-09-17 (hub 0.1.0, plugin 0.7.0). Contributions
+implementations of it, released since 2026-09-17 (latest: hub 0.2.0, plugin 0.8.0). Contributions
 that matter most are design review, protocol feedback, firsthand knowledge of engine
 constraints (DayZ `RestApi` behavior, Arma Reforger scripting capabilities), and plugins
 for other games written from the spec alone, which is what protocol 1.0 waits for.
