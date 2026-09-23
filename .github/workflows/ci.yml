@@ -77,8 +77,9 @@ jobs:
               hub/store/*|\"hub/store/*) postgres=true ;;
             esac
           done <<< "$files"
-          echo "$files"
-          echo "conformance=$conformance postgres=$postgres"
+          # The names are not echoed: a file named like a workflow command
+          # (::add-mask::...) would be run as one and could hide the outputs.
+          echo "$(wc -l <<< "$files") changed file(s): conformance=$conformance postgres=$postgres"
           echo "conformance=$conformance" >> "$GITHUB_OUTPUT"
           echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
 
@@ -181,8 +182,9 @@ jobs:
   conformance-sqlite:
     name: Conformance on SQLite
     needs: changes
-    # Runs unless the classification succeeded and said it may skip.
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.conformance == 'true') }}
+    # Runs unless the classification said, explicitly, that it may skip: a
+    # failed Changes job or a missing output runs it.
+    if: ${{ !cancelled() && needs.changes.outputs.conformance != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -231,7 +233,7 @@ jobs:
     # against the other system of record, so main carries it and any other
     # pull request does not wait for it.
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.result != 'success' || needs.changes.outputs.postgres == 'true') }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.postgres != 'false') }}
     runs-on: ubuntu-latest
     services:
       postgres:
