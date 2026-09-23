@@ -14,13 +14,10 @@
 // at the next one. It is written one entry per line (VyshkaFiles.WriteJson),
 // because the engine's file reader faults the process on a 64 KiB line.
 //
-// A rewrite truncates the file before it writes it, and the engine offers no
-// rename, so a crash partway would take the list already in force with it.
-// Each apply therefore writes the new list to installation-bans.next.json
-// first, then the main file, then deletes the staging copy. At boot a staging
-// copy that parses is the newest list there is (it exists only between those
-// steps) and wins; one that does not was cut short while being written and
-// is discarded, and the main file still holds the list it was replacing.
+// Each apply replaces the file through its staging copy,
+// installation-bans.next.json (VyshkaFiles.ReplaceJson), so a crash partway
+// never takes the list already in force with it, and a boot finishes or
+// discards a write a crash interrupted before it reads the list.
 //
 //   { "revision": 14, "bans": [ { "id": "01M3...", "player": { "platform": "steam",
 //     "id": "7656..." }, "reason": "...", "name": "...", "expiresAt": null } ] }
@@ -151,36 +148,21 @@ class VyshkaInstallationBans
 		s_Loaded = true;
 		s_Revision = "";
 		Entries().Clear();
-		string staged = VyshkaFiles.INSTALLATION_BANS_NEXT_PATH;
-		if (FileExist(staged))
-		{
-			if (ReadStored(staged))
-			{
-				// The apply that wrote it stopped before the main file was
-				// rewritten or the copy deleted; finish it.
-				VyshkaLog.Warn("finishing an interrupted write of the installation ban list from " + staged);
-				if (WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, s_Revision, Entries()))
-					DeleteFile(staged);
-				return;
-			}
-			VyshkaLog.Warn(staged + " was cut short while being written and is discarded; the list in force before it stays");
-			DeleteFile(staged);
-			Entries().Clear();
-		}
-		if (!FileExist(VyshkaFiles.INSTALLATION_BANS_PATH))
+		VyshkaJsonValue root = VyshkaFiles.ReadReplacedJson(VyshkaFiles.INSTALLATION_BANS_PATH);
+		if (!root && !FileExist(VyshkaFiles.INSTALLATION_BANS_PATH))
 			return;
-		if (!ReadStored(VyshkaFiles.INSTALLATION_BANS_PATH))
+		if (!ReadStored(root))
 		{
 			Entries().Clear();
+			s_Revision = "";
 			VyshkaLog.Error(VyshkaFiles.INSTALLATION_BANS_PATH + " is not the installation ban list this plugin writes; no installation ban is enforced until the hub's list is read again");
 		}
 	}
 
-	// ReadStored reads one stored copy into force; false when it is not the
+	// ReadStored puts the stored document in force; false when it is not the
 	// document this plugin writes.
-	static bool ReadStored(string path)
+	static bool ReadStored(VyshkaJsonValue root)
 	{
-		VyshkaJsonValue root = VyshkaFiles.ReadJson(path);
 		VyshkaJsonValue list;
 		VyshkaJsonValue revision;
 		if (root && root.IsObject())
@@ -203,12 +185,13 @@ class VyshkaInstallationBans
 		return true;
 	}
 
-	// WriteStored writes one copy of a list; false when it could not be.
-	static bool WriteStored(string path, string revisionText, map<string, ref VyshkaInstallationBanEntry> entries)
+	// Encode is the stored document for a list; null when the revision is
+	// not a number.
+	static VyshkaJsonValue Encode(string revisionText, map<string, ref VyshkaInstallationBanEntry> entries)
 	{
 		VyshkaJsonValue revision = VyshkaJson.Parse(revisionText);
 		if (!revision || !revision.IsNumber())
-			return false;
+			return null;
 		VyshkaJsonValue list = VyshkaJsonValue.NewArray();
 		for (int i = 0; i < entries.Count(); i++)
 		{
@@ -219,7 +202,7 @@ class VyshkaInstallationBans
 		VyshkaJsonValue root = VyshkaJsonValue.NewObject();
 		root.Set("revision", revision);
 		root.Set("bans", list);
-		return VyshkaFiles.WriteJson(path, root);
+		return root;
 	}
 
 	// Reset forgets the loaded state so the next Load rereads the file; the
@@ -268,47 +251,27 @@ class VyshkaInstallationBans
 	static bool Apply(string revisionText, array<ref VyshkaInstallationBanEntry> entries, out string error)
 	{
 		Load();
-		// A staging copy still on disk may be the only whole copy of the list
-		// in force (a boot whose rewrite of the main file failed), and the
-		// write below would truncate it: the list in force goes to the main
-		// file first, and nothing new is applied until it has.
-		if (FileExist(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH) && s_Revision == "")
-		{
-			// No list is in force, so the staging copy is an apply that failed
-			// this boot, and there is nothing it could be the only copy of.
-			DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
-		}
-		if (FileExist(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH))
-		{
-			if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, s_Revision, Entries()))
-			{
-				error = VyshkaFiles.INSTALLATION_BANS_PATH + " could not be written, and " + VyshkaFiles.INSTALLATION_BANS_NEXT_PATH + " may be the only copy of the list in force, so no new list is applied";
-				return false;
-			}
-			DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
-		}
 		map<string, ref VyshkaInstallationBanEntry> next = new map<string, ref VyshkaInstallationBanEntry>;
 		for (int j = 0; j < entries.Count(); j++)
 		{
 			VyshkaInstallationBanEntry entry = entries.Get(j);
 			next.Set(entry.m_Id, entry);
 		}
-		// The staging copy first, then the main file: a crash in either write
-		// leaves one whole list on disk (see the top of this file). A main
-		// file that cannot be written fails the apply, so the list in force
-		// is always the one the main file holds or is about to, and never
-		// one kept in the staging copy alone.
-		if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH, revisionText, next))
+		// A replace that fails leaves the list in force as it was for this
+		// boot. The file is then as it was too, but for the two cases
+		// VyshkaFiles.Replace logs, where the next boot applies the new list
+		// from its staging copy: a list the hub served, so no harm.
+		VyshkaJsonValue stored = Encode(revisionText, next);
+		if (!stored)
 		{
-			error = VyshkaFiles.INSTALLATION_BANS_NEXT_PATH + " could not be written";
+			error = "revision " + revisionText + " is not a number";
 			return false;
 		}
-		if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, revisionText, next))
+		if (!VyshkaFiles.ReplaceJson(VyshkaFiles.INSTALLATION_BANS_PATH, stored))
 		{
 			error = VyshkaFiles.INSTALLATION_BANS_PATH + " could not be written";
 			return false;
 		}
-		DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
 		s_Entries = next;
 		s_Revision = revisionText;
 		if (s_Enforcer)

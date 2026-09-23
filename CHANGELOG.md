@@ -540,6 +540,39 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Fixed
 
+- 2026-09-23: a crash in the middle of rewriting `bans.json`, `manifest.json`,
+  `credentials.json`, or `executed.log` left the file cut short (issue #121): the engine
+  has no rename and `FileMode.WRITE` truncates before it writes, so a kill partway lost
+  the whole local ban list, the manifest revision marks, the server secret after its
+  enrollment token was burned, or the executed-action history that keeps a re-delivered
+  dispatch from running twice. Every file the plugin rewrites in place now goes through
+  `VyshkaFiles.ReplaceJson` or `ReplaceLines`, the staging-copy write the installation ban
+  list introduced, moved into the file layer: the whole new content goes to
+  `<name>.next.<ext>` first, then to the file, then the staging copy is deleted. A reader
+  finishes an interrupted replace before it reads (a staging copy that parses is written
+  over the file, and one cut short is discarded; the log's, whole when it ends with its end
+  line, is appended to a log that lacks some of its ids, each line marked as restored so
+  every later read puts it back behind the log's newer ids, and the log is never truncated
+  by a recovery, so an id appended after a compaction survives). Each
+  write is read back before the next step destroys anything, since the engine reports no
+  error from a write (a full disk included); a staging copy that cannot be read is kept
+  rather than taken for one cut short; a replace whose file cannot be opened leaves the
+  disk as it was; and deleting the credentials deletes a staging copy with them so an
+  interrupted write cannot bring them back. The executed log now fills its 512-id memory
+  from the newest record back, each id once; a line a crash tore from a record is ignored,
+  so it cannot push a whole one out or hide one of the same text (a bare id from the
+  earliest raw-line format, which never shipped in a release, is still honored and kept by
+  a compaction unless it begins with a quote or a `#`); every append starts
+  on a line of its own, so it no longer runs into a last line a crash left unfinished (a
+  defect older than this change); an unreadable log no longer skips a staging copy that
+  could restore it; and a log that could not be read whole is not compacted. No protocol
+  change. The engine self-test grades both crash windows of each file
+  through its own loader (`files.bansCrash`, `files.manifestCrash`,
+  `files.credentialsCrash`, `files.executedCrash`, `files.executedOrder`) and the replace itself, including a file
+  or a staging copy that cannot be opened (`files.replace`); negative controls with the
+  recovery, the log's join, the capacity rule, the restored order, the torn-line and
+  bare-id rules, the append's leading newline, the unreadable-copy rule, or the read-back
+  each disabled fail the checks that grade them.
 - 2026-09-22: `core.vehicle.destroy` named the vehicle itself as the cause of an
   explosion (`cause: self`), since the engine passes the vehicle as its own killer for a
   blast (measured with a plastic explosive); a vehicle that is its own killer is now
