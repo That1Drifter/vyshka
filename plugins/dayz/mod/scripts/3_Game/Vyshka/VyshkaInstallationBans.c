@@ -272,6 +272,12 @@ class VyshkaInstallationBans
 		// in force (a boot whose rewrite of the main file failed), and the
 		// write below would truncate it: the list in force goes to the main
 		// file first, and nothing new is applied until it has.
+		if (FileExist(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH) && s_Revision == "")
+		{
+			// No list is in force, so the staging copy is an apply that failed
+			// this boot, and there is nothing it could be the only copy of.
+			DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
+		}
 		if (FileExist(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH))
 		{
 			if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, s_Revision, Entries()))

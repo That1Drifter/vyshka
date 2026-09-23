@@ -135,9 +135,11 @@ type driver struct {
 	walkRestarts   int
 	walked         []banEntry
 	toldDuringWalk bool
-	// deliveredLast says the latest poll delivered something, whose ack the
-	// next poll carries; a walk page waits for that poll.
-	deliveredLast bool
+	// noticeUnacked says a bans.changed was taken and the poll carrying its
+	// ack has not gone out yet; a walk page waits for that poll. pageWaited
+	// says the next page has already waited one turn.
+	noticeUnacked bool
+	pageWaited    bool
 }
 
 // banEntry is one entry of the installation ban list as the driver keeps it.
@@ -518,12 +520,21 @@ func (d *driver) run(game string) {
 			}
 		}
 
-		// A page of the ban list is read only on a turn whose previous poll
-		// brought nothing, so everything the hub delivered is acked before
-		// the walk goes on: a notice that arrived mid-walk is on record as
-		// taken (its ack) before the walk's next page is asked for.
-		if d.bansDue && !d.deliveredLast && !time.Now().Before(d.bansNextTry) {
-			d.walkBans()
+		// A page of the ban list waits while a bans.changed the driver has
+		// taken is still unacked: the poll after it carries the ack, so a
+		// notice that arrived mid-walk is on record as taken before the walk
+		// goes on. Only that notice gates the walk, so a hub with something
+		// to deliver on every poll does not hold it up, and a page waits one
+		// turn at most, so a list changing on every poll slows the walk but
+		// cannot stop it (the spec asks no such order; the wait only lets the
+		// suite see it).
+		if d.bansDue && !time.Now().Before(d.bansNextTry) {
+			if d.noticeUnacked && !d.pageWaited {
+				d.pageWaited = true
+			} else {
+				d.pageWaited = false
+				d.walkBans()
+			}
 		}
 
 		batch := d.buffer
@@ -551,7 +562,8 @@ func (d *driver) run(game string) {
 		}
 		d.polledThisSession = true
 		d.unpolledRefusals = 0
-		d.deliveredLast = false
+		// This poll carried the ack of everything taken before it.
+		d.noticeUnacked = false
 
 		var response pollResponse
 		if err := json.Unmarshal(body, &response); err != nil {
@@ -581,7 +593,9 @@ func (d *driver) run(game string) {
 				continue
 			}
 			d.inAck = delivered.Seq
-			d.deliveredLast = true
+			if delivered.Type == "bans.changed" {
+				d.noticeUnacked = true
+			}
 			d.handle(delivered)
 		}
 	}

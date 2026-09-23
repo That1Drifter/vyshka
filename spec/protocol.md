@@ -2783,10 +2783,10 @@ holds for the list the restore undid, which that plugin would then never walk. A
 SHOULD mint revisions so that cannot happen. The reference hub mints each revision as the
 larger of one more than the last and its clock in milliseconds since the epoch, so a
 restored hub's next change lands above everything it handed out before the restore as
-long as its clock has not been set back behind them; a hub restored onto a clock that has
-been, or one that mints by counting alone, can repeat a revision, and an operator
-restoring one SHOULD make a change to the list afterwards (a ban placed and lifted is
-enough) so every plugin walks it again.
+long as its clock has not been set back behind them. A hub restored onto a clock that has
+been, or one that mints by counting alone, can repeat a revision, and a plugin holding
+that revision keeps its list until the list's revision moves past it; an operator SHOULD
+restore a hub onto a correct clock.
 
 **Expiry.** The hub is the truth on expiry too. It MUST take a ban off the active list no
 later than 60 s after its `expiresAt` (reference: within 5 s), increasing the revision as

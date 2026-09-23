@@ -215,6 +215,56 @@ func TestMockBanHoldSurvivesOverlappingRequests(t *testing.T) {
 	}
 }
 
+// A held request whose client gives up leaves the hold for the others, and a
+// notice acked only after a page escaped the hold certifies no ordering.
+func TestMockBanHoldIgnoresCancelledWaiters(t *testing.T) {
+	held := banHoldBound
+	banHoldBound = 600 * time.Millisecond
+	t.Cleanup(func() { banHoldBound = held })
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	p := newBanPlugin(t, h)
+	h.mu.Lock()
+	h.prepareBanListLocked(32, banEntries("s", 1))
+	h.setBanListLocked(31, banEntries("r", 5))
+	h.bans.bumpAfterFirstPage[31] = 32
+	h.mu.Unlock()
+	_, first := p.page("")
+	cursor := first["nextCursor"].(string)
+
+	// A client that gives up at 100 ms.
+	impatient := &http.Client{Timeout: 100 * time.Millisecond}
+	request, _ := http.NewRequest(http.MethodGet, p.baseURL+"/plugin/v1/bans?cursor="+cursor, nil)
+	request.Header.Set("Authorization", "Bearer "+p.sessionToken)
+	if response, err := impatient.Do(request); err == nil {
+		response.Body.Close()
+		t.Fatal("a held page answered inside 100 ms")
+	}
+	time.Sleep(50 * time.Millisecond)
+	// Its retry is still held: the cancelled waiter did not lift the hold.
+	started := time.Now()
+	if status, _ := p.page(cursor); status != http.StatusOK {
+		t.Fatalf("the retry answered %d", status)
+	}
+	if waited := time.Since(started); waited < 300*time.Millisecond {
+		t.Errorf("the retry came back after %s: the cancelled request lifted the hold", waited)
+	}
+	h.mu.Lock()
+	for _, item := range h.outbound {
+		if item.typ == "bans.changed" {
+			item.acked = true
+		}
+	}
+	ordered, escaped := h.bans.ordered, h.bans.escaped
+	h.mu.Unlock()
+	if ordered || !escaped {
+		t.Errorf("after a page escaped the hold, ordered = %v and escaped = %v, want false and true", ordered, escaped)
+	}
+}
+
 // Without the capability the stage has nothing to grade and says so; with it,
 // a plugin that never walks fails, naming what it owed.
 func TestBansStageGradesOnlyADeclaringPlugin(t *testing.T) {

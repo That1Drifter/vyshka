@@ -84,6 +84,9 @@ type mockBans struct {
 	holdUntil    time.Time
 	ordered      bool
 	heldOut      bool
+	// escaped says a page of the held walk went out before the notice was
+	// acked, after which a later ack proves nothing about the order.
+	escaped bool
 }
 
 func newMockBans() *mockBans {
@@ -245,10 +248,19 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 				}
 				h.mu.Lock()
 			}
+			if !notice.acked && r.Context().Err() != nil {
+				// This request's client gave up: it is served nothing and
+				// leaves the hold as it stands for the others.
+				h.mu.Unlock()
+				return
+			}
 			if notice.acked {
-				h.bans.ordered = true
+				if !h.bans.escaped {
+					h.bans.ordered = true
+				}
 			} else {
 				h.bans.heldOut = true
+				h.bans.escaped = true
 			}
 			if h.bans.holdNotice == notice {
 				h.bans.holdRevision = -1

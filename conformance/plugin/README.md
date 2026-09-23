@@ -197,8 +197,8 @@ enumerates the one custom context it declares (`driver.zone`, two members, one w
 position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
 outages, renumbers them across session changes, keeps the installation ban list (it declares
-`bans`, walks the list a page per turn of its loop, polling in between and acking what a
-poll delivered before the next page, whenever the
+`bans`, walks the list a page per turn of its loop, polling in between and acking any
+`bans.changed` it took before the next page (a page waits one turn at most), whenever the
 revision it is told of differs from the one it holds, and reports what it applied), and
 follows the recovery table of spec
 section 2.3. It asks for inline errors unless started
