@@ -17,6 +17,8 @@ import (
 //	kv:rw:example-mod
 //	notes:read                       operator notes on identities
 //	notes:write
+//	bans:read                        the installation ban list
+//	bans:manage                      banning and lifting on it
 //	webhooks:manage
 //	admin                            everything, including token management
 //
@@ -30,6 +32,7 @@ const (
 	resourceActions  = "actions"
 	resourceKV       = "kv"
 	resourceNotes    = "notes"
+	resourceBans     = "bans"
 	resourceWebhooks = "webhooks"
 	resourceAdmin    = "admin"
 
@@ -81,6 +84,10 @@ var scopeKinds = []scopeKind{
 	// identities to narrow by, and writing does not imply reading.
 	{resource: resourceNotes, verb: verbRead},
 	{resource: resourceNotes, verb: verbWrite},
+	// The installation ban list (spec section 13) takes no pattern either:
+	// it is one list of identities, and managing it implies reading it.
+	{resource: resourceBans, verb: verbRead},
+	{resource: resourceBans, verb: verbManage},
 	{resource: resourceWebhooks, verb: verbManage},
 	{resource: resourceAdmin, verb: ""},
 }
@@ -300,9 +307,13 @@ func (p *principal) allowsAny(resource, verb string) bool {
 	}
 	// Dispatching an action implies reading it. Without this a narrowly scoped
 	// dispatcher could start a job and then be unable to find out what happened
-	// to it, which would make every such token useless on its own.
+	// to it, which would make every such token useless on its own. Managing
+	// the ban list implies reading it for the same reason (spec section 10.1).
 	if resource == resourceActions && verb == verbRead {
 		return p.allowsAny(resourceActions, verbDispatch)
+	}
+	if resource == resourceBans && verb == verbRead {
+		return p.allowsAny(resourceBans, verbManage)
 	}
 	return false
 }
@@ -320,6 +331,9 @@ func (p *principal) allows(resource, verb, value string) bool {
 	if resource == resourceActions && verb == verbRead {
 		return p.allows(resourceActions, verbDispatch, value)
 	}
+	if resource == resourceBans && verb == verbRead {
+		return p.allows(resourceBans, verbManage, value)
+	}
 	return false
 }
 
@@ -335,6 +349,9 @@ func (p *principal) covers(resource, verb, pattern string) bool {
 	}
 	if resource == resourceActions && verb == verbRead {
 		return p.covers(resourceActions, verbDispatch, pattern)
+	}
+	if resource == resourceBans && verb == verbRead {
+		return p.covers(resourceBans, verbManage, pattern)
 	}
 	return false
 }

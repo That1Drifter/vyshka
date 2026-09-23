@@ -1,11 +1,12 @@
 // Vyshka DayZ plugin: the link to the hub.
 //
-// One object drives the whole lifecycle of spec sections 5, 6, 7, 8 and 9:
-// enroll once, start a session on every boot, long-poll forever, publish the
-// manifest, execute dispatched actions behind an executed-actionId LRU,
+// One object drives the whole lifecycle of spec sections 5, 6, 7, 8, 9 and
+// 13: enroll once, start a session on every boot, long-poll forever, publish
+// the manifest, execute dispatched actions behind an executed-actionId LRU,
 // answer a hub asking what a custom context holds, flush events and
-// snapshots into the outbox, keep unacked envelopes there, and renumber them
-// across session changes.
+// snapshots into the outbox, keep unacked envelopes there, renumber them
+// across session changes, and keep the installation ban list current
+// (VyshkaBanSync), reporting each revision it applies.
 //
 // Everything runs on the script tick. A repeating call-queue timer wakes the
 // plugin, and the transport's callbacks land on the same thread, so there is
@@ -107,6 +108,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	ref VyshkaOutbox m_Outbox;
 	ref VyshkaTransport m_Transport;
 	ref VyshkaStoreClient m_Store;
+	ref VyshkaBanSync m_BanSync;
+	string m_BansReportOwed;   // a bans.applied revision the outbox had no room for yet; "" when none
 	ref VyshkaRegistry m_Actions;
 	int m_ManifestRevision;    // what this boot publishes (ResolveManifestRevision, ReconcileManifestRevision)
 	ref VyshkaJsonValue m_ManifestJson;   // the manifest body without the revision, as this boot declares it
@@ -304,6 +307,11 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Store = new VyshkaStoreClient();
 		if (!m_Store.Init(m_Config.m_HubUrl, namespaces))
 			return;
+		// The installation ban list's reader, on a transport of its own for
+		// the same reason as the store's (VyshkaBanSync).
+		m_BanSync = new VyshkaBanSync();
+		if (!m_BanSync.Init(m_Config.m_HubUrl))
+			return;
 		ApplyReadTimeout(m_Config.m_PollTimeoutSeconds);
 
 		// The revision the manifest publishes is derived from what the
@@ -385,8 +393,11 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (m_Events.Due())
 			FlushEvents();
 		// The store's own transport: its requests go out whether or not a
-		// poll is in flight, which is the point of it having one.
+		// poll is in flight, which is the point of it having one. The ban
+		// list's reader works the same way.
 		m_Store.Tick(m_SessionToken);
+		m_BanSync.Tick(m_SessionToken);
+		AppendBansReport();
 		m_Transport.CheckWatchdog();
 		if (m_Transport.IsInFlight())
 			return;
@@ -649,6 +660,46 @@ class VyshkaPlugin : VyshkaResponseSink
 	}
 
 
+	// BansApplied reports a revision of the installation ban list the plugin
+	// has applied whole (spec section 13.4). The ban list's reader calls it;
+	// before the plugin has started, or after it stopped, there is no link to
+	// carry the report, and the next session reports the stored revision.
+	static void BansApplied(string revision)
+	{
+		if (!s_Instance || !s_Instance.m_Running)
+			return;
+		s_Instance.QueueBansReport(revision);
+	}
+
+	void QueueBansReport(string revision)
+	{
+		m_BansReportOwed = revision;
+		AppendBansReport();
+	}
+
+	// AppendBansReport puts the owed bans.applied in the outbox when there is
+	// room for it beside the slots held for results; a report that waits is
+	// kept, not dropped, and a newer revision replaces an older one waiting,
+	// since only the latest is worth saying.
+	void AppendBansReport()
+	{
+		if (m_BansReportOwed == "")
+			return;
+		if (!m_Outbox.HasRoom(1 + ReservedResults()))
+			return;
+		VyshkaJsonValue revision = VyshkaJson.Parse(m_BansReportOwed);
+		if (!revision || !revision.IsNumber())
+		{
+			VyshkaLog.Warn("not reporting installation ban list revision " + m_BansReportOwed + ", which is not a number");
+			m_BansReportOwed = "";
+			return;
+		}
+		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
+		body.Set("revision", revision);
+		if (m_Outbox.Append("bans.applied", body))
+			m_BansReportOwed = "";
+	}
+
 	// ReservedResults is how many outbox slots are spoken for by results not
 	// yet appended: one per pending dispatch, one per result held back
 	// because the outbox was full when it was ready.
@@ -832,6 +883,8 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_Transport.SetReadTimeout(pollTimeoutSeconds + 5);
 		if (m_Store)
 			m_Store.SetBudgetMs((pollTimeoutSeconds + 5 + 10 + 5) * 1000);
+		if (m_BanSync)
+			m_BanSync.SetBudgetMs((pollTimeoutSeconds + 5 + 10 + 5) * 1000);
 	}
 
 	void SetLinkState(string state)
@@ -1072,6 +1125,17 @@ class VyshkaPlugin : VyshkaResponseSink
 		ReconcileManifestRevision(root);
 
 		QueueManifest();
+
+		// The installation ban list's revision (spec section 13.4): a session
+		// that begins with the revision already enforced is reported, so the
+		// hub learns what this server holds after a restart on either side;
+		// one that differs is walked by the ban list's reader.
+		VyshkaJsonValue sessionServer = root.Get("server");
+		VyshkaJsonValue bansRevision = null;
+		if (sessionServer && sessionServer.IsObject())
+			bansRevision = sessionServer.Get("bansRevision");
+		if (m_BanSync.OnSession(bansRevision))
+			QueueBansReport(VyshkaInstallationBans.Revision());
 
 		VyshkaLog.Info("session started; pollTimeout " + m_PollTimeoutSeconds.ToString() + " s, " + m_Outbox.Count().ToString() + " envelope(s) to send");
 		SetLinkState("connected");
@@ -1350,6 +1414,8 @@ class VyshkaPlugin : VyshkaResponseSink
 			HandleManifestReject(body);
 		else if (envelopeType == "event.reject" || envelopeType == "state.reject")
 			HandleTelemetryReject(envelopeType, body);
+		else if (envelopeType == "bans.changed")
+			m_BanSync.OnChanged(body);
 		// Anything else is acked and ignored (spec section 4).
 	}
 

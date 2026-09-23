@@ -136,6 +136,9 @@ type Config struct {
 	// poll cycle and the answer rides its next poll, so the bound is for a
 	// plugin that will not answer, not for a slow one.
 	ContextEnumerateTimeout time.Duration
+	// BanSweepInterval is how often expired bans are taken off the
+	// installation ban list (spec section 13.1 allows 60 s; reference 5 s).
+	BanSweepInterval time.Duration
 	// Panel is the optional web UI, served under /panel/ with the prefix
 	// stripped, and reached by a redirect from /. Nil serves no panel and
 	// leaves / a 404 like any other unrouted path. The hub takes it as a
@@ -286,6 +289,14 @@ func (c *Config) withDefaults() {
 	if c.ContextEnumerateTimeout <= 0 {
 		c.ContextEnumerateTimeout = 10 * time.Second
 	}
+	// Above 60 s the hub would miss the bound section 13.1 sets on taking an
+	// expired ban off the list, so a longer setting is pulled back to it.
+	if c.BanSweepInterval <= 0 {
+		c.BanSweepInterval = defaultBanSweepInterval
+	}
+	if c.BanSweepInterval > maxBanSweepInterval {
+		c.BanSweepInterval = maxBanSweepInterval
+	}
 }
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
@@ -308,9 +319,11 @@ type Server struct {
 	started      time.Time
 	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
 	// Close never races the loop against the store it is closing. The webhook
-	// dispatcher shares the stop channel and confirms through dispatcherDone.
-	stopSweeper chan struct{}
-	sweeperDone chan struct{}
+	// dispatcher shares the stop channel and confirms through dispatcherDone,
+	// and the ban expiry sweep through banSweeperDone.
+	stopSweeper    chan struct{}
+	sweeperDone    chan struct{}
+	banSweeperDone chan struct{}
 	// webhookWake nudges the webhook dispatcher when fresh work landed;
 	// webhookClient makes its delivery attempts.
 	webhookWake    chan struct{}
@@ -408,6 +421,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		started:        time.Now(),
 		stopSweeper:    make(chan struct{}),
 		sweeperDone:    make(chan struct{}),
+		banSweeperDone: make(chan struct{}),
 		webhookWake:    make(chan struct{}, 1),
 		dispatcherDone: make(chan struct{}),
 		webhookClient: &http.Client{
@@ -427,6 +441,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	s.handler = s.routes()
 	go s.runMaintenance()
 	go s.runWebhookDispatcher()
+	go s.runBanSweeper()
 	return s, nil
 }
 
@@ -468,6 +483,7 @@ func (s *Server) runMaintenance() {
 				backfill.Stop()
 				backfillTick = nil
 			}
+
 		case <-expiry.C:
 			// Bounded, because Close waits for this loop before closing the
 			// store: a job that could block forever could hang shutdown.
@@ -673,6 +689,19 @@ func (s *Server) routes() http.Handler {
 		s.admin(resourceNotes, verbWrite, s.handleDeleteNote))
 	mux.HandleFunc("/api/v1/players/{platform}/{playerId}/notes/{noteId}", methodNotAllowed("DELETE"))
 
+	// The installation ban list (spec section 13.2): one list for every
+	// server, so its grants name no server and a binding does not narrow
+	// them; bans:manage cannot be minted onto a bound token at all.
+	mux.HandleFunc("GET /api/v1/bans", s.admin(resourceBans, verbRead, s.handleListBans))
+	mux.HandleFunc("POST /api/v1/bans", s.admin(resourceBans, verbManage, s.handleCreateBan))
+	mux.HandleFunc("/api/v1/bans", methodNotAllowed("GET", "POST"))
+
+	mux.HandleFunc("GET /api/v1/bans/{banId}", s.admin(resourceBans, verbRead, s.handleGetBan))
+	mux.HandleFunc("/api/v1/bans/{banId}", methodNotAllowed("GET"))
+
+	mux.HandleFunc("POST /api/v1/bans/{banId}/lift", s.admin(resourceBans, verbManage, s.handleLiftBan))
+	mux.HandleFunc("/api/v1/bans/{banId}/lift", methodNotAllowed("POST"))
+
 	// Webhooks (spec section 11), all behind webhooks:manage: registration can
 	// aim signed POSTs at anything the hub can reach, and the delivery record
 	// names every target, so reading and writing carry the same weight here.
@@ -762,6 +791,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/delete", s.pluginKV(kvDelete))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/delete", methodNotAllowed("POST"))
 
+	// The installation ban list, read page by page (spec section 13.3), with
+	// the POST spelling an engine that carries its credential on a POST alone
+	// needs.
+	mux.HandleFunc("GET /plugin/v1/bans", s.handlePluginBans)
+	mux.HandleFunc("/plugin/v1/bans", methodNotAllowed("GET"))
+	mux.HandleFunc("POST /plugin/v1/bans/get", s.handlePluginBans)
+	mux.HandleFunc("/plugin/v1/bans/get", methodNotAllowed("POST"))
+
 	// The panel, when one is mounted. It is a static asset surface and not
 	// part of either API realm: its responses are pages, so a missing asset
 	// is a plain 404 from the handler itself, not the protocol error shape.
@@ -846,6 +883,7 @@ func (s *Server) Close() error {
 		s.baseCancel()
 		<-s.sweeperDone
 		<-s.dispatcherDone
+		<-s.banSweeperDone
 		err = s.store.Close()
 	})
 	return err

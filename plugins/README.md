@@ -1,6 +1,6 @@
 # Plugins
 
-Reference plugins live here, one directory per game, matching `spec/protocol.md` section 13.
+Reference plugins live here, one directory per game, each written against `spec/protocol.md`.
 
 | Directory | Game | Language | Status |
 |---|---|---|---|

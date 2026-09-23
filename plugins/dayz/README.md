@@ -21,7 +21,7 @@ Clean-room: written from the engine's public script headers and the measurements
 | Path | What it is |
 |---|---|
 | `mod/config.cpp` | Addon and script-module registration |
-| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the registry of actions, contexts, events, and namespaces, the event buffer, the ban list, the key/value store client (`VyshkaStoreClient`) and the namespace-bound handle mods use (`VyshkaStore`), the map markers (`VyshkaMapMarker`), and the mod-facing facade (`GetVyshka()`) |
+| `mod/scripts/3_Game/Vyshka/` | Protocol code: JSON, clock and ids, files, outbox, transport, the link itself, the registry of actions, contexts, events, and namespaces, the event buffer, the ban list, the installation ban list and its reader (`VyshkaInstallationBans`, `VyshkaBanSync`), the key/value store client (`VyshkaStoreClient`) and the namespace-bound handle mods use (`VyshkaStore`), the map markers (`VyshkaMapMarker`), and the mod-facing facade (`GetVyshka()`) |
 | `mod/scripts/4_World/Vyshka/` | Game-facing code: the heal action, the vitals and condition actions (`VyshkaVitalsActions`), the moderation actions, the position and world actions, the spawn action (`VyshkaSpawnActions`), the inventory actions (`VyshkaInventoryActions`), the admin flags (`VyshkaFlags`), the player roster and telemetry (`VyshkaPlayerTelemetry`), the vehicle list, telemetry, and actions (`VyshkaVehicles`) |
 | `mod/scripts/5_Mission/Vyshka/` | The `MissionServer` hooks that start and stop the plugin and feed it connects, disconnects, and chat, and the `VyshkaRegister` hook a mod overrides to add its own actions |
 | `sample/` | A self-contained sample mod built on the surface below: one action, one event, one context, a map marker, a store counter. Copy it to start your own |
@@ -124,8 +124,8 @@ its revision is derived from its content, see "Writing a mod against the plugin"
 | `vyshka.bloodyhands` | player | none | `bloody` (required) | `name`, `before`, `after` |
 | `vyshka.flags` | player | warning | any of `god`, `freeze`, `unlimitedStamina`, `unlimitedAmmo`, `ignoredByAi` (booleans; an absent one is left as it is; at least one is required) | `player`, `name` (when known), `online`, `flags` (all five after the change), `changed` (the ones named), `revision` (of the store key; 0 when nothing was ever stored); the player need not be online |
 | `vyshka.kick` | player | warning | `reason` | `name`, `reason`; the player is disconnected through the engine's own disconnect call and `core.player.kick` is emitted |
-| `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`; the identity goes on the ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id |
-| `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`; fails when the identity is not banned. Emits `vyshka.player.unban` |
+| `vyshka.ban` | player | destructive | `reason`, `durationMinutes` (0, the default, is permanent) | `player`, `name` (when known), `kicked`, `expiresAt`, `activeBans`, `installationBans`; the identity goes on this server's ban list, the player is kicked if online, and `core.player.ban` is emitted. The player need not be online: an offline identity is banned by its plain Steam64 id. A ban on every server is the hub's installation list, not this action (below) |
+| `vyshka.unban` | player | warning | none | `removed` (the entry), `activeBans`, and `installationBan` (`id`, `reason`) when an installation ban still stands; fails when the identity carries no ban of this server's own, naming the installation ban when there is one, since that is lifted through the hub. Emits `vyshka.player.unban` |
 | `vyshka.message` | player | none | `message` (required), `title`, `seconds` (1 to 60, default 10), `style` (`notification`, the default, or `chat`) | `name`, `style` |
 | `vyshka.broadcast` | world | none | the same | `recipients`, `style` |
 | `vyshka.teleport` | player | warning | exactly one of `position` (`[x, y, z]`, or `[x, z]` placed on the terrain), `toPlayer` (a Steam64 id), `previous` (true) | `name`, `mode` (`position`, `player`, `previous`), `from`, `to`, and `toPlayer` with `toPlayerName` when a player was the destination, `vehicle` when the player's vehicle was moved with them |
@@ -189,6 +189,40 @@ is left alone, enforces nothing, and makes the ban and unban actions refuse unti
 fixed or removed, which the log says at boot. The plugin's clock is a 32-bit epoch: a
 duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
 as that instant rather than wrapped into the past.
+
+**The installation ban list** (protocol section 13) is the hub's: one list for every server
+enrolled in it, managed through the Admin API (`POST /api/v1/bans`, and `.../lift`) or the
+panel, never through an action. The manifest declares the `bans` capability, and the plugin
+keeps a copy: whenever the revision the hub reports (on the session response, or in a
+`bans.changed` it sends when the list changes) differs from the one the plugin holds, lower
+included, the plugin reads the list through `POST /plugin/v1/bans/get` on a transport of its
+own, so the read never waits behind the held poll. Pages of 100 go back to back, every one
+of them at the revision the first was served at, since the hub pins a walk to it; a
+`409 conflict` starts the walk over, and any other failure keeps the list already in force
+and tries again 30 s later. A whole revision is written to
+`<profiles>/Vyshka/installation-bans.next.json` and then to
+`<profiles>/Vyshka/installation-bans.json`, one entry and one member per line like
+everything else, and the staging copy is deleted: the engine has no rename and a rewrite
+truncates first, so this is what keeps a crash in the middle of a write from losing the
+list in force (at boot a staging copy that parses is the newest list and is finished,
+and one cut short is discarded). The list is then put in force and reported to the hub
+with `bans.applied`, which the server record shows; a session that begins with the
+revision already held reports it again. A revision the hub reports while a walk is under
+way is kept: the walk's end does not take its own revision for the latest one, and walks
+again when they differ. The stored copy is enforced from boot, before any session exists, so a hub outage
+never lifts an installation ban. It is the hub's list: an edit to the file is lost at the
+next revision, and a file that does not parse enforces nothing until the next read, which
+the log says. Only `steam` entries apply (one list can serve several games), and an entry
+past its `expiresAt` is no ban by this server's clock, whatever the hub has yet to do about
+it.
+
+The server enforces the union of the two lists. An identity on either is refused at connect
+the same way, and applying a revision disconnects every player online on it at that moment.
+`core.player.kick` over a ban says whose it was: `scope: "server"` for this server's own
+list, `scope: "installation"` with the hub's `banId` for the installation list (the server's
+own is named when both apply). No event is emitted per entry of an applied list: the hub
+holds every ban and its audit record already. `vyshka.unban` lifts only this server's own
+ban and says so when an installation ban still stands.
 
 **Teleports** move the character with the engine's own position call, the one its restricted
 area enforcement and its developer tooling use; a player seated in a vehicle is moved with the
@@ -458,7 +492,7 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.death` | The character dies | `player`, `name`, `position`, `cause`, and where known `killer`, `killerName`, `weapon`, `distance`, `killerType`; when the hit that killed came through the hit hook first (the engine's order, measured; the one exception is a non-lethal round whose converted shock kills inside the engine's own part of the hook, which reads as a `self` death followed by the fatal hit), `bodyPart`, `ammo`, and `damageType` as on the damage event; when the engine names the character itself as the killer (`cause` `self` with no `weapon`: starvation, dehydration, bleeding out, drowning, a fall), the vitals at that moment: `water`, `energy`, `blood`, `bleedingSources`, and `submerged` (the head was under water, the engine's own eligibility check for drowning; an observation, since a submerged character can bleed out) |
 | `core.player.damage` | The character takes a hit the engine reports to it (the hit hook, after the damage is applied), the fatal hit included; a hit on the corpse afterwards is not reported, and neither is a fall that cost no health (a fall is a health hit and a shock hit, and the admin log keeps the first only) | `player`, `name`, `position`, `cause` and its companions as on a death but named `attacker`, `attackerName`, and `sourceType`; `damageType` (`melee`, `firearm`, `explosion`, `stun`, or `other` for a vehicle, a fall, fire, or area damage: the engine's own categories); `bodyPart` (the engine's damage zone, `Torso`, `Head`, `Brain`, `LeftLeg`, ...); `ammo` (the engine's hit type, `Bullet_556x45`, `MeleeInfected`, `FallDamageHealth`, ...); `damage`, `blood`, `shock` (the engine's damage result for the hit, per health type: the larger of the highest value across the zones hit and the whole character's value, since on DayZ 1.29 the zone reading is 0 for a fall, which names no zone, and half the character's loss for a head hit; the figure for the hit, not a before-and-after of the vitals, so a hit that overshoots reports more than the character had left), `health` (left after the hit); `blocked` when the engine reports a hit with no damage result; `fatal` on the hit that killed |
 | `core.player.chat` | A chat line reaches the server mission | `name`, `channel` (`direct`, `megaphone`, `transmitter`, `publicAddress`, `admin`, `system`, `battleye`, or `other`), `channelId` (the engine's raw channel value), `text`, and `player` when exactly one online player has that name (the engine names the sender, it does not identify them). A retail client's direct chat arrived with a channel value outside the engine's documented set on DayZ 1.29, so it reads `other`; `channelId` carries what the engine said |
-| `core.player.kick` | A player is disconnected by `vyshka.kick`, or a banned identity is refused at connect | `player`, `name`, `reason`, `cause` (`action` or `ban`), `actionId` |
+| `core.player.kick` | A player is disconnected by `vyshka.kick`, a banned identity is refused at connect, or a newly applied installation ban list names a player online | `player`, `name`, `reason`, `cause` (`action` or `ban`), `scope` on a ban (`server` or `installation`), `banId` on an installation ban, `actionId` when an action made it |
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
 | `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
@@ -1028,7 +1062,10 @@ go run ./plugins/dayz/cmd/vyshka-dayz selftest
 `selftest` derives a mission whose `init.c` carries `selftest/VyshkaSelfTest.c`, boots a
 server on it under `plugins/dayz/build/selftest-profile` with the plugin idle (no config),
 and grades the lines the script prints, one per check, the way the conformance suites
-report: a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
+report: the installation ban list written through its staging copy and read back, with
+both crash windows of that write (a staging copy cut short beside a whole list, which is
+discarded and the list kept, and a whole staging copy beside a main file cut short, which
+wins and is written again); a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
 limit as one line); a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than

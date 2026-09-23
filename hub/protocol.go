@@ -81,6 +81,16 @@ type serverView struct {
 	PendingEnvelopeCount int          `json:"pendingEnvelopeCount"`
 	Plugin               *pluginView  `json:"plugin"`
 	Session              *sessionView `json:"session"`
+	// Bans is the server's side of the installation ban list (spec sections
+	// 5.1 and 13.4): whether its plugin declares it enforces the list, and
+	// the revision it last said it enforces.
+	Bans serverBansView `json:"bans"`
+}
+
+type serverBansView struct {
+	Supported       bool       `json:"supported"`
+	AppliedRevision *int64     `json:"appliedRevision"`
+	AppliedAt       *time.Time `json:"appliedAt"`
 }
 
 type pluginView struct {
@@ -95,7 +105,7 @@ type sessionView struct {
 	PollTimeoutSeconds int       `json:"pollTimeoutSeconds"`
 }
 
-func newServerView(server store.Server, session *store.Session, pendingEnvelopes int) serverView {
+func newServerView(server store.Server, session *store.Session, pendingEnvelopes int, capabilities []string) serverView {
 	view := serverView{
 		ID:                   server.ID,
 		Name:                 server.Name,
@@ -107,6 +117,15 @@ func newServerView(server store.Server, session *store.Session, pendingEnvelopes
 		LastSeenAt:           server.LastSeenAt,
 		LinkState:            server.LinkState,
 		PendingEnvelopeCount: pendingEnvelopes,
+		Bans: serverBansView{
+			AppliedRevision: server.BansAppliedRevision,
+			AppliedAt:       server.BansAppliedAt,
+		},
+	}
+	for _, capability := range capabilities {
+		if capability == store.CapabilityBans {
+			view.Bans.Supported = true
+		}
 	}
 	if server.PluginName != "" || server.PluginVersion != "" || len(server.Transports) > 0 {
 		view.Plugin = &pluginView{
@@ -136,6 +155,11 @@ type serverIdentity struct {
 	// is how a plugin learns the floor its next publish has to clear, since a
 	// publish at an equal or lower revision is ignored.
 	ManifestRevision *int64 `json:"manifestRevision,omitempty"`
+	// BansRevision is the current revision of the installation ban list (spec
+	// sections 5.3 and 13.3), reported on every session response so a plugin
+	// that restarted learns at once whether the list it enforces is current.
+	// Enrollment answers carry no session and leave it out.
+	BansRevision *int64 `json:"bansRevision,omitempty"`
 }
 
 func newServerIdentity(server store.Server) serverIdentity {

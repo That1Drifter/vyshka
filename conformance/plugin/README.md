@@ -1,10 +1,12 @@
 # Plugin conformance suite
 
-The mock hub that answers "is this plugin compliant?" (spec section 14). A candidate plugin
+The mock hub that answers "is this plugin compliant?" (spec section 15). A candidate plugin
 points at it instead of a real hub, and the harness drives it through its whole lifecycle:
 enrollment, sessions, long-poll, manifest publish, context enumeration, action round-trips,
-a forced re-delivery, a transport outage, a session change with envelopes still unacked, and
-a schema-invalid dispatch. A plugin that passes is compliant, with no reading of hub source required.
+a forced re-delivery, a transport outage, a session change with envelopes still unacked, a
+schema-invalid dispatch, and, for a candidate whose manifest declares the `bans` capability,
+the installation ban list. A plugin that passes is compliant, with no reading of hub source
+required.
 
 ## Running it
 
@@ -35,11 +37,12 @@ PASS  telemetry.wellFormed       Any events and snapshots the plugin publishes a
 ...
 PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
 PASS  dispatch.largeParams       A dispatch carrying large params is acked and answered inside its deadline
+PASS  bans.sync                  A plugin declaring bans walks the list whole and reports what it applied
 PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
 PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
-17 checks, 0 failed
+18 checks, 0 failed
 ```
 
 A stage can also report `PART`: it passed everything it could assert but says, in a note
@@ -48,8 +51,9 @@ had more than one poll in flight during an error-recovery stage, which makes the
 before a retry and the count of resends impossible to attribute (spec section 3.1 asks for
 one poll at a time), when the candidate published no telemetry inside the telemetry stage's
 window (publishing any is a SHOULD, so a plugin without it is compliant, and there was
-nothing to grade), and when its manifest declares no custom context, which leaves the
-enumeration stage nothing to ask about. A `PART` is not a full pass.
+nothing to grade), when its manifest declares no custom context, which leaves the
+enumeration stage nothing to ask about, and when it does not declare the `bans` capability,
+which leaves the ban list stage nothing to grade. A `PART` is not a full pass.
 
 Exit code is 0 when every check passes, 1 when any check fails, and 2 when the suite could
 not run at all.
@@ -140,6 +144,28 @@ in. The `telemetry.wellFormed` stage itself only waits, for `-check-timeout`, fo
 batch or snapshot to arrive; a candidate that publishes telemetry on a slower cadence
 should raise that flag rather than accept the `PART`.
 
+The installation ban list (spec section 13) is graded only for a candidate whose manifest
+declares the `bans` capability (section 6.7); the mock serves `GET /plugin/v1/bans` and
+`POST /plugin/v1/bans/get`, two entries a page whatever `limit` asks for, with
+`server.bansRevision` on every session response. The `bans.sync` stage then publishes a
+list of several pages under a `bans.changed` and waits for the `bans.applied` of its
+revision; moves the list to a new revision the moment a walk has read its first page, so
+the walk must finish at the revision it began at, holding the rest of that walk until the
+candidate has acked the `bans.changed` of the new revision, so the notice lands in the
+middle of the walk and the walk's end must not overwrite it (a candidate that does not
+ack it within 8 s, one that walks without polling in between, gets a `PART` for that
+ordering); answers `409 conflict` on a cursor partway through a walk and
+on every later cursor of that walk, so only a walk begun again gets past it; ends the
+session, and waits
+for the new session to report the revision the candidate already holds; and moves the list
+to a lower revision, as a hub restored from a backup would, which must be walked too,
+since a revision that differs is enough. The stage's revisions are drawn from the clock,
+so a candidate holding a list from an earlier run never mistakes them for its own, and
+revision 0, the empty list every hub starts from, counts as applied without a walk. Throughout, a `bans.applied` of a revision the
+candidate has not been served every page of is a fault: the report is the only evidence of
+enforcement a hub gets. Each wait allows `-check-timeout` plus 35 s, one retry at the
+reference DayZ plugin's 30 s cadence.
+
 ## How the checks work
 
 Unlike the hub suite, the checks here are **stages**: the candidate is one long-lived
@@ -170,7 +196,11 @@ publishes a one-action manifest and one batch of events plus one `state.players`
 enumerates the one custom context it declares (`driver.zone`, two members, one with a
 position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
-outages, renumbers them across session changes, and follows the recovery table of spec
+outages, renumbers them across session changes, keeps the installation ban list (it declares
+`bans`, walks the list a page per turn of its loop, polling in between and acking any
+`bans.changed` it took before the next page (a page waits one turn at most), whenever the
+revision it is told of differs from the one it holds, and reports what it applied), and
+follows the recovery table of spec
 section 2.3. It asks for inline errors unless started
 with `-inline=false`, and with `-opaque` it discards the status and body of every non-2xx,
 keeping only the class, which is what an engine like DayZ's leaves a plugin with. CI runs

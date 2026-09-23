@@ -109,6 +109,9 @@ type session struct {
 		// A pointer, because absent and zero are different answers: the hub
 		// holds no manifest, or it holds one at some revision (section 5.3).
 		ManifestRevision *int64 `json:"manifestRevision"`
+		// The installation ban list's revision (section 13.3), which a hub
+		// implementing the list reports on every session response.
+		BansRevision *int64 `json:"bansRevision"`
 	} `json:"server"`
 }
 

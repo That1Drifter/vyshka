@@ -31,7 +31,7 @@ const outboundQueueLimit = 5000
 // endpoint refuses them, so it can never be used to route around the
 // validation the hub performs on them, or to forge a message the plugin will
 // take as the hub's own word (spec sections 5.5 and 6).
-var reservedEnvelopeTypes = []string{"action.", "manifest.", "context.", "event.", "state."}
+var reservedEnvelopeTypes = []string{"action.", "manifest.", "context.", "event.", "state.", "bans."}
 
 type createServerRequest struct {
 	Name                      string `json:"name"`
@@ -92,7 +92,7 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	auditDetail(r, "game", server.Game)
 	s.log.Info("server created", "serverId", server.ID, "name", server.Name, "game", server.Game)
 	writeJSON(w, http.StatusCreated, createServerResponse{
-		Server:     newServerView(server, nil, 0),
+		Server:     newServerView(server, nil, 0, nil),
 		Enrollment: enrollmentView{Token: secret, ExpiresAt: expiresAt},
 	})
 }
@@ -139,8 +139,8 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// serverView assembles the live parts of a server record: its session and how
-// much work is queued for it.
+// serverView assembles the live parts of a server record: its session, how
+// much work is queued for it, and what its manifest says it can do.
 func (s *Server) serverView(r *http.Request, server store.Server) (serverView, error) {
 	session, err := s.store.LiveSession(r.Context(), server.ID)
 	if err != nil {
@@ -150,7 +150,11 @@ func (s *Server) serverView(r *http.Request, server store.Server) (serverView, e
 	if err != nil {
 		return serverView{}, err
 	}
-	return newServerView(server, session, pending), nil
+	capabilities, err := s.store.ManifestCapabilities(r.Context(), server.ID)
+	if err != nil {
+		return serverView{}, err
+	}
+	return newServerView(server, session, pending, capabilities), nil
 }
 
 // handleIssueEnrollmentToken mints a replacement enrollment token, which is how

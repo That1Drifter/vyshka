@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.31 (2026-09-23)
+**Status:** draft 0.32 (2026-09-23)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -73,7 +73,7 @@ Both realms are JSON over HTTP:
 - Request and response bodies are UTF-8 JSON. A request carrying a body MUST use
   `Content-Type: application/json`; a hub MUST reject anything else with `415`.
 - Receivers MUST ignore unknown fields in any request or response body. This is the
-  body-level half of the forward-compatibility rule in section 13: new optional fields may
+  body-level half of the forward-compatibility rule in section 14: new optional fields may
   appear at any time.
 - Bearer credentials travel in `Authorization: Bearer <token>`. All tokens defined by this
   document (enrollment token, server secret, session token, admin token) are **opaque**:
@@ -475,7 +475,8 @@ Authorization: Bearer <admin token>
     "linkState": "unknown",
     "pendingEnvelopeCount": 0,
     "plugin": null,
-    "session": null
+    "session": null,
+    "bans": { "supported": false, "appliedRevision": null, "appliedAt": null }
   },
   "enrollment": {
     "token": "<one-time enrollment token>",
@@ -497,6 +498,10 @@ Authorization: Bearer <admin token>
   (section 9.4).
 - `session` is `null` when no live session exists, otherwise
   `{ "id": ..., "expiresAt": ..., "pollTimeoutSeconds": ... }`.
+- `bans` is the server's side of the installation ban list (section 13): `supported` is
+  whether the stored manifest declares the `bans` capability (section 6.7), and
+  `appliedRevision` and `appliedAt` are the revision the plugin last reported enforcing and
+  when it said so (section 13.4), both `null` until its first report.
 
 Supporting endpoints, all requiring the `admin` scope:
 
@@ -566,7 +571,8 @@ POST /plugin/v1/session
   "pollTimeoutSeconds": 25,
   "transports": ["poll"],
   "features": { },
-  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz", "manifestRevision": 7 }
+  "server": { "id": "01J5QK...", "name": "Chernarus #1", "game": "dayz", "manifestRevision": 7,
+              "bansRevision": 12 }
 }
 ```
 
@@ -580,8 +586,13 @@ POST /plugin/v1/session
   a profile directory, or a clock set back, cannot strand its manifest below what the hub
   holds; a plugin MUST tolerate the field's absence, since a hub predating this draft
   never sends it.
+- `server.bansRevision` is the current revision of the installation ban list (section
+  13.1). A hub implementing section 13 MUST report it on every session response, so a
+  plugin that restarted, or lost its stored copy, learns at once whether the list it
+  enforces is current. A plugin MUST tolerate its absence, which means the hub serves no
+  list: a hub predating draft 0.32 never sends it.
 - `protocolVersion` is what the plugin speaks; omitted means the current version. A hub MUST
-  support the current and previous major version (section 13) and MUST reject anything else
+  support the current and previous major version (section 14) and MUST reject anything else
   with `protocol_version_unsupported`.
 - `pollTimeoutSeconds` is honored within 5 s to 60 s and clamped outside it, per section
   3.1.1. `envelopeVersion` is the `v` the hub will send on envelopes (section 4).
@@ -638,10 +649,11 @@ of the same queue, with its own endpoint and its own validation.
   response therefore carries no `seq`.
 - A hub MUST reject a `type` family the hub itself models (`action.*` via the dispatch
   endpoint of section 7, `manifest.*` via section 6, `context.*` via section 6.2,
-  `event.*` via section 8.1, `state.*` via section 8.3) with `conflict`. This endpoint must never become a way around the
+  `event.*` via section 8.1, `state.*` via section 8.3, `bans.*` via section 13) with
+  `conflict`. This endpoint must never become a way around the
   validation those surfaces perform, nor a way to queue a message, such as a forged
-  `manifest.reject`, `event.reject`, or `state.reject`, that the plugin would take as the
-  hub's own word.
+  `manifest.reject`, `event.reject`, `state.reject`, or `bans.changed`, that the plugin
+  would take as the hub's own word.
 - Queueing does not require a live session, and MUST NOT fail because the server has none.
 
 | `code` | HTTP | Raised when |
@@ -682,7 +694,8 @@ At session start, and at any later moment, the plugin sends `manifest.publish`:
     ],
     "contexts": [ ],
     "events": [ ],
-    "kvNamespaces": [ "example-mod" ]
+    "kvNamespaces": [ "example-mod" ],
+    "capabilities": [ "bans" ]
   }
 }
 ```
@@ -873,7 +886,8 @@ duplicated, a declared context `id` is one of the built-in contexts (`world`, `p
 annotation (section 6.1) names a context the manifest does not
 declare or sits on a non-string schema, a `kvNamespace` annotation (section 6.1) names a
 namespace the manifest's `kvNamespaces` does not declare or sits on a non-string schema, a
-`not` is in any form but `{ "enum": [...] }` (section 6.1), or a declared field exceeds the hub's length
+`not` is in any form but `{ "enum": [...] }` (section 6.1), `capabilities` is not a list of
+strings within the bounds of section 6.7, or a declared field exceeds the hub's length
 limits (counted in Unicode code points, the unit `maxLength` means in the companion
 schema). A JSON `null` where an
 OPTIONAL field could appear reads as the field being absent, never as a type error.
@@ -965,6 +979,24 @@ accepted; an operation already past its confinement check when the publish commi
 still land under the old declaration, which is the ordering any pair of concurrent
 requests already has. The keys under a withdrawn namespace are untouched, because admin
 tokens and other servers' manifests may still reach them.
+
+### 6.7 Capabilities
+
+The OPTIONAL `capabilities` array names the optional parts of this protocol the plugin
+implements, so a hub can tell a plugin that does something from one that merely acks the
+envelopes it would take (section 4 obliges every plugin to ack an unknown type, so an ack
+proves nothing).
+
+- Each entry is a non-empty string of at most 64 code points; at most 32 entries. A list
+  outside those bounds, or anything but a list of strings, rejects the manifest (section
+  6.4). A duplicate entry is harmless.
+- A hub MUST ignore an entry it does not know. A new capability is therefore an additive
+  change, and a plugin can declare one ahead of the hubs that read it.
+- The declaration lives with the stored manifest: a capability applies from the publish
+  that declares it until the publish that drops it (section 6.1).
+
+This draft defines one entry, `bans`: the plugin enforces the installation ban list of
+section 13.
 
 ## 7. Action lifecycle
 
@@ -1369,7 +1401,7 @@ Within a session a retransmitted snapshot is a duplicate like any envelope (sect
 acked again, applied no further. Across a session change `seq` is renumbered and only the
 envelope `id` survives, so a hub MUST deduplicate an accepted `state.*` envelope on its
 `id` (per server), storing nothing for one it has already stored. Without that, the one
-case section 14 calls out, a restart with traffic in flight, would put the same snapshot
+case section 15 calls out, a restart with traffic in flight, would put the same snapshot
 in history twice with a fresh receipt time. The dedup record MUST outlive the snapshot's
 history row: history is bounded by depth as well as time, so a superseded row can leave
 history long before the window passes while the latest of its type survives every pass,
@@ -1589,6 +1621,12 @@ DELETE /api/v1/players/steam/76561198000000001/notes/{noteId}
   (section 10.1). Notes are installation-wide, like the identity they describe, so a
   server binding does not narrow them.
 
+**Bans.** The installation bans ever placed on an identity, lifted and expired ones
+included, are the ban list read of section 13.2 filtered to it:
+`GET /api/v1/bans?platform=steam&playerId=76561198000000001&state=all`, under `bans:read`.
+A ban record is kept after it is lifted or expires, so the history is as long as the hub
+has kept it rather than as long as event retention.
+
 | `code` | HTTP | Raised when |
 |---|---|---|
 | `bad_request` | 400 | `{platform}` or `{playerId}` empty, over its bound, or carrying U+0000; an unparseable `type`, `since`, `until`, `limit`, or `cursor`; a note `text` missing, blank, carrying U+0000, or over 4000 code points |
@@ -1708,6 +1746,8 @@ actions:dispatch:core.player.*   one namespace of action codes
 kv:rw:example-mod                one KV namespace
 notes:read                       operator notes on player identities (section 8.6)
 notes:write                      writing and deleting those notes
+bans:read                        the installation ban list and its records (section 13)
+bans:manage                      banning and lifting on that list
 webhooks:manage                  webhook configuration
 admin                            everything, including token management and server enrollment
 ```
@@ -1734,6 +1774,8 @@ Two implications are normative, and neither runs in reverse:
   safeguard.
 - **`actions:dispatch:{pattern}` implies `actions:read:{pattern}`.** A token that could start
   a job but never learn what became of it would be unusable on its own.
+- **`bans:manage` implies `bans:read`**, for the same reason: a token that can lift a ban
+  has to be able to find it.
 
 **Server binding.** This grammar narrows by action code, event type, and KV namespace, and
 has no term that names a server. The server dimension belongs to the token, not to a scope:
@@ -1760,18 +1802,24 @@ binding names, and the token keeps meaning what it meant.
 Some grants have no server to bind to, and a hub MUST refuse them on a bound token at mint,
 with `bad_request`: `admin` (token management and enrollment are installation-wide, and a
 bound superuser is a contradiction), `webhooks:manage` (a subscription is a standing export
-the hub delivers on its own, section 11), and any grant a later draft marks
-installation-wide. `kv:rw` is allowed on a bound token and the binding does not narrow it:
+the hub delivers on its own, section 11), `bans:manage` (a ban on the installation list
+reaches every server, section 13, and a moderator bound to one server bans on that server
+through the server's own ban action, which `actions:dispatch` grants and the binding
+confines), and any grant a later draft marks installation-wide. `kv:rw` is allowed on a
+bound token and the binding does not narrow it:
 the store is installation-wide by design (section 12), a value written under one server's
 token is the same value on every server, and a bound token needs the store for exactly the
 things (presets, per-identity flags) that are meant to follow a player across servers.
 `notes:read` and `notes:write` are allowed and unnarrowed for the same reason: a note is
 about an identity, and an identity is the same person on every server (section 8.6), so a
 moderator bound to one server reads and writes the notes every other moderator keeps.
-Those are the two places a binding does not mean what its name suggests, and a UI SHOULD
-say so beside the grant.
+`bans:read` is allowed and unnarrowed as well: the list is one list for the installation,
+and a moderator bound to one server needs to see why a player cannot join it. Those are
+the three places a binding does not mean what its name suggests, and a UI SHOULD say so
+beside the grant.
 
-`notes:write` does not imply `notes:read`, and neither takes a `:pattern`.
+`notes:write` does not imply `notes:read`, and neither takes a `:pattern`; neither does
+either `bans` grant, since there is nothing to narrow a list of identities by.
 
 A hub MUST implement the binding. A hub that stored one and ignored it would hand out a
 credential wider than the operator believes, which is worse than refusing the mint; a hub
@@ -1794,6 +1842,8 @@ in the request, the check MUST run against that value:
 | `GET /api/v1/players/{platform}/{playerId}/actions` | any `actions:read` grant; the answer holds only the codes it covers (section 8.6) |
 | `GET /api/v1/players/{platform}/{playerId}/notes` | `notes:read` |
 | `POST .../notes`, `DELETE .../notes/{noteId}` | `notes:write` |
+| `GET /api/v1/bans`, `GET /api/v1/bans/{banId}` | `bans:read` |
+| `POST /api/v1/bans`, `POST /api/v1/bans/{banId}/lift` | `bans:manage` |
 | `/api/v1/kv/{namespace}/{key}`, `POST .../incr`, `GET /api/v1/kv/{namespace}` | `kv:rw:{the path's namespace}` |
 | `GET /api/v1/kv` | any `kv:rw` grant; the namespaces listed are filtered to those the grants cover (section 12.2) |
 | `/api/v1/tokens`, `/api/v1/tokens/{id}`, `GET /api/v1/audit` | `admin` |
@@ -1820,9 +1870,11 @@ the scope:
   server, and answer only what the binding admits: the records of other servers are left
   out, never refused, as `GET /api/v1/servers` leaves them out.
 - Routes that name no server and read no server's records (the key/value store, player
-  notes, token management, the audit log, webhooks) are not touched by the binding; of
-  those, a bound token can hold grants only on the key/value store and on notes, and
-  section 10.1 says why those stay installation-wide.
+  notes, the ban list, token management, the audit log, webhooks) are not touched by the
+  binding; of those, a bound token can hold grants only on the key/value store, on notes,
+  and to read the ban list, and section 10.1 says why those stay installation-wide. A ban
+  record's `serverId` is provenance, not a server the record belongs to, so a bound token
+  reads every record whatever it names.
 
 A hub serving one trust boundary answers `forbidden` here for the same reason it does
 everywhere else in this section: the id in the path is one the caller already holds, and
@@ -1913,7 +1965,8 @@ debugging a typo must not be sent looking at its scopes.
 section 10.1: a list of server ids the token is confined to, where absent or empty mints an
 unbound token. A hub MUST validate it before minting: an id it does not know is `not_found`,
 more than 50 ids, an id outside the identifier alphabet, or a scope the binding cannot carry
-(`admin`, `webhooks:manage`) is `bad_request`, and either refusal mints nothing. The record
+(`admin`, `webhooks:manage`, `bans:manage`) is `bad_request`, and either refusal mints
+nothing. The record
 carries `servers` on every response that carries the record, `[]` for an unbound token, so
 a client never has to guess which meaning an absent member has. `expiresInSeconds` is
 OPTIONAL; absent or zero mints a token that does not expire on its own, and a hub MAY clamp
@@ -2660,7 +2713,304 @@ to write into such a namespace uses **set** on it directly; no create step exist
 | `revision_mismatch` | 409 | `ifRevision` does not match the current revision; `details.revision` carries it |
 | `conflict` | 409 | incr on a non-integer value, an arithmetic result outside `(-2^53, 2^53)`, or a revision at the `2^53` bound |
 
-## 13. Versioning and compatibility
+## 13. Installation ban list
+
+An installation is one hub and the game servers enrolled in it, and it has one set of
+people it wants on none of them. The installation ban list is that set: held by the hub,
+changed through the Admin API, and pulled by every plugin that declares it enforces it.
+It sits beside whatever a game server bans on its own (a ban action a plugin declares, a
+game's own list), never in place of it: a server enforces the union of the two.
+
+Truth lives on the hub and the plugin pulls, over plain HTTP, the way the key/value store
+works (section 12): a list is state, not a message, and an at-least-once queue of list
+changes would be a second copy of the state that could disagree with the first. The
+queue carries only a nudge that the list changed (section 13.3), and what a server
+enforces is reported by its plugin rather than inferred from an ack (section 13.4).
+
+A hub MUST implement this section. A hub that predates it refuses `bans:*` at mint under
+the closed-set rule of section 10.1 and omits `bansRevision` from its session responses,
+which is how an admin client and a plugin tell. A plugin SHOULD implement it, and one that
+does declares the `bans` capability (section 6.7).
+
+### 13.1 Records and the revision
+
+```json
+{
+  "id": "01J5QR...",
+  "player": { "platform": "steam", "id": "76561198000000001" },
+  "reason": "Speed hack, confirmed on two servers",
+  "name": "Survivor",
+  "serverId": "01J5QK...",
+  "createdAt": "2026-09-23T18:00:00.000Z",
+  "createdBy": { "tokenId": "01J...", "tokenName": "moderator-anna" },
+  "expiresAt": null,
+  "state": "active",
+  "liftedAt": null,
+  "liftedBy": null
+}
+```
+
+- `player` is the identity of section 8.2, with the bounds of section 8.3 (a non-empty
+  `platform` of at most 64 code points and `id` of at most 128) and no U+0000.
+- `reason` is a non-empty string of at most 200 code points that is not whitespace alone
+  and contains no U+0000. It travels to every game server and is what a refused player
+  may be shown, so it is required.
+- `name` is a display label of at most 200 code points, stored as sent with no lookup:
+  the name the player was known by, for the operator reading the list. `""` when none
+  was given.
+- `serverId` is provenance: the server the ban arose on, recorded for the audit's
+  per-server view (section 10.5) and for the reader, `null` when none was given. It has no
+  effect on enforcement.
+- `expiresAt` is when the ban ends, `null` for a ban that does not end on its own.
+- `state` is `active`, `lifted`, or `expired`. A ban is `expired` from the instant its
+  `expiresAt` passes, on every Admin API read, whether or not the hub has taken it off the
+  list it serves yet (below). `liftedAt` and `liftedBy` are set when it is lifted and
+  `null` otherwise; `createdBy` and `liftedBy` name the credential with its name **as it
+  was at the time**, as the audit log does, a bootstrap credential with an empty `tokenId`.
+
+An identity carries at most one ban in state `active`. Records are kept after a ban is
+lifted or expires: they are an operator's own history, like notes (section 8.6), and no
+retention applies to them.
+
+**The active list** is what the plugins enforce: every ban the hub holds as active. Its
+**revision** is an integer in `[0, 2^53)`, `0` before the list has ever changed, that the
+hub increases every time the active list changes and at no other time. A change is a ban
+created, an active ban lifted, or expired bans taken off the list.
+
+A revision should name one list for good. The case that tests it is a hub restored from a
+backup: its revision goes back, and its next change could take a number a plugin already
+holds for the list the restore undid, which that plugin would then never walk. A hub
+SHOULD mint revisions so that cannot happen. The reference hub mints each revision as the
+larger of one more than the last and its clock in milliseconds since the epoch, so a
+restored hub's next change lands above everything it handed out before the restore as
+long as its clock has not been set back behind them. A hub restored onto a clock that has
+been, or one that mints by counting alone, can repeat a revision, and a plugin holding
+that revision keeps its list until the list's revision moves past it; an operator SHOULD
+restore a hub onto a correct clock.
+
+**Expiry.** The hub is the truth on expiry too. It MUST take a ban off the active list no
+later than 60 s after its `expiresAt` (reference: within 5 s), increasing the revision as
+for any change; bans that expire together MAY go in one change. Until it does, the list
+it serves may still carry an entry past its `expiresAt`, which a plugin treats as no ban
+by its own clock (section 13.4), so the window costs nothing but a stale entry.
+
+### 13.2 Managing the list (Admin API)
+
+```
+POST /api/v1/bans
+{ "player": { "platform": "steam", "id": "76561198000000001" },
+  "reason": "Speed hack, confirmed on two servers",
+  "durationSeconds": 604800, "name": "Survivor", "serverId": "01J5QK..." }
+
+-> 201 Created
+{ "ban": { "id": "01J5QR...", "state": "active", ... }, "revision": 13 }
+```
+
+- `player` and `reason` are REQUIRED, within the bounds of section 13.1.
+- `durationSeconds` is OPTIONAL, an integer in `[1, 315360000]` (ten years); the ban's
+  `expiresAt` is that long after the hub's own clock at creation. Absent or `null` means a
+  ban that does not end on its own. A value outside the range is `bad_request`, not
+  clamped, the rule `ttlSeconds` follows in section 12.2. The duration is counted by the
+  hub because the hub is the truth on expiry: a client's clock is not consulted.
+- `name` and `serverId` are OPTIONAL. A `serverId` naming no server the hub knows is
+  `not_found`, the rule a webhook's `serverIds` follows (section 11.2).
+- An identity that already carries an active ban is `conflict`, with `details.banId`
+  naming that ban. Lifting and banning again are two acts, each audited.
+- `revision` is the revision of the active list once the change is made.
+
+```
+GET /api/v1/bans?state=active&limit=100
+GET /api/v1/bans?platform=steam&playerId=76561198000000001&state=all
+
+-> 200 OK
+{ "revision": 13, "bans": [ { "id": "01J5QR...", ... } ], "nextCursor": "..." }
+```
+
+| Parameter | Rules |
+|---|---|
+| `state` | `active` (the default) or `all`. `active` answers the bans in that state; `all` adds the lifted and the expired. |
+| `platform`, `playerId` | Together or not at all: the bans of one identity, each within the bounds of section 13.1. One without the other is `bad_request`. |
+| `limit` | Page size. The hub bounds it (reference default 100, cap 500) and clamps rather than refusing, as in section 8.5. |
+| `cursor` | An opaque `nextCursor` from a previous page. |
+
+Bans come back newest first by `createdAt`, with the id as the tiebreak so the order is
+total. `revision` is the revision of the active list the page was read with, one read
+with the records, so a reader comparing it with the servers' reports (section 13.4)
+compares the list it is shown. The cursor follows section 8.5: opaque, absent on the last
+page, and a walk never returns a record twice. With `state=all` a walk also never skips a
+record present when it began, since records are kept. With `state=active` each page is
+judged as the list stands when it is read, so a ban lifted or expired between two pages
+is left out of the later one: an active walk is a live view, not a snapshot, and a reader
+that needs one list as it stood uses the plugin read of section 13.3.
+
+`GET /api/v1/bans/{banId}` answers `{ "ban": { ... } }`, or `not_found`.
+
+```
+POST /api/v1/bans/{banId}/lift
+
+-> 200 OK
+{ "ban": { "id": "01J5QR...", "state": "lifted", "liftedAt": "...", ... }, "revision": 14 }
+```
+
+- Lifting an active ban sets `liftedAt` and `liftedBy`, takes the ban off the active list,
+  and increases the revision. The request carries no body; one sent anyway is ignored.
+- Lifting a ban that is no longer active (lifted, or expired) changes nothing and answers
+  the record as it stands, with the current revision: a retried lift is harmless, and a
+  repeated lift never moves the recorded `liftedAt`, the rule a token revocation follows
+  (section 10.4).
+- An unknown `{banId}` is `not_found`.
+
+Reading needs `bans:read`, and banning and lifting need `bans:manage` (section 10.1). A
+server binding does not narrow either: the list is the installation's. Creating and
+lifting are Admin API mutations and audited like any other (section 10.5); a hub SHOULD
+record the ban's `serverId` on the audit record of its creation, so it appears in that
+server's audit view.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `bad_request` | 400 | `player` or `reason` missing or outside its bounds, `name` over its bound or carrying U+0000, `durationSeconds` not an integer in range, `state` not `active` or `all`, one of `platform` and `playerId` without the other, an unparseable `limit` or `cursor` |
+| `forbidden` | 403 | The token lacks the route's grant |
+| `not_found` | 404 | An unknown `{banId}`, or a `serverId` naming no server |
+| `conflict` | 409 | The identity already carries an active ban; `details.banId` names it |
+
+### 13.3 Pulling the list (Plugin API)
+
+A plugin learns the current revision two ways, and reads the list itself one way.
+
+**At session start**, from `server.bansRevision` in the session response (section 5.3).
+
+**While a session is up**, from `bans.changed` (hub -> plugin):
+
+```json
+{ "type": "bans.changed", "body": { "revision": 14 } }
+```
+
+- A hub MUST queue a `bans.changed` for every server whose stored manifest declares the
+  `bans` capability (section 6.7) whenever the active list changes, and MUST NOT queue one
+  for a server whose manifest does not: an old plugin acks an envelope it does not
+  understand (section 4), and a hub that sent it one would have nothing but that ack to go
+  on. A hub MAY skip a server whose credentials are revoked or were never issued.
+- A hub MUST also queue one, carrying the current revision, when it accepts a manifest
+  that declares the capability, and the acceptance and any change of the list MUST be
+  ordered: either the change sees the capability stored and notifies the server, or the
+  notice queued with the acceptance carries the change's revision. A plugin reads the
+  list at session start, before its manifest is necessarily accepted, and a change landing
+  between the two would otherwise reach nobody.
+- The notice is a nudge, not the list: its revision may already be stale when it
+  arrives, and a plugin reads the list rather than trusting the number. A hub SHOULD
+  therefore replace a `bans.changed` it has queued for a server and not yet sent with one
+  carrying the newer revision, so a burst of changes costs a server one notice rather than
+  one each; a notice already sent is left alone (section 9.1). A notice the hub cannot
+  queue because the server's queue is at its bound (section 9.2) is dropped: the next
+  session response carries the revision regardless.
+- It is an ordinary envelope (section 4), acked and retransmitted like any other.
+
+**The list** is read page by page:
+
+```
+GET /plugin/v1/bans?limit=100
+GET /plugin/v1/bans?cursor=...&limit=100
+Authorization: Bearer <sessionToken>
+
+-> 200 OK
+{
+  "revision": 14,
+  "bans": [
+    { "id": "01J5QR...", "player": { "platform": "steam", "id": "76561198000000001" },
+      "reason": "Speed hack, confirmed on two servers", "name": "Survivor",
+      "expiresAt": null }
+  ],
+  "nextCursor": "..."
+}
+```
+
+- Any live session may read the list (section 5.3), whether or not its manifest declares
+  the capability.
+- `bans` holds the active list's entries, each with the `id`, `player`, `reason`, `name`,
+  and `expiresAt` of its record (section 13.1). Entries come in byte order of
+  `player.platform` then `player.id`, which is total, since an identity carries at most
+  one active ban.
+- **A walk reads one revision.** The first page (no `cursor`) is served at the current
+  revision, and every page reached through its cursors is served at that same revision,
+  whatever changed since: `revision` on each page says which. A walk that began at 14 ends
+  at 14 even when a ban lands halfway, and the plugin then learns of 15 from a notice or
+  its next session and walks again. Without this, a list that changes faster than a
+  plugin can page through it could never be read whole.
+- `limit` is bounded (reference default 100, cap 500) and clamped rather than refused, as
+  in section 8.5. A page is bounded so that no single answer is a large piece of work
+  for a constrained engine (Appendix A); a plugin MAY fetch the pages of a walk back to
+  back or spread over time, since the walk's revision does not move under it.
+- `nextCursor` is absent on the last page. A cursor is opaque (section 2.1), but a hub
+  MUST draw it from letters, digits, `-`, and `_` alone, so a plugin on an engine with no
+  URL-encoding library can put it in the query string as it came.
+- A hub that can no longer serve the revision a cursor names answers `409 conflict`, and
+  the plugin starts the walk over from the first page. That covers a hub that pruned the
+  history it needs, and a cursor from another history: one naming a revision this hub
+  never minted, or one above its current revision, as a cursor minted before a restore
+  from an older backup does. The reference hub keeps every ban record and a register of
+  the revisions it minted, so it can serve every revision of its own history and refuses
+  one its register does not hold (within the limit section 13.1 states for a clock set
+  back).
+
+**POST spelling.** For the engines of section 12.2 that carry their credential on a
+`POST` alone, the Plugin API also offers the read as `POST /plugin/v1/bans/get`, taking
+the same parameters in the query string, ignoring any body, and giving the same answer
+and the same errors. A hub MUST serve both spellings. A plugin whose client can issue a
+`GET` with its credential SHOULD use that.
+
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `session_invalid` | 401 | The session token is expired, unknown, or superseded (section 5.3) |
+| `bad_request` | 400 | An unparseable `limit` or `cursor` |
+| `conflict` | 409 | The hub cannot serve the revision the cursor names; start the walk over |
+
+### 13.4 Enforcing the list (plugin)
+
+A plugin that declares the `bans` capability MUST:
+
+1. **Keep what it applied.** The last list it applied and its revision are kept where
+   they survive a restart (file-backed where the engine allows) and enforced from boot,
+   before any session exists: a hub outage never lifts an installation ban.
+2. **Walk whenever the revision differs.** When the revision it learns (the session
+   response, a `bans.changed`) differs from the one it enforces, it reads the list.
+   Differs, not only exceeds: a hub restored from a backup can report a lower revision,
+   and the hub is the truth.
+3. **Apply only a whole revision.** The list takes effect once every page of one walk is
+   in hand, and stored when it is stored at all; a walk that fails partway (a transport
+   failure, a refusal, a page at a revision other than the first page's) changes nothing,
+   keeps the previous list enforced, and is retried (reference: every 30 s). A `conflict`
+   restarts the walk at once.
+4. **Report.** Once it has applied a revision, it sends `bans.applied` (plugin -> hub),
+   `{ "revision": 14 }`, and on a session that begins with the revision it already
+   enforces it sends one as well, so the hub learns what the server enforces after a
+   restart on either side. It MUST NOT report a revision it has not applied: the report is
+   the only evidence of enforcement there is.
+5. **Honor expiry by its own clock.** An entry whose `expiresAt` has passed is no ban,
+   whatever the hub has yet to do about it (section 13.1).
+6. **Apply only its own platform.** An entry whose `player.platform` is not one the
+   server's game uses is ignored: one list serves an installation that runs several games.
+7. **Enforce the union.** An identity on either the installation list or the server's
+   own is refused at connect, and on applying a revision, every player online at that
+   moment whose identity is on it is disconnected. A server-side lift removes the
+   server's own entry only; an installation ban is lifted through section 13.2 and
+   nowhere else, and a plugin SHOULD say so when a server-side lift leaves one standing.
+
+When a plugin disconnects a player over a ban it SHOULD emit `core.player.kick` (section
+8.1) with `cause: "ban"`, and with `scope` saying whose ban it was: `"installation"`,
+carrying the ban's `id` as `banId`, or `"server"` for the server's own. It SHOULD NOT emit
+an event per entry of an applied list: the hub already holds each ban and its audit
+record, and a walk would otherwise replay the whole list into every feed.
+
+**The report on the hub.** A hub records the revision of every `bans.applied` it accepts
+on the server record, as `bans.appliedRevision` with `bans.appliedAt` (section 5.1), in
+envelope order, the last report winning: it is the plugin's word on what it enforces, and
+the hub keeps it as said. A body whose `revision` is not an integer in `[0, 2^53)` is
+acked and ignored (section 4). A report is kept whatever the manifest declares, so a
+report that rides the same poll as the publish declaring the capability is not lost to
+the order the two are applied in; a reader weighs `appliedRevision` together with
+`supported`.
+
+## 14. Versioning and compatibility
 
 - The protocol version is negotiated at session start; hubs MUST support the current and
   previous major version.
@@ -2671,7 +3021,7 @@ to write into such a namespace uses **set** on it directly; no create step exist
 - The spec document, the reference hub, and each plugin are versioned independently
   (SemVer).
 
-## 14. Conformance
+## 15. Conformance
 
 Two black-box suites accompany this document:
 
@@ -2681,7 +3031,9 @@ Two black-box suites accompany this document:
   manifest publish, action round-trips (including a forced re-delivery to verify dedup), a
   simulated network outage (to verify buffering), a forced session change with envelopes
   still unacked (to verify renumbering, section 9.1), and a schema-invalid dispatch (which
-  must never crash the game server).
+  must never crash the game server). A candidate whose manifest declares the `bans`
+  capability (section 6.7) is also walked through a paged read of the installation ban
+  list and graded on the revision it reports applying (section 13.4).
 
 An implementation that passes its suite is compliant; reading reference-implementation
 source is never required.
@@ -2733,8 +3085,15 @@ notes for such environments:
 - Where the content-type header is the only header a client can set, it may also be sent
   with a `POST` alone: the reference DayZ plugin's `GET` requests reached the wire with no
   content type and therefore no credential. The POST spellings of the key/value operations
-  (section 12.2) exist for such a client, which uses them for every key/value call and
-  never issues a `GET`, `PUT`, or `DELETE` against the hub.
+  (section 12.2) and of the ban list read (section 13.3) exist for such a client, which
+  uses them for every such call and never issues a `GET`, `PUT`, or `DELETE` against the
+  hub.
+- A client whose JSON parser costs more than linear time in its input (the reference DayZ
+  plugin measured one quadratic, until it was rewritten) must not be handed a large answer
+  in one piece. The ban list is paged for that reason (section 13.3), and such a plugin
+  reads a long list a bounded page at a time; the reference DayZ plugin also writes its
+  stored copy one entry per line, because its engine's file reader faults on a line of
+  64 KiB.
 - File-backed ring buffers get whatever fsync semantics the engine provides; document the
   loss window honestly rather than claiming durability the engine cannot deliver.
 - Engines with richer facilities (e.g. Arma Reforger's Enfusion) SHOULD still implement

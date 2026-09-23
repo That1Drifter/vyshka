@@ -508,6 +508,9 @@ tr.dim td { opacity: 0.6; }
 #audit td.data details > pre { margin-top: 0.5rem; }
 #deliveries td.last-result { white-space: normal; }
 #kv-keys td { word-break: break-all; }
+table.bans td { font-size: 0.95em; }
+table.bans td.reason { width: 30%; word-break: break-word; }
+table.bans td.row-actions { white-space: nowrap; }
 
 /* Action list */
 

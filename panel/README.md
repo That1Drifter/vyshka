@@ -6,8 +6,8 @@ may not reach into hub internals, and anything it can do must be possible with `
 `/api/v1` alone. Action forms are rendered from the plugin manifest rather than hand-written
 per game, which is what keeps the hub game-agnostic.
 
-Tracked in issue #13 (panel v1), #47 (the event feed), #46 (the live map), and #64 (the
-management views).
+Tracked in issue #13 (panel v1), #47 (the event feed), #46 (the live map), #64 (the
+management views), and #80 (the installation ban list).
 
 ## What it does
 
@@ -15,8 +15,8 @@ management views).
   travels to the hub as a bearer token on every request; closing the tab forgets it, and
   "Sign out" forgets it sooner. The hub's own scopes apply unchanged: a token narrowed to
   `servers:read` sees the server list and nothing dispatches.
-- **Top-level nav** across the six sections: Servers, Players, Tokens, Webhooks, Audit,
-  Key/value.
+- **Top-level nav** across the seven sections: Servers, Players, Bans, Tokens, Webhooks,
+  Audit, Key/value.
   It is in `index.html` because it is the shell rather than any view's output, and it is
   hidden until a token is signed in, since every link behind it needs one.
 - **Server list** with link state, credential state, enrolled plugin, last-seen time, and the
@@ -31,6 +31,13 @@ management views).
   same way and deliberately without a page reload, because a reload would take it with it;
   and **Revoke credentials** over `DELETE /servers/{id}/credentials` behind an explicit
   confirmation tick, after which the record is re-read.
+- **Installation bans** on the server page, one line of the record (protocol section 13.4):
+  "not supported by this server's plugin" when its stored manifest does not declare the
+  `bans` capability; otherwise the revision the plugin last reported enforcing and when,
+  or "no report yet". When the token can read the list, one `GET /bans?limit=1` fetches
+  the list's current revision and the line says whether the server is up to date, behind,
+  or out of step (a hub restored from a backup can be behind its servers); a refusal of
+  that read leaves the comparison out and the rest of the line stands.
 - **Secrets held for a page that has gone**: an enrollment token, a token secret, and a
   webhook signing secret each exist in one answer and nowhere else, and that answer can land
   after the operator has already navigated. Rather than discard it with the page that asked
@@ -195,8 +202,8 @@ management views).
   bundle, a scope list, a server picker, and an expiry (never, 1, 7, 30, or 90 days, or
   custom seconds). The picker is the server binding of protocol section 10.1: nothing
   ticked mints an unbound token, and ticked servers confine every grant to them; the hub
-  refuses `admin` and `webhooks:manage` on a bound token and does not narrow `kv:rw`, which
-  the picker's hint says. Revoking asks for a second click on the row before it sends
+  refuses `admin`, `webhooks:manage`, and `bans:manage` on a bound token and does not
+  narrow `kv:rw`, `notes:read`, `notes:write`, or `bans:read`, which the picker's hint says. Revoking asks for a second click on the row before it sends
   `DELETE /tokens/{id}`. The whole view needs `admin`, and a refusal is one notice naming
   that scope rather than one per call that failed.
 - **Role bundles** are a panel convenience and no part of the protocol: they only fill the
@@ -241,13 +248,36 @@ management views).
   and the data behind a disclosure, with "Load older" behind the cursor), the actions
   against it over `.../actions`, and its notes over `.../notes`, newest first, with a form
   that writes one under the signed-in token and a Delete per note that does nothing until
-  the tick beside it is set. The title takes the name from the newest event that names the
+  the tick beside it is set. Its **Installation bans** section lists every ban ever placed
+  on the identity, lifted and expired ones included, over
+  `GET /bans?platform=&playerId=&state=all`, with Lift on the active one and the ban form
+  (below) fixed to the identity. The title takes the name from the newest event that names the
   identity as the player, and a notice says the events are a window of the hub's retention
-  rather than a lifetime. Each of the three parts reads on its own grant (`events:read`,
-  `actions:read`, `notes:read`), and a part the token cannot read says which grant it
-  needs in place while the rest of the page carries on. Every identity an event names in the
+  rather than a lifetime. Each of the four parts reads on its own grant (`events:read`,
+  `actions:read`, `notes:read`, `bans:read`), and a part the token cannot read says which
+  grant it needs in place while the rest of the page carries on; the bans section drops its
+  form with the list, since `bans:manage` implies `bans:read`. Every identity an event names in the
   event feed, and every player on the live map, links here, as does the target notice on
   the server page.
+- **Bans** at `#/bans` (protocol section 13), over `GET /bans`: the installation ban list,
+  one list for every server, with its revision ("List revision N", which every ban placed,
+  lifted, or expired moves), then the bans newest first with the player linking to their
+  profile, the name, the reason, the expiry or "permanent", who placed it and when (the
+  credential's name as it was then), the server it arose on (its name when the token can
+  list servers, else the id), and a state badge; lifted and expired rows are dimmed, a
+  lifted one saying who lifted it. "Include lifted and expired bans" is `state=all`, kept
+  in the route; "Load older" walks the hub's cursor. **Lift** asks for a second click on
+  the row, the way a token is revoked, then sends `POST /bans/{id}/lift` and redraws the
+  list from its first page. The **Ban a player** form takes a platform (default `steam`), a
+  player id, a reason (required, at most 200 characters, counted in code points as the hub
+  counts them), an optional name, a duration (permanent, 1 hour, 1 day, 7 days, 30 days, or
+  a custom number of hours or days, which the hub counts from its own clock), and an
+  optional server it arose on, a provenance picker left out when the token cannot list
+  servers. A second ban of an identity already banned is the hub's `conflict`: the form
+  names the standing ban from `details.banId`, reads it once to say what it was for, and
+  says that lifting and banning again are two acts. A token without `bans:manage` sees the
+  hub's `forbidden` beside the form or the list; one without `bans:read` gets the view's
+  one notice naming that scope.
 - **Audit** at `#/audit`, over `GET /audit` (protocol section 10.5): at, token name with its
   id on hover, method and path, a status badge (2xx ok, 4xx refused, 5xx error), source ip,
   server, and the detail as one line with the full JSON behind a disclosure, the same
@@ -365,13 +395,15 @@ panel/
     app.js         // routing, sign-in, the server and action views, the form builder, dispatch and result, the event feed, the map view
     manage.js      // the management views: server registration and credentials, tokens, webhooks and deliveries, audit, key/value, pinned actions
     map.js         // the map widget: tile pyramid on a canvas, markers as buttons, the world frame
-    players.js     // player profiles: one identity's events, actions, and notes across every server, and the way in
+    players.js     // player profiles: one identity's events, actions, notes, and bans across every server, and the way in
+    bans.js        // the installation ban list: its view, the ban form, the list the profile reuses, the server page's line
     style.css      // one stylesheet, light and dark
   panel_test.go      // the handler: headers, what it serves, what it refuses, the maps surface
   e2e_harness_test.go // the shared browser scaffolding: the hub, the tab, the console capture, the step helpers, the fake plugin
   e2e_test.go        // headless Chrome over sign-in, the action form, dispatch, the event feed, and the live map
   e2e_manage_test.go // headless Chrome over the management views: servers, credentials, pins, tokens, webhooks, audit, key/value
   e2e_players_test.go // headless Chrome over the player profiles, their notes, and the webhook redaction fields
+  e2e_bans_test.go   // headless Chrome over the installation ban list, the server page's line, and the profile's bans
 ```
 
 No build step: the files are served as written, as ES modules the browser resolves against
@@ -440,6 +472,23 @@ refused deletion without its tick and deleted with it, the players page listing 
 and a hand-typed lookup landing on the victim's profile with the player role, a token that
 reads events alone seeing them with one notice each for notes and actions, and redaction
 paths registered from the webhook form, shown on the webhook page, and edited.
+
+A fourth covers the installation ban list (issue #80), against a server whose fake plugin
+declares the `bans` capability and one that never enrolls: an empty list at revision 0, a
+seven-day ban placed through the form with its provenance and a markup-shaped reason kept
+as text, a second ban of the same identity refused as a conflict naming the standing ban
+and what it was for, a permanent ban and one for a custom two days (after the custom
+duration with no amount is refused on the page), a lift that a Cancel takes back and a
+second click sends, the lifted ban back in the list behind the every-state toggle, dimmed
+and badged with who lifted it. Then the server page: "no report yet" beside the list's
+revision, "up to date" once the plugin reports `bans.applied` at the current revision,
+"behind" after one more ban, and "not supported" for the server that declares nothing. Then
+the profile's bans (the lifted ban, a ban placed from the profile's own form, its conflict,
+and a lift), a walk through 106 bans in two pages with none shown twice, a token holding
+`bans:read` alone refused a ban and a lift with the hub's `forbidden` beside the controls,
+and a token without it given the view's notice, the profile's notice with no form, and a
+server line with no comparison. The unconfirmed and cancelled lifts are the guards'
+negative controls.
 
 - `VYSHKA_E2E=required` fails instead of skipping when no browser is found (CI sets it).
 - `VYSHKA_E2E_BROWSER=/path/to/chrome` names the executable.

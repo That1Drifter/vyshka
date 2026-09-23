@@ -1,9 +1,10 @@
 // Vyshka panel: player profiles (protocol section 8.6).
 //
 // A profile is one identity across every server of the installation: the
-// events that refer to it, the actions dispatched against it, and the notes
-// operators keep on it, each from its own Admin API read and each shown or
-// refused on its own, because each carries its own grant. The events are as
+// events that refer to it, the actions dispatched against it, the notes
+// operators keep on it, and the installation bans placed on it (bans.js
+// draws those), each from its own Admin API read and each shown or refused
+// on its own, because each carries its own grant. The events are as
 // deep as the hub's retention and no deeper, and the page says so rather than
 // letting an empty table pass for a clean record.
 //
@@ -15,6 +16,7 @@ import {
   isForbidden, playerHref, playersHref, problemBox, serverHref, setCrumbs, signOut, stale,
   summarizeEventData, token,
 } from './lib.js';
+import { banForm, banList } from './bans.js';
 
 const PROFILE_PAGE_SIZE = 50;
 const NOTE_MAX = 4000;
@@ -280,6 +282,36 @@ function notesSection(platform, id, seq) {
   return el('section', { class: 'card', id: 'notes-section' }, el('h2', {}, 'Notes'), body, form);
 }
 
+// bansSection is the identity's installation bans (protocol section 13),
+// every state, over GET /bans?platform=&playerId=&state=all, with a Lift on
+// the active one and the ban form fixed to this identity. A token that
+// cannot read the list gets the notice in place of both, since the grant
+// that bans (bans:manage) implies the one that reads.
+function bansSection(platform, id, names, seq) {
+  const problem = problemBox('player-bans-error');
+  const list = banList({
+    id: 'player-bans', seq, names, showPlayer: false, problem,
+    filters: { platform, playerId: id, state: 'all' },
+    emptyText: 'No installation ban has ever been placed on this identity.',
+    onForbidden: (err) => {
+      clear(body);
+      body.append(refusedNotice('player-bans-forbidden', 'bans:read', err));
+    },
+  });
+  const form = banForm({
+    prefix: 'player-ban-form', identity: { platform, id }, seq,
+    servers: [...names].map(([serverId, name]) => ({ id: serverId, name })),
+    onPlaced: () => { list.reload(); },
+  });
+  const body = el('div', {}, problem.node, list.node, form.node);
+  list.reload();
+  return el('section', { class: 'card', id: 'player-bans-section' },
+    el('h2', {}, 'Installation bans'),
+    el('p', { class: 'muted' },
+      'Every ban placed on this identity on the installation list, lifted and expired ones included. An active one is refused at connect on every server whose plugin enforces the list; a server’s own ban list is apart from it.'),
+    body);
+}
+
 // A path segment of exactly "." or ".." is a dot segment, and the browser
 // removes it from a fetch URL, its %2e form included, so this page cannot
 // reach the profile of an identity with one; the hub can be asked by a
@@ -312,6 +344,7 @@ export async function viewPlayer(app, route, seq) {
     el('p', { class: 'muted', id: 'player-window' }, RETENTION_NOTE)));
 
   app.append(notesSection(platform, id, seq));
+  app.append(bansSection(platform, id, names, seq));
 
   let named = false;
   app.append(pagedSection({

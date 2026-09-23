@@ -376,6 +376,12 @@ export function playersHref() {
   return '#/players';
 }
 
+// bansHref is the installation ban list (protocol section 13); all adds the
+// lifted and expired bans, and lives in the route so a reload keeps it.
+export function bansHref(all = false) {
+  return '#/bans' + (all ? '?state=all' : '');
+}
+
 const IDENTITY_PLATFORM_MAX = 64;
 const NUL = String.fromCharCode(0);
 const IDENTITY_ID_MAX = 128;

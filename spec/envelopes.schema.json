@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vyshka.dev/spec/envelopes.schema.json",
   "title": "Vyshka envelopes and the poll exchange",
-  "description": "Machine-readable companion to spec/protocol.md sections 3.1.2, 4 and 9. The prose document is normative: where the two disagree, the prose wins. This document defines no root constraint of its own: it is a library of definitions, referenced as `envelopes.schema.json#/$defs/envelope` and so on, because the three shapes here travel in different places and validating them against a single root would only be a way to accept all three everywhere.",
+  "description": "Machine-readable companion to spec/protocol.md sections 3.1.2, 4, 9, and 13.3 to 13.4. The prose document is normative: where the two disagree, the prose wins. This document defines no root constraint of its own: it is a library of definitions, referenced as `envelopes.schema.json#/$defs/envelope` and so on, because the three shapes here travel in different places and validating them against a single root would only be a way to accept all three everywhere.",
   "$defs": {
     "seq": {
       "type": "integer",
@@ -102,6 +102,32 @@
           "description": "Effective hold time for this session, repeated so a plugin never has to cache it."
         },
         "sessionExpiresAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    },
+    "banRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "A revision of the installation ban list (section 13.1): 0 before the list has ever changed, increased by the hub on every change to the active list and at no other time."
+    },
+    "bansChanged": {
+      "type": "object",
+      "title": "bans.changed body",
+      "description": "Hub -> plugin (section 13.3). A nudge that the installation ban list changed, sent only to a server whose manifest declares the bans capability. The revision may be stale by the time it arrives: the plugin reads the list rather than trusting the number, and walks whenever the revision it learns differs from the one it enforces.",
+      "required": ["revision"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/banRevision" }
+      },
+      "additionalProperties": true
+    },
+    "bansApplied": {
+      "type": "object",
+      "title": "bans.applied body",
+      "description": "Plugin -> hub (section 13.4). The revision of the installation ban list the plugin now enforces, sent once a whole revision is applied and at the start of a session that begins with the revision already enforced. A plugin never reports a revision it has not applied. A hub acks and ignores a body without a usable revision.",
+      "required": ["revision"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/banRevision" }
       },
       "additionalProperties": true
     }

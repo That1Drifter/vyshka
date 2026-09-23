@@ -365,12 +365,19 @@ type InboundApplication struct {
 	// envelope rather than flattened, because the envelope id is what
 	// deduplicates a batch replayed across a session change.
 	EventBatches []NewEventBatch
+	// BansApplied are the revisions of the installation ban list the plugin
+	// reported enforcing (spec section 13.4), in arrival order. The last one
+	// is recorded on the server: each report is the plugin's word on what it
+	// enforces now, and a later one supersedes an earlier.
+	BansApplied []int64
 }
 
-// ManifestPublish is one validated manifest to store, revision-gated.
+// ManifestPublish is one validated manifest to store, revision-gated, with
+// the capabilities it declares (spec section 6.7).
 type ManifestPublish struct {
-	Revision int64
-	Body     json.RawMessage
+	Revision     int64
+	Body         json.RawMessage
+	Capabilities []string
 }
 
 // Notice is one hub -> plugin envelope queued as a side effect of ingest.
@@ -398,6 +405,9 @@ type InboundApplied struct {
 	EventsStored int
 	// SnapshotsStored counts state snapshots appended.
 	SnapshotsStored int
+	// BansReported counts bans.applied reports taken; only the last of them is
+	// what the server record keeps.
+	BansReported int
 }
 
 // ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
@@ -419,11 +429,36 @@ type InboundApplied struct {
 // server-scoped writes under the lock order at lockServer, and taking the
 // session before the server would invert that order against StartSession.
 func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify func(ack int64) InboundApplication, noticeQueueLimit int) (InboundApplied, error) {
+	return s.applyInbound(ctx, sessionID, classify, noticeQueueLimit, false)
+}
+
+// ApplyInboundDeclaringBans is ApplyInbound for a poll carrying a manifest
+// that declares the bans capability (spec sections 6.7 and 13.3). It takes the
+// ban list's lock first, the step a change of the list starts with, so the
+// two cannot interleave: a change either committed before the manifest, and
+// the notice queued here for the server (when a manifest is accepted) carries
+// its revision, or it waits for the manifest and finds the capability stored.
+// Without this a change choosing its servers before the manifest committed
+// would reach nobody, while the plugin had already read the list it replaced.
+func (s *Store) ApplyInboundDeclaringBans(ctx context.Context, sessionID string, classify func(ack int64) InboundApplication, noticeQueueLimit int) (InboundApplied, error) {
+	return s.applyInbound(ctx, sessionID, classify, noticeQueueLimit, true)
+}
+
+func (s *Store) applyInbound(ctx context.Context, sessionID string, classify func(ack int64) InboundApplication, noticeQueueLimit int, declaringBans bool) (InboundApplied, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return InboundApplied{}, fmt.Errorf("begin apply inbound: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The ban list's lock comes before the server's, as it does in a change
+	// of the list (lockBanList), so taking it here inverts nothing.
+	var bansRevision int64
+	if declaringBans {
+		if bansRevision, err = lockBanList(ctx, tx); err != nil {
+			return InboundApplied{}, err
+		}
+	}
 
 	// A session's server never changes, so this read needs no lock and no
 	// liveness predicate: it only names the row to lock next. Liveness is
@@ -469,12 +504,24 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 	applied := InboundApplied{Ack: application.Ack}
 	now := time.Now().UTC()
 	for _, manifest := range application.Manifests {
-		replaced, err := applyManifest(ctx, tx, serverID, manifest.Revision, manifest.Body, now)
+		replaced, err := applyManifest(ctx, tx, serverID, manifest.Revision, manifest.Body, manifest.Capabilities, now)
 		if err != nil {
 			return InboundApplied{}, err
 		}
 		if replaced {
 			applied.ManifestsApplied++
+			if declaringBans && hasCapability(manifest.Capabilities, CapabilityBans) {
+				// The revision as it stands under the list's lock: any change
+				// the plugin's walk could have missed before this manifest
+				// made it a recipient is at or below it (spec section 13.3).
+				queued, err := noticeBanRevision(ctx, tx, serverID, bansRevision, noticeQueueLimit)
+				if err != nil {
+					return InboundApplied{}, err
+				}
+				if queued {
+					applied.NoticesQueued++
+				}
+			}
 		}
 	}
 	for _, notice := range application.Notices {
@@ -517,6 +564,16 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 		return InboundApplied{}, err
 	}
 	applied.SnapshotsStored = snapshots
+
+	if reports := len(application.BansApplied); reports > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE servers SET bans_applied_revision = ?, bans_applied_at = ? WHERE id = ?`,
+			application.BansApplied[reports-1], formatTime(now), serverID,
+		); err != nil {
+			return InboundApplied{}, fmt.Errorf("record applied ban list revision: %w", err)
+		}
+		applied.BansReported = reports
+	}
 
 	if err := tx.Commit(); err != nil {
 		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)

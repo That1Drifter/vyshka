@@ -55,6 +55,11 @@ type Server struct {
 	// LinkState is the link monitor's classification (spec section 11.1):
 	// unknown until a session has been observed, then up or down.
 	LinkState string
+	// BansAppliedRevision and BansAppliedAt are the installation ban list
+	// revision the plugin last reported enforcing and when (spec section
+	// 13.4), nil until its first report.
+	BansAppliedRevision *int64
+	BansAppliedAt       *time.Time
 }
 
 // CredentialState reports whether the server can authenticate right now.
@@ -141,7 +146,8 @@ func scanTime(column sql.NullString) (*time.Time, error) {
 }
 
 const serverColumns = `id, name, game, created_at, secret_hash, enrolled_at, revoked_at,
-	plugin_name, plugin_version, transports, last_seen_at, link_state`
+	plugin_name, plugin_version, transports, last_seen_at, link_state,
+	bans_applied_revision, bans_applied_at`
 
 const sessionColumns = `id, server_id, created_at, expires_at, ended_at, end_reason,
 	protocol_version, poll_timeout_seconds, outbound_seq, outbound_ack,
@@ -156,11 +162,13 @@ func scanServer(row rowScanner) (Server, error) {
 		server                            Server
 		createdAt, secretHash, transports string
 		enrolledAt, revokedAt, lastSeenAt sql.NullString
+		bansApplied                       sql.NullInt64
+		bansAppliedAt                     sql.NullString
 	)
 
 	if err := row.Scan(&server.ID, &server.Name, &server.Game, &createdAt, &secretHash,
 		&enrolledAt, &revokedAt, &server.PluginName, &server.PluginVersion,
-		&transports, &lastSeenAt, &server.LinkState,
+		&transports, &lastSeenAt, &server.LinkState, &bansApplied, &bansAppliedAt,
 	); err != nil {
 		return Server{}, err
 	}
@@ -176,6 +184,13 @@ func scanServer(row rowScanner) (Server, error) {
 		return Server{}, err
 	}
 	if server.LastSeenAt, err = scanTime(lastSeenAt); err != nil {
+		return Server{}, err
+	}
+	if bansApplied.Valid {
+		revision := bansApplied.Int64
+		server.BansAppliedRevision = &revision
+	}
+	if server.BansAppliedAt, err = scanTime(bansAppliedAt); err != nil {
 		return Server{}, err
 	}
 	server.HasCredentials = secretHash != ""

@@ -196,6 +196,17 @@
             "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
           },
           "description": "The key/value namespaces (section 12) this plugin may operate on; the sole source of a plugin's KV access. Duplicates reject the manifest, as does an entry outside the namespace grammar: this field grants access, so a malformed grant fails at publish time (section 6.6)."
+        },
+        "capabilities": {
+          "type": ["array", "null"],
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "description": "Optional parts of the protocol this plugin implements (section 6.7). A hub ignores an entry it does not know; a list outside these bounds rejects the manifest, a duplicate entry does not. This draft defines `bans`: the plugin enforces the installation ban list (section 13). null reads as absent.",
+          "examples": [["bans"]]
         }
       },
       "additionalProperties": true

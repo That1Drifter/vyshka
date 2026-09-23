@@ -302,8 +302,8 @@ func TestPanelManagementEndToEnd(t *testing.T) {
 	}
 	run("sign in", chromedp.SendKeys("#token", e2eAdminToken, chromedp.ByQuery),
 		chromedp.Click("#sign-in", chromedp.ByQuery), chromedp.WaitVisible("#servers", chromedp.ByQuery))
-	if got := evalString(`Array.from(document.querySelectorAll("#nav a[data-nav]")).map(a => a.dataset.nav).join(",")`); got != "servers,players,tokens,webhooks,audit,kv" {
-		t.Fatalf("nav links = %q, want the six sections", got)
+	if got := evalString(`Array.from(document.querySelectorAll("#nav a[data-nav]")).map(a => a.dataset.nav).join(",")`); got != "servers,players,bans,tokens,webhooks,audit,kv" {
+		t.Fatalf("nav links = %q, want the seven sections", got)
 	}
 	if got := attribute("#nav a[data-nav=servers]", "aria-current"); got != "page" {
 		t.Fatalf("the servers link carries aria-current %q, want page", got)

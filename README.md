@@ -9,7 +9,7 @@ Arma Reforger is the explicit second target, and nothing in the protocol is DayZ
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.24), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.32), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),
@@ -47,7 +47,9 @@ conditions) are read at `GET /api/v1/servers/{id}/state/{type}`. A player's prof
 the actions against it, and the notes operators keep on it. Signed webhooks push events,
 action outcomes, and, for a webhook that asks by name, audit records to other systems, with
 per-webhook redaction of named fields, retries, and a dead letter, and a per-mod key/value
-store serves both realms.
+store serves both realms. One installation ban list at `/api/v1/bans` reaches every server
+whose plugin declares it can enforce it: the plugin reads the list a page at a time, one
+revision whole, and reports the revision it applied, which the server record shows.
 
 Everything is behind scoped Admin API tokens. A credential can be narrowed to one action
 code or one event namespace, every route enforces its scope, and every authenticated
