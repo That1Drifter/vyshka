@@ -394,6 +394,66 @@ func TestStateWorldSnapshot(t *testing.T) {
 	}
 }
 
+// Member names are exact (section 2.1 tolerates unknown members, it never
+// merges them into known ones): a body or entry carrying a known member only
+// under another case lacks it, and an unknown member spelt like a known one
+// in another case neither replaces nor spoils it.
+func TestStateSnapshotMemberNamesAreExact(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t)
+	created, live := enrolledSession(t, server, "state exact names")
+	base := "/api/v1/servers/" + created.Server.ID + "/state/"
+
+	refused := []struct {
+		name, envelopeType string
+		body               map[string]any
+	}{
+		{"World for world", "state.world", map[string]any{"World": map[string]any{}}},
+		{"Players for players", "state.players", map[string]any{"Players": []any{}}},
+		{"Player for player", "state.players", map[string]any{"players": []map[string]any{
+			{"Player": map[string]any{"platform": "steam", "id": "1"}}}}},
+		{"ID for id", "state.vehicles", map[string]any{"vehicles": []map[string]any{{"ID": "v-1"}}}},
+	}
+	seq := int64(0)
+	for _, one := range refused {
+		seq++
+		if result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+			"envelopes": []map[string]any{stateEnvelope(seq, one.envelopeType, one.body)},
+		}); result.Ack != seq {
+			t.Fatalf("%s: ack = %d, want %d", one.name, result.Ack, seq)
+		}
+	}
+	for _, stateType := range []string{"world", "players", "vehicles"} {
+		if code := errorCode(t, server, http.MethodGet, base+stateType,
+			testAdminToken, nil, http.StatusNotFound); code != "not_found" {
+			t.Errorf("%s stored a snapshot whose required member was only there in another case (code %q)", stateType, code)
+		}
+	}
+
+	// The real member comes first in the wire bytes and the impostor after
+	// it, which is the order a case-insensitive decoder lets overwrite.
+	accepted := []struct {
+		envelopeType, body string
+	}{
+		{"state.world", `{"world":{},"WORLD":[]}`},
+		{"state.vehicles", `{"vehicles":[{"id":"v-1","ID":""}]}`},
+		{"state.players", `{"players":[{"player":{"platform":"steam","id":"1"},"PLAYER":null}]}`},
+	}
+	for _, one := range accepted {
+		seq++
+		envelope := stateEnvelope(seq, one.envelopeType, nil)
+		envelope["body"] = json.RawMessage(one.body)
+		if result := pollNow(t, server, created.Server.ID, live.SessionToken, map[string]any{
+			"envelopes": []map[string]any{envelope},
+		}); result.Ack != seq {
+			t.Fatalf("%s: ack = %d, want %d", one.body, result.Ack, seq)
+		}
+	}
+	for _, stateType := range []string{"world", "vehicles", "players"} {
+		getState(t, server, created.Server.ID, stateType)
+	}
+}
+
 // Section 2.1's unknown-field rule applies inside a snapshot body too: a
 // state.players body carrying a `vehicles` field of any shape at all is a
 // body with an unknown field, not a malformed snapshot.

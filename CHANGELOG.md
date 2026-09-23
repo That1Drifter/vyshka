@@ -183,6 +183,13 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-22: snapshot member names are matched exactly (issue #78's review found it).
+  The hub read a `state.*` body, its entries, and a player's identity into Go structs,
+  whose decoding matches names without regard to case, so `{"Players": []}` passed for a
+  body carrying `players` and an unknown `ID` after an entry's `id` replaced it. Every
+  level is now read by exact name, as the protocol, the schema, and the plugin suite
+  already did; an unknown member spelt like a known one is tolerated and nothing more.
+  The new hub test fails against the old decoding.
 - 2026-09-22: a number nested inside an `enum` member (an object or array member) beyond
   ±2^53 was accepted and then compared as its rounded value; the ±2^53 rule of protocol
   section 6.1 now applies at every depth of an `enum` or `not` member, and the plugin
@@ -242,9 +249,12 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   map's own controller, `engine`, the engine's own weather, or `hold`, nothing changing
   it), starting from a fixed `preset` (`clear`, `cloudy`, `storm`) or from a record under
   the new `vyshka.weather` key/value namespace (`name`, annotated with `kvNamespace`),
-  with the dispatch's own knobs winning. A value outside a phenomenon's limits widens
-  them and says so, and the result notes rain or snow the engine will stop and, in
-  `world` mode, when the map takes over. `vyshka.time.freeze` (world, warning) stops the
+  with the dispatch's own knobs winning. A value outside a phenomenon's limits (the
+  wind's included) widens them and says so. In `world` mode a dispatch holds back every
+  phenomenon's next forecast to its hold, because the map's controller re-applies its
+  own settings whenever any phenomenon falls due; the result notes when the map takes
+  over, and rain or snow the engine will stop outside its threshold. A stored preset
+  with a member that is not a knob, at any level, is refused. `vyshka.time.freeze` (world, warning) stops the
   server's clock and starts it again. `spikes/dayz-world-clock` measured the engine side
   first: the time multiplier at 0 stops the clock and a time set while stopped holds; a
   value set under the map's controller lasts its hold time, after which the controller
@@ -253,7 +263,13 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   except rain or snow outside its threshold; the engine's own weather skips the map's
   controller. The live run found the engine's `string.Split` handling one-character
   separators only, which had the stored-preset check refuse known knobs; the list is now
-  spelt out.
+  spelt out. Verified live on DayZ 1.29 against a local hub, no client: the clock held
+  for two minutes frozen and ran again, and a noon set while frozen held; the storm
+  preset, a stored preset with a knob over it, snow widened past Chernarus's closed
+  limits, and the rain note all behaved; a `world`-mode value stood its 45 s hold before
+  the map took the wind maximum back; a restart came back in `world` mode with the clock
+  running; plugin conformance passed 17/17 with 28 actions. Whether a connected client's
+  clock stops with the server's is not measured.
 
 - 2026-09-22: vehicles 2 (issue #77, plugin 0.8.0, no protocol change). Each
   `state.vehicles` entry carries `data.state` (`intact`, `destroyed`, or `exploded`, a

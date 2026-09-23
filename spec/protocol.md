@@ -1305,7 +1305,8 @@ object is a snapshot that reports nothing.
   `YYYY-MM-DDTHH:MM:SS` naming a valid calendar date and time of day, with no offset. It
   is the game's calendar, not a moment on any real clock, so the hub checks its form and
   never compares it with its own clock or with `capturedAt`. A `time` of any other form
-  rejects the snapshot. A game without a calendar leaves it out.
+  rejects the snapshot; a null `time` reads as absent (section 6.4). A game without a
+  calendar leaves it out.
 - `data` is OPTIONAL, a JSON object of game- or mod-specific extras (the weather, how fast
   the clock runs, a season), as on a list entry. Unknown members of `world` are tolerated,
   per section 2.1.

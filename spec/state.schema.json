@@ -131,9 +131,11 @@
       "description": "One object, not a list: a server has one world. A member absent from it is not reported, never zero or false; an empty object is a snapshot that reports nothing.",
       "properties": {
         "time": {
-          "type": "string",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$",
-          "description": "The game's own clock, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS with no offset, naming a valid calendar date and time of day. The game's calendar, not a moment on any real clock: the hub checks the form and never compares it with its own clock or with capturedAt.",
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$" },
+            { "type": "null" }
+          ],
+          "description": "The game's own clock, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS with no offset, naming a valid calendar date and time of day (the pattern checks the form; the calendar is the prose's). The game's calendar, not a moment on any real clock: the hub checks the form and never compares it with its own clock or with capturedAt. Absent and null both read as not reported.",
           "examples": ["2026-09-20T14:32"]
         },
         "data": {

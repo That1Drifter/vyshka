@@ -727,7 +727,8 @@ with the server's clock is the live run's to show.
   each within limits of its own (Chernarus keeps snowfall at 0 to 0); a value outside them
   is let in by widening the limits, and `widened` names them.
 - `windSpeed`, `windDirection`, `windMaxSpeed`: metres a second and degrees of the engine's
-  wind angle, the frame the snapshot reports. A speed above the maximum raises the maximum.
+  wind angle, the frame the snapshot reports. The speed and the direction are phenomena
+  with limits too (the speed's upper limit is the maximum), widened the same way.
 - `dynamicFog`: the volumetric fog's distance and height density and its height bias, only
   on a world whose config enables it (the action fails otherwise, since the engine would
   ignore it).
@@ -739,24 +740,31 @@ with the server's clock is the live run's to show.
   (default 0, at once). `holdSeconds`: the least time it stands before the controller may
   choose the next (default 1800).
 - `mode`: what the weather does afterwards, kept until changed or the server restarts:
-  - `world` (the engine's start): the map's own weather controller. A value set lasts its
-    `holdSeconds`, then the controller moves on, and each time it does it re-applies its
-    own storm, rain thresholds, wind maximum, and snowfall limits (Chernarus closes
-    snowfall again at once).
+  - `world` (the engine's start): the map's own weather controller. The controller runs
+    whenever any phenomenon is due a new forecast, and each run re-applies its own storm,
+    rain thresholds, wind maximum, and snowfall limits (Chernarus closes snowfall again at
+    once), so a dispatch in this mode holds back every phenomenon's next forecast to its
+    `holdSeconds`, the untouched ones included: what it set stands that long, then the map
+    moves on.
   - `engine`: the engine's own random weather within the limits, the map's controller
-    skipped.
+    skipped. Where a mod has set both the engine's weather and the frozen update, the
+    engine's weather wins and the snapshot says `engine`.
   - `hold`: nothing changes the weather until it is changed again, the wind included. The
-    engine still stops rain when the overcast is outside the rain threshold (0.6 to 1 by
-    default); `notes` says so when a dispatch asks for rain it will not keep.
+    engine still stops rain or snow when the overcast is outside its threshold (0.6 to 1
+    by the engine's default); `notes` says so when a dispatch asks for rain or snow it
+    will not keep, naming the threshold it judged by: the one the dispatch or an earlier
+    one set, or the engine's default when the map's controller may have replaced that
+    since.
 
 `preset` starts from one of three fixed knob sets: `clear` (overcast 0.05, no fog, rain, or
 snow, wind 2 m/s), `cloudy` (overcast 0.55, below the default rain threshold, fog 0.05,
 wind 6 m/s), and `storm` (overcast 1, fog 0.1, rain 1, wind 15 m/s, lightning at an
-overcast of 0.8 at least every 20 s). `name` starts from a record an operator keeps in the
+overcast of 0.8, at least 20 s between strikes). `name` starts from a record an operator keeps in the
 `vyshka.weather` namespace instead, read under the plugin's own session like the other
 presets (see "Presets" above for the grants): a JSON object of the same knobs, `mode`,
-`transitionSeconds`, and `holdSeconds` included, where a member that is not a knob fails
-the dispatch rather than being ignored. Either way the dispatch's own knobs win.
+`transitionSeconds`, and `holdSeconds` included, where a member that is not a knob, at the
+top or inside `storm`, `dynamicFog`, or a threshold, fails the dispatch rather than being
+ignored. Either way the dispatch's own knobs win.
 
 ```json
 { "overcast": 0.8, "fog": 0.3, "rain": 0.4, "windSpeed": 8,

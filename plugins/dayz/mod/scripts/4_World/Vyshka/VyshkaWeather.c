@@ -63,17 +63,24 @@ class VyshkaWeather
 	static const float THRESHOLD_STOP_DEFAULT = 30.0;
 
 	// What this plugin set that the engine cannot be asked about: whether it
-	// stopped the clock, and the rain and snowfall thresholds' minimum
-	// overcast (-1 until it set one), for the notes of a later dispatch.
+	// stopped the clock, and the rain and snowfall thresholds, for the notes
+	// of a later dispatch. A threshold is known only while nothing else can
+	// have replaced it: the map's controller re-applies its own whenever it
+	// runs, so every dispatch that finds the weather in world mode forgets
+	// them.
 	static bool s_TimeFrozen;
-	static float s_RainMin = -1;
-	static float s_SnowfallMin = -1;
+	static bool s_RainKnown;
+	static float s_RainMin;
+	static float s_RainMax;
+	static bool s_SnowfallKnown;
+	static float s_SnowfallMin;
+	static float s_SnowfallMax;
 
 	static void Reset()
 	{
 		s_TimeFrozen = false;
-		s_RainMin = -1;
-		s_SnowfallMin = -1;
+		s_RainKnown = false;
+		s_SnowfallKnown = false;
 	}
 
 	// Register declares the weather presets' namespace and the two actions.
@@ -85,14 +92,16 @@ class VyshkaWeather
 	}
 
 	// Mode reads the weather's behaviour from the engine, so a mod that took
-	// the weather over itself is reported as it is.
+	// the weather over itself is reported as it is, in the order the engine
+	// asks (WeatherPhenomenon.OnBeforeChange): the mission's own weather
+	// first, which wins over a frozen update when a mod sets both.
 	static string Mode()
 	{
 		Weather weather = GetGame().GetWeather();
-		if (weather.GetWeatherUpdateFrozen())
-			return MODE_HOLD;
 		if (weather.GetMissionWeather())
 			return MODE_ENGINE;
+		if (weather.GetWeatherUpdateFrozen())
+			return MODE_HOLD;
 		return MODE_WORLD;
 	}
 
@@ -260,6 +269,38 @@ class VyshkaWeather
 		applied.Add(VyshkaJsonValue.NewString(name));
 	}
 
+	// HoldBack makes a phenomenon's next forecast come no sooner than
+	// seconds from now.
+	static void HoldBack(WeatherPhenomenon phenomenon, float seconds)
+	{
+		if (phenomenon.GetNextChange() < seconds)
+			phenomenon.SetNextChange(seconds);
+	}
+
+	// ThresholdNote says when the overcast being moved to lies outside the
+	// rain or snowfall threshold, where the engine stops that fall over the
+	// threshold's stop time. The threshold is the one set here when that is
+	// still known; otherwise the engine's default, said as such, since the
+	// map or a mod may have set another.
+	static void ThresholdNote(VyshkaJsonValue notes, string fall, float overcast, bool known, float setLow, float setHigh)
+	{
+		float low = setLow;
+		float high = setHigh;
+		string source = "the " + fall + " threshold set here";
+		string caveat = "";
+		if (!known)
+		{
+			low = THRESHOLD_MIN_DEFAULT;
+			high = 1;
+			source = "the engine's default " + fall + " threshold";
+			caveat = " (unless the map or a mod set another)";
+		}
+		if (overcast >= low && overcast <= high)
+			return;
+		string range = VyshkaJsonValue.FormatFloat(low) + " to " + VyshkaJsonValue.FormatFloat(high);
+		notes.Add(VyshkaJsonValue.NewString("the overcast (" + VyshkaJsonValue.FormatFloat(overcast) + ") is outside " + source + ", " + range + caveat + ", so the engine stops the " + fall + " over the threshold's stop time"));
+	}
+
 	// Apply sets what knobs holds, in an order where nothing set is undone
 	// by what follows: thresholds, storm, and the wind's maximum first, then
 	// the phenomena, the dynamic fog, and the mode last.
@@ -282,16 +323,28 @@ class VyshkaWeather
 		if (knobs.m_HasHold)
 			hold = knobs.m_Hold;
 
+		// In world mode the map's controller may have run since a threshold
+		// was set here, putting back its own, so what was set is no longer
+		// known.
+		if (Mode() == MODE_WORLD)
+		{
+			s_RainKnown = false;
+			s_SnowfallKnown = false;
+		}
 		if (knobs.m_HasRainThreshold)
 		{
 			weather.SetRainThresholds(knobs.m_RainMin, knobs.m_RainMax, knobs.m_RainStop);
+			s_RainKnown = true;
 			s_RainMin = knobs.m_RainMin;
+			s_RainMax = knobs.m_RainMax;
 			applied.Add(VyshkaJsonValue.NewString("rainThreshold"));
 		}
 		if (knobs.m_HasSnowfallThreshold)
 		{
 			weather.SetSnowfallThresholds(knobs.m_SnowfallMin, knobs.m_SnowfallMax, knobs.m_SnowfallStop);
+			s_SnowfallKnown = true;
 			s_SnowfallMin = knobs.m_SnowfallMin;
+			s_SnowfallMax = knobs.m_SnowfallMax;
 			applied.Add(VyshkaJsonValue.NewString("snowfallThreshold"));
 		}
 		if (knobs.m_HasStorm)
@@ -304,21 +357,13 @@ class VyshkaWeather
 			weather.SetWindMaximumSpeed(knobs.m_WindMax);
 			applied.Add(VyshkaJsonValue.NewString("windMaxSpeed"));
 		}
+		// The wind's magnitude and direction are phenomena with limits of
+		// their own like the rest, the magnitude's upper limit being the
+		// wind's maximum speed, so they are widened the same way.
 		if (knobs.m_HasWindSpeed)
-		{
-			if (knobs.m_WindSpeed > weather.GetWindMaximumSpeed())
-			{
-				weather.SetWindMaximumSpeed(knobs.m_WindSpeed);
-				widened.Add(VyshkaJsonValue.NewString("windMaxSpeed"));
-			}
-			weather.GetWindMagnitude().Set(knobs.m_WindSpeed, transition, hold);
-			applied.Add(VyshkaJsonValue.NewString("windSpeed"));
-		}
+			SetPhenomenon(weather.GetWindMagnitude(), "windSpeed", knobs.m_WindSpeed, transition, hold, applied, widened);
 		if (knobs.m_HasWindDirection)
-		{
-			weather.GetWindDirection().Set(knobs.m_WindDirection * Math.DEG2RAD, transition, hold);
-			applied.Add(VyshkaJsonValue.NewString("windDirection"));
-		}
+			SetPhenomenon(weather.GetWindDirection(), "windDirection", knobs.m_WindDirection * Math.DEG2RAD, transition, hold, applied, widened);
 		if (knobs.m_HasOvercast)
 			SetPhenomenon(weather.GetOvercast(), "overcast", knobs.m_Overcast, transition, hold, applied, widened);
 		if (knobs.m_HasFog)
@@ -348,25 +393,32 @@ class VyshkaWeather
 			applied.Add(VyshkaJsonValue.NewString("mode"));
 		}
 
-		// What the engine will do to the values just set, where it can be
-		// told from here. The overcast is the one being moved to.
-		float overcast = weather.GetOvercast().GetForecast();
-		float rainMin = s_RainMin;
-		if (rainMin < 0)
-			rainMin = THRESHOLD_MIN_DEFAULT;
-		if (knobs.m_HasRain && knobs.m_Rain > 0 && overcast < rainMin)
-			notes.Add(VyshkaJsonValue.NewString("the overcast is below the rain threshold's minimum (" + VyshkaJsonValue.FormatFloat(rainMin) + "), so the engine stops the rain over the threshold's stop time"));
-		float snowfallMin = s_SnowfallMin;
-		if (snowfallMin < 0)
-			snowfallMin = THRESHOLD_MIN_DEFAULT;
-		if (knobs.m_HasSnowfall && knobs.m_Snowfall > 0 && overcast < snowfallMin)
-			notes.Add(VyshkaJsonValue.NewString("the overcast is below the snowfall threshold's minimum (" + VyshkaJsonValue.FormatFloat(snowfallMin) + "), so the engine stops the snow over the threshold's stop time"));
 		string mode = Mode();
 		if (mode == MODE_WORLD)
 		{
+			// The map's controller runs whenever any phenomenon is due a new
+			// forecast, and each run re-applies its storm, thresholds, wind
+			// maximum, and snowfall limits, so one phenomenon falling due
+			// would undo what was set on another. Every phenomenon's next
+			// change is held back to the hold, which is then what the note
+			// says it is.
+			HoldBack(weather.GetOvercast(), hold);
+			HoldBack(weather.GetFog(), hold);
+			HoldBack(weather.GetRain(), hold);
+			HoldBack(weather.GetSnowfall(), hold);
+			HoldBack(weather.GetWindMagnitude(), hold);
+			HoldBack(weather.GetWindDirection(), hold);
 			int holdSeconds = hold;
-			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over after " + holdSeconds.ToString() + " s and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
+			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over in " + holdSeconds.ToString() + " s (no phenomenon is due a new forecast before then) and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
 		}
+
+		// What the engine will do to the values just set, where it can be
+		// told from here. The overcast is the one being moved to.
+		float overcast = weather.GetOvercast().GetForecast();
+		if (knobs.m_HasRain && knobs.m_Rain > 0)
+			ThresholdNote(notes, "rain", overcast, s_RainKnown, s_RainMin, s_RainMax);
+		if (knobs.m_HasSnowfall && knobs.m_Snowfall > 0)
+			ThresholdNote(notes, "snowfall", overcast, s_SnowfallKnown, s_SnowfallMin, s_SnowfallMax);
 
 		string appliedText = applied.Serialize();
 		VyshkaLog.Info("weather set: " + appliedText + ", mode " + mode);
@@ -585,6 +637,37 @@ class VyshkaWeatherKnobs
 		return true;
 	}
 
+	// SectionMembers refuses a member of the object knob key that is not one
+	// of members; an absent or non-object knob is left to Section.
+	static bool SectionMembers(VyshkaJsonValue source, string key, array<string> members, string path, out string error)
+	{
+		VyshkaJsonValue section = source.Get(key);
+		if (!section || !section.IsObject())
+			return true;
+		for (int i = 0; i < section.Count(); i++)
+		{
+			string member = section.KeyAt(i);
+			if (members.Find(member) < 0)
+			{
+				error = path + key + "." + member + " is not one of its members (" + JoinNames(members) + ")";
+				return false;
+			}
+		}
+		return true;
+	}
+
+	static string JoinNames(array<string> names)
+	{
+		string text = "";
+		for (int i = 0; i < names.Count(); i++)
+		{
+			if (i > 0)
+				text += ", ";
+			text += names.Get(i);
+		}
+		return text;
+	}
+
 	// Read takes the knobs source carries. A stored preset (record) may
 	// carry only the knobs, so a misspelt member is refused rather than
 	// silently ignored; a dispatch's params carry the preset and name
@@ -611,6 +694,19 @@ class VyshkaWeatherKnobs
 					return false;
 				}
 			}
+			// The same inside the knobs that are objects, so a misspelt
+			// stopSeconds does not quietly become the default.
+			array<string> fogMembers = {"distanceDensity", "heightDensity", "heightBias"};
+			array<string> stormMembers = {"density", "threshold", "timeoutSeconds"};
+			array<string> thresholdMembers = {"min", "max", "stopSeconds"};
+			if (!SectionMembers(source, "dynamicFog", fogMembers, path, error))
+				return false;
+			if (!SectionMembers(source, "storm", stormMembers, path, error))
+				return false;
+			if (!SectionMembers(source, "rainThreshold", thresholdMembers, path, error))
+				return false;
+			if (!SectionMembers(source, "snowfallThreshold", thresholdMembers, path, error))
+				return false;
 		}
 
 		float value;

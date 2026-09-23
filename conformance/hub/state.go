@@ -246,6 +246,7 @@ func checkStateWorld(ctx context.Context, env Env) error {
 	}{
 		{"a body with no world", map[string]any{"capturedAt": time.Now().UTC().Format(time.RFC3339)}},
 		{"a null world", map[string]any{"world": nil}},
+		{"a world only under another case", map[string]any{"World": map[string]any{}}},
 		{"a world that is a list", map[string]any{"world": []any{map[string]any{"time": "2026-09-20T14:32"}}}},
 		{"a time with an unpadded hour", map[string]any{"world": map[string]any{"time": "2026-09-20T9:05"}}},
 		{"a time on February 30", map[string]any{"world": map[string]any{"time": "2026-02-30T10:00"}}},
