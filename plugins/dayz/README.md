@@ -531,11 +531,11 @@ the global health as a whole percent of the vehicle's maximum, which differs by 
 whose tank the engine does not give script. A repair makes a wreck `intact` again, and its
 next destruction is reported as a new one. A snapshot that would pass the 262144 bytes a
 snapshot may carry (around a thousand vehicles: 52 took 11 464 bytes on a live run) is sent
-with compact entries instead, whose `data` holds only `type`, `state`, and `crew` when
-someone is aboard, so every vehicle stays in it; the plugin logs that once per run. A
-compact entry is smaller than an entry was before the state existed, so a server whose
-snapshot fitted then still fits; one past the cap even so is rejected by the hub, which
-keeps the last snapshot it accepted, and the plugin logs that once as well.
+with less detail instead, a level at a time until it fits, so every vehicle stays in it:
+compact entries, whose `data` holds only `type`, `state`, and `crew` when someone is aboard
+(smaller than an entry was before the state existed, so a server whose snapshot fitted then
+still fits); then `id`, `kind`, and `position` alone; then `id` alone, which fits the 5000
+entries a snapshot may hold. The plugin logs the level whenever it changes.
 
 ```json
 { "capturedAt": "2026-09-18T10:00:00Z",

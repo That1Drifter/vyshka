@@ -91,12 +91,14 @@ class VyshkaVehicles
 	static ref array<ref VyshkaVehicleHit> s_FatalHits;
 	static const int REPORT_BUDGET = 40000;   // serialized bytes the delete-destroyed lists may take together (the hub's result cap is 64 KiB)
 	// A snapshot body is capped at 262144 bytes (section 8.3). A capture
-	// that would pass this is made again with compact entries (Describe),
-	// which keeps every vehicle in it.
+	// that would pass this is made again with less detail (Describe), which
+	// keeps every vehicle in it.
 	static const int SNAPSHOT_BUDGET = 260000;
-	static const int SNAPSHOT_MAX = 262144;
-	static bool s_CompactLogged;   // the compact capture is logged once per run, not every poll
-	static bool s_OverLogged;      // and so is a compact one still past the cap
+	static const int DETAIL_FULL = 0;
+	static const int DETAIL_COMPACT = 1;
+	static const int DETAIL_PLACED = 2;
+	static const int DETAIL_ID = 3;
+	static int s_LoggedDetail;   // the detail level of the last capture, so a change is logged once
 	static const int PART_DEPTH_MAX = 3;   // levels of parts a repair walks (a car, its door, anything on the door)
 	// The vehicle each seated identity is in, by plain Steam64 id.
 	static ref map<string, ref VyshkaSeat> s_Seated;
@@ -373,24 +375,31 @@ class VyshkaVehicles
 
 	// Describe is one state.vehicles entry (section 8.3): id and kind at the
 	// top, and under data the engine class, its display name, the seat
-	// count, the crew, the damage state, the health, and the fluids. A
-	// compact entry keeps the class, the state, and a crew that is not
-	// empty, and nothing else under data: always smaller than an entry was
-	// before the state existed (the state's bytes are fewer than the display
-	// name, seat count, and empty crew it replaces), so a server whose
-	// snapshot fitted then still fits.
-	static VyshkaJsonValue Describe(Transport vehicle, bool compact)
+	// count, the crew, the damage state, the health, and the fluids, at
+	// DETAIL_FULL. A snapshot too large for that is made again with less
+	// (Capture): DETAIL_COMPACT keeps the class, the state, and a crew that
+	// is not empty, and nothing else under data, which is always smaller
+	// than an entry was before the state existed (the state's bytes are
+	// fewer than the display name, seat count, and empty crew it replaces),
+	// so a server whose snapshot fitted then still fits; DETAIL_PLACED keeps
+	// the id, the kind, and the position a map needs; DETAIL_ID the id
+	// alone, which fits 5000 vehicles (the entry cap) whatever their ids.
+	static VyshkaJsonValue Describe(Transport vehicle, int detail)
 	{
 		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
 		entry.Set("id", VyshkaJsonValue.NewString(Id(vehicle)));
+		if (detail >= DETAIL_ID)
+			return entry;
 		entry.Set("kind", VyshkaJsonValue.NewString(Kind(vehicle)));
 		VyshkaJsonValue position = VyshkaPlayers.Position(vehicle.GetPosition());
 		if (position)
 			entry.Set("position", position);
+		if (detail >= DETAIL_PLACED)
+			return entry;
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("type", VyshkaJsonValue.NewString(vehicle.GetType()));
 		VyshkaJsonValue crew = Crew(vehicle);
-		if (compact)
+		if (detail >= DETAIL_COMPACT)
 		{
 			if (crew.Count() > 0)
 				data.Set("crew", crew);
@@ -433,34 +442,33 @@ class VyshkaVehicles
 				exploded.Remove(k);
 		}
 
-		VyshkaJsonValue body = Body(live, false);
+		// Every vehicle stays in the snapshot, since one absent from it is
+		// gone (section 8.3); detail goes instead, a level at a time.
+		VyshkaJsonValue body = Body(live, DETAIL_FULL);
 		int bytes = body.Serialize().Length();
-		if (bytes > SNAPSHOT_BUDGET)
+		int fullBytes = bytes;
+		int detail = DETAIL_FULL;
+		while (bytes > SNAPSHOT_BUDGET && detail < DETAIL_ID)
 		{
-			// Every vehicle stays in the snapshot, since one absent from it
-			// is gone (section 8.3); the extras go instead.
-			body = Body(live, true);
-			int compactBytes = body.Serialize().Length();
-			if (!s_CompactLogged)
-				VyshkaLog.Warn("the vehicles snapshot came to " + bytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 260000 kept under the 262144 a snapshot may carry; sent with compact entries (" + compactBytes.ToString() + " bytes); logged once per run");
-			s_CompactLogged = true;
-			// Past the cap even so, the hub rejects it whole and keeps the
-			// last one it accepted: nothing is left to drop but vehicles,
-			// and a snapshot missing some would say they are gone.
-			if (compactBytes > SNAPSHOT_MAX && !s_OverLogged)
-			{
-				VyshkaLog.Warn("the compact vehicles snapshot is still " + compactBytes.ToString() + " bytes; the hub will reject it while there are this many vehicles; logged once per run");
-				s_OverLogged = true;
-			}
+			detail++;
+			body = Body(live, detail);
+			bytes = body.Serialize().Length();
 		}
+		if (detail != DETAIL_FULL && detail != s_LoggedDetail)
+		{
+			// Logged when the level changes, not on every poll.
+			string line = "the vehicles snapshot came to " + fullBytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 260000 kept under the 262144 a snapshot may carry";
+			VyshkaLog.Warn(line + "; sent at detail level " + detail.ToString() + " of 3 (" + bytes.ToString() + " bytes)");
+		}
+		s_LoggedDetail = detail;
 		return body;
 	}
 
-	static VyshkaJsonValue Body(array<Transport> live, bool compact)
+	static VyshkaJsonValue Body(array<Transport> live, int detail)
 	{
 		VyshkaJsonValue vehicles = VyshkaJsonValue.NewArray();
 		for (int i = 0; i < live.Count(); i++)
-			vehicles.Add(Describe(live.Get(i), compact));
+			vehicles.Add(Describe(live.Get(i), detail));
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
 		body.Set("vehicles", vehicles);
@@ -1373,10 +1381,17 @@ class VyshkaRepairAction : VyshkaAction
 			EntityAI current = parts.Get(p);
 			if (CarWheel_Ruined.Cast(current))
 			{
-				current = SwapWheel(item, current, report);
+				// A wheel that could not be swapped stays where it is (or is
+				// gone, if the engine's replacement took it and put nothing
+				// back), and its own parts are still walked.
+				EntityAI swapped = SwapWheel(item, current, report);
+				if (swapped)
+				{
+					current = swapped;
+					repaired++;
+				}
 				if (!current)
 					continue;
-				repaired++;
 			}
 			else if (VyshkaInventory.HasHealth(current))
 			{
