@@ -192,6 +192,9 @@ function notesSection(platform, id, seq) {
         rendered.delete(String(note.id));
         deleted.add(String(note.id));
         written.delete(String(note.id));
+        // A refusal that landed while this delete was out may already show
+        // the saved notice; it counts only the writes still standing.
+        if (readState === 'forbidden') showSaved();
         empty.hidden = rendered.size > 0;
         problem.hide();
       } catch (err) {
