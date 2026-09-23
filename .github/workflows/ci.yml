@@ -184,7 +184,7 @@ jobs:
     needs: changes
     # Runs unless the classification said, explicitly, that it may skip: a
     # failed Changes job or a missing output runs it.
-    if: ${{ !cancelled() && needs.changes.outputs.conformance != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.conformance != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +233,7 @@ jobs:
     # against the other system of record, so main carries it and any other
     # pull request does not wait for it.
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.postgres != 'false') }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.result != 'success' || needs.changes.outputs.postgres != 'false') }}
     runs-on: ubuntu-latest
     services:
       postgres:
