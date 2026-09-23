@@ -19,6 +19,12 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-22: the live map badges a vehicle's damage state (issue #77): a vehicle whose
+  `data.state` is a string other than `intact` (the DayZ plugin's `destroyed` or
+  `exploded`) carries it as a badge beside its kind and leaves it out of the extras, as
+  a player's admin flags are shown; an intact vehicle's state stays in the extras. The
+  browser test covers both and was shown to discriminate against the panel without the
+  badge.
 - 2026-09-22: the `kvNamespace` annotation (issue #76, protocol draft 0.29, sections 6.1
   and 6.4): a string param may name one key/value namespace its manifest declares in
   `kvNamespaces`, and a UI offers that namespace's keys as the field's values through
@@ -205,6 +211,31 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-09-22: vehicles 2 (issue #77, plugin 0.8.0, no protocol change). Each
+  `state.vehicles` entry carries `data.state` (`intact`, `destroyed`, or `exploded`, a
+  destruction whose fatal hit was an explosion), `data.health` (a whole percent of the
+  vehicle's maximum), and `data.fluids` (a car's fuel, oil, brake fluid, and coolant, a
+  boat's fuel, as fractions); a snapshot that would pass the 262144-byte cap is sent
+  without display names and fluids, every vehicle kept. `vyshka.vehicle.refuel`
+  (vehicle, warning) sets the named fluids (`fuel` by default) to a `level` of each tank;
+  `vyshka.vehicle.repair` (vehicle, none) runs the engine's full-health call on the
+  vehicle, which lifts a destruction, and with `parts` (the default) on every attached
+  part, swapping a ruined wheel back to its intact class through the engine's own
+  replacement. `core.vehicle.destroy` gains `state`, and `damageType` and `ammo` from the
+  hit that destroyed the vehicle (a hit hook on the three vehicle bases, which the engine
+  runs before the kill hook in the same damage call). The README's mod surface documents
+  `VyshkaVehicles` (`Live`, `Find`, `Id`, `State`) with a delete-all-unclaimed action as
+  the example an ownership mod registers, compiled and dispatched on a DayZ 1.29 server;
+  the README's action count is corrected to twenty-six (the presets had not been
+  counted). Verified live on DayZ 1.29 against a local hub, no client needed: twelve
+  plastic explosive blasts destroyed a sedan (the damage lands a frame after the blast)
+  and it read `exploded` in the event and the snapshot, a scripted kill read
+  `destroyed`, a blast on that wreck reported nothing new, repair brought both kinds back
+  to intact at 100 with two and three ruined wheels swapped back (nine and five parts),
+  a second blast on a repaired car was reported as a new destruction, `deletedestroyed`
+  with `dryRun` listed the three wrecks, and refuel filled a car's tank from 0.26 to 1,
+  set all four fluids to 0.5, drained the fuel with `level` 0, filled a boat from 0.01,
+  and refused a boat's coolant.
 - 2026-09-22: presets (issue #76, plugin 0.8.0). Loadouts, teleport locations, and
   vehicle presets live in the hub's key/value store, one namespace per kind
   (`vyshka.loadouts`, `vyshka.locations`, `vyshka.vehicles`, declared in the manifest),
@@ -315,6 +346,16 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Fixed
 
+- 2026-09-22: `core.vehicle.destroy` named the vehicle itself as the cause of an
+  explosion (`cause: self`), since the engine passes the vehicle as its own killer for a
+  blast (measured with a plastic explosive); a vehicle that is its own killer is now
+  described by what its fatal hit came from, so a blast reads `cause: explosion` with
+  `weapon` and `killerType`, as the README always said (issue #77).
+- 2026-09-22: every restart reported each wreck saved at shutdown as a new destruction:
+  the hive loads the wreck, the engine runs its kill hook inside the load (between the
+  store-load hooks), and deletes it half a second later (measured on DayZ 1.29, two
+  wrecks over two restarts, then none reported after the fix). A kill hook inside a
+  vehicle's load is now recorded and not reported (issue #77).
 - 2026-09-22: an inventory read of a character holding a launcher, a dart gun, or a shock
   pistol logged a script error per such item (`No DamageSystemData`): those classes
   declare no damage system, and the read asked for their health anyway. Their entries now

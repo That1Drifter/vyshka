@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-22 (the presets of #76 landed as protocol draft 0.29, the schema subset
+**As of:** 2026-09-22 (the vehicles 2 slice of #77 landed with no protocol change, the
+vehicle's damage state, health, and fluids in its snapshot and refuel and repair beside
+unstuck; the presets of #76 landed as protocol draft 0.29, the schema subset
 gaining the `kvNamespace` annotation and the panel's key/value view becoming an editor,
 with operator-defined weather presets moved to #78; the spawning extension of #75 landed as protocol draft 0.28, the
 schema subset gaining its one form of `not`; the inventory actions of #74 landed, the first action result
@@ -195,9 +197,16 @@ After the tag, in this order:
     operator-written data. Operator-defined weather presets moved to #78, which builds
     the weather action they feed. Capture from a placed object was left out: vehicles
     are the only placed objects with ids today, and nothing asked for it yet.
-14. **Vehicles 2** (#77): refuel, repair, and intact, destroyed, and exploded states in the
-    snapshot. Delete-all-unclaimed depends on an ownership mod and becomes a documented
-    mod-surface example instead of a plugin action.
+14. **Vehicles 2** (#77), landed 2026-09-22: refuel (any of a car's four fluids, a boat's
+    fuel, to a level) and repair (the engine's full-health call, which lifts a destruction,
+    on the vehicle and its parts, with a ruined wheel swapped back to its intact class),
+    and the intact, destroyed, and exploded states in the snapshot beside health and
+    fluids; exploded is a destruction by an explosion's hit, since the engine names the
+    vehicle itself as the killer of a blast. The live run found that every restart had
+    reported each saved wreck as a new destruction (the hive loads it, runs its kill hook,
+    and deletes it), which the slice fixed. No protocol change: the fields ride `data`.
+    Delete-all-unclaimed depends on an ownership mod and became a documented mod-surface
+    example instead of a plugin action, compiled and dispatched on a live server.
 15. **World** (#78): `state.world` first (the panel needs current time and conditions
     before a weather form makes sense), then one action with every engine knob optional, a
     fixed preset enum shipped in the plugin (clear, cloudy, storm), and freeze time, and the

@@ -99,6 +99,8 @@ modded class MissionServer
 		registry.Register(new VyshkaSetTimeAction());
 		registry.Register(new VyshkaUnstuckAction());
 		registry.Register(new VyshkaDeleteDestroyedAction());
+		registry.Register(new VyshkaRefuelAction());
+		registry.Register(new VyshkaRepairAction());
 		registry.Register(new VyshkaVitalsAction());
 		registry.Register(new VyshkaStopBleedingAction());
 		registry.Register(new VyshkaDryAction());

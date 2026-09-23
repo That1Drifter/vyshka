@@ -154,7 +154,9 @@ management views).
   re-read every five seconds. The latest snapshots' players and vehicles are listed with
   identity or id, position, and extras (a player's admin flags, the `flags` object the
   DayZ plugin puts in an entry's `data`, are badges beside the name rather than part of
-  the extras), and plotted on a basemap when the hub has a
+  the extras, and so is a vehicle's damage state when it is anything but `intact`, the
+  `state` string the DayZ plugin puts there: `destroyed` or `exploded`), and plotted on a
+  basemap when the hub has a
   tileset installed for the server's world (below): players as round dots, vehicles as
   squares in a colour of their own, labelled by the plugin's display name or class. The
   world is the one the plugin reported in its latest `core.server.start`
@@ -372,7 +374,8 @@ within 1.5 px of where the world frame puts them with the canvas pixel under eac
 colour of its quadrant (which is what tells a flipped or swapped axis from a right one),
 a second snapshot replacing the markers whole, a marker click landing on the action list
 with the player preselected and the heal form filled in, a vehicles snapshot listed and
-plotted apart from the players (one car placed, one boat without a position), left where it
+plotted apart from the players (one car placed, one boat without a position; the boat's
+`exploded` state a badge and out of its extras, the intact car's state left in them), left where it
 was by the players' replacement, its marker landing on the action list with the vehicle
 preselected and the vehicle action's form filled in and fed its suggestions, and a world
 with no tileset listing the players and the vehicles under a notice.

@@ -1,9 +1,10 @@
-// Vyshka DayZ plugin: vehicles (issue #67).
+// Vyshka DayZ plugin: vehicles (issues #67 and #77).
 //
-// The state.vehicles snapshot a live map needs (spec section 8.3), the
-// enter, exit, and destroy events a feed wants, and the two chores every
-// long-running server needs: delete every destroyed vehicle, and unstuck
-// one. The engine keeps no list of its vehicles that script can ask for, so
+// The state.vehicles snapshot a live map needs (spec section 8.3), with each
+// vehicle's damage state, health, and fluids; the enter, exit, and destroy
+// events a feed wants; and the chores every long-running server needs:
+// delete every destroyed vehicle, unstuck one, refuel one, and repair one.
+// The engine keeps no list of its vehicles that script can ask for, so
 // this file keeps one: every car, boat, and helicopter registers itself as
 // it is initialized and leaves as it is deleted, whichever way it arrived
 // (the hive loading it at boot, the central economy respawning it, or a
@@ -16,6 +17,16 @@
 // lifetime of the thing it names" (section 8.3) asks for. A restart is a new
 // life: the ids start over with it. The vehicle-context actions take that id
 // as their referenceKey, the same string the snapshot publishes.
+
+// VyshkaVehicleHit is the hit that destroyed a vehicle, kept from the hit
+// hook for the kill hook that follows it in the same damage call.
+class VyshkaVehicleHit
+{
+	Transport m_Vehicle;   // not owned
+	EntityAI m_Source;     // not owned; what the hit came from, when the engine named it
+	int m_Type;
+	string m_Ammo;
+}
 
 // VyshkaSeat is what the plugin remembers about a seated player, so that
 // the exit event can still name the vehicle after the engine has let go of
@@ -38,6 +49,13 @@ class VyshkaVehicles
 	static const string KIND_VEHICLE = "vehicle";
 	static const string EXIT_LEFT = "left";
 	static const string EXIT_DISCONNECT = "disconnect";
+	static const string STATE_INTACT = "intact";
+	static const string STATE_DESTROYED = "destroyed";
+	static const string STATE_EXPLODED = "exploded";
+	static const string FLUID_FUEL = "fuel";
+	static const string FLUID_OIL = "oil";
+	static const string FLUID_BRAKE = "brake";
+	static const string FLUID_COOLANT = "coolant";
 
 	// Every vehicle alive on this server, in the order it was initialized.
 	// The engine clears a plain reference when it destroys the object, so a
@@ -50,7 +68,30 @@ class VyshkaVehicles
 	// leaves this list as its health level changes (OnRepaired), and at the
 	// next capture as a fallback, so a second destruction is reported.
 	static ref array<Transport> s_Destroyed;
+	// The destroyed vehicles whose destruction was an explosion: the hit
+	// that destroyed them carried the engine's explosion damage type, or the
+	// killer the engine named was an explosive. Kept in memory only, which
+	// loses nothing: a restart brings no wreck back for longer than its load
+	// (below).
+	static ref array<Transport> s_Exploded;
+	// The vehicles the hive is loading. A wreck saved at shutdown is loaded
+	// at the next boot, runs its kill hook inside its own load (between the
+	// store-load hooks), and is deleted by the engine half a second later
+	// (measured on DayZ 1.29, two wrecks over two restarts); a destruction
+	// from an earlier run is not a new one, so a kill hook inside a load is
+	// recorded and not reported. The list is cleared at every capture as
+	// well, since a load that failed never reaches its closing hook.
+	static ref array<Transport> s_Loading;
+	// The hit that destroyed a vehicle, from its hit hook, until the kill
+	// hook that follows it reads it (OnHit).
+	static ref VyshkaVehicleHit s_FatalHit;
 	static const int REPORT_BUDGET = 40000;   // serialized bytes the delete-destroyed lists may take together (the hub's result cap is 64 KiB)
+	// A snapshot body is capped at 262144 bytes (section 8.3). A capture
+	// that would pass this is made again without the display names and the
+	// fluids (Capture), which keeps every vehicle in it.
+	static const int SNAPSHOT_BUDGET = 260000;
+	static bool s_CompactLogged;   // the compact capture is logged once per run, not every poll
+	static const int PART_DEPTH_MAX = 3;   // levels of parts a repair walks (a car, its door, anything on the door)
 	// The vehicle each seated identity is in, by plain Steam64 id.
 	static ref map<string, ref VyshkaSeat> s_Seated;
 
@@ -66,6 +107,20 @@ class VyshkaVehicles
 		if (!s_Destroyed)
 			s_Destroyed = new array<Transport>;
 		return s_Destroyed;
+	}
+
+	static array<Transport> Exploded()
+	{
+		if (!s_Exploded)
+			s_Exploded = new array<Transport>;
+		return s_Exploded;
+	}
+
+	static array<Transport> Loading()
+	{
+		if (!s_Loading)
+			s_Loading = new array<Transport>;
+		return s_Loading;
 	}
 
 	static map<string, ref VyshkaSeat> Seated()
@@ -99,9 +154,38 @@ class VyshkaVehicles
 		int at = Vehicles().Find(vehicle);
 		if (at >= 0)
 			Vehicles().Remove(at);
+		Forget(vehicle);
+	}
+
+	// Forget drops a vehicle from the destruction records: it is gone, or it
+	// has been brought back.
+	static void Forget(Transport vehicle)
+	{
 		int reported = Destroyed().Find(vehicle);
 		if (reported >= 0)
 			Destroyed().Remove(reported);
+		int exploded = Exploded().Find(vehicle);
+		if (exploded >= 0)
+			Exploded().Remove(exploded);
+		if (s_FatalHit && s_FatalHit.m_Vehicle == vehicle)
+			s_FatalHit = null;
+		int loading = Loading().Find(vehicle);
+		if (loading >= 0)
+			Loading().Remove(loading);
+	}
+
+	// OnLoading and OnLoaded bracket a vehicle's load from the hive.
+	static void OnLoading(Transport vehicle)
+	{
+		if (vehicle && Loading().Find(vehicle) < 0)
+			Loading().Insert(vehicle);
+	}
+
+	static void OnLoaded(Transport vehicle)
+	{
+		int at = Loading().Find(vehicle);
+		if (at >= 0)
+			Loading().Remove(at);
 	}
 
 	// OnRepaired runs when a vehicle's global health level leaves ruined:
@@ -110,9 +194,70 @@ class VyshkaVehicles
 	{
 		if (!vehicle)
 			return;
-		int reported = Destroyed().Find(vehicle);
-		if (reported >= 0)
-			Destroyed().Remove(reported);
+		Forget(vehicle);
+	}
+
+	// State is the vehicle's damage state as the snapshot publishes it:
+	// intact, destroyed, or exploded (destroyed by an explosion).
+	static string State(Transport vehicle)
+	{
+		if (!vehicle.IsDamageDestroyed())
+			return STATE_INTACT;
+		if (Exploded().Find(vehicle) >= 0)
+			return STATE_EXPLODED;
+		return STATE_DESTROYED;
+	}
+
+	// Health is the vehicle's global health as a whole percent of its
+	// maximum: the maximum differs from one vehicle class to the next.
+	static int Health(Transport vehicle)
+	{
+		return (int)Math.Round(vehicle.GetHealth01("", "Health") * 100);
+	}
+
+	// Fluids reads the levels a vehicle holds, each a fraction of its tank
+	// rounded to two decimals: a car's four, a boat's fuel. A vehicle of
+	// another kind has none script can read, and gets null.
+	static VyshkaJsonValue Fluids(Transport vehicle)
+	{
+		CarScript car = CarScript.Cast(vehicle);
+		if (car)
+		{
+			VyshkaJsonValue levels = VyshkaJsonValue.NewObject();
+			levels.Set(FLUID_FUEL, Fraction(car.GetFluidFraction(CarFluid.FUEL)));
+			levels.Set(FLUID_OIL, Fraction(car.GetFluidFraction(CarFluid.OIL)));
+			levels.Set(FLUID_BRAKE, Fraction(car.GetFluidFraction(CarFluid.BRAKE)));
+			levels.Set(FLUID_COOLANT, Fraction(car.GetFluidFraction(CarFluid.COOLANT)));
+			return levels;
+		}
+		BoatScript boat = BoatScript.Cast(vehicle);
+		if (boat)
+		{
+			VyshkaJsonValue fuel = VyshkaJsonValue.NewObject();
+			fuel.Set(FLUID_FUEL, Fraction(boat.GetFluidFraction(BoatFluid.FUEL)));
+			return fuel;
+		}
+		return null;
+	}
+
+	static VyshkaJsonValue Fraction(float value)
+	{
+		return VyshkaVitals.Number(Math.Round(value * 100) / 100);
+	}
+
+	// Target resolves the referenceKey of a vehicle-context action to the
+	// vehicle, or explains why it cannot.
+	static Transport Target(string referenceKey, out string error)
+	{
+		if (referenceKey == "")
+		{
+			error = "a vehicle-context action needs the vehicle's id as referenceKey";
+			return null;
+		}
+		Transport vehicle = Find(referenceKey);
+		if (!vehicle)
+			error = "no vehicle " + referenceKey + " exists on this server (ids are in the state.vehicles snapshot)";
+		return vehicle;
 	}
 
 	// IsDriverSeat says whether a crew index is the driver's, by the seat
@@ -222,9 +367,10 @@ class VyshkaVehicles
 	}
 
 	// Describe is one state.vehicles entry (section 8.3): id and kind at the
-	// top, the engine class, its display name, the seat count, and the crew
-	// under data.
-	static VyshkaJsonValue Describe(Transport vehicle)
+	// top, and under data the engine class, its display name, the seat
+	// count, the crew, the damage state, the health, and the fluids. A
+	// compact entry leaves out the display name and the fluids.
+	static VyshkaJsonValue Describe(Transport vehicle, bool compact)
 	{
 		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
 		entry.Set("id", VyshkaJsonValue.NewString(Id(vehicle)));
@@ -234,9 +380,18 @@ class VyshkaVehicles
 			entry.Set("position", position);
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("type", VyshkaJsonValue.NewString(vehicle.GetType()));
-		data.Set("displayName", VyshkaJsonValue.NewString(vehicle.GetDisplayName()));
+		if (!compact)
+			data.Set("displayName", VyshkaJsonValue.NewString(vehicle.GetDisplayName()));
 		data.Set("seats", VyshkaJsonValue.NewInt(vehicle.CrewSize()));
 		data.Set("crew", Crew(vehicle));
+		data.Set("state", VyshkaJsonValue.NewString(State(vehicle)));
+		data.Set("health", VyshkaJsonValue.NewInt(Health(vehicle)));
+		if (!compact)
+		{
+			VyshkaJsonValue fluids = Fluids(vehicle);
+			if (fluids)
+				data.Set("fluids", fluids);
+		}
 		entry.Set("data", data);
 		return entry;
 	}
@@ -245,9 +400,6 @@ class VyshkaVehicles
 	static VyshkaJsonValue Capture()
 	{
 		array<Transport> live = Live();
-		VyshkaJsonValue vehicles = VyshkaJsonValue.NewArray();
-		for (int i = 0; i < live.Count(); i++)
-			vehicles.Add(Describe(live.Get(i)));
 		// A vehicle reported destroyed and since repaired can be destroyed
 		// again; one that is gone has nothing left to report.
 		array<Transport> reported = Destroyed();
@@ -257,6 +409,34 @@ class VyshkaVehicles
 			if (!wreck || !wreck.IsDamageDestroyed())
 				reported.Remove(j);
 		}
+		Loading().Clear();
+		array<Transport> exploded = Exploded();
+		for (int k = exploded.Count() - 1; k >= 0; k--)
+		{
+			Transport blasted = exploded.Get(k);
+			if (!blasted || !blasted.IsDamageDestroyed())
+				exploded.Remove(k);
+		}
+
+		VyshkaJsonValue body = Body(live, false);
+		int bytes = body.Serialize().Length();
+		if (bytes > SNAPSHOT_BUDGET)
+		{
+			// Every vehicle stays in the snapshot, since one absent from it
+			// is gone (section 8.3); the extras go instead.
+			body = Body(live, true);
+			if (!s_CompactLogged)
+				VyshkaLog.Warn("the vehicles snapshot came to " + bytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 262144 a snapshot may carry; sent without display names and fluids (" + body.Serialize().Length().ToString() + " bytes); logged once per run");
+			s_CompactLogged = true;
+		}
+		return body;
+	}
+
+	static VyshkaJsonValue Body(array<Transport> live, bool compact)
+	{
+		VyshkaJsonValue vehicles = VyshkaJsonValue.NewArray();
+		for (int i = 0; i < live.Count(); i++)
+			vehicles.Add(Describe(live.Get(i), compact));
 		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
 		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
 		body.Set("vehicles", vehicles);
@@ -376,18 +556,67 @@ class VyshkaVehicles
 	// killer is read the way the death event reads
 	// a player's killer: a player behind the item that did it, an explosive,
 	// another vehicle, the vehicle itself (fire, a fall), or something else.
+	//
+	// The hit that destroyed it, when one did (a scripted health write
+	// destroys without a hit), came through the hit hook first and says how
+	// (measured on DayZ 1.29: the hit hook runs, then the kill hook, in the
+	// same damage call): its damage type and ammunition go into the event,
+	// and an explosion makes the vehicle exploded rather than destroyed. An
+	// explosive named as the killer does too, whichever hook ran first. The
+	// engine names the vehicle itself as the killer of an explosion
+	// (measured: a plastic explosive's blast), so a vehicle that is its own
+	// killer is described by what its fatal hit came from, when it came
+	// from something else.
 	static void OnDestroyed(Transport vehicle, Object killer)
 	{
 		if (!vehicle)
 			return;
+		VyshkaVehicleHit hit = s_FatalHit;
+		s_FatalHit = null;
+		if (hit && hit.m_Vehicle != vehicle)
+			hit = null;
 		if (Destroyed().Find(vehicle) >= 0)
 			return;
 		Destroyed().Insert(vehicle);
+		if (Loading().Find(vehicle) >= 0)
+			return;
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		Label(vehicle, data);
 		data.Set("crew", Crew(vehicle));
-		DescribeKiller(vehicle, killer, data);
+		Object blamed = killer;
+		if (killer == vehicle && hit && hit.m_Source && hit.m_Source != vehicle)
+			blamed = hit.m_Source;
+		DescribeKiller(vehicle, blamed, data);
+		bool exploded = data.GetString("cause") == "explosion";
+		if (hit)
+		{
+			data.Set("damageType", VyshkaJsonValue.NewString(VyshkaPlayers.DamageTypeName(hit.m_Type)));
+			if (hit.m_Ammo != "")
+				data.Set("ammo", VyshkaJsonValue.NewString(hit.m_Ammo));
+			if (hit.m_Type == DamageType.EXPLOSION)
+				exploded = true;
+		}
+		if (exploded && Exploded().Find(vehicle) < 0)
+			Exploded().Insert(vehicle);
+		data.Set("state", VyshkaJsonValue.NewString(State(vehicle)));
 		VyshkaPlugin.Emit("core.vehicle.destroy", data);
+	}
+
+	// OnHit runs from the vehicle's hit hook, after the engine has applied
+	// the damage. A hit that leaves the vehicle destroyed before its
+	// destruction was reported is the one that destroyed it, and is kept for
+	// the kill hook the engine runs next (OnDestroyed); every other hit, a
+	// hit on a wreck included, is not kept.
+	static void OnHit(Transport vehicle, int damageType, EntityAI source, string ammo)
+	{
+		if (!vehicle || !vehicle.IsDamageDestroyed() || Destroyed().Find(vehicle) >= 0)
+			return;
+		VyshkaVehicleHit hit = new VyshkaVehicleHit();
+		hit.m_Vehicle = vehicle;
+		hit.m_Source = source;
+		hit.m_Type = damageType;
+		hit.m_Ammo = ammo;
+		s_FatalHit = hit;
 	}
 
 	static void DescribeKiller(Transport victim, Object killer, VyshkaJsonValue data)
@@ -433,7 +662,8 @@ class VyshkaVehicles
 }
 
 // The three scripted vehicle bases register as they are initialized, leave
-// as they are deleted, and report their destruction. Every vanilla vehicle
+// as they are deleted, and report their destruction and the hit behind it;
+// the store-load hooks say when a destruction belongs to an earlier run. Every vanilla vehicle
 // and every modded one that extends these is covered; a mod that extends
 // the engine's Car, Boat, or Helicopter directly is not, and is not
 // modded from script either.
@@ -458,6 +688,27 @@ modded class CarScript
 		if (GetGame().IsServer())
 			VyshkaVehicles.OnDestroyed(this, killer);
 		super.EEKilled(killer);
+	}
+
+	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
+	{
+		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnHit(this, damageType, source, ammo);
+	}
+
+	override bool OnStoreLoad(ParamsReadContext ctx, int version)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoading(this);
+		return super.OnStoreLoad(ctx, version);
+	}
+
+	override void AfterStoreLoad()
+	{
+		super.AfterStoreLoad();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoaded(this);
 	}
 
 	// The global zone (an empty zone name) leaving ruined is a repair: the
@@ -493,6 +744,27 @@ modded class BoatScript
 		super.EEKilled(killer);
 	}
 
+	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
+	{
+		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnHit(this, damageType, source, ammo);
+	}
+
+	override bool OnStoreLoad(ParamsReadContext ctx, int version)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoading(this);
+		return super.OnStoreLoad(ctx, version);
+	}
+
+	override void AfterStoreLoad()
+	{
+		super.AfterStoreLoad();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoaded(this);
+	}
+
 	// The global zone (an empty zone name) leaving ruined is a repair: the
 	// next destruction is a new one.
 	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
@@ -524,6 +796,27 @@ modded class HelicopterScript
 		if (GetGame().IsServer())
 			VyshkaVehicles.OnDestroyed(this, killer);
 		super.EEKilled(killer);
+	}
+
+	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
+	{
+		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnHit(this, damageType, source, ammo);
+	}
+
+	override bool OnStoreLoad(ParamsReadContext ctx, int version)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoading(this);
+		return super.OnStoreLoad(ctx, version);
+	}
+
+	override void AfterStoreLoad()
+	{
+		super.AfterStoreLoad();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoaded(this);
 	}
 
 	// The global zone (an empty zone name) leaving ruined is a repair: the
@@ -724,5 +1017,321 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 		result.Set("intact", VyshkaJsonValue.NewInt(intact));
 		result.Set("truncated", VyshkaJsonValue.NewBool(deletedCount > deleted.Count() || skippedCount > skipped.Count()));
 		return VyshkaActionOutcome.Success(result);
+	}
+}
+
+// VyshkaRefuelAction sets the fluids of one vehicle to a level: a car's fuel,
+// oil, brake fluid, and coolant, a boat's fuel. Each tank named is emptied
+// and filled to the fraction of its capacity asked for, so the level is the
+// one asked for whatever was in it; the default fills the fuel tank.
+class VyshkaRefuelAction : VyshkaAction
+{
+	override string Code()    { return "vyshka.vehicle.refuel"; }
+	override string Name()    { return "Refuel vehicle"; }
+	override string Context() { return "vehicle"; }
+	override string Danger()  { return "warning"; }
+
+	override VyshkaJsonValue ParamsSchema()
+	{
+		VyshkaJsonValue names = VyshkaJsonValue.NewArray();
+		names.Add(VyshkaJsonValue.NewString(VyshkaVehicles.FLUID_FUEL));
+		names.Add(VyshkaJsonValue.NewString(VyshkaVehicles.FLUID_OIL));
+		names.Add(VyshkaJsonValue.NewString(VyshkaVehicles.FLUID_BRAKE));
+		names.Add(VyshkaJsonValue.NewString(VyshkaVehicles.FLUID_COOLANT));
+		VyshkaJsonValue item = VyshkaJsonValue.NewObject();
+		item.Set("type", VyshkaJsonValue.NewString("string"));
+		item.Set("enum", names);
+		VyshkaJsonValue fuelOnly = VyshkaJsonValue.NewArray();
+		fuelOnly.Add(VyshkaJsonValue.NewString(VyshkaVehicles.FLUID_FUEL));
+		VyshkaJsonValue fluids = VyshkaJsonValue.NewObject();
+		fluids.Set("type", VyshkaJsonValue.NewString("array"));
+		fluids.Set("items", item);
+		fluids.Set("default", fuelOnly);
+
+		VyshkaJsonValue level = VyshkaJsonValue.NewObject();
+		level.Set("type", VyshkaJsonValue.NewString("number"));
+		level.Set("minimum", VyshkaJsonValue.NewInt(0));
+		level.Set("maximum", VyshkaJsonValue.NewInt(1));
+		level.Set("default", VyshkaJsonValue.NewInt(1));
+
+		VyshkaJsonValue properties = VyshkaJsonValue.NewObject();
+		properties.Set("fluids", fluids);
+		properties.Set("level", level);
+
+		VyshkaJsonValue schema = VyshkaJsonValue.NewObject();
+		schema.Set("type", VyshkaJsonValue.NewString("object"));
+		schema.Set("properties", properties);
+		return schema;
+	}
+
+	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
+	{
+		string error;
+		Transport vehicle = VyshkaVehicles.Target(referenceKey, error);
+		if (!vehicle)
+			return VyshkaActionOutcome.Failure(error);
+
+		float level = 1;
+		VyshkaJsonValue named = null;
+		if (params && params.IsObject())
+		{
+			level = params.GetFloat("level", 1);
+			named = params.Get("fluids");
+		}
+		if (level < 0 || level > 1)
+			return VyshkaActionOutcome.Failure("level must be a fraction of the tank within 0 and 1");
+		array<string> wanted = new array<string>;
+		if (named && !named.IsNull())
+		{
+			if (!named.IsArray())
+				return VyshkaActionOutcome.Failure("fluids must be a list of fluid names (fuel, oil, brake, coolant)");
+			for (int i = 0; i < named.Count(); i++)
+			{
+				VyshkaJsonValue name = named.At(i);
+				if (!name || !name.IsString() || !IsFluid(name.m_Text))
+					return VyshkaActionOutcome.Failure("fluids names fuel, oil, brake, and coolant only");
+				if (wanted.Find(name.m_Text) < 0)
+					wanted.Insert(name.m_Text);
+			}
+			if (wanted.Count() == 0)
+				return VyshkaActionOutcome.Failure("fluids names no fluid to fill");
+		}
+		else
+		{
+			wanted.Insert(VyshkaVehicles.FLUID_FUEL);
+		}
+
+		CarScript car = CarScript.Cast(vehicle);
+		BoatScript boat = BoatScript.Cast(vehicle);
+		if (!car && !boat)
+			return VyshkaActionOutcome.Failure("a " + VyshkaVehicles.Kind(vehicle) + " holds no fluids the plugin can fill (cars and boats do)");
+		if (boat)
+		{
+			for (int b = 0; b < wanted.Count(); b++)
+			{
+				if (wanted.Get(b) != VyshkaVehicles.FLUID_FUEL)
+					return VyshkaActionOutcome.Failure("a boat has a fuel tank and nothing else; " + wanted.Get(b) + " cannot be filled");
+			}
+		}
+
+		VyshkaJsonValue before = VyshkaVehicles.Fluids(vehicle);
+		for (int f = 0; f < wanted.Count(); f++)
+		{
+			if (car)
+			{
+				CarFluid carFluid = CarFluidOf(wanted.Get(f));
+				car.LeakAll(carFluid);
+				float carAmount = car.GetFluidCapacity(carFluid) * level;
+				if (carAmount > 0)
+					car.Fill(carFluid, carAmount);
+			}
+			else
+			{
+				boat.LeakAll(BoatFluid.FUEL);
+				float boatAmount = boat.GetFluidCapacity(BoatFluid.FUEL) * level;
+				if (boatAmount > 0)
+					boat.Fill(BoatFluid.FUEL, boatAmount);
+			}
+		}
+		VyshkaLog.Info("refuelled " + vehicle.GetType() + " (" + referenceKey + "): " + wanted.Count().ToString() + " fluids to " + VyshkaVitals.Text(level));
+
+		VyshkaJsonValue filled = VyshkaJsonValue.NewArray();
+		for (int n = 0; n < wanted.Count(); n++)
+			filled.Add(VyshkaJsonValue.NewString(wanted.Get(n)));
+		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
+		VyshkaVehicles.Label(vehicle, result);
+		result.Set("fluids", filled);
+		result.Set("level", VyshkaVitals.Number(level));
+		result.Set("before", before);
+		result.Set("after", VyshkaVehicles.Fluids(vehicle));
+		result.Set("state", VyshkaJsonValue.NewString(VyshkaVehicles.State(vehicle)));
+		return VyshkaActionOutcome.Success(result);
+	}
+
+	static bool IsFluid(string name)
+	{
+		return name == VyshkaVehicles.FLUID_FUEL || name == VyshkaVehicles.FLUID_OIL || name == VyshkaVehicles.FLUID_BRAKE || name == VyshkaVehicles.FLUID_COOLANT;
+	}
+
+	static CarFluid CarFluidOf(string name)
+	{
+		if (name == VyshkaVehicles.FLUID_OIL)
+			return CarFluid.OIL;
+		if (name == VyshkaVehicles.FLUID_BRAKE)
+			return CarFluid.BRAKE;
+		if (name == VyshkaVehicles.FLUID_COOLANT)
+			return CarFluid.COOLANT;
+		return CarFluid.FUEL;
+	}
+}
+
+// VyshkaRepairAction brings one vehicle back to full health: every damage
+// zone of the vehicle through the engine's own full-health call, which also
+// lifts a destruction, and with parts (the default) every part attached to
+// it and the parts on those. A wheel the engine swapped for its ruined class
+// when it was ruined is swapped back through the engine's own replacement,
+// the way the engine made the swap. Fluids are the refuel action's business,
+// and a missing part stays missing.
+class VyshkaRepairAction : VyshkaAction
+{
+	static const string RUINED_SUFFIX = "_Ruined";
+
+	override string Code()    { return "vyshka.vehicle.repair"; }
+	override string Name()    { return "Repair vehicle"; }
+	override string Context() { return "vehicle"; }
+	override string Danger()  { return "none"; }
+
+	override VyshkaJsonValue ParamsSchema()
+	{
+		VyshkaJsonValue parts = VyshkaJsonValue.NewObject();
+		parts.Set("type", VyshkaJsonValue.NewString("boolean"));
+		parts.Set("default", VyshkaJsonValue.NewBool(true));
+
+		VyshkaJsonValue properties = VyshkaJsonValue.NewObject();
+		properties.Set("parts", parts);
+
+		VyshkaJsonValue schema = VyshkaJsonValue.NewObject();
+		schema.Set("type", VyshkaJsonValue.NewString("object"));
+		schema.Set("properties", properties);
+		return schema;
+	}
+
+	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
+	{
+		string error;
+		Transport vehicle = VyshkaVehicles.Target(referenceKey, error);
+		if (!vehicle)
+			return VyshkaActionOutcome.Failure(error);
+		bool withParts = true;
+		if (params && params.IsObject())
+			withParts = params.GetBool("parts", true);
+
+		string stateBefore = VyshkaVehicles.State(vehicle);
+		int healthBefore = VyshkaVehicles.Health(vehicle);
+
+		// The vehicle first: a ruined wheel's intact class is refused by a
+		// vehicle that is still destroyed.
+		vehicle.SetFullHealth();
+		if (!vehicle.IsDamageDestroyed())
+			VyshkaVehicles.OnRepaired(vehicle);
+
+		int repaired = 0;
+		VyshkaJsonValue replaced = VyshkaJsonValue.NewArray();
+		VyshkaJsonValue problems = VyshkaJsonValue.NewArray();
+		if (withParts)
+			repaired = RepairParts(vehicle, 1, replaced, problems);
+
+		string stateAfter = VyshkaVehicles.State(vehicle);
+		int healthAfter = VyshkaVehicles.Health(vehicle);
+		// Built in two steps: one expression this long is past what the
+		// script compiler takes ("Formula too complex").
+		string line = "repaired " + vehicle.GetType() + " (" + referenceKey + "): " + stateBefore + " at " + healthBefore.ToString() + "%";
+		line = line + " to " + stateAfter + " at " + healthAfter.ToString() + "%, " + repaired.ToString() + " parts, " + replaced.Count().ToString() + " wheels swapped back";
+		VyshkaLog.Info(line);
+		if (vehicle.IsDamageDestroyed())
+			return VyshkaActionOutcome.Failure("the engine kept " + vehicle.GetType() + " (" + referenceKey + ") destroyed after its full-health call");
+
+		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
+		VyshkaVehicles.Label(vehicle, result);
+		VyshkaJsonValue before = VyshkaJsonValue.NewObject();
+		before.Set("state", VyshkaJsonValue.NewString(stateBefore));
+		before.Set("health", VyshkaJsonValue.NewInt(healthBefore));
+		VyshkaJsonValue after = VyshkaJsonValue.NewObject();
+		after.Set("state", VyshkaJsonValue.NewString(stateAfter));
+		after.Set("health", VyshkaJsonValue.NewInt(healthAfter));
+		result.Set("before", before);
+		result.Set("after", after);
+		result.Set("parts", VyshkaJsonValue.NewInt(repaired));
+		result.Set("replaced", replaced);
+		result.Set("problems", problems);
+		return VyshkaActionOutcome.Success(result);
+	}
+
+	// RepairParts brings every part attached to item, and the parts on
+	// those down to PART_DEPTH_MAX levels, to full health, and swaps a
+	// ruined wheel back to its intact class; it returns how many parts it
+	// repaired or swapped. The parts are listed before any is touched, since
+	// a swap changes the attachments.
+	static int RepairParts(EntityAI item, int depth, VyshkaJsonValue replaced, VyshkaJsonValue problems)
+	{
+		if (depth > VyshkaVehicles.PART_DEPTH_MAX || !item.GetInventory())
+			return 0;
+		array<EntityAI> parts = new array<EntityAI>;
+		for (int i = 0; i < item.GetInventory().AttachmentCount(); i++)
+		{
+			EntityAI part = item.GetInventory().GetAttachmentFromIndex(i);
+			if (part)
+				parts.Insert(part);
+		}
+		int repaired = 0;
+		for (int p = 0; p < parts.Count(); p++)
+		{
+			EntityAI current = parts.Get(p);
+			if (CarWheel_Ruined.Cast(current))
+			{
+				if (SwapWheel(item, current, replaced, problems))
+					repaired++;
+				continue;
+			}
+			if (VyshkaInventory.HasHealth(current))
+			{
+				current.SetFullHealth();
+				repaired++;
+			}
+			repaired += RepairParts(current, depth + 1, replaced, problems);
+		}
+		return repaired;
+	}
+
+	// SwapWheel replaces a ruined wheel with the intact class its name
+	// comes from (HatchbackWheel_Ruined is a ruined HatchbackWheel), in the
+	// same slot, through the replacement the engine used to ruin it. A
+	// ruined wheel with no intact class to go back to is reported, not
+	// removed.
+	static bool SwapWheel(EntityAI vehicle, EntityAI wheel, VyshkaJsonValue replaced, VyshkaJsonValue problems)
+	{
+		string ruinedType = wheel.GetType();
+		InventoryLocation location = new InventoryLocation();
+		int slotId = InventorySlots.INVALID;
+		if (wheel.GetInventory().GetCurrentInventoryLocation(location) && location.GetType() == InventoryLocationType.ATTACHMENT)
+			slotId = location.GetSlot();
+		string slot = "";
+		if (slotId != InventorySlots.INVALID)
+			slot = InventorySlots.GetSlotName(slotId);
+		string intactType = "";
+		int cut = ruinedType.Length() - RUINED_SUFFIX.Length();
+		if (cut > 0 && ruinedType.Substring(cut, RUINED_SUFFIX.Length()) == RUINED_SUFFIX)
+			intactType = ruinedType.Substring(0, cut);
+		if (intactType == "" || slotId == InventorySlots.INVALID || !GetGame().IsKindOf(intactType, "CarWheel") || GetGame().IsKindOf(intactType, "CarWheel_Ruined"))
+		{
+			Problem(problems, ruinedType, slot, "no intact wheel class to swap it back to");
+			return false;
+		}
+		ReplaceWheelLambda lambda = new ReplaceWheelLambda(wheel, intactType, null);
+		lambda.SetTransferParams(true, true, false);
+		wheel.GetInventory().ReplaceItemWithNew(InventoryMode.SERVER, lambda);
+
+		EntityAI now = vehicle.GetInventory().FindAttachment(slotId);
+		if (!now || now.GetType() != intactType)
+		{
+			Problem(problems, ruinedType, slot, "the engine did not put " + intactType + " in its place");
+			return false;
+		}
+		now.SetFullHealth();
+		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+		entry.Set("slot", VyshkaJsonValue.NewString(slot));
+		entry.Set("from", VyshkaJsonValue.NewString(ruinedType));
+		entry.Set("to", VyshkaJsonValue.NewString(intactType));
+		replaced.Add(entry);
+		return true;
+	}
+
+	static void Problem(VyshkaJsonValue problems, string className, string slot, string reason)
+	{
+		VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+		entry.Set("class", VyshkaJsonValue.NewString(className));
+		entry.Set("slot", VyshkaJsonValue.NewString(slot));
+		entry.Set("reason", VyshkaJsonValue.NewString(reason));
+		problems.Add(entry);
 	}
 }
