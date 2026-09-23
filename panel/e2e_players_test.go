@@ -250,4 +250,37 @@ func TestPanelPlayerProfileEndToEnd(t *testing.T) {
 	if _, redact := redactOf(); !reflect.DeepEqual(redact, []string{"position"}) {
 		t.Fatalf("after the edit the webhook redacts %v, want position alone", redact)
 	}
+
+	// 7. A note list's read and a write can answer in either order. A fetch
+	// wrapper in the page schedules both orderings: a read answered after a
+	// write with the empty list it saw before the write, and a read that saw
+	// the write answered before the write's own answer. Either way the note
+	// is on the page exactly once.
+	schedule := func(readDelay, writeDelay, readHold int) string {
+		return `(function(){const real=window.__realFetch||window.fetch;window.__realFetch=real;` +
+			`const sleep=(ms)=>new Promise((r)=>setTimeout(r,ms));` +
+			`window.fetch=async function(url,init){const notes=String(url).includes("/notes");` +
+			`const method=(init&&init.method)||"GET";` +
+			`if(notes&&method==="GET"){await sleep(` + strconv.Itoa(readHold) + `);const r=await real(url,init);await sleep(` + strconv.Itoa(readDelay) + `);return r;}` +
+			`if(notes&&method==="POST"){const r=await real(url,init);await sleep(` + strconv.Itoa(writeDelay) + `);return r;}` +
+			`return real(url,init);};return true})()`
+	}
+	for _, order := range []struct {
+		name, id                        string
+		readDelay, writeDelay, readHold int
+	}{
+		{"a stale empty read answering after the write", "76561198000000021", 2000, 0, 0},
+		{"a read that saw the write answering before it", "76561198000000022", 0, 2500, 800},
+	} {
+		run("schedule "+order.name, chromedp.Evaluate(schedule(order.readDelay, order.writeDelay, order.readHold), nil),
+			chromedp.Evaluate(`location.hash = `+strconv.Quote("#/players/steam/"+order.id), nil),
+			chromedp.WaitVisible("#note-text", chromedp.ByQuery))
+		run("write under "+order.name, setValue("#note-text", "Written while the list loaded."),
+			chromedp.Click("#note-add", chromedp.ByQuery))
+		time.Sleep(3500 * time.Millisecond)
+		if got := evalString(`String(document.querySelectorAll("#notes li.note").length) + (document.querySelector("#notes-empty").hidden ? "" : " and empty")`); got != "1" {
+			t.Fatalf("under %s the list holds %s notes, want the one written", order.name, got)
+		}
+	}
+	run("restore fetch", chromedp.Evaluate(`(function(){if(window.__realFetch)window.fetch=window.__realFetch;return true})()`, nil))
 }

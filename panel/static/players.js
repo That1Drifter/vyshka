@@ -138,13 +138,30 @@ function notesSection(platform, id, seq) {
   const listArea = el('div', {}, empty, list, el('div', { class: 'actions-row' }, older));
   const body = el('div', {}, problem.node, saved, listArea);
   let cursor = null;
-  let shown = 0;
+  // rendered holds the row of every note on the page by id. A read and a
+  // write can answer in either order, and a note may arrive through both (a
+  // read that ran after the write committed), so both place notes through
+  // place(), which draws each id once.
+  const rendered = new Map();
   // The list's read state: pending until the first read settles, then
-  // readable or forbidden. A write is confirmed in the list only when the
-  // list is known to be readable; otherwise the saved notice, which lives
-  // outside the list, confirms it, and a refusal landing after the write
-  // cannot take the confirmation with it.
+  // readable or forbidden. A write while it is readable or pending is placed
+  // in the list at once; a refusal clears the list, and the saved notice,
+  // which lives outside it, then confirms every write that was made.
   let readState = 'pending';
+  let written = 0;
+  const showSaved = () => {
+    saved.textContent = 'Saved. This token cannot read notes (notes:read), so ' +
+      (written === 1 ? 'the note is' : 'the notes are') + ' not listed here.';
+    saved.hidden = false;
+  };
+  const place = (note, atTop) => {
+    const key = String(note.id);
+    if (rendered.has(key)) return;
+    const item = noteItem(note);
+    rendered.set(key, item);
+    if (atTop) list.prepend(item); else list.append(item);
+    empty.hidden = true;
+  };
 
   const noteItem = (note) => {
     const author = note.createdBy && typeof note.createdBy === 'object' ? note.createdBy : {};
@@ -164,8 +181,8 @@ function notesSection(platform, id, seq) {
         await api('DELETE', identityPath(platform, id, '/notes/' + encodeURIComponent(note.id)));
         if (stale(seq)) return;
         item.remove();
-        shown--;
-        empty.hidden = shown > 0;
+        rendered.delete(String(note.id));
+        empty.hidden = rendered.size > 0;
         problem.hide();
       } catch (err) {
         if (stale(seq) || onUnauthorized(err)) return;
@@ -184,19 +201,21 @@ function notesSection(platform, id, seq) {
       if (stale(seq)) return;
       readState = 'readable';
       for (const note of Array.isArray(page.notes) ? page.notes : []) {
-        if (list.querySelector('[data-note-id="' + CSS.escape(String(note.id)) + '"]')) continue;
-        list.append(noteItem(note));
-        shown++;
+        if (note && note.id !== undefined) place(note, false);
       }
       cursor = page.nextCursor || null;
       older.hidden = !cursor;
-      empty.hidden = shown > 0;
+      empty.hidden = rendered.size > 0;
     } catch (err) {
       if (stale(seq) || onUnauthorized(err)) return;
       if (isForbidden(err)) {
         readState = 'forbidden';
+        rendered.clear();
         clear(listArea);
         listArea.append(refusedNotice('notes-forbidden', 'notes:read', err));
+        // A write that landed while the read was out was drawn in the list
+        // this refusal just cleared; the notice keeps its confirmation.
+        if (written > 0) showSaved();
         return;
       }
       problem.show(err);
@@ -225,15 +244,11 @@ function notesSection(platform, id, seq) {
       try {
         const created = await api('POST', identityPath(platform, id, '/notes'), { text: text.value });
         if (stale(seq) || token() !== owner) return;
-        if (readState === 'readable') {
-          list.prepend(noteItem(created.note));
-          shown++;
-          empty.hidden = true;
+        written++;
+        if (readState === 'forbidden') {
+          showSaved();
         } else {
-          saved.textContent = readState === 'forbidden'
-            ? 'Saved. This token cannot read notes (notes:read), so the note is not listed here.'
-            : 'Saved. The note list had not loaded yet when the hub confirmed it.';
-          saved.hidden = false;
+          place(created.note, true);
         }
         text.value = '';
       } catch (err) {
