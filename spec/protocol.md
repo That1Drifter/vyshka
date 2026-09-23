@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.32 (2026-09-23)
+**Status:** draft 0.33 (2026-09-23)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -283,13 +283,14 @@ Authorization: Bearer <sessionToken>
 }
 ```
 
-Both request fields are OPTIONAL: `{}` is a valid idle poll, and so is a poll that only
+Every request field is OPTIONAL: `{}` is a valid idle poll, and so is a poll that only
 acks or only sends.
 
 | Field | Direction | Meaning |
 |---|---|---|
 | `ack` (request) | plugin -> hub | Highest contiguous hub -> plugin `seq` the plugin has durably processed. `0`, or absent, acks nothing. |
 | `envelopes` (request) | plugin -> hub | Envelopes the plugin is sending, in ascending `seq` order. |
+| `more` (request) | plugin -> hub | A boolean: `true` when the plugin holds envelopes beyond the ones this request carries (see "A backlog" below). Absent means `false`. |
 | `envelopes` (response) | hub -> plugin | Envelopes queued for the plugin, in ascending `seq` order. Always present; an empty batch is `[]`, never `null`. |
 | `ack` (response) | hub -> plugin | Highest contiguous plugin -> hub `seq` the hub has durably processed. |
 | `pollTimeoutSeconds` | hub -> plugin | The effective hold time for this session, repeated so a plugin never has to cache it. |
@@ -317,6 +318,38 @@ Rules:
   that, and MUST reject anything over its cap with `bad_request` rather than truncate it
   silently: a plugin that believes an envelope was delivered will never resend it.
 - A hub MUST update the server record's `lastSeenAt` on every poll.
+
+A backlog. A plugin keeping one poll in flight (section 3.1) cannot send its next poll
+until the last one is answered, and it frames a bounded batch into each: at most what the
+hub accepts (above), and within a per-poll event budget (section 8.1). Without a signal, a
+hub that has nothing to deliver holds every such poll to term, so a backlog drains one
+batch per `pollTimeout` whatever the link could carry. The `more` member is that signal:
+
+- A plugin SHOULD set `more` to `true` when its outbound buffer holds envelopes it left
+  out of the request's batch because the batch reached a limit. It MUST NOT set it on a
+  request that carries no envelopes, and MUST NOT set it when the batch carries everything
+  it holds. Once the answer to a poll that set `more` has arrived, the next poll the
+  plugin sends in that session MUST carry envelopes if any it left behind that batch are
+  still unacked: the hub answered at once on the plugin's word that they were waiting.
+  (They may be acked already if another poll carried them, one open at the same time or
+  one whose answer was lost.)
+- A hub SHOULD answer a poll that sets `more` as soon as it has applied the request,
+  without holding, when the `ack` it answers with covers at least one envelope the request
+  carried. When that `ack` covers none of them (the batch sits above a gap, section 9.1,
+  or the request carried nothing), the hub SHOULD hold the poll as it would any other: the
+  plugin's next poll would carry the same batch, and answering at once would buy a loop
+  rather than progress.
+- Command latency is unchanged, because the plugin re-polls at once after each response
+  (section 3.1) and the next poll is held as usual once the backlog is gone. A hub
+  predating draft 0.33 ignores the member as it ignores any unknown request field (section
+  14), so a plugin sets it without asking what the hub supports.
+
+> **Measured basis:** the reference DayZ plugin frames at most 1000 events and 200
+> envelopes into one poll. Against a hub that held every poll, a backlog drained at 40
+> events/s at the default `pollTimeout` of 25 s, however fast the link: a 4400-event
+> backlog took five poll cycles at `pollTimeout` 5
+> (`spikes/dayz-outbox-crash/results/findings.md`, finding 5). Core telemetry sits far
+> below that rate; a backlog after an outage does not.
 
 | `code` | HTTP | Raised when |
 |---|---|---|
@@ -3030,8 +3063,9 @@ Two black-box suites accompany this document:
 - **Plugin conformance** is a mock hub that drives a candidate plugin through enrollment,
   manifest publish, action round-trips (including a forced re-delivery to verify dedup), a
   simulated network outage (to verify buffering), a forced session change with envelopes
-  still unacked (to verify renumbering, section 9.1), and a schema-invalid dispatch (which
-  must never crash the game server). A candidate whose manifest declares the `bans`
+  still unacked (to verify renumbering, section 9.1), a schema-invalid dispatch (which
+  must never crash the game server), and a burst of dispatches that leaves the plugin
+  more to send than one poll carries (to verify `more`, section 3.1.2). A candidate whose manifest declares the `bans`
   capability (section 6.7) is also walked through a paged read of the installation ban
   list and graded on the revision it reports applying (section 13.4).
 

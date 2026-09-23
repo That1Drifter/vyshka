@@ -1166,6 +1166,62 @@ var checks = []Check{
 		},
 	},
 	{
+		ID:      "plugin.poll.more",
+		Title:   "A poll saying more is answered at once when its batch landed, and held when it made no progress",
+		Section: "3.1.2",
+		Run: func(ctx context.Context, env Env) error {
+			// A long hold, so that a prompt answer cannot be confused with the
+			// hold expiring.
+			plugin, err := env.newFakePlugin(ctx, "conformance: backlog", 25)
+			if err != nil {
+				return err
+			}
+			first := plugin.nextOutbound(unknownType(), nil)
+			started := time.Now()
+			landed, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{first}, More: true})
+			if err != nil {
+				return err
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				return fmt.Errorf("the hub held a poll saying more for %s after acking its batch; such a poll is answered as soon as it is applied, or a backlog drains one batch per pollTimeout", elapsed)
+			}
+			if landed.Ack != first.Seq {
+				return fmt.Errorf("ack = %d after a poll saying more, want %d", landed.Ack, first.Seq)
+			}
+
+			// The same claim with nothing the ack can cover: a batch above a
+			// gap, and a poll carrying no envelopes at all. Either answered at
+			// once would have the plugin send the same thing again at once.
+			short, err := env.newFakePlugin(ctx, "conformance: backlog without progress", shortPollTimeoutSeconds)
+			if err != nil {
+				return err
+			}
+			gapped := short.nextOutbound(unknownType(), nil)
+			gapped.Seq += 5
+			negotiated := time.Duration(shortPollTimeoutSeconds) * time.Second
+			for _, stalled := range []struct {
+				what    string
+				request pollRequest
+			}{
+				{"a batch above a gap", pollRequest{Envelopes: []envelope{gapped}, More: true}},
+				{"no envelopes", pollRequest{More: true}},
+			} {
+				started := time.Now()
+				response, err := short.poll(ctx, stalled.request)
+				if err != nil {
+					return fmt.Errorf("a poll saying more with %s: %w", stalled.what, err)
+				}
+				if response.Ack != 0 {
+					return fmt.Errorf("ack = %d after a poll saying more with %s, want 0", response.Ack, stalled.what)
+				}
+				if held := time.Since(started); held < negotiated/2 {
+					return fmt.Errorf("the hub answered a poll saying more with %s after %s; when the ack covers nothing the poll carried, the next poll carries the same batch, so the hub holds it as it would any other", stalled.what, held)
+				}
+			}
+			return nil
+		},
+	},
+	{
 		ID:      "plugin.poll.retransmit",
 		Title:   "An unacked envelope is delivered again on the next poll, unchanged",
 		Section: "9.1",

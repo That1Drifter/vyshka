@@ -50,6 +50,9 @@ type envelope struct {
 type pollRequest struct {
 	Ack       int64      `json:"ack,omitempty"`
 	Envelopes []envelope `json:"envelopes,omitempty"`
+	// More says the sender holds envelopes beyond this batch (spec section
+	// 3.1.2).
+	More bool `json:"more,omitempty"`
 }
 
 type pollResponse struct {

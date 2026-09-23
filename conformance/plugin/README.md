@@ -37,12 +37,13 @@ PASS  telemetry.wellFormed       Any events and snapshots the plugin publishes a
 ...
 PASS  dispatch.invalidTolerated  A schema-invalid dispatch is survived, not fatal
 PASS  dispatch.largeParams       A dispatch carrying large params is acked and answered inside its deadline
+PASS  poll.more                  A backlog is sent a batch at a time, each poll saying whether more is queued
 PASS  bans.sync                  A plugin declaring bans walks the list whole and reports what it applied
 PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
 PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
-18 checks, 0 failed
+19 checks, 0 failed
 ```
 
 A stage can also report `PART`: it passed everything it could assert but says, in a note
@@ -52,8 +53,10 @@ before a retry and the count of resends impossible to attribute (spec section 3.
 one poll at a time), when the candidate published no telemetry inside the telemetry stage's
 window (publishing any is a SHOULD, so a plugin without it is compliant, and there was
 nothing to grade), when its manifest declares no custom context, which leaves the
-enumeration stage nothing to ask about, and when it does not declare the `bans` capability,
-which leaves the ban list stage nothing to grade. A `PART` is not a full pass.
+enumeration stage nothing to ask about, when it does not declare the `bans` capability,
+which leaves the ban list stage nothing to grade, and when it drained the backlog stage's
+burst without a poll saying `more` (setting it is a SHOULD) or had more than one poll open
+at once, which stands the check of what follows a `more` down. A `PART` is not a full pass.
 
 Exit code is 0 when every check passes, 1 when any check fails, and 2 when the suite could
 not run at all.
@@ -107,6 +110,23 @@ the body holds its poll cycle for the parse and discards the action as expired (
 reference DayZ plugin's first parser took about a minute at this size); one whose parser is
 linear answers in well under a second. A plugin that cuts a long string value short without
 a word is beyond what the wire shows, so that is left to the plugin's own tests.
+
+A backlog (spec section 3.1.2) is graded on arrival and provoked once. Every poll that sets
+`more` is checked where it lands: the member must be a boolean, a poll carrying no
+envelopes must not set it, and when the mock's answer acked exactly what such a poll
+carried, the next poll of the session to arrive after that answer must carry envelopes,
+or the claim was false. That last check stands down for a candidate that has had two
+polls open at once, since arrival order then says nothing of the order it framed them in. It may carry the same batch again: an answer lost
+on the way has the plugin resend it, and the mock cannot tell that from one that arrived.
+The mock answers a poll saying `more` at once when its ack covers something the poll
+carried, as a hub does. The `poll.more` stage then dispatches 150 actions in one response,
+300 owed envelopes, more than the 200 a hub is guaranteed to accept in one poll, and waits
+for every result or for their deadline. A candidate that drained them with at least one
+poll saying `more` passes; one that sent them all in one poll, or over several without
+saying `more`, gets a `PART` naming which, with how many dispatches were answered before
+the wait ended when a slow candidate discarded some past their deadline, since a smaller
+backlog could explain the missing `more`. Each dispatch names the same action with the same synthesized params, so a
+candidate's first declared action should be one it can run 150 times in a burst.
 
 The three error-recovery stages (spec section 2.3) provoke a refusal the way a real hub
 would and watch what the candidate does: a batch refused as `envelope_invalid`, a `200`
@@ -196,7 +216,8 @@ publishes a one-action manifest and one batch of events plus one `state.players`
 enumerates the one custom context it declares (`driver.zone`, two members, one with a
 position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
-outages, renumbers them across session changes, keeps the installation ban list (it declares
+outages, renumbers them across session changes, sends at most 200 of them a poll and says
+`more` when it left some behind, keeps the installation ban list (it declares
 `bans`, walks the list a page per turn of its loop, polling in between and acking any
 `bans.changed` it took before the next page (a page waits one turn at most), whenever the
 revision it is told of differs from the one it holds, and reports what it applied), and

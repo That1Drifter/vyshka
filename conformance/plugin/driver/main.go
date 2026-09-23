@@ -3,7 +3,8 @@
 // session, long-polls, publishes a manifest, enumerates the one custom
 // context that manifest declares, executes dispatched actions with an
 // executed-actionId LRU, buffers unacked envelopes across outages, renumbers
-// them across session changes, and keeps the installation ban list (it has
+// them across session changes, says more when a poll leaves some of them
+// behind, and keeps the installation ban list (it has
 // no players to refuse, so keeping it is walking it whole and reporting what
 // it applied). CI runs the harness against it to prove the suite goes green
 // against a compliant implementation.
@@ -541,10 +542,16 @@ func (d *driver) run(game string) {
 		if len(batch) > d.batchLimit {
 			batch = batch[:d.batchLimit]
 		}
-		status, body, err := d.post("/plugin/v1/poll", d.sessionToken, map[string]any{
+		request := map[string]any{
 			"ack":       d.inAck,
 			"envelopes": batch,
-		})
+		}
+		// What the batch left behind is waiting, so the hub may answer at
+		// once rather than hold (spec section 3.1.2).
+		if len(batch) < len(d.buffer) {
+			request["more"] = true
+		}
+		status, body, err := d.post("/plugin/v1/poll", d.sessionToken, request)
 		if err != nil {
 			// A transport failure is not a delivery failure: the buffer holds
 			// everything unacked, and the next successful poll recovers it.

@@ -496,4 +496,13 @@ class VyshkaOutbox
 		result += "]";
 		return result;
 	}
+
+	// HasMore reports whether the batch BatchJson last framed left envelopes
+	// behind it, which the poll says with more (spec section 3.1.2) so the
+	// hub answers at once instead of holding: a backlog then drains a batch
+	// per round trip rather than a batch per pollTimeout.
+	bool HasMore()
+	{
+		return m_SentCount > 0 && m_SentCount < m_Entries.Count();
+	}
 }

@@ -9,7 +9,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 | Suite | Question it answers | Status |
 |---|---|---|
 | `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, context enumeration, actions, telemetry, state snapshots, player profiles, scoped tokens and audit, webhooks, key/value store, the installation ban list |
-| `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, a schema-invalid dispatch, and, when the manifest declares it, the installation ban list; see `plugin/README.md` |
+| `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, a schema-invalid dispatch, a backlog larger than one poll, and, when the manifest declares it, the installation ban list; see `plugin/README.md` |
 
 ## Hub suite
 
@@ -30,7 +30,7 @@ PASS  kv.confinement                 Namespace access is confined on both realms
 ...
 PASS  plugin.errors.inlineSupersededHold A held poll that opted in is answered inline the moment its session is superseded
 
-105 checks, 0 failed
+106 checks, 0 failed
 ```
 
 The command exits 0 when every check passes, 1 when any check fails, and 2 when the suite

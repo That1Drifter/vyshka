@@ -164,6 +164,10 @@ type mockHub struct {
 	// request already in flight, so they stand down.
 	pollsInFlight    atomic.Int32
 	overlappingPolls atomic.Int64
+	// pollArrivals numbers polls as their handlers start, before the body is
+	// read, so the backlog grading can order a poll against an answer
+	// without trusting a clock that can tie on a coarse timer.
+	pollArrivals atomic.Int64
 	// expectedContent is what a provocation saw of each fresh envelope it
 	// refused or swallowed; ingest faults a later arrival of that id whose
 	// type, ts or body changed.
@@ -182,6 +186,28 @@ type mockHub struct {
 	// The installation ban list (spec section 13) the bans stage walks the
 	// candidate through; see bans.go.
 	bans *mockBans
+
+	// A backlog (spec section 3.1.2). pollsSayingMore and pollsCarryingFresh
+	// count the polls that set more and the polls that carried an envelope
+	// above the accepted top, for the backlog stage. moreFollowUp is set when
+	// a poll said more and its answer acked exactly what it carried: the
+	// next poll of that session to arrive after the answer must then carry
+	// envelopes, or the claim was false (the MUST of section 3.1.2). It need not carry new ones: an
+	// answer the plugin never received has it send the same batch again,
+	// which is the retransmission section 9.1 requires, and a write that
+	// succeeded here is no evidence the plugin read it.
+	pollsSayingMore    int
+	pollsCarryingFresh int
+	moreFollowUp       *moreClaim
+}
+
+// moreClaim is a poll that said more and was answered with an ack of exactly
+// its batch: Top is the highest seq it carried, in session Session, and
+// Arrivals is the poll arrival count when the answer was framed.
+type moreClaim struct {
+	Session  int
+	Top      int64
+	Arrivals int64
 }
 
 // batchRejection is what the mock refused: the condemned envelope at index 0,
@@ -533,12 +559,16 @@ func (h *mockHub) killSession() int {
 // hub's transport primitive (spec section 5.5): no seq until a session
 // delivers it.
 func (h *mockHub) queueOutbound(envelopeType string, body any) *outboundItem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.queueOutboundLocked(envelopeType, body)
+}
+
+func (h *mockHub) queueOutboundLocked(envelopeType string, body any) *outboundItem {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		encoded = json.RawMessage(`{}`)
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.hubEnvCounter++
 	item := &outboundItem{
 		id:   fmt.Sprintf("conformance-hub-%d", h.hubEnvCounter),
@@ -557,6 +587,21 @@ func (h *mockHub) queueOutbound(envelopeType string, body any) *outboundItem {
 // expiresAt: the deadline the plugin is told, which the checks keep aligned
 // with how long they are willing to wait.
 func (h *mockHub) queueDispatch(actionID string, action manifestAction, params any, ttl time.Duration) *outboundItem {
+	return h.queueOutbound("action.dispatch", dispatchBody(actionID, action, params, ttl))
+}
+
+// queueDispatches queues one dispatch per actionId under a single hold of the
+// lock, so a held poll cannot wake between two of them: the whole burst goes
+// out in one response.
+func (h *mockHub) queueDispatches(actionIDs []string, action manifestAction, params any, ttl time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, actionID := range actionIDs {
+		h.queueOutboundLocked("action.dispatch", dispatchBody(actionID, action, params, ttl))
+	}
+}
+
+func dispatchBody(actionID string, action manifestAction, params any, ttl time.Duration) map[string]any {
 	context := action.Context
 	if context == "" {
 		context = "world"
@@ -571,7 +616,7 @@ func (h *mockHub) queueDispatch(actionID string, action manifestAction, params a
 	if context != "world" {
 		body["referenceKey"] = "conformance-target"
 	}
-	return h.queueOutbound("action.dispatch", body)
+	return body
 }
 
 // redeliver queues a verbatim copy of an already-delivered envelope: same id,
@@ -610,6 +655,14 @@ func (h *mockHub) consumeFaults(cursor *int) error {
 // capped by a frozen limit, and never lower than already reported, because a
 // hub's acks are monotonic too.
 func (h *mockHub) reportedAckLocked() int64 {
+	ack := h.pendingAckLocked()
+	h.lastReportedAck = ack
+	return ack
+}
+
+// pendingAckLocked is the ack the next answer would report, without
+// recording it as reported.
+func (h *mockHub) pendingAckLocked() int64 {
 	ack := h.processedTop
 	if h.ackLimit >= 0 && h.ackLimit < ack {
 		ack = h.ackLimit
@@ -617,7 +670,6 @@ func (h *mockHub) reportedAckLocked() int64 {
 	if ack < h.lastReportedAck {
 		ack = h.lastReportedAck
 	}
-	h.lastReportedAck = ack
 	return ack
 }
 
@@ -859,9 +911,62 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 type pollWire struct {
 	Ack       *int64            `json:"ack"`
 	Envelopes []json.RawMessage `json:"envelopes"`
+	// More stays raw so a value that is not a boolean is a fault naming the
+	// member rather than a body that fails to decode.
+	More json.RawMessage `json:"more"`
+}
+
+// gradeMoreLocked checks a poll's more member on arrival (spec section
+// 3.1.2) and settles the claim the previous poll of the session made, and
+// reports whether this poll says more. arrival is the poll's number in
+// pollArrivals.
+func (h *mockHub) gradeMoreLocked(request pollWire, arrival int64) bool {
+	says := false
+	if len(request.More) > 0 {
+		switch strings.TrimSpace(string(request.More)) {
+		case "true":
+			says = true
+		case "false":
+		default:
+			h.faultLocked("3.1.2", "a poll carried more = %s; more is a boolean", truncateRaw(request.More))
+		}
+	}
+	if says {
+		h.pollsSayingMore++
+		if len(request.Envelopes) == 0 {
+			h.faultLocked("3.1.2", "a poll said more while carrying no envelopes; more says the plugin left envelopes out of the batch it sent, and a hub answering it at once would only be polled again with nothing")
+		}
+	}
+	if claim := h.moreFollowUp; claim != nil {
+		h.moreFollowUp = nil
+		// Only a poll of the same session that arrived after the answer was
+		// framed, from a candidate that has never had two polls open: with
+		// polls overlapping, arrival order says nothing of the order the
+		// plugin framed them in, so the grading stands down as the error
+		// stages do. Even then arrival is no evidence the plugin read the
+		// answer, which is why an empty batch is the only thing faulted:
+		// whether or not the answer reached it, a plugin holding envelopes
+		// behind the batch carries some of them on its next poll (section
+		// 3.1.2 makes that a MUST).
+		if claim.Session == h.sessionOrdinal && arrival > claim.Arrivals && h.pollsInFlight.Load() == 1 &&
+			h.overlappingPolls.Load() == 0 && len(request.Envelopes) == 0 {
+			h.faultLocked("3.1.2", "a poll said more, its answer acked exactly what it carried (through seq %d), and the next poll carried no envelopes; a plugin that sets more carries envelopes on its next poll of the session, the ones it left behind the batch, which the answer cannot have acked", claim.Top)
+		}
+	}
+	return says
+}
+
+// truncateRaw shortens a raw JSON value for a fault message.
+func truncateRaw(raw json.RawMessage) string {
+	const limit = 64
+	if len(raw) <= limit {
+		return string(raw)
+	}
+	return string(raw[:limit]) + "..."
 }
 
 func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
+	arrival := h.pollArrivals.Add(1)
 	if h.pollsInFlight.Add(1) > 1 {
 		h.overlappingPolls.Add(1)
 	}
@@ -898,6 +1003,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		answer(w, inline, http.StatusBadRequest, "bad_request", "body is not JSON", nil)
 		return
 	}
+	saysMore := h.gradeMoreLocked(request, arrival)
 
 	// The provocations of the error stages, applied before anything in the
 	// request takes effect: a refused batch changes nothing, including its
@@ -1009,15 +1115,40 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 	h.pollsThisSession++
 	h.totalPolls++
+	carried := batchIDs(request.Envelopes)
+	for _, one := range carried {
+		if one.Seq > h.processedTop {
+			h.pollsCarryingFresh++
+			break
+		}
+	}
 	h.applyAckLocked(request.Ack)
 	h.ingestLocked(request.Envelopes)
 	h.signalLocked()
+
+	// A poll saying more is answered at once when the ack covers something it
+	// carried, as section 3.1.2 asks of a hub; one whose ack covers nothing
+	// would only come back with the same batch, so it is held like any other.
+	var lowest, highest int64
+	for _, one := range carried {
+		if one.Seq < 1 {
+			continue
+		}
+		if lowest == 0 || one.Seq < lowest {
+			lowest = one.Seq
+		}
+		highest = max(highest, one.Seq)
+	}
+	drain := saysMore && lowest > 0 && h.pendingAckLocked() >= lowest
 
 	// Hold briefly when nothing is deliverable, answer at once when something
 	// is, and answer 401 the moment the session stops being live, all per
 	// section 3.1.2. The idle hold is deliberately short: this hub exists to
 	// grade a plugin, and "up to pollTimeout" allows any earlier answer.
 	holdDeadline := time.Now().Add(time.Second)
+	if drain {
+		holdDeadline = time.Now()
+	}
 	for {
 		if !h.sessionLive || h.sessionToken != token {
 			h.mu.Unlock()
@@ -1043,9 +1174,18 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	envelopes := h.collectDeliverableLocked()
+	ack := h.reportedAckLocked()
+	// A claim is only worth settling when the answer acked exactly the batch:
+	// an ack past it covers envelopes another poll carried, possibly the very
+	// ones this poll left behind, and then the plugin may rightly have
+	// nothing left to send. The same goes for an answer framed while another
+	// poll is open.
+	if saysMore && highest > 0 && ack == highest && h.pollsInFlight.Load() == 1 && h.overlappingPolls.Load() == 0 {
+		h.moreFollowUp = &moreClaim{Session: h.sessionOrdinal, Top: highest, Arrivals: h.pollArrivals.Load()}
+	}
 	response := map[string]any{
 		"envelopes":          envelopes,
-		"ack":                h.reportedAckLocked(),
+		"ack":                ack,
 		"pollTimeoutSeconds": h.pollTimeoutSeconds,
 		"sessionExpiresAt":   h.sessionExpiresAt,
 	}

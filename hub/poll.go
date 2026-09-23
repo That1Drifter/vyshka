@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -43,6 +45,10 @@ type pollRequest struct {
 	// processed. Absent or 0 acks nothing.
 	Ack       int64             `json:"ack"`
 	Envelopes []inboundEnvelope `json:"envelopes"`
+	// More says the plugin cut this batch short and holds envelopes behind
+	// it (spec section 3.1.2). Absent means false. It stays raw because
+	// decoding into a bool would take a JSON null for false without a word.
+	More json.RawMessage `json:"more"`
 }
 
 type pollResponse struct {
@@ -78,6 +84,11 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Ack < 0 {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "ack must not be negative")
+		return
+	}
+	more, ok := decodeMore(request.More)
+	if !ok {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "more must be a boolean")
 		return
 	}
 	for index, inbound := range request.Envelopes {
@@ -316,18 +327,54 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.holdPoll(w, r, session, sessionTokenHash, inboundAck)
+	s.holdPoll(w, r, session, sessionTokenHash, inboundAck, backlogFloor(more, request.Envelopes))
+}
+
+// decodeMore reads the poll's more member: absent is false, and anything but
+// a JSON boolean is refused.
+func decodeMore(raw json.RawMessage) (bool, bool) {
+	switch string(bytes.TrimSpace(raw)) {
+	case "":
+		return false, true
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
+// backlogFloor is the lowest seq a poll saying more carried, and 0 for any
+// other poll. The hub answers such a poll without holding once the ack it
+// answers with reaches the floor, covering at least one envelope the poll
+// carried (spec section 3.1.2). An ack below it means the next poll carries
+// the same batch again, so answering at once would buy a loop rather than
+// progress.
+func backlogFloor(more bool, envelopes []inboundEnvelope) int64 {
+	if !more {
+		return 0
+	}
+	var floor int64
+	for _, inbound := range envelopes {
+		if floor == 0 || inbound.Seq < floor {
+			floor = inbound.Seq
+		}
+	}
+	return floor
 }
 
 // holdPoll answers as soon as there is anything to send, and otherwise holds the
 // request until the negotiated timeout, the session's expiry, or the session
-// being ended out from under it.
+// being ended out from under it. A backlogFloor above 0 (see backlogFloor)
+// ends the hold as soon as the ack it answers with reaches it, which a
+// concurrent poll committing the envelopes below the floor can also bring
+// about.
 //
 // The ack it reports is refreshed from committed state on every database read,
 // never left at the value this request ingested: a concurrent poll may commit a
 // higher ack and be answered while this one is still held, and an ack the hub
 // has reported must never be lowered by a later response (spec section 9.1).
-func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64) {
+func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64, backlogFloor int64) {
 	pollTimeout := clampPollTimeout(time.Duration(session.PollTimeoutSeconds) * time.Second)
 	deadline := time.Now().Add(pollTimeout)
 	// A hold that outlives its own session would answer 401 late; ending it at
@@ -370,6 +417,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			return
 		}
 		inboundAck = max(inboundAck, committedAck)
+		drain := backlogFloor > 0 && inboundAck >= backlogFloor
 		if len(queued) > 0 {
 			release()
 			envelopes := make([]envelope, len(queued))
@@ -384,7 +432,7 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		}
 
 		remaining := time.Until(deadline)
-		if remaining <= 0 || !mayHold {
+		if remaining <= 0 || !mayHold || drain {
 			release()
 			respond(nil)
 			return

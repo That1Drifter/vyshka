@@ -9,7 +9,7 @@ Arma Reforger is the explicit second target, and nothing in the protocol is DayZ
 
 ## Status: early implementation
 
-The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.32), is the primary product,
+The protocol spec, [`spec/protocol.md`](spec/protocol.md) (draft 0.33), is the primary product,
 together with the black-box conformance suites in [`conformance/`](conformance/README.md); the
 hub and plugins are reference implementations of it. The implemented endpoints also have
 machine-readable companions: [`spec/openapi-admin.yaml`](spec/openapi-admin.yaml),

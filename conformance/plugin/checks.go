@@ -59,6 +59,13 @@ const (
 	actionInvalid   = "conformance-act-invalid"
 	actionRecovery  = "conformance-act-recovery"
 	actionLarge     = "conformance-act-large"
+	actionBacklog   = "conformance-act-backlog"
+
+	// The backlog stage (poll.more) dispatches this many actions in one
+	// response. Each owes an action.ack and an action.result (section 7), so
+	// the plugin has twice this many envelopes to send, more than the 200 a
+	// hub is guaranteed to accept in one poll (section 3.1.2).
+	backlogActions = 150
 
 	// The large dispatch (dispatch.largeParams): its params carry this many
 	// bytes in one string member the schema does not name. A hub forwards
@@ -470,6 +477,79 @@ var stages = []Stage{
 		},
 	},
 	largeParamsStage,
+	backlogStage,
+}
+
+// backlogStage gives the plugin more to send than one poll should carry and
+// watches how it drains (section 3.1.2): a burst of dispatches in one
+// response, each owing an ack and a result. Whether a poll says more is graded
+// on arrival, wherever it happens (gradeMoreLocked): never on an empty batch,
+// and never followed by an empty poll once the answer acked the whole batch.
+// What this stage adds is the occasion. A plugin that sends the whole backlog in
+// one poll, or drains it over several without saying more, is compliant
+// (more is a SHOULD) and gets a PART saying which.
+var backlogStage = Stage{
+	ID:      "poll.more",
+	Title:   "A backlog is sent a batch at a time, each poll saying whether more is queued",
+	Section: "3.1.2",
+	Run: func(h *harness) error {
+		hub := h.hub
+		var saidBefore, carriedBefore int
+		hub.view(func() {
+			saidBefore = hub.pollsSayingMore
+			carriedBefore = hub.pollsCarryingFresh
+		})
+		actionIDs := make([]string, backlogActions)
+		for i := range actionIDs {
+			actionIDs[i] = fmt.Sprintf("%s-%03d", actionBacklog, i+1)
+		}
+		hub.queueDispatches(actionIDs, h.action, synthesizeParams(h.action.Params), h.checkTimeout)
+		// The results are what the backlog is made of, not what this stage
+		// grades: a plugin slower than the burst's deadline discards the
+		// dispatches past it without a result, as section 7 has it do, and
+		// the action lifecycle is graded by the stages before this one. So
+		// the wait ends when every result is in or the deadline has passed,
+		// and a shortfall is reported rather than failed.
+		answered := 0
+		_ = hub.await(h.resultBudget(), fmt.Sprintf("an action.result for each of the %d dispatches", backlogActions), func() bool {
+			answered = 0
+			for _, actionID := range actionIDs {
+				if track := hub.actions[actionID]; track != nil && track.results >= 1 {
+					answered++
+				}
+			}
+			return answered == len(actionIDs)
+		})
+		// The shortfall only matters when it could explain a backlog with no
+		// poll saying more; once one did, the stage graded what it came for.
+		shortfall := ""
+		if answered < len(actionIDs) {
+			shortfall = fmt.Sprintf("; %d of the %d dispatches were answered before the wait ended, so the backlog may have been smaller than intended", answered, len(actionIDs))
+		}
+		// One more poll settles the claim of the poll that carried the last
+		// result, if it made one.
+		if err := h.awaitMorePolls(1, "after the backlog drained"); err != nil {
+			return err
+		}
+		var said, carried int
+		hub.view(func() {
+			said = hub.pollsSayingMore - saidBefore
+			carried = hub.pollsCarryingFresh - carriedBefore
+		})
+		switch {
+		case said > 0 && hub.overlappingPolls.Load() > 0:
+			// The claim check (gradeMoreLocked) stands down for a candidate
+			// that has had two polls open at once, so a pass here would say
+			// more than was graded.
+			return ungraded{"polls said more, but the candidate has had more than one poll open at once, so whether its next poll carried what it left behind could not be graded (section 3.1.2); only more on an empty poll was"}
+		case said > 0:
+			return nil
+		case carried <= 1:
+			return ungraded{fmt.Sprintf("the envelopes the burst owed rode one poll, so there was never more to say; a hub is only guaranteed to accept 200 envelopes in a poll (section 3.1.2)%s", shortfall)}
+		default:
+			return ungraded{fmt.Sprintf("the backlog drained over %d polls and none said more; a hub that holds a poll with nothing to deliver then takes one pollTimeout per batch, where a poll saying more is answered at once (section 3.1.2)%s", carried, shortfall)}
+		}
+	},
 }
 
 // paddingRefused says why the schema admits no added member, or "" when it
