@@ -2,9 +2,11 @@
 // harness: a minimal but correct autonomous plugin. It enrolls, keeps a
 // session, long-polls, publishes a manifest, enumerates the one custom
 // context that manifest declares, executes dispatched actions with an
-// executed-actionId LRU, buffers unacked envelopes across outages, and
-// renumbers them across session changes. CI runs the harness against it to
-// prove the suite goes green against a compliant implementation.
+// executed-actionId LRU, buffers unacked envelopes across outages, renumbers
+// them across session changes, and keeps the installation ban list (it has
+// no players to refuse, so keeping it is walking it whole and reporting what
+// it applied). CI runs the harness against it to prove the suite goes green
+// against a compliant implementation.
 //
 // Like everything under conformance/, it speaks only HTTP and imports no hub
 // or plugin code.
@@ -27,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -108,6 +111,29 @@ type driver struct {
 	manifestSent  bool
 	telemetrySent bool
 	firstFailure  time.Time
+
+	// The installation ban list (spec section 13.4). bansEnforced is the
+	// revision of the list the driver holds, -1 before it holds any;
+	// bansKnown the latest revision the hub has told it of; bansDue whether a
+	// walk is owed, retried no sooner than bansNextTry after a failed one.
+	// A real plugin keeps the list on disk; the driver never restarts, so it
+	// keeps it in memory.
+	bansEnforced int64
+	bansKnown    int64
+	bansDue      bool
+	bansNextTry  time.Time
+	bans         []banEntry
+}
+
+// banEntry is one entry of the installation ban list as the driver keeps it.
+type banEntry struct {
+	ID     string `json:"id"`
+	Player struct {
+		Platform string `json:"platform"`
+		ID       string `json:"id"`
+	} `json:"player"`
+	Reason    string  `json:"reason"`
+	ExpiresAt *string `json:"expiresAt"`
 }
 
 func main() {
@@ -135,11 +161,13 @@ func main() {
 	}()
 
 	d := &driver{
-		baseURL:  *url,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		executed: map[string]bool{},
-		inline:   *inline,
-		opaque:   *opaque,
+		baseURL:      *url,
+		client:       &http.Client{Timeout: 10 * time.Second},
+		executed:     map[string]bool{},
+		inline:       *inline,
+		opaque:       *opaque,
+		bansEnforced: -1,
+		bansKnown:    -1,
 	}
 	if err := d.enroll(*token, *game); err != nil {
 		log.Println("enroll:", err)
@@ -155,14 +183,38 @@ func (d *driver) post(path, bearer string, body any) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	if d.inline {
-		path += "?errors=inline"
+	return d.do(http.MethodPost, path, bearer, encoded)
+}
+
+// get sends one bodyless GET, the spelling a client with full HTTP uses for
+// the ban list read (spec section 13.3). query is appended as it is.
+func (d *driver) get(path, query, bearer string) (int, []byte, error) {
+	if query != "" {
+		path += "?" + query
 	}
-	request, err := http.NewRequest(http.MethodPost, d.baseURL+path, bytes.NewReader(encoded))
+	return d.do(http.MethodGet, path, bearer, nil)
+}
+
+// do sends one request with the driver's error mode and credential.
+func (d *driver) do(method, path, bearer string, encoded []byte) (int, []byte, error) {
+	if d.inline {
+		if strings.Contains(path, "?") {
+			path += "&errors=inline"
+		} else {
+			path += "?errors=inline"
+		}
+	}
+	var reader io.Reader = http.NoBody
+	if encoded != nil {
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, d.baseURL+path, reader)
 	if err != nil {
 		return 0, nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
+	if encoded != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	if bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -322,6 +374,9 @@ func (d *driver) startSession(game string) error {
 	var session struct {
 		SessionToken       string `json:"sessionToken"`
 		PollTimeoutSeconds int    `json:"pollTimeoutSeconds"`
+		Server             struct {
+			BansRevision *int64 `json:"bansRevision"`
+		} `json:"server"`
 	}
 	if err := json.Unmarshal(body, &session); err != nil {
 		return err
@@ -341,6 +396,19 @@ func (d *driver) startSession(game string) error {
 		d.buffer[i].Seq = d.outSeq
 	}
 	log.Println("session started")
+
+	// The ban list's revision (spec section 13.4): a session that begins with
+	// the revision already enforced is reported, and one that differs is
+	// walked. A hub that reports none serves no list.
+	if session.Server.BansRevision != nil {
+		d.bansKnown = *session.Server.BansRevision
+		if d.bansKnown == d.bansEnforced {
+			d.send("bans.applied", map[string]any{"revision": d.bansEnforced})
+		} else {
+			d.bansDue = true
+			d.bansNextTry = time.Time{}
+		}
+	}
 	return nil
 }
 
@@ -432,6 +500,10 @@ func (d *driver) run(game string) {
 				})
 				d.telemetrySent = true
 			}
+		}
+
+		if d.bansDue && !time.Now().Before(d.bansNextTry) {
+			d.walkBans()
 		}
 
 		batch := d.buffer
@@ -613,6 +685,8 @@ func (d *driver) manifest(game string) map[string]any {
 			"namespace": "conformance-driver",
 		}},
 		"events": []any{},
+		// The installation ban list (spec sections 6.7 and 13).
+		"capabilities": []string{"bans"},
 	}
 }
 
@@ -690,9 +764,103 @@ func (d *driver) handle(delivered envelope) {
 		}
 		d.send("context.entries", reply)
 
+	case "bans.changed":
+		// A nudge (spec section 13.3): the list is walked when the revision
+		// differs from the one enforced, lower included.
+		var body struct {
+			Revision *int64 `json:"revision"`
+		}
+		if err := json.Unmarshal(delivered.Body, &body); err != nil || body.Revision == nil {
+			log.Println("ignoring a bans.changed with an unusable body")
+			return
+		}
+		d.bansKnown = *body.Revision
+		if d.bansKnown != d.bansEnforced {
+			d.bansDue = true
+			d.bansNextTry = time.Time{}
+		}
+
 	default:
 		// Unknown types are acked and ignored (spec section 4).
 	}
+}
+
+// walkBans reads the installation ban list from its first page to its last
+// (spec section 13.4), holding the walk to the revision the first page was
+// served at, and applies and reports it only once it is whole. A conflict
+// starts the walk over at once; any other failure keeps the list the driver
+// holds and tries again later.
+func (d *driver) walkBans() {
+	for restarts := 0; restarts < 3; restarts++ {
+		var (
+			walked   []banEntry
+			revision int64 = -1
+			cursor   string
+		)
+		conflict := false
+		for pages := 0; ; pages++ {
+			if pages > 10000 {
+				log.Println("bans: a walk did not end; trying again later")
+				d.bansNextTry = time.Now().Add(2 * time.Second)
+				return
+			}
+			query := "limit=100"
+			if cursor != "" {
+				query += "&cursor=" + cursor
+			}
+			status, body, err := d.get("/plugin/v1/bans", query, d.sessionToken)
+			if err != nil {
+				log.Println("bans: walk failed:", err)
+				d.bansNextTry = time.Now().Add(2 * time.Second)
+				return
+			}
+			if ok, failure := d.classify(status, body); !ok {
+				if failure.Code == "conflict" || (failure.Code == "" && failure.Status == http.StatusConflict) {
+					log.Println("bans: the hub cannot serve the walk's revision any more; starting over")
+					conflict = true
+					break
+				}
+				log.Printf("bans: walk refused: %s (status %d): %s; trying again later", failure.Code, failure.Status, failure.Message)
+				d.bansNextTry = time.Now().Add(2 * time.Second)
+				return
+			}
+			var page struct {
+				Revision   int64      `json:"revision"`
+				Bans       []banEntry `json:"bans"`
+				NextCursor string     `json:"nextCursor"`
+			}
+			if err := json.Unmarshal(body, &page); err != nil {
+				log.Println("bans: unusable page:", err)
+				d.bansNextTry = time.Now().Add(2 * time.Second)
+				return
+			}
+			if revision < 0 {
+				revision = page.Revision
+			} else if page.Revision != revision {
+				log.Printf("bans: a page came at revision %d in a walk of %d; starting over", page.Revision, revision)
+				conflict = true
+				break
+			}
+			walked = append(walked, page.Bans...)
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+		if conflict {
+			continue
+		}
+		// Whole: apply, then report. The first page was served at the hub's
+		// current revision, which is the freshest word the driver has.
+		d.bans = walked
+		d.bansEnforced = revision
+		d.bansKnown = revision
+		d.bansDue = false
+		log.Printf("bans: applied revision %d (%d entries)", revision, len(walked))
+		d.send("bans.applied", map[string]any{"revision": revision})
+		return
+	}
+	d.bansNextTry = time.Now().Add(2 * time.Second)
 }
 
 func (d *driver) markExecuted(actionID string) {

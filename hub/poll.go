@@ -103,8 +103,8 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Then the plugin's envelopes. The hub models manifest.publish, action.ack,
-	// action.result, event.batch, and the state.* snapshots on the inbound
-	// path; every other accepted envelope takes the forward-compatibility path
+	// action.result, event.batch, the state.* snapshots, and bans.applied on the
+	// inbound path; every other accepted envelope takes the forward-compatibility path
 	// of spec section 4: acked and ignored. Bodies are validated up front
 	// because validity depends only on content, while which envelopes are
 	// newly accepted is only known inside the transaction.
@@ -114,6 +114,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	events := s.prepareEvents(request.Envelopes, now)
 	snapshots := s.prepareSnapshots(request.Envelopes, now)
 	contextReplies := prepareContextEntries(request.Envelopes, now)
+	bansApplied := prepareBansApplied(request.Envelopes)
 	replayedBatches, err := s.ingestedEventBatches(r.Context(), server.ID, request.Envelopes, events)
 	if err != nil {
 		s.writeInternalError(w, r, err)
@@ -208,6 +209,10 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 				} else {
 					application.Snapshots = append(application.Snapshots, *prepared.snapshot)
 				}
+				continue
+			}
+			if revision, isReport := bansApplied[index]; isReport {
+				application.BansApplied = append(application.BansApplied, revision)
 			}
 		}
 		return application
@@ -252,7 +257,8 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 			"actionsStarted", applied.ActionsStarted,
 			"actionsFinished", applied.ActionsFinished,
 			"eventsStored", applied.EventsStored,
-			"snapshotsStored", applied.SnapshotsStored)
+			"snapshotsStored", applied.SnapshotsStored,
+			"bansReported", applied.BansReported)
 	}
 	if unusableActionBodies > 0 {
 		s.log.Warn("poll carried action envelopes with unusable bodies; acked and ignored",

@@ -365,12 +365,19 @@ type InboundApplication struct {
 	// envelope rather than flattened, because the envelope id is what
 	// deduplicates a batch replayed across a session change.
 	EventBatches []NewEventBatch
+	// BansApplied are the revisions of the installation ban list the plugin
+	// reported enforcing (spec section 13.4), in arrival order. The last one
+	// is recorded on the server: each report is the plugin's word on what it
+	// enforces now, and a later one supersedes an earlier.
+	BansApplied []int64
 }
 
-// ManifestPublish is one validated manifest to store, revision-gated.
+// ManifestPublish is one validated manifest to store, revision-gated, with
+// the capabilities it declares (spec section 6.7).
 type ManifestPublish struct {
-	Revision int64
-	Body     json.RawMessage
+	Revision     int64
+	Body         json.RawMessage
+	Capabilities []string
 }
 
 // Notice is one hub -> plugin envelope queued as a side effect of ingest.
@@ -398,6 +405,9 @@ type InboundApplied struct {
 	EventsStored int
 	// SnapshotsStored counts state snapshots appended.
 	SnapshotsStored int
+	// BansReported counts bans.applied reports taken; only the last of them is
+	// what the server record keeps.
+	BansReported int
 }
 
 // ApplyInbound applies a poll's envelopes to the session's inbound ack, plus
@@ -469,7 +479,7 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 	applied := InboundApplied{Ack: application.Ack}
 	now := time.Now().UTC()
 	for _, manifest := range application.Manifests {
-		replaced, err := applyManifest(ctx, tx, serverID, manifest.Revision, manifest.Body, now)
+		replaced, err := applyManifest(ctx, tx, serverID, manifest.Revision, manifest.Body, manifest.Capabilities, now)
 		if err != nil {
 			return InboundApplied{}, err
 		}
@@ -517,6 +527,16 @@ func (s *Store) ApplyInbound(ctx context.Context, sessionID string, classify fun
 		return InboundApplied{}, err
 	}
 	applied.SnapshotsStored = snapshots
+
+	if reports := len(application.BansApplied); reports > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE servers SET bans_applied_revision = ?, bans_applied_at = ? WHERE id = ?`,
+			application.BansApplied[reports-1], formatTime(now), serverID,
+		); err != nil {
+			return InboundApplied{}, fmt.Errorf("record applied ban list revision: %w", err)
+		}
+		applied.BansReported = reports
+	}
 
 	if err := tx.Commit(); err != nil {
 		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)

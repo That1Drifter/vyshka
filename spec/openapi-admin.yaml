@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.11.0
+  version: 0.12.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.2, 6.5, 7, 8.3, 8.5, 8.6, 10, 11, and 12).
+    6.2, 6.5, 7, 8.3, 8.5, 8.6, 10, 11, 12, and 13).
 
     Authentication is a bearer token carrying explicit scopes (spec section
     10). The scope each endpoint requires is stated in its description; where
@@ -46,6 +46,11 @@ tags:
     description: |
       One identity across every server (spec section 8.6): the events that
       refer to it, the actions dispatched against it, and operator notes.
+  - name: bans
+    description: |
+      The installation ban list (spec section 13): one list for every server,
+      pulled by each plugin that declares the `bans` capability. Records are
+      kept after a lift or an expiry.
   - name: kv
     description: |
       The per-mod key/value store (spec section 12), the same operations the
@@ -667,9 +672,9 @@ paths:
                     the token is confined to. Absent or empty mints an unbound
                     token whose grants apply to every server. An id the hub
                     does not know is `not_found`; a scope the binding cannot
-                    carry (`admin`, `webhooks:manage`) is `bad_request`. The
-                    binding does not narrow `kv:rw`, since the store has no
-                    server dimension.
+                    carry (`admin`, `webhooks:manage`, `bans:manage`) is
+                    `bad_request`. The binding does not narrow `kv:rw`,
+                    `notes:*`, or `bans:read`, which have no server dimension.
                 expiresInSeconds:
                   type: integer
                   minimum: 0
@@ -982,6 +987,162 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
           description: No such note on this identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/bans:
+    get:
+      tags: [bans]
+      operationId: listBans
+      summary: Read the ban list, newest first.
+      description: |
+        Requires `bans:read` (or `bans:manage`, which implies it). A server
+        binding does not narrow it: the list is the installation's. By default
+        the answer is the active bans; `state=all` adds the lifted and the
+        expired, and `platform` with `playerId` narrows to one identity, which
+        is the identity's ban history (spec section 8.6).
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { type: string, enum: [active, all], default: active }
+        - name: platform
+          in: query
+          required: false
+          description: Given with playerId or not at all.
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - name: playerId
+          in: query
+          required: false
+          description: Given with platform or not at all.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, clamped into the hub's range (reference default 100, cap 500).
+          schema: { type: integer, minimum: 1, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of ban records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BanPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [bans]
+      operationId: createBan
+      summary: Ban an identity on every server of the installation.
+      description: |
+        Requires `bans:manage`, which a server-bound token cannot hold. Every
+        server whose manifest declares the `bans` capability is sent a
+        `bans.changed` and pulls the list (spec section 13.3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [player, reason]
+              properties:
+                player: { $ref: "#/components/schemas/Identity" }
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Not empty or whitespace alone, no U+0000; travels to every server.
+                durationSeconds:
+                  oneOf: [{ type: integer, minimum: 1, maximum: 315360000 }, { type: "null" }]
+                  description: |
+                    How long the ban lasts, counted from the hub's clock.
+                    Absent or null is a ban that does not end on its own; a
+                    value outside the range is refused, not clamped.
+                name:
+                  type: string
+                  maxLength: 200
+                  description: The name the player was known by, stored as sent with no lookup.
+                serverId:
+                  type: string
+                  description: Provenance, the server the ban arose on. Must name a known server; no effect on enforcement.
+            example:
+              player: { platform: steam, id: "76561198000000001" }
+              reason: Speed hack, confirmed on two servers
+              durationSeconds: 604800
+              name: Survivor
+      responses:
+        "201":
+          description: The ban and the list's revision after it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BanChange" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: The serverId names no server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The identity already carries an active ban; `details.banId` names it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/bans/{banId}:
+    parameters:
+      - $ref: "#/components/parameters/BanId"
+    get:
+      tags: [bans]
+      operationId: getBan
+      summary: Read one ban record.
+      description: Requires `bans:read`.
+      responses:
+        "200":
+          description: The record.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ban]
+                properties:
+                  ban: { $ref: "#/components/schemas/Ban" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such ban.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/bans/{banId}/lift:
+    parameters:
+      - $ref: "#/components/parameters/BanId"
+    post:
+      tags: [bans]
+      operationId: liftBan
+      summary: Lift one ban.
+      description: |
+        Requires `bans:manage`. Takes an active ban off the list and moves the
+        revision. A ban already lifted, or expired, is answered as it stands:
+        a retried lift is harmless and never moves the recorded lift. The
+        request carries no body; one sent anyway is ignored.
+      responses:
+        "200":
+          description: The record as it stands and the list's revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BanChange" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such ban.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1342,6 +1503,13 @@ components:
         maxLength: 128
         pattern: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
       description: A key within the namespace (spec section 12.1). Case-sensitive.
+    BanId:
+      name: banId
+      in: path
+      required: true
+      description: Hub-assigned ban id; opaque to clients.
+      schema:
+        type: string
     StateType:
       name: stateType
       in: path
@@ -1388,6 +1556,20 @@ components:
           oneOf: [{ $ref: "#/components/schemas/PluginDescriptor" }, { type: "null" }]
         session:
           oneOf: [{ $ref: "#/components/schemas/SessionSummary" }, { type: "null" }]
+        bans:
+          type: object
+          description: |
+            The server's side of the installation ban list (spec sections 5.1
+            and 13.4). `supported` is whether the stored manifest declares the
+            `bans` capability; `appliedRevision` and `appliedAt` are what the
+            plugin last reported enforcing, null until its first report.
+          required: [supported, appliedRevision, appliedAt]
+          properties:
+            supported: { type: boolean }
+            appliedRevision:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+            appliedAt:
+              oneOf: [{ type: string, format: date-time }, { type: "null" }]
 
     PluginDescriptor:
       type: object
@@ -1590,6 +1772,81 @@ components:
               type: string
               description: The credential's name as it was when the note was written.
 
+    Identity:
+      type: object
+      description: A player identity (spec section 8.2), within the section 8.3 bounds and without U+0000.
+      required: [platform, id]
+      properties:
+        platform: { type: string, minLength: 1, maxLength: 64 }
+        id: { type: string, minLength: 1, maxLength: 128 }
+
+    BanAuthor:
+      type: object
+      required: [tokenId, tokenName]
+      properties:
+        tokenId:
+          type: string
+          description: Empty for a bootstrap credential.
+        tokenName:
+          type: string
+          description: The credential's name as it was at the time.
+
+    Ban:
+      type: object
+      description: One ban on the installation list (spec section 13.1), kept after a lift or an expiry.
+      required: [id, player, reason, name, serverId, createdAt, createdBy, expiresAt, state, liftedAt, liftedBy]
+      properties:
+        id: { type: string }
+        player: { $ref: "#/components/schemas/Identity" }
+        reason: { type: string }
+        name:
+          type: string
+          description: Empty when none was given.
+        serverId:
+          oneOf: [{ type: string }, { type: "null" }]
+          description: Provenance only; no effect on enforcement.
+        createdAt: { type: string, format: date-time }
+        createdBy: { $ref: "#/components/schemas/BanAuthor" }
+        expiresAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: Null for a ban that does not end on its own.
+        state:
+          type: string
+          enum: [active, lifted, expired]
+          description: |
+            Expired from the instant expiresAt passes, whether or not the hub
+            has taken the ban off the list it serves yet.
+        liftedAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        liftedBy:
+          oneOf: [{ $ref: "#/components/schemas/BanAuthor" }, { type: "null" }]
+
+    BanChange:
+      type: object
+      required: [ban, revision]
+      properties:
+        ban: { $ref: "#/components/schemas/Ban" }
+        revision:
+          type: integer
+          minimum: 0
+          description: The revision of the active list once the change is made.
+
+    BanPage:
+      type: object
+      required: [revision, bans]
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+          description: The current revision of the active list, to compare with the servers' reports.
+        bans:
+          type: array
+          items: { $ref: "#/components/schemas/Ban" }
+          description: Newest first by createdAt, the id breaking ties.
+        nextCursor:
+          type: string
+          description: Opaque position to resume from. Absent on the last page.
+
     EventPage:
       type: object
       required: [events]
@@ -1611,7 +1868,7 @@ components:
         One grant, `resource:verb` with an optional `:pattern` third field
         (spec section 10.1). Resources and verbs are a closed set; a pattern is
         `*`, a `{prefix}.*` namespace pattern, or an exact value.
-      pattern: "^(admin|servers:read|webhooks:manage|notes:read|notes:write|(events:read|actions:read|actions:dispatch|kv:rw)(:(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?))?)$"
+      pattern: "^(admin|servers:read|webhooks:manage|notes:read|notes:write|bans:read|bans:manage|(events:read|actions:read|actions:dispatch|kv:rw)(:(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?))?)$"
       example: "events:read:example-mod.*"
 
     AdminTokenRecord:

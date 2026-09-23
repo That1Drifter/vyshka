@@ -235,6 +235,16 @@ func (s *Server) newSessionResponse(ctx context.Context, session store.Session, 
 	case !errors.Is(err, store.ErrNotFound):
 		return sessionResponse{}, err
 	}
+
+	// The installation ban list's revision (spec section 13.3), on every
+	// session response: a hub implementing the list must report it, so a
+	// failed read fails the response rather than leaving a plugin to take the
+	// field's absence for a hub that serves no list.
+	bansRevision, err := s.store.BanRevision(ctx)
+	if err != nil {
+		return sessionResponse{}, err
+	}
+	response.Server.BansRevision = &bansRevision
 	return response, nil
 }
 

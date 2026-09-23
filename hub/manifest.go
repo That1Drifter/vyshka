@@ -26,6 +26,10 @@ const (
 	maxManifestContexts     = 100
 	maxManifestEvents       = 500
 	maxManifestKVNamespaces = 100
+	// The capability bounds of spec section 6.7: a handful of names, each a
+	// short identifier.
+	maxManifestCapabilities = 32
+	maxCapabilityLength     = 64
 	maxCodeLength           = 128
 	maxLabelLength          = 200
 	maxNamespaceLength      = 64
@@ -59,6 +63,7 @@ type manifestBody struct {
 	Contexts         []manifestContext `json:"contexts"`
 	Events           []manifestEvent   `json:"events"`
 	KVNamespaces     []string          `json:"kvNamespaces"`
+	Capabilities     []string          `json:"capabilities"`
 }
 
 type manifestPlugin struct {
@@ -280,10 +285,50 @@ func validateManifest(body json.RawMessage) (int64, []schema.Fault) {
 		}
 	}
 
+	// capabilities is read, not granted: an entry the hub does not know is
+	// ignored (section 6.7), so only the shape is checked here. The list is
+	// bounded all the same, since it is stored with the manifest and read on
+	// every change to the ban list.
+	if len(manifest.Capabilities) > maxManifestCapabilities {
+		fault("capabilities", "a manifest may declare at most %d capabilities, got %d",
+			maxManifestCapabilities, len(manifest.Capabilities))
+		manifest.Capabilities = nil
+	}
+	for i, capability := range manifest.Capabilities {
+		path := fmt.Sprintf("capabilities[%d]", i)
+		switch {
+		case capability == "":
+			fault(path, "a capability is a non-empty string")
+		case tooLong(capability, maxCapabilityLength):
+			fault(path, "capability is longer than %d characters", maxCapabilityLength)
+		}
+	}
+
 	if len(faults) > 0 {
 		return 0, faults
 	}
 	return revision, nil
+}
+
+// manifestCapabilities reads the capabilities an accepted manifest declares
+// (spec section 6.7), deduplicated in the order given. It runs only on a body
+// validateManifest accepted, so the body decodes.
+func manifestCapabilities(body json.RawMessage) []string {
+	var manifest struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if json.Unmarshal(body, &manifest) != nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(manifest.Capabilities))
+	capabilities := make([]string, 0, len(manifest.Capabilities))
+	for _, capability := range manifest.Capabilities {
+		if !seen[capability] {
+			seen[capability] = true
+			capabilities = append(capabilities, capability)
+		}
+	}
+	return capabilities
 }
 
 // schemaRefs is what compileParams found in one schema: the `context` and
@@ -353,7 +398,9 @@ func prepareManifests(envelopes []inboundEnvelope) map[int]preparedManifest {
 		}
 		if revision, faults := validateManifest(e.Body); len(faults) == 0 {
 			prepared[index] = preparedManifest{
-				publish: &store.ManifestPublish{Revision: revision, Body: e.Body},
+				publish: &store.ManifestPublish{
+					Revision: revision, Body: e.Body, Capabilities: manifestCapabilities(e.Body),
+				},
 			}
 		} else {
 			prepared[index] = preparedManifest{reject: newManifestReject(e.ID, e.Body, faults)}

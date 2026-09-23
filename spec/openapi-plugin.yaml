@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Vyshka Plugin API
-  version: 0.5.0
+  version: 0.6.0
   summary: Game-server-facing API of the Vyshka hub.
   description: |
     The plugin half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
-    covers only the endpoints implemented so far (spec sections 3.1.2, 5.2 and
-    5.3).
+    covers only the endpoints implemented so far (spec sections 3.1.2, 5.2,
+    5.3, 12, and 13.3).
 
     Three credentials, each with one job: a one-time enrollment token bootstraps
     a record into a permanent server secret, and the secret buys short-lived
@@ -38,6 +38,11 @@ tags:
       The per-mod key/value store (spec section 12): synchronous
       request/response, never envelopes, confined to the namespaces the
       server's stored manifest declares in `kvNamespaces` (section 6.6).
+  - name: bans
+    description: |
+      The installation ban list (spec section 13.3), read page by page. Each
+      walk reads one revision whole: the first page is served at the current
+      revision and every page reached through its cursors at that same one.
 
 paths:
   /plugin/v1/enroll:
@@ -481,6 +486,66 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /plugin/v1/bans:
+    parameters:
+      - $ref: "#/components/parameters/BanCursor"
+      - $ref: "#/components/parameters/BanLimit"
+      - $ref: "#/components/parameters/InlineErrors"
+    get:
+      tags: [bans]
+      operationId: bansGet
+      summary: Read one page of the installation ban list.
+      description: |
+        Any live session may read the list. Entries come in byte order of
+        `player.platform` then `player.id`. A walk that begins at revision R
+        ends at R whatever changes meanwhile; the plugin learns of a newer
+        revision from `bans.changed` or its next session response and walks
+        again. A cursor the hub can no longer serve answers `409 conflict`,
+        and the walk starts over from the first page.
+      security:
+        - sessionToken: []
+      responses:
+        "200":
+          description: One page, or an InlineError under `?errors=inline`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BanPage"
+                  - $ref: "#/components/schemas/InlineError"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "409": { $ref: "#/components/responses/BanRevisionGone" }
+
+  /plugin/v1/bans/get:
+    parameters:
+      - $ref: "#/components/parameters/BanCursor"
+      - $ref: "#/components/parameters/BanLimit"
+      - $ref: "#/components/parameters/InlineErrors"
+    post:
+      tags: [bans]
+      operationId: bansGetPost
+      summary: The POST spelling of the ban list read (section 13.3).
+      description: |
+        For an engine client that carries its credential on a POST alone. The
+        parameters travel in the query string as for `GET`; a body sent anyway
+        is ignored. The answer, status, and errors are those of
+        `GET /plugin/v1/bans`.
+      security:
+        - sessionToken: []
+      responses:
+        "200":
+          description: One page, or an InlineError under `?errors=inline`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BanPage"
+                  - $ref: "#/components/schemas/InlineError"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SessionInvalid" }
+        "409": { $ref: "#/components/responses/BanRevisionGone" }
+
 components:
   securitySchemes:
     sessionToken:
@@ -580,6 +645,15 @@ components:
             equal or lower revision is ignored (section 6.1), so a plugin that
             lost its own record publishes above what is reported here. A plugin
             tolerates its absence (a hub predating the field).
+        bansRevision:
+          type: integer
+          minimum: 0
+          description: |
+            On a session response (spec sections 5.3 and 13.3), the current
+            revision of the installation ban list. A hub implementing section
+            13 reports it on every session response; a plugin that enforces
+            the list walks it whenever this differs from the revision it
+            enforces. Absent from a hub that serves no list.
 
     Session:
       type: object
@@ -613,6 +687,46 @@ components:
           additionalProperties: true
           description: Hub-declared flags. Plugins must tolerate unrecognized keys.
         server: { $ref: "#/components/schemas/ServerIdentity" }
+
+    BanEntry:
+      type: object
+      description: One entry of the active ban list as a plugin reads it (spec section 13.3).
+      required: [id, player, reason, name, expiresAt]
+      properties:
+        id: { type: string }
+        player:
+          type: object
+          required: [platform, id]
+          properties:
+            platform: { type: string }
+            id: { type: string }
+        reason: { type: string }
+        name:
+          type: string
+          description: Empty when none was given.
+        expiresAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: |
+            Null for a ban that does not end on its own. Past this instant the
+            entry is no ban, by the plugin's own clock, whether or not the hub
+            has taken it off the list yet (section 13.4).
+
+    BanPage:
+      type: object
+      required: [revision, bans]
+      not: { required: [error] }
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+          description: The revision this page was served at, which every page of one walk shares.
+        bans:
+          type: array
+          items: { $ref: "#/components/schemas/BanEntry" }
+        nextCursor:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Absent on the last page.
 
     KVEntry:
       type: object
@@ -771,6 +885,23 @@ components:
         `error` member. For engines whose HTTP client hides the status and
         body of a non-2xx response. Any value other than `inline` is refused
         with an ordinary 400. A hub that predates the option ignores it.
+    BanCursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        The nextCursor of the previous page; absent for the first page of a
+        walk. Opaque, but drawn from letters, digits, `-`, and `_`, so it goes
+        into the query string as it came.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+    BanLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, clamped into the hub's range (reference default 100, cap 500).
+      schema: { type: integer, minimum: 1, default: 100 }
     KVNamespace:
       name: namespace
       in: path
@@ -793,6 +924,13 @@ components:
       description: A key within the namespace (spec section 12.1). Case-sensitive.
 
   responses:
+    BanRevisionGone:
+      description: |
+        The hub cannot serve the revision the cursor names (`conflict`): start
+        the walk over from the first page.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InlineError:
       description: |
         Only when the request carried `?errors=inline`: the refusal the hub

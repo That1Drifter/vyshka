@@ -178,6 +178,10 @@ type mockHub struct {
 	sessionStarts map[int]time.Time
 	garbleArmed   bool
 	garbled       *garbleRecord
+
+	// The installation ban list (spec section 13) the bans stage walks the
+	// candidate through; see bans.go.
+	bans *mockBans
 }
 
 // batchRejection is what the mock refused: the condemned envelope at index 0,
@@ -345,6 +349,9 @@ type manifestInfo struct {
 	// the manifest's events (nil where an event declares none), which a hub
 	// compiles like a params schema (spec section 6.4).
 	EventPayloads []map[string]any
+	// Capabilities are the optional parts of the protocol the plugin says it
+	// implements (spec section 6.7).
+	Capabilities []string
 }
 
 type actionTrack struct {
@@ -377,12 +384,15 @@ func startMockHub(listen string) (*mockHub, error) {
 		idToSeq:         map[string]int64{},
 		idContent:       map[string]*inboundEnvelope{},
 		actions:         map[string]*actionTrack{},
+		bans:            newMockBans(),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /plugin/v1/enroll", h.handleEnroll)
 	mux.HandleFunc("POST /plugin/v1/session", h.handleSession)
 	mux.HandleFunc("POST /plugin/v1/poll", h.handlePoll)
+	mux.HandleFunc("GET /plugin/v1/bans", h.handleBans)
+	mux.HandleFunc("POST /plugin/v1/bans/get", h.handleBans)
 	h.server = &http.Server{Handler: mux}
 	go func() { _ = h.server.Serve(listener) }()
 	return h, nil
@@ -839,6 +849,7 @@ func (h *mockHub) handleSession(w http.ResponseWriter, r *http.Request) {
 		"features":           map[string]any{"inlineErrors": !h.legacyErrors},
 		"server": map[string]any{
 			"id": h.serverID, "name": "conformance-candidate", "game": h.enrolledGame,
+			"bansRevision": h.bans.revision,
 		},
 	}
 	h.mu.Unlock()
@@ -1302,6 +1313,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 			Events       []struct {
 				Payload map[string]any `json:"payload"`
 			} `json:"events"`
+			Capabilities []string `json:"capabilities"`
 		}
 		if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 			h.faultLocked("6", "a manifest.publish body could not be decoded as an object")
@@ -1314,7 +1326,8 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 		if h.manifest != nil && revision <= h.manifest.Revision {
 			return
 		}
-		info := &manifestInfo{Game: body.Game, Revision: revision, KVNamespaces: body.KVNamespaces}
+		info := &manifestInfo{Game: body.Game, Revision: revision, KVNamespaces: body.KVNamespaces,
+			Capabilities: body.Capabilities}
 		for _, action := range body.Actions {
 			info.Actions = append(info.Actions, manifestAction{
 				Code: action.Code, Context: action.Context, Params: action.Params,
@@ -1378,6 +1391,9 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 	case "state.players", "state.vehicles", "state.entities", "state.world":
 		h.telemetry.snapshots++
 		h.validateSnapshotLocked(envelope)
+
+	case "bans.applied":
+		h.interpretBansAppliedLocked(envelope)
 	}
 }
 

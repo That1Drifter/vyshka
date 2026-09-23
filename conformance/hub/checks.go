@@ -240,6 +240,9 @@ type sessionRecord struct {
 		// answers: a hub holding no manifest reports nothing (spec section
 		// 5.3), and no manifest can be at revision 0.
 		ManifestRevision *int64 `json:"manifestRevision"`
+		// The installation ban list's revision (spec sections 5.3 and 13.3),
+		// which a hub implementing the list reports on every session response.
+		BansRevision *int64 `json:"bansRevision"`
 	} `json:"server"`
 }
 

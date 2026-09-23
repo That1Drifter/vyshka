@@ -47,6 +47,9 @@ type harness struct {
 	// The delivered dispatch envelope of the round-trip stage, kept so the
 	// dedup stage can force its re-delivery verbatim.
 	firstDispatch *outboundItem
+	// banAllowance overrides how long past checkTimeout the bans stage waits
+	// for a report; zero means the default (bans.go).
+	banAllowance time.Duration
 }
 
 const (

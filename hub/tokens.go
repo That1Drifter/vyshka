@@ -167,7 +167,8 @@ const maxTokenServers = 50
 // section 10.1) and returns it deduplicated in request order; an empty result
 // is an unbound token. It refuses, with `bad_request`, a binding that is
 // oversized, an id outside the identifier alphabet, and a scope the binding
-// cannot carry (`admin`, `webhooks:manage`), and with `not_found` an id that
+// cannot carry (`admin`, `webhooks:manage`, `bans:manage`), and with
+// `not_found` an id that
 // names no server the hub knows, the rule a webhook's serverIds follows: a
 // typo would otherwise become a token that silently grants nothing.
 //
@@ -188,7 +189,10 @@ func (s *Server) parseRequestedBinding(w http.ResponseWriter, r *http.Request, r
 		if err != nil {
 			continue
 		}
-		if scope.Resource == resourceAdmin || scope.Resource == resourceWebhooks {
+		// bans:manage reaches every server through the installation list
+		// (spec section 13); bans:read stays, unnarrowed, like notes.
+		if scope.Resource == resourceAdmin || scope.Resource == resourceWebhooks ||
+			(scope.Resource == resourceBans && scope.Verb == verbManage) {
 			writeError(w, http.StatusBadRequest, codeBadRequest,
 				"a token bound to servers cannot carry "+text+": that grant has no server dimension (spec section 10.1)")
 			return nil, false

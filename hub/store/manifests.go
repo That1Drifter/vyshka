@@ -48,15 +48,26 @@ func (s *Store) Manifest(ctx context.Context, serverID string) (Manifest, error)
 // monotonicity: a revision above the stored one replaces it, anything else is
 // ignored (spec section 6.1). The gate lives in the statement itself so that
 // two concurrent publishes cannot interleave a read and a write.
-func applyManifest(ctx context.Context, tx *Tx, serverID string, revision int64, body []byte, now time.Time) (applied bool, err error) {
+//
+// The capabilities the manifest declares (spec section 6.7) are stored beside
+// it, already read out of the body by the caller's validation, so the servers
+// a ban change notifies are found without parsing every stored manifest.
+func applyManifest(ctx context.Context, tx *Tx, serverID string, revision int64, body []byte, capabilities []string, now time.Time) (applied bool, err error) {
+	if capabilities == nil {
+		capabilities = []string{}
+	}
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		return false, fmt.Errorf("encode manifest capabilities: %w", err)
+	}
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO manifests (server_id, revision, body, published_at)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO manifests (server_id, revision, body, published_at, capabilities)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (server_id) DO UPDATE
 		    SET revision = excluded.revision, body = excluded.body,
-		        published_at = excluded.published_at
+		        published_at = excluded.published_at, capabilities = excluded.capabilities
 		  WHERE excluded.revision > manifests.revision`,
-		serverID, revision, string(body), formatTime(now),
+		serverID, revision, string(body), formatTime(now), string(encoded),
 	)
 	if err != nil {
 		return false, fmt.Errorf("apply manifest: %w", err)
