@@ -284,8 +284,10 @@ arrived, since those entries were written for one stream.
   Markdown skips both conformance jobs, since neither suite reads those files (the DayZ
   plugin is graded on a local server). A pull request that touches `hub/store/` now runs
   the Postgres conformance pass too, where before only `main` did. The Go suite and the
-  spec validation run on every pull request as before, a push to `main` still runs
-  everything, and a diff the job cannot classify runs everything.
+  spec validation run on every pull request as before, and a push to `main` still runs
+  everything. The diff is the merge commit GitHub builds against its first parent, with a
+  renamed file listed at its old path too; anything the job cannot classify, and the job
+  itself failing, runs everything.
 - 2026-09-17: CI runs as three parallel jobs instead of one sequence: the Go suite on both
   databases with the spec validation, the hub conformance suite on SQLite with the three
   plugin-suite runs, and the hub conformance suite on Postgres. The last runs on pushes to

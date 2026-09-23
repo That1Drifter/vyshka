@@ -33,22 +33,25 @@ jobs:
   changes:
     name: Changes
     # Which of the slow jobs a pull request needs. Anything this cannot work
-    # out (not a pull request, a diff that fails, an empty diff) runs them all.
+    # out (not a pull request, a checkout that is not the merge commit, a diff
+    # that fails or is empty) runs them all, and so does this job failing
+    # (the conditions below).
     runs-on: ubuntu-latest
     outputs:
       conformance: ${{ steps.paths.outputs.conformance }}
       postgres: ${{ steps.paths.outputs.postgres }}
     steps:
+      # A pull request checks out the merge commit GitHub builds, so its first
+      # parent is the base the run is graded against and the diff between them
+      # is exactly what merging introduces.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
       - name: Classify the changed paths
         id: paths
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           everything() {
             echo "conformance=true" >> "$GITHUB_OUTPUT"
@@ -56,17 +59,22 @@ jobs:
             exit 0
           }
           [ "$EVENT" = "pull_request" ] || everything
-          files="$(git diff --name-only "$BASE...$HEAD")" || everything
+          git rev-parse -q --verify HEAD^2 > /dev/null || everything
+          # No rename detection, so a file moved out of a graded tree is
+          # listed at its old path too; no quoting of non-ASCII names, and a
+          # name Git still quotes is matched with its quote below.
+          files="$(git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD)" || everything
           [ -n "$files" ] || everything
           conformance=false
           postgres=false
           while IFS= read -r file; do
+            # A quoted name matches neither skip pattern, so it runs the suites.
             case "$file" in
               plugins/dayz/*|*.md) ;;
               *) conformance=true ;;
             esac
             case "$file" in
-              hub/store/*) postgres=true ;;
+              hub/store/*|\"hub/store/*) postgres=true ;;
             esac
           done <<< "$files"
           echo "$files"
@@ -173,7 +181,8 @@ jobs:
   conformance-sqlite:
     name: Conformance on SQLite
     needs: changes
-    if: needs.changes.outputs.conformance == 'true'
+    # Runs unless the classification succeeded and said it may skip.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.conformance == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -222,7 +231,7 @@ jobs:
     # against the other system of record, so main carries it and any other
     # pull request does not wait for it.
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.postgres == 'true'
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.result != 'success' || needs.changes.outputs.postgres == 'true') }}
     runs-on: ubuntu-latest
     services:
       postgres:
