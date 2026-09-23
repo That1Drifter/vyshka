@@ -251,7 +251,9 @@ After the tag, in this order:
     this engine and the file reader as fatal on a 64 KiB line; the plugin fixes landed as
     #108 first. The DayZ plugin keeps the applied list on disk one entry per line and
     enforces it from boot, disconnects anyone online on a new revision, and names the
-    installation ban when a server-side unban leaves one standing.
+    installation ban when a server-side unban leaves one standing. It writes that copy
+    through a staging file, since a rewrite truncates first and the engine has no rename;
+    the plugin's other rewritten files carry the same crash window, committed as #121.
 
 One protocol discussion ran alongside, because it changed the spec and the persona needed
 it early:

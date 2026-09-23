@@ -135,6 +135,9 @@ type driver struct {
 	walkRestarts   int
 	walked         []banEntry
 	toldDuringWalk bool
+	// deliveredLast says the latest poll delivered something, whose ack the
+	// next poll carries; a walk page waits for that poll.
+	deliveredLast bool
 }
 
 // banEntry is one entry of the installation ban list as the driver keeps it.
@@ -515,7 +518,11 @@ func (d *driver) run(game string) {
 			}
 		}
 
-		if d.bansDue && !time.Now().Before(d.bansNextTry) {
+		// A page of the ban list is read only on a turn whose previous poll
+		// brought nothing, so everything the hub delivered is acked before
+		// the walk goes on: a notice that arrived mid-walk is on record as
+		// taken (its ack) before the walk's next page is asked for.
+		if d.bansDue && !d.deliveredLast && !time.Now().Before(d.bansNextTry) {
 			d.walkBans()
 		}
 
@@ -544,6 +551,7 @@ func (d *driver) run(game string) {
 		}
 		d.polledThisSession = true
 		d.unpolledRefusals = 0
+		d.deliveredLast = false
 
 		var response pollResponse
 		if err := json.Unmarshal(body, &response); err != nil {
@@ -573,6 +581,7 @@ func (d *driver) run(game string) {
 				continue
 			}
 			d.inAck = delivered.Seq
+			d.deliveredLast = true
 			d.handle(delivered)
 		}
 	}

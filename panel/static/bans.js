@@ -219,6 +219,12 @@ export function banList(options) {
 
   const reload = async () => {
     const mine = ++walk;
+    // The previous walk's cursor is dropped before the new first page is
+    // asked for: a "Load older" between the two would otherwise page on
+    // from the old boundary under the new walk's number, and a ban placed
+    // meanwhile would push one record into the gap between them.
+    cursor = null;
+    older.hidden = true;
     try {
       const page = await api('GET', path(null));
       if (stale(seq) || mine !== walk) return;
@@ -303,7 +309,12 @@ export function banForm(options) {
   // showConflict names the ban standing, and then fills in what it was for
   // with one read of it, which bans:manage (implying bans:read) allows. A
   // read that fails leaves the ban named by its id, which is enough to find it.
+  // Every conflict shown takes a number, and the detail read answers only the
+  // conflict that asked for it: a second conflict shown while the first one's
+  // read is out must not have the first ban's record appended under it.
+  let conflictShown = 0;
   const showConflict = async (who, banId) => {
+    const mine = ++conflictShown;
     clear(conflict);
     const key = who.platform + ':' + who.id;
     append(conflict, [el('strong', {}, 'conflict: '), key + ' is already banned',
@@ -314,7 +325,7 @@ export function banForm(options) {
     if (!banId) return;
     try {
       const answer = await api('GET', '/bans/' + encodeURIComponent(banId));
-      if (stale(seq) || conflict.hidden) return;
+      if (stale(seq) || conflict.hidden || mine !== conflictShown) return;
       const standing = answer && answer.ban ? answer.ban : null;
       if (!standing) return;
       conflict.append(el('span', { class: 'conflict-detail' },
@@ -332,6 +343,7 @@ export function banForm(options) {
       event.preventDefault();
       problem.hide();
       conflict.hidden = true;
+      conflictShown++;
       placed.hidden = true;
       const who = identity
         ? { platform: identity.platform, id: identity.id }

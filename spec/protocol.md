@@ -2777,12 +2777,16 @@ retention applies to them.
 hub increases every time the active list changes and at no other time. A change is a ban
 created, an active ban lifted, or expired bans taken off the list.
 
-A revision names one list for good: a hub MUST NOT report a revision it has reported
-before for a different active list, which is the case a hub restored from a backup meets
-(its revision goes back, and the next change would otherwise take a number a plugin
-already holds for the list the restore undid). The reference hub mints each revision as
-the larger of one more than the last and its clock in milliseconds since the epoch, so a
-restored hub's next change lands above everything it handed out before the restore.
+A revision should name one list for good. The case that tests it is a hub restored from a
+backup: its revision goes back, and its next change could take a number a plugin already
+holds for the list the restore undid, which that plugin would then never walk. A hub
+SHOULD mint revisions so that cannot happen. The reference hub mints each revision as the
+larger of one more than the last and its clock in milliseconds since the epoch, so a
+restored hub's next change lands above everything it handed out before the restore as
+long as its clock has not been set back behind them; a hub restored onto a clock that has
+been, or one that mints by counting alone, can repeat a revision, and an operator
+restoring one SHOULD make a change to the list afterwards (a ban placed and lifted is
+enough) so every plugin walks it again.
 
 **Expiry.** The hub is the truth on expiry too. It MUST take a ban off the active list no
 later than 60 s after its `expiresAt` (reference: within 5 s), increasing the revision as
@@ -2945,7 +2949,8 @@ Authorization: Bearer <sessionToken>
   never minted, or one above its current revision, as a cursor minted before a restore
   from an older backup does. The reference hub keeps every ban record and a register of
   the revisions it minted, so it can serve every revision of its own history and refuses
-  any other.
+  one its register does not hold (within the limit section 13.1 states for a clock set
+  back).
 
 **POST spelling.** For the engines of section 12.2 that carry their credential on a
 `POST` alone, the Plugin API also offers the read as `POST /plugin/v1/bans/get`, taking

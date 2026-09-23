@@ -151,10 +151,10 @@ declares the `bans` capability (section 6.7); the mock serves `GET /plugin/v1/ba
 list of several pages under a `bans.changed` and waits for the `bans.applied` of its
 revision; moves the list to a new revision the moment a walk has read its first page, so
 the walk must finish at the revision it began at, holding the rest of that walk until the
-candidate has taken the `bans.changed` of the new revision (acked it, or, for a candidate
-with no poll open, been delivered it) so the notice lands in the middle of the walk and
-the walk's end must not overwrite it (a candidate that cannot take it within 8 s gets a
-`PART` for that ordering); answers `409 conflict` on a cursor partway through a walk and
+candidate has acked the `bans.changed` of the new revision, so the notice lands in the
+middle of the walk and the walk's end must not overwrite it (a candidate that does not
+ack it within 8 s, one that walks without polling in between, gets a `PART` for that
+ordering); answers `409 conflict` on a cursor partway through a walk and
 on every later cursor of that walk, so only a walk begun again gets past it; ends the
 session, and waits
 for the new session to report the revision the candidate already holds; and moves the list
@@ -197,7 +197,8 @@ enumerates the one custom context it declares (`driver.zone`, two members, one w
 position) and answers an enumerate for any other with an empty list and a reason,
 executes dispatches behind an executed-actionId LRU, buffers unacked envelopes across
 outages, renumbers them across session changes, keeps the installation ban list (it declares
-`bans`, walks the list a page per turn of its loop, polling in between, whenever the
+`bans`, walks the list a page per turn of its loop, polling in between and acking what a
+poll delivered before the next page, whenever the
 revision it is told of differs from the one it holds, and reports what it applied), and
 follows the recovery table of spec
 section 2.3. It asks for inline errors unless started

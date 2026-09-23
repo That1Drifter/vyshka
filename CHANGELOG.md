@@ -36,7 +36,8 @@ arrived, since those entries were written for one stream.
   refused on a bound token at mint. The active list carries a revision, moved by every
   change and by nothing else, under a lock so concurrent changes are distinct revisions,
   and minted as the larger of one more than the last and the clock in milliseconds, so a
-  hub restored from a backup never hands a revision out again for a different list; every
+  hub restored from a backup does not hand a revision out again for a different list while
+  its clock has not been set back behind them (the spec states the limit); every
   minted revision is registered, and a cursor naming one this hub never minted is
   refused. Expired bans leave the list within 5 s (the spec allows 60), each sweep one
   change, on a sweeper of their own so the retention passes cannot hold it up. A plugin

@@ -172,6 +172,49 @@ func TestMockBanListPinsWalksAndArmsConflicts(t *testing.T) {
 	}
 }
 
+// Two requests held on one moved walk (a retry beside the original) both come
+// back, and the hold is cleared once, never under the other's feet.
+func TestMockBanHoldSurvivesOverlappingRequests(t *testing.T) {
+	held := banHoldBound
+	banHoldBound = 300 * time.Millisecond
+	t.Cleanup(func() { banHoldBound = held })
+	h, err := startMockHub("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	p := newBanPlugin(t, h)
+	h.mu.Lock()
+	h.prepareBanListLocked(22, banEntries("q", 1))
+	h.setBanListLocked(21, banEntries("p", 5))
+	h.bans.bumpAfterFirstPage[21] = 22
+	h.mu.Unlock()
+
+	_, first := p.page("")
+	cursor := first["nextCursor"].(string)
+	statuses := make(chan int, 2)
+	for range 2 {
+		go func() {
+			status, _ := p.page(cursor)
+			statuses <- status
+		}()
+	}
+	for range 2 {
+		select {
+		case status := <-statuses:
+			if status != http.StatusOK {
+				t.Errorf("a held page answered %d, want 200 once the hold ran out", status)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a held page never came back")
+		}
+	}
+	// The mock is still answering: its lock was not left held.
+	if status, _ := p.page(""); status != http.StatusOK {
+		t.Errorf("a first page after the overlap answered %d", status)
+	}
+}
+
 // Without the capability the stage has nothing to grade and says so; with it,
 // a plugin that never walks fails, naming what it owed.
 func TestBansStageGradesOnlyADeclaringPlugin(t *testing.T) {

@@ -226,33 +226,34 @@ func (h *mockHub) handleBans(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The rest of a walk the list has moved on under waits until the
-		// plugin has taken the notice of the new revision, so it holds a
-		// fresher revision than the walk's when the walk ends. Taken means
-		// acked, the proof for a plugin that polls while it walks; or
-		// delivered with no poll open, which is proof enough for one that
-		// walks and polls in turn, since it has handled a poll's answer
-		// before it asks for the next page.
-		taken := func() bool {
-			notice := h.bans.holdNotice
-			return notice.acked || (notice.seq != 0 && h.pollsInFlight.Load() == 0)
-		}
-		if revision == h.bans.holdRevision && h.bans.holdNotice != nil {
-			for !taken() && time.Now().Before(h.bans.holdUntil) && h.sessionToken == token && h.sessionLive {
+		// plugin has acked the notice of the new revision, so it holds a
+		// fresher revision than the walk's when the walk ends: an ack is the
+		// one thing a hub sees that says the plugin processed an envelope
+		// (section 9.1). The notice is this request's own copy, since the
+		// wait releases the lock and a second held request (a retry) can
+		// clear the shared hold under it.
+		if notice := h.bans.holdNotice; revision == h.bans.holdRevision && notice != nil {
+			until := h.bans.holdUntil
+			for !notice.acked && time.Now().Before(until) && h.sessionToken == token && h.sessionLive &&
+				r.Context().Err() == nil {
 				ch := h.changed
 				h.mu.Unlock()
 				select {
 				case <-ch:
+				case <-r.Context().Done():
 				case <-time.After(50 * time.Millisecond):
 				}
 				h.mu.Lock()
 			}
-			if taken() {
+			if notice.acked {
 				h.bans.ordered = true
 			} else {
 				h.bans.heldOut = true
 			}
-			h.bans.holdRevision = -1
-			h.bans.holdNotice = nil
+			if h.bans.holdNotice == notice {
+				h.bans.holdRevision = -1
+				h.bans.holdNotice = nil
+			}
 		}
 	} else {
 		h.bans.walks++
@@ -472,7 +473,7 @@ var bansStage = Stage{
 		var ordered bool
 		hub.view(func() { ordered = hub.bans.ordered })
 		if !ordered {
-			return ungraded{fmt.Sprintf("the plugin did not take the bans.changed of revision %d within %s of the list moving on under its walk (it walks the whole list between two polls), so a notice arriving during a walk was not graded", after, banHoldBound)}
+			return ungraded{fmt.Sprintf("the plugin did not ack the bans.changed of revision %d within %s of the list moving on under its walk (it walks without polling in between), so a notice arriving during a walk was not graded", after, banHoldBound)}
 		}
 		return nil
 	},

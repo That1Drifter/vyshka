@@ -149,8 +149,11 @@ func lockBanList(ctx context.Context, tx *Tx) (int64, error) {
 // already handed out before the restore for a different list (spec section
 // 13.1): the restored hub's last revision is behind the ones it minted since,
 // but the clock is not, so its next change lands above all of them and a
-// plugin still holding a pre-restore revision sees it differ. Milliseconds
-// stay far inside the protocol's 2^53 bound.
+// plugin still holding a pre-restore revision sees it differ. That holds as
+// long as the clock has not been set back behind what was minted before the
+// restore, which is the limit spec section 13.1 states; no counter the
+// restored database holds could do better, since the restore took the
+// counter back too. Milliseconds stay far inside the protocol's 2^53 bound.
 func nextBanRevision(current int64, now time.Time) int64 {
 	return max(current+1, now.UnixMilli())
 }

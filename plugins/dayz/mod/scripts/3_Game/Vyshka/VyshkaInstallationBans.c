@@ -268,6 +268,19 @@ class VyshkaInstallationBans
 	static bool Apply(string revisionText, array<ref VyshkaInstallationBanEntry> entries, out string error)
 	{
 		Load();
+		// A staging copy still on disk may be the only whole copy of the list
+		// in force (a boot whose rewrite of the main file failed), and the
+		// write below would truncate it: the list in force goes to the main
+		// file first, and nothing new is applied until it has.
+		if (FileExist(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH))
+		{
+			if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, s_Revision, Entries()))
+			{
+				error = VyshkaFiles.INSTALLATION_BANS_PATH + " could not be written, and " + VyshkaFiles.INSTALLATION_BANS_NEXT_PATH + " may be the only copy of the list in force, so no new list is applied";
+				return false;
+			}
+			DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
+		}
 		map<string, ref VyshkaInstallationBanEntry> next = new map<string, ref VyshkaInstallationBanEntry>;
 		for (int j = 0; j < entries.Count(); j++)
 		{
@@ -275,7 +288,10 @@ class VyshkaInstallationBans
 			next.Set(entry.m_Id, entry);
 		}
 		// The staging copy first, then the main file: a crash in either write
-		// leaves one whole list on disk (see the top of this file).
+		// leaves one whole list on disk (see the top of this file). A main
+		// file that cannot be written fails the apply, so the list in force
+		// is always the one the main file holds or is about to, and never
+		// one kept in the staging copy alone.
 		if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH, revisionText, next))
 		{
 			error = VyshkaFiles.INSTALLATION_BANS_NEXT_PATH + " could not be written";
@@ -283,12 +299,10 @@ class VyshkaInstallationBans
 		}
 		if (!WriteStored(VyshkaFiles.INSTALLATION_BANS_PATH, revisionText, next))
 		{
-			// The staging copy is whole and newest, so it stays: the next boot
-			// takes it, and this boot enforces what it says.
-			VyshkaLog.Warn(VyshkaFiles.INSTALLATION_BANS_PATH + " could not be written; the list stays in " + VyshkaFiles.INSTALLATION_BANS_NEXT_PATH + " for the next boot");
+			error = VyshkaFiles.INSTALLATION_BANS_PATH + " could not be written";
+			return false;
 		}
-		else
-			DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
+		DeleteFile(VyshkaFiles.INSTALLATION_BANS_NEXT_PATH);
 		s_Entries = next;
 		s_Revision = revisionText;
 		if (s_Enforcer)
