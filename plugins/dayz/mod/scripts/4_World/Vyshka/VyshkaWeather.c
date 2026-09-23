@@ -66,11 +66,15 @@ class VyshkaWeather
 	// stopped the clock, and the rain and snowfall thresholds, for the notes
 	// of a later dispatch. A threshold is known only while nothing else can
 	// have replaced it: the map's controller re-applies its own whenever it
-	// runs, which in world mode is when the first phenomenon falls due. A
-	// dispatch that leaves the weather in world mode records that moment
-	// (s_ControllerDueMs, monotonic), and a later one forgets the thresholds
-	// once it has passed, or when it finds world mode with no moment recorded
-	// (a mod switched the mode).
+	// runs, which in world mode is when the first phenomenon falls due. Each
+	// dispatch records the mode it left (s_LeftMode) and, for world mode, how
+	// long until the controller could run (s_ControllerDueMs, counted from
+	// s_LeftAtMs). A later dispatch forgets the thresholds once that window has
+	// passed, whatever the mode is by then, or when the mode is not the one
+	// left (a mod switched it, and the controller may have run meanwhile).
+	// The window is compared as elapsed time, a difference of two readings of
+	// the engine's millisecond clock, which stays right across the clock's
+	// wrap for any window shorter than the wrap (about 24 days).
 	static bool s_TimeFrozen;
 	static bool s_RainKnown;
 	static float s_RainMin;
@@ -78,7 +82,8 @@ class VyshkaWeather
 	static bool s_SnowfallKnown;
 	static float s_SnowfallMin;
 	static float s_SnowfallMax;
-	static bool s_ControllerDueKnown;
+	static string s_LeftMode;
+	static int s_LeftAtMs;
 	static int s_ControllerDueMs;
 
 	static void Reset()
@@ -86,7 +91,19 @@ class VyshkaWeather
 		s_TimeFrozen = false;
 		s_RainKnown = false;
 		s_SnowfallKnown = false;
-		s_ControllerDueKnown = false;
+		s_LeftMode = "";
+	}
+
+	// ThresholdsStale says whether the map's controller, or a mod, may have
+	// replaced the thresholds this plugin set since the last dispatch.
+	static bool ThresholdsStale()
+	{
+		if (s_LeftMode == "" || Mode() != s_LeftMode)
+			return true;
+		if (s_LeftMode != MODE_WORLD)
+			return false;
+		int elapsed = VyshkaClock.MonotonicMs() - s_LeftAtMs;
+		return elapsed < 0 || elapsed >= s_ControllerDueMs;
 	}
 
 	// Register declares the weather presets' namespace and the two actions.
@@ -345,10 +362,9 @@ class VyshkaWeather
 		if (knobs.m_HasHold)
 			hold = knobs.m_Hold;
 
-		// In world mode the map's controller may have run since a threshold
-		// was set here, putting back its own: once the moment recorded for it
-		// has passed, or when none was, what was set is no longer known.
-		if (Mode() == MODE_WORLD && (!s_ControllerDueKnown || VyshkaClock.MonotonicMs() >= s_ControllerDueMs))
+		// The map's controller, or a mod, may have put back its own thresholds
+		// since the last dispatch; then what was set here is no longer known.
+		if (ThresholdsStale())
 		{
 			s_RainKnown = false;
 			s_SnowfallKnown = false;
@@ -434,15 +450,12 @@ class VyshkaWeather
 			// phenomena longer, and nothing shortens them, so the note says
 			// when the first of them actually falls due.
 			float due = EarliestForecast(weather);
-			s_ControllerDueKnown = true;
-			s_ControllerDueMs = VyshkaClock.MonotonicMs() + (int)(due * 1000);
+			s_ControllerDueMs = (int)(due * 1000);
 			int dueSeconds = Math.Ceil(due);
 			notes.Add(VyshkaJsonValue.NewString("world mode: the map's own weather takes over in " + dueSeconds.ToString() + " s, when the first phenomenon falls due, and re-applies its storm, thresholds, wind maximum, and snowfall limits; use mode hold to keep these values"));
 		}
-		else
-		{
-			s_ControllerDueKnown = false;
-		}
+		s_LeftMode = mode;
+		s_LeftAtMs = VyshkaClock.MonotonicMs();
 
 		// What the engine will do to the values just set, where it can be
 		// told from here. The overcast is the one being moved to.
