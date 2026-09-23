@@ -756,7 +756,8 @@ with the server's clock is the live run's to show.
     will not keep, naming the threshold it judged by: the one the dispatch set, which is
     in force; else the one last set here, or the engine's default, each with the caveat
     that the map or a mod may have set another since, because the engine has no way to
-    read a threshold back.
+    read a threshold back. A missing note is therefore no promise that the rain or snow
+    stays; the snapshot is what shows it.
 
 `preset` starts from one of three fixed knob sets: `clear` (overcast 0.05, no fog, rain, or
 snow, wind 2 m/s), `cloudy` (overcast 0.55, below the default rain threshold, fog 0.05,
