@@ -8,10 +8,17 @@ name: CI
 #   conformance-sqlite          the hub suite against the built binary on SQLite,
 #                               and the plugin suite against the reference driver
 #   conformance-postgres        the hub suite against a hub on Postgres; pushes to
-#                               main only, so a pull request waits for one pass
-#                               and main is still graded on both databases before
-#                               anything is tagged (the Go suite covers the store
-#                               on Postgres for every pull request)
+#                               main, and pull requests that touch hub/store/, so
+#                               most pull requests wait for one pass and main is
+#                               still graded on both databases before anything is
+#                               tagged (the Go suite covers the store on Postgres
+#                               for every pull request)
+#
+# A pull request that touches only the DayZ plugin (plugins/dayz/) or Markdown
+# skips both conformance jobs: the suites grade the hub and the reference
+# driver, and neither reads a file under plugins/dayz/ or a .md file (the DayZ
+# plugin is graded on a local server, plugins/dayz/README.md "Conformance").
+# The test job always runs. A push to main runs everything.
 
 on:
   push:
@@ -23,6 +30,59 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Changes
+    # Which of the slow jobs a pull request needs. Anything this cannot work
+    # out (not a pull request, a checkout that is not the merge commit, a diff
+    # that fails or is empty) runs them all, and so does this job failing
+    # (the conditions below).
+    runs-on: ubuntu-latest
+    outputs:
+      conformance: ${{ steps.paths.outputs.conformance }}
+      postgres: ${{ steps.paths.outputs.postgres }}
+    steps:
+      # A pull request checks out the merge commit GitHub builds, so its first
+      # parent is the base the run is graded against and the diff between them
+      # is exactly what merging introduces.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify the changed paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          everything() {
+            echo "conformance=true" >> "$GITHUB_OUTPUT"
+            echo "postgres=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          [ "$EVENT" = "pull_request" ] || everything
+          git rev-parse -q --verify HEAD^2 > /dev/null || everything
+          # No rename detection, so a file moved out of a graded tree is
+          # listed at its old path too; no quoting of non-ASCII names, and a
+          # name Git still quotes is matched with its quote below.
+          files="$(git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD)" || everything
+          [ -n "$files" ] || everything
+          conformance=false
+          postgres=false
+          while IFS= read -r file; do
+            # A quoted name matches neither skip pattern, so it runs the suites.
+            case "$file" in
+              plugins/dayz/*|*.md) ;;
+              *) conformance=true ;;
+            esac
+            case "$file" in
+              hub/store/*|\"hub/store/*) postgres=true ;;
+            esac
+          done <<< "$files"
+          # The names are not echoed: a file named like a workflow command
+          # (::add-mask::...) would be run as one and could hide the outputs.
+          echo "$(wc -l <<< "$files") changed file(s): conformance=$conformance postgres=$postgres"
+          echo "conformance=$conformance" >> "$GITHUB_OUTPUT"
+          echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -121,6 +181,10 @@ jobs:
 
   conformance-sqlite:
     name: Conformance on SQLite
+    needs: changes
+    # Runs unless the classification said, explicitly, that it may skip: a
+    # failed Changes job or a missing output runs it.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.conformance != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,10 +227,13 @@ jobs:
 
   conformance-postgres:
     name: Conformance on Postgres
-    # Pushes only, which the trigger limits to main: the pass takes as long
-    # as the SQLite one and grades the same checks against the other system
-    # of record, so main carries it and a pull request does not wait for it.
-    if: github.event_name == 'push'
+    # Pushes, which the trigger limits to main, and pull requests that touch
+    # the store (queries and migrations are where the two databases part):
+    # the pass takes as long as the SQLite one and grades the same checks
+    # against the other system of record, so main carries it and any other
+    # pull request does not wait for it.
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.result != 'success' || needs.changes.outputs.postgres != 'false') }}
     runs-on: ubuntu-latest
     services:
       postgres:

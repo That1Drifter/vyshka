@@ -279,6 +279,15 @@ arrived, since those entries were written for one stream.
   from now on. The plugin conformance suite flags an `audit.*` event, and the hub suite
   gains `plugin.events.reservedNamespaces`, the first check of the reservation on the hub
   side.
+- 2026-09-23: CI sizes a pull request's run to what it touches: a `Changes` job classifies
+  the diff, and a pull request that touches only the DayZ plugin (`plugins/dayz/`) or
+  Markdown skips both conformance jobs, since neither suite reads those files (the DayZ
+  plugin is graded on a local server). A pull request that touches `hub/store/` now runs
+  the Postgres conformance pass too, where before only `main` did. The Go suite and the
+  spec validation run on every pull request as before, and a push to `main` still runs
+  everything. The diff is the merge commit GitHub builds against its first parent, with a
+  renamed file listed at its old path too; anything the job cannot classify, and the job
+  itself failing, runs everything.
 - 2026-09-17: CI runs as three parallel jobs instead of one sequence: the Go suite on both
   databases with the spec validation, the hub conformance suite on SQLite with the three
   plugin-suite runs, and the hub conformance suite on Postgres. The last runs on pushes to
