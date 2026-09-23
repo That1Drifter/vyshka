@@ -460,6 +460,10 @@ class VyshkaVehicles
 			string line = "the vehicles snapshot came to " + fullBytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles, past the 260000 kept under the 262144 a snapshot may carry";
 			VyshkaLog.Warn(line + "; sent at detail level " + detail.ToString() + " of 3 (" + bytes.ToString() + " bytes)");
 		}
+		else if (detail == DETAIL_FULL && s_LoggedDetail != DETAIL_FULL)
+		{
+			VyshkaLog.Info("the vehicles snapshot fits at full detail again (" + bytes.ToString() + " bytes for " + live.Count().ToString() + " vehicles)");
+		}
 		s_LoggedDetail = detail;
 		return body;
 	}
