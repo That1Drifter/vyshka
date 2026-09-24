@@ -116,6 +116,18 @@ func newAuditView(record store.AuditRecord) auditView {
 	}
 }
 
+// auditNotificationData is the data of an audit.recorded notification: the
+// record exactly as GET /api/v1/audit answers it (spec section 11.1). The
+// webhook dispatcher is handed it at construction, because the view is the
+// Admin API's to define.
+func auditNotificationData(record store.AuditRecord) json.RawMessage {
+	encoded, err := json.Marshal(newAuditView(record))
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
+}
+
 func encodeAuditCursor(record store.AuditRecord) string {
 	return base64.RawURLEncoding.EncodeToString(
 		[]byte(envelopeTimestamp(record.At) + "|" + record.ID))

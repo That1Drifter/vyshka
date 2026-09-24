@@ -1,4 +1,4 @@
-package hub
+package webhook
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // the webhook is read again at the moment of the attempt, not trusted from
 // the batch.
 func TestAttemptDeliveryReadsTheWebhookAtAttemptTime(t *testing.T) {
-	s := bootBare(t)
+	d := newTestDispatcher(t)
 	ctx := context.Background()
 
 	var oldHits, newHits atomic.Int32
@@ -32,13 +32,13 @@ func TestAttemptDeliveryReadsTheWebhookAtAttemptTime(t *testing.T) {
 	}))
 	t.Cleanup(newTarget.Close)
 
-	if _, err := s.store.CreateWebhook(ctx, store.Webhook{
-		ID: "wh-attempt", URL: oldTarget.URL, Secret: "secret", Template: templateGenericJSON,
+	if _, err := d.store.CreateWebhook(ctx, store.Webhook{
+		ID: "wh-attempt", URL: oldTarget.URL, Secret: "secret", Template: TemplateGenericJSON,
 	}); err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 	now := envelopeTimestamp(time.Now().UTC())
-	if _, err := s.store.DB().Exec(
+	if _, err := d.store.DB().Exec(
 		`INSERT INTO webhook_deliveries
 		   (id, webhook_id, type, server_id, body, state, attempts, next_attempt_at, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
@@ -47,7 +47,7 @@ func TestAttemptDeliveryReadsTheWebhookAtAttemptTime(t *testing.T) {
 		t.Fatalf("insert delivery: %v", err)
 	}
 	attempts := func() int {
-		listed, err := s.store.WebhookDeliveries(ctx, "wh-attempt", 10)
+		listed, err := d.store.WebhookDeliveries(ctx, "wh-attempt", 10)
 		if err != nil || len(listed) != 1 {
 			t.Fatalf("list deliveries: %d (%v)", len(listed), err)
 		}
@@ -64,20 +64,20 @@ func TestAttemptDeliveryReadsTheWebhookAtAttemptTime(t *testing.T) {
 	}
 
 	paused := true
-	if _, err := s.store.UpdateWebhook(ctx, "wh-attempt", store.WebhookUpdate{Paused: &paused}, nil); err != nil {
+	if _, err := d.store.UpdateWebhook(ctx, "wh-attempt", store.WebhookUpdate{Paused: &paused}, nil); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	s.attemptDelivery(batch)
+	d.attemptDelivery(batch)
 	if oldHits.Load() != 0 || newHits.Load() != 0 || attempts() != 0 {
 		t.Fatalf("an attempt began after the pause landed: old %d, new %d, attempts %d",
 			oldHits.Load(), newHits.Load(), attempts())
 	}
 
 	resumed, target := false, newTarget.URL
-	if _, err := s.store.UpdateWebhook(ctx, "wh-attempt", store.WebhookUpdate{Paused: &resumed, URL: &target}, nil); err != nil {
+	if _, err := d.store.UpdateWebhook(ctx, "wh-attempt", store.WebhookUpdate{Paused: &resumed, URL: &target}, nil); err != nil {
 		t.Fatalf("resume and retarget: %v", err)
 	}
-	s.attemptDelivery(batch)
+	d.attemptDelivery(batch)
 	if oldHits.Load() != 0 || newHits.Load() != 1 || attempts() != 1 {
 		t.Fatalf("the attempt went to the batch's URL rather than the current one, or was not counted: old %d, new %d, attempts %d",
 			oldHits.Load(), newHits.Load(), attempts())
@@ -85,10 +85,10 @@ func TestAttemptDeliveryReadsTheWebhookAtAttemptTime(t *testing.T) {
 
 	// A batch read before a replay cannot begin against the replayed row:
 	// the replay's own selection makes that attempt.
-	if _, err := s.store.ReplayWebhookDelivery(ctx, "wh-attempt", "dlv-attempt"); err != nil {
+	if _, err := d.store.ReplayWebhookDelivery(ctx, "wh-attempt", "dlv-attempt"); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	s.attemptDelivery(batch)
+	d.attemptDelivery(batch)
 	if newHits.Load() != 1 {
 		t.Fatalf("a stale batch entry sent after a replay: new %d", newHits.Load())
 	}

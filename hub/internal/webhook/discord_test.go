@@ -1,4 +1,4 @@
-package hub
+package webhook
 
 import (
 	"encoding/json"
@@ -217,17 +217,17 @@ func TestDiscordBoundsFieldLengths(t *testing.T) {
 
 func TestDiscordLifecycleWording(t *testing.T) {
 	t.Parallel()
-	completed := renderForTest(t, notifyActionCompleted,
+	completed := renderForTest(t, ActionCompleted,
 		`{"actionId": "01A", "code": "vyshka.heal", "state": "completed", "ok": true, "durationMs": 12}`, "s")
 	if completed.Embeds[0].Description != "vyshka.heal completed in 12 ms" || completed.Embeds[0].Fields[0].Value != "01A" {
 		t.Errorf("completed action rendered as %+v", completed.Embeds[0])
 	}
-	failed := renderForTest(t, notifyActionCompleted,
+	failed := renderForTest(t, ActionCompleted,
 		`{"actionId": "01B", "code": "vyshka.kick", "state": "failed", "ok": false, "error": "player 1 is not online"}`, "s")
 	if failed.Embeds[0].Description != "vyshka.kick failed: player 1 is not online" {
 		t.Errorf("failed action rendered as %q", failed.Embeds[0].Description)
 	}
-	lost := renderForTest(t, notifyServerLinkLost, `{"lastSeenAt": "2026-09-14T11:59:00.000Z"}`, "s")
+	lost := renderForTest(t, LinkLost, `{"lastSeenAt": "2026-09-14T11:59:00.000Z"}`, "s")
 	if lost.Embeds[0].Title != "Server link lost" || !strings.Contains(lost.Embeds[0].Description, "2026-09-14T11:59:00.000Z") {
 		t.Errorf("link lost rendered as %+v", lost.Embeds[0])
 	}

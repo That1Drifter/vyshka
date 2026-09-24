@@ -1,4 +1,4 @@
-package hub
+package webhook
 
 import (
 	"bytes"
@@ -24,7 +24,8 @@ import (
 // once at fan-out like generic-json, so retries stay byte-identical and the
 // section 11.4 signature holds; Discord ignores the extra headers.
 
-const templateDiscord = "discord"
+// TemplateDiscord names the discord delivery body.
+const TemplateDiscord = "discord"
 
 // Discord's documented limits for a webhook execution body.
 const (
@@ -168,13 +169,13 @@ func discordEmbedFor(notificationType string, data map[string]any) discordEmbed 
 			description = "no sample"
 		}
 		return discordEmbed{Title: "Performance", Description: description, Color: discordBlue}
-	case notifyActionCompleted:
+	case ActionCompleted:
 		return discordAction(data)
-	case notifyServerLinkLost:
+	case LinkLost:
 		return discordEmbed{Title: "Server link lost", Description: lastSeenDescription(data), Color: discordRed}
-	case notifyServerLinkRestore:
+	case LinkRestored:
 		return discordEmbed{Title: "Server link restored", Description: lastSeenDescription(data), Color: discordGreen}
-	case notifyAuditRecorded:
+	case AuditRecorded:
 		return discordAudit(data)
 	}
 	return discordGeneric(notificationType, data)
@@ -684,7 +685,7 @@ func embedTextLength(embed discordEmbed) int {
 // renderDeliveryBody renders one delivery's body for a webhook's template:
 // the section 11.3 generic-json shape, or the discord embed.
 func renderDeliveryBody(webhook store.Webhook, one notification, deliveryID string, serverName string) ([]byte, error) {
-	if webhook.Template == templateDiscord {
+	if webhook.Template == TemplateDiscord {
 		return renderDiscord(one, serverName)
 	}
 	data := one.Data
@@ -702,8 +703,8 @@ func renderDeliveryBody(webhook store.Webhook, one notification, deliveryID stri
 	})
 }
 
-// unknownTemplateMessage is the registration refusal for a template this hub
+// UnknownTemplateMessage is the registration refusal for a template this hub
 // does not implement (spec section 11.2).
-func unknownTemplateMessage(template string) string {
-	return fmt.Sprintf("template %s is not one this hub implements; %s and %s are", template, templateGenericJSON, templateDiscord)
+func UnknownTemplateMessage(template string) string {
+	return fmt.Sprintf("template %s is not one this hub implements; %s and %s are", template, TemplateGenericJSON, TemplateDiscord)
 }

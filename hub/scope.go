@@ -3,6 +3,8 @@ package hub
 import (
 	"fmt"
 	"strings"
+
+	"github.com/That1Drifter/vyshka/hub/internal/pattern"
 )
 
 // The scope grammar of spec section 10. A scope is `resource:verb`, optionally
@@ -200,16 +202,7 @@ func validScopePattern(pattern string) bool {
 // matches reports whether a grant's pattern covers one concrete value: an event
 // type, an action code, or a KV namespace.
 func (s Scope) matches(value string) bool {
-	switch {
-	case s.Pattern == "" || s.Pattern == "*":
-		return true
-	case strings.HasSuffix(s.Pattern, ".*"):
-		// The prefix keeps its separating dot, so `example-mod.*` matches
-		// example-mod.heal and not example-modular.heal.
-		return strings.HasPrefix(value, strings.TrimSuffix(s.Pattern, "*"))
-	default:
-		return s.Pattern == value
-	}
+	return pattern.Match(s.Pattern, value)
 }
 
 // covers reports whether a grant covers everything a requested pattern could
