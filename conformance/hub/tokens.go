@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -162,6 +163,12 @@ func containsString(value any, needle, path string) string {
 		if strings.Contains(v, needle) {
 			return path
 		}
+	case json.Number:
+		// A value decoded with UseNumber keeps the digits as sent, so a
+		// credential that is all digits cannot slip out as a bare number.
+		if strings.Contains(string(v), needle) {
+			return path
+		}
 	case map[string]any:
 		for k, child := range v {
 			// A member name is a string the client decodes like any other.
@@ -201,7 +208,10 @@ func (e Env) listTokens(ctx context.Context) ([]tokenRecord, error) {
 // listTokensWhole is listTokens that also returns the whole response body
 // decoded as generic JSON, for searches that must see members tokenRecord
 // does not model. Searching the decoded value rather than the bytes as sent
-// also sees a string the hub wrote with JSON escapes.
+// also sees a string the hub wrote with JSON escapes. Numbers are kept as
+// their digits (UseNumber): searched like strings, and never refused for not
+// fitting a float64, since a member the suite does not model may hold any
+// number JSON allows.
 func (e Env) listTokensWhole(ctx context.Context) ([]tokenRecord, any, error) {
 	const path = "/api/v1/tokens"
 	resp, body, err := e.do(ctx, http.MethodGet, path, e.AdminToken, nil)
@@ -219,7 +229,9 @@ func (e Env) listTokensWhole(ctx context.Context) ([]tokenRecord, any, error) {
 		return nil, nil, fmt.Errorf("GET %s: decode body %q: %w", path, truncate(body), err)
 	}
 	var whole any
-	if err := json.Unmarshal(body, &whole); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&whole); err != nil {
 		return nil, nil, fmt.Errorf("GET %s: decode body %q: %w", path, truncate(body), err)
 	}
 	return listed.Tokens, whole, nil
