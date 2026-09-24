@@ -57,6 +57,15 @@ arrived, since those entries were written for one stream.
   removed. The signed-delivery and backfill barriers each wait for a delivery of their
   own type, so a forbidden delivery cannot stand in for it; the pause test's barrier is
   a twin webhook with a receiver of its own.
+- 2026-09-23: webhook delivery moved into its own package, `hub/internal/webhook`, with
+  no behavior or protocol change (issue #132). The package holds the dispatcher (fan-out, rendering
+  for both templates, signing, redaction, attempts on the retry schedule, the link
+  monitor) behind `NewDispatcher`, `Start`, `Nudge`, and `Close`, plus the filter
+  matching grammar the Admin API reuses for coverage; the Admin API handlers stay in
+  package `hub`. The section 10.1 pattern match that scopes and webhook filters share
+  moved to a leaf package, `hub/internal/pattern`, so both keep one reading of it. The
+  internal tests of the moved code moved with it and build a dispatcher over a store
+  instead of booting a whole hub.
 
 ### [0.2.0] - 2026-09-23
 

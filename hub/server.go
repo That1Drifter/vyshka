@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/internal/token"
+	"github.com/That1Drifter/vyshka/hub/internal/webhook"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -318,22 +319,15 @@ type Server struct {
 	handler      http.Handler
 	started      time.Time
 	// stopSweeper ends the maintenance loop; sweeperDone confirms it ended, so
-	// Close never races the loop against the store it is closing. The webhook
-	// dispatcher shares the stop channel and confirms through dispatcherDone,
-	// and the ban expiry sweep through banSweeperDone.
+	// Close never races the loop against the store it is closing. The ban
+	// expiry sweep shares the stop channel and confirms through banSweeperDone.
 	stopSweeper    chan struct{}
 	sweeperDone    chan struct{}
 	banSweeperDone chan struct{}
-	// webhookWake nudges the webhook dispatcher when fresh work landed;
-	// webhookClient makes its delivery attempts.
-	webhookWake    chan struct{}
-	dispatcherDone chan struct{}
-	webhookClient  *http.Client
-	// baseCtx parents every in-flight delivery attempt; Close cancels it so
-	// shutdown never waits out a slow webhook target's timeout.
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
-	closeOnce  sync.Once
+	// webhooks is the webhook delivery engine (spec section 11). It owns its
+	// own loop and shutdown, and Close stops it before the store closes.
+	webhooks  *webhook.Dispatcher
+	closeOnce sync.Once
 	// backfilled counts the events the identity backfill has indexed, for the
 	// one log line that says it finished. Only the maintenance loop touches it.
 	backfilled int
@@ -422,25 +416,20 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		stopSweeper:    make(chan struct{}),
 		sweeperDone:    make(chan struct{}),
 		banSweeperDone: make(chan struct{}),
-		webhookWake:    make(chan struct{}, 1),
-		dispatcherDone: make(chan struct{}),
-		webhookClient: &http.Client{
-			Timeout: cfg.WebhookDeliveryTimeout,
-			// A 3xx is handed back as the final answer, never followed: a
-			// redirect would resend the signed body to an address nobody
-			// registered and no audit names (spec section 11.3).
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		webhooks: webhook.NewDispatcher(webhook.Config{
+			Store:           st,
+			Log:             cfg.Logger,
+			RetryDelays:     cfg.WebhookRetryDelays,
+			DeliveryTimeout: cfg.WebhookDeliveryTimeout,
+			AuditData:       auditNotificationData,
+		}),
 	}
-	s.baseCtx, s.baseCancel = context.WithCancel(context.Background())
 	if bootstrapToken != "" {
 		s.bootstrapTokenHash = token.Hash(bootstrapToken)
 	}
 	s.handler = s.routes()
 	go s.runMaintenance()
-	go s.runWebhookDispatcher()
+	s.webhooks.Start()
 	go s.runBanSweeper()
 	return s, nil
 }
@@ -498,7 +487,7 @@ func (s *Server) runMaintenance() {
 				s.log.Info("actions expired", "count", expired)
 				// Expiry is a terminal state, and terminal states owe the
 				// action.completed webhooks a notification (spec section 11.1).
-				s.nudgeWebhooks()
+				s.webhooks.Nudge()
 			}
 		case <-prune.C:
 			s.prune("events", s.store.PruneEvents)
@@ -880,9 +869,10 @@ func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.stopSweeper)
-		s.baseCancel()
+		// The dispatcher is stopped and its in-flight attempts cancelled
+		// before the store closes, like the loops waited on below.
+		s.webhooks.Close()
 		<-s.sweeperDone
-		<-s.dispatcherDone
 		<-s.banSweeperDone
 		err = s.store.Close()
 	})

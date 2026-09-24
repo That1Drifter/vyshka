@@ -1,7 +1,8 @@
-package hub
+package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -50,28 +51,46 @@ func TestSignWebhookBodyKnownVector(t *testing.T) {
 	}
 }
 
-// bootBare boots a hub inside the package, for tests that drive unexported
-// machinery directly.
-func bootBare(t *testing.T) *Server {
+// newTestDispatcher builds a dispatcher over a fresh, migrated store, for tests
+// that drive its unexported machinery directly. It is configured as a hub
+// with default settings configures it, and is not started: a test that wants
+// the loop running calls Start. The dispatcher is closed before the store.
+func newTestDispatcher(t *testing.T) *Dispatcher {
 	t.Helper()
-	server, err := New(context.Background(), Config{
-		DatabaseURL: dbtest.URL(t),
-		AdminToken:  "vya_INTERNALTESTTOKENINTERNAL",
-		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
-	})
+	ctx := context.Background()
+	st, err := store.Open(ctx, dbtest.URL(t))
 	if err != nil {
-		t.Fatalf("boot hub: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { server.Close() })
-	return server
+	t.Cleanup(func() { st.Close() })
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate store: %v", err)
+	}
+	d := NewDispatcher(Config{
+		Store: st,
+		Log:   slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		RetryDelays: []time.Duration{
+			10 * time.Second, time.Minute, 4 * time.Minute, 10 * time.Minute,
+		},
+		DeliveryTimeout: 10 * time.Second,
+		AuditData: func(record store.AuditRecord) json.RawMessage {
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return json.RawMessage(`{}`)
+			}
+			return encoded
+		},
+	})
+	t.Cleanup(d.Close)
+	return d
 }
 
 // plantLinkedServer inserts a server with a live session directly, because the
 // link monitor cares about rows, not about how enrollment produced them.
-func plantLinkedServer(t *testing.T, s *Server, serverID string, lastSeen time.Time) {
+func plantLinkedServer(t *testing.T, d *Dispatcher, serverID string, lastSeen time.Time) {
 	t.Helper()
 	now := time.Now().UTC()
-	db := s.store.DB()
+	db := d.store.DB()
 	if _, err := db.Exec(
 		`INSERT INTO servers (id, name, game, created_at, secret_hash, enrolled_at, last_seen_at)
 		 VALUES (?, ?, 'test-game', ?, ?, ?, ?)`,
@@ -91,19 +110,19 @@ func plantLinkedServer(t *testing.T, s *Server, serverID string, lastSeen time.T
 	}
 }
 
-func setLastSeen(t *testing.T, s *Server, serverID string, lastSeen time.Time) {
+func setLastSeen(t *testing.T, d *Dispatcher, serverID string, lastSeen time.Time) {
 	t.Helper()
-	if _, err := s.store.DB().Exec(
+	if _, err := d.store.DB().Exec(
 		`UPDATE servers SET last_seen_at = ? WHERE id = ?`,
 		envelopeTimestamp(lastSeen), serverID); err != nil {
 		t.Fatalf("update last_seen_at: %v", err)
 	}
 }
 
-func linkState(t *testing.T, s *Server, serverID string) string {
+func linkState(t *testing.T, d *Dispatcher, serverID string) string {
 	t.Helper()
 	var state string
-	if err := s.store.DB().QueryRow(
+	if err := d.store.DB().QueryRow(
 		`SELECT link_state FROM servers WHERE id = ?`, serverID).Scan(&state); err != nil {
 		t.Fatalf("read link_state: %v", err)
 	}
@@ -126,19 +145,21 @@ func awaitCondition(t *testing.T, what string, pred func() bool) {
 }
 
 func TestCheckLinksFiresTransitionsOncePerEdge(t *testing.T) {
-	s := bootBare(t)
+	d := newTestDispatcher(t)
+	// The loop runs alongside the explicit checks, as it does in a hub.
+	d.Start()
 	ctx := context.Background()
 
-	webhook, err := s.store.CreateWebhook(ctx, store.Webhook{
+	webhook, err := d.store.CreateWebhook(ctx, store.Webhook{
 		ID: "wh-link", URL: "http://127.0.0.1:1/hook", Secret: "vyw_link",
-		Template: templateGenericJSON, Events: []string{"server.link.*"},
+		Template: TemplateGenericJSON, Events: []string{"server.link.*"},
 	})
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 
 	deliveryTypes := func() []string {
-		listed, err := s.store.WebhookDeliveries(ctx, webhook.ID, 10)
+		listed, err := d.store.WebhookDeliveries(ctx, webhook.ID, 10)
 		if err != nil {
 			t.Fatalf("list deliveries: %v", err)
 		}
@@ -152,38 +173,38 @@ func TestCheckLinksFiresTransitionsOncePerEdge(t *testing.T) {
 	// A server whose link ended before the monitor ever classified it is
 	// caught up silently: the first classification fires nothing in either
 	// direction (spec section 11.1).
-	plantLinkedServer(t, s, "srv-stale", time.Now().Add(-time.Hour))
-	s.checkLinks(ctx)
-	awaitCondition(t, "silent unknown -> down", func() bool { return linkState(t, s, "srv-stale") == store.LinkDown })
+	plantLinkedServer(t, d, "srv-stale", time.Now().Add(-time.Hour))
+	d.checkLinks(ctx)
+	awaitCondition(t, "silent unknown -> down", func() bool { return linkState(t, d, "srv-stale") == store.LinkDown })
 	if types := deliveryTypes(); len(types) != 0 {
 		t.Fatalf("the first classification fired %v, want nothing", types)
 	}
 
 	// Fresh traffic: unknown -> up, silently. First sight is not a restoration.
-	plantLinkedServer(t, s, "srv-live", time.Now())
-	s.checkLinks(ctx)
-	awaitCondition(t, "unknown -> up", func() bool { return linkState(t, s, "srv-live") == store.LinkUp })
+	plantLinkedServer(t, d, "srv-live", time.Now())
+	d.checkLinks(ctx)
+	awaitCondition(t, "unknown -> up", func() bool { return linkState(t, d, "srv-live") == store.LinkUp })
 	if types := deliveryTypes(); len(types) != 0 {
 		t.Fatalf("unknown -> up fired %v, want nothing", types)
 	}
 
 	// Silence past twice the pollTimeout plus grace: up -> down, with the lost
 	// notification, exactly once even when checked repeatedly.
-	setLastSeen(t, s, "srv-live", time.Now().Add(-100*time.Second))
-	s.checkLinks(ctx)
-	s.checkLinks(ctx)
-	awaitCondition(t, "up -> down", func() bool { return linkState(t, s, "srv-live") == store.LinkDown })
-	if types := deliveryTypes(); len(types) != 1 || types[0] != notifyServerLinkLost {
-		t.Fatalf("up -> down fired %v, want one %s", types, notifyServerLinkLost)
+	setLastSeen(t, d, "srv-live", time.Now().Add(-100*time.Second))
+	d.checkLinks(ctx)
+	d.checkLinks(ctx)
+	awaitCondition(t, "up -> down", func() bool { return linkState(t, d, "srv-live") == store.LinkDown })
+	if types := deliveryTypes(); len(types) != 1 || types[0] != LinkLost {
+		t.Fatalf("up -> down fired %v, want one %s", types, LinkLost)
 	}
 
 	// Traffic resumes: down -> up, with the restoration.
-	setLastSeen(t, s, "srv-live", time.Now())
-	s.checkLinks(ctx)
-	awaitCondition(t, "down -> up", func() bool { return linkState(t, s, "srv-live") == store.LinkUp })
+	setLastSeen(t, d, "srv-live", time.Now())
+	d.checkLinks(ctx)
+	awaitCondition(t, "down -> up", func() bool { return linkState(t, d, "srv-live") == store.LinkUp })
 	awaitCondition(t, "the restored notification", func() bool {
 		types := deliveryTypes()
-		return len(types) == 2 && (types[0] == notifyServerLinkRestore || types[1] == notifyServerLinkRestore)
+		return len(types) == 2 && (types[0] == LinkRestored || types[1] == LinkRestored)
 	})
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/internal/schema"
+	"github.com/That1Drifter/vyshka/hub/internal/webhook"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -326,7 +327,7 @@ func (s *Server) validateEventBatch(body json.RawMessage, now time.Time) ([]stor
 		// The action, server, and audit namespaces belong to the hub's own
 		// notifications (spec sections 8.1 and 11.1). Telemetry admitted there
 		// would reach webhook receivers looking exactly like the hub's word.
-		if reservedNamespace(event.T) {
+		if webhook.ReservedNamespace(event.T) {
 			fault(path+".t",
 				"the action, server, and audit namespaces are reserved for the hub's own notifications; core server telemetry lives under core.server.*")
 			continue

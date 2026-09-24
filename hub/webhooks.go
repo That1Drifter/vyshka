@@ -10,6 +10,7 @@ import (
 
 	"github.com/That1Drifter/vyshka/hub/internal/id"
 	"github.com/That1Drifter/vyshka/hub/internal/token"
+	"github.com/That1Drifter/vyshka/hub/internal/webhook"
 	"github.com/That1Drifter/vyshka/hub/store"
 )
 
@@ -24,11 +25,6 @@ const (
 	maxRedactPathLength     = 128
 	webhookDeliveryPageSize = 100
 	maxWebhookDeliveryPage  = 500
-	// pendingDeliveryBound is the per-webhook pending queue bound of section
-	// 11.5: at the bound a new delivery is dead on arrival, visibly.
-	pendingDeliveryBound = 1000
-
-	templateGenericJSON = "generic-json"
 )
 
 type createWebhookRequest struct {
@@ -136,7 +132,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Redact:    redact,
 		// The coverage check above has already refused a filter admitting
 		// the audit notification to anything but admin.
-		AuditGranted: filterAdmitsAudit(events),
+		AuditGranted: webhook.FilterAdmitsAudit(events),
 	})
 	if err != nil {
 		s.writeInternalError(w, r, err)
@@ -232,10 +228,10 @@ func (s *Server) validateWebhookServerIDs(w http.ResponseWriter, r *http.Request
 func validateWebhookTemplate(w http.ResponseWriter, value string) (string, bool) {
 	template := strings.TrimSpace(value)
 	if template == "" {
-		template = templateGenericJSON
+		template = webhook.TemplateGenericJSON
 	}
-	if template != templateGenericJSON && template != templateDiscord {
-		writeError(w, http.StatusBadRequest, codeBadRequest, unknownTemplateMessage(template))
+	if template != webhook.TemplateGenericJSON && template != webhook.TemplateDiscord {
+		writeError(w, http.StatusBadRequest, codeBadRequest, webhook.UnknownTemplateMessage(template))
 		return "", false
 	}
 	return template, true
@@ -324,9 +320,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// notification was made by a token that reads the audit log.
 	update.AuditGranted = func(existing store.Webhook) bool {
 		if update.Events != nil {
-			return filterAdmitsAudit(*update.Events)
+			return webhook.FilterAdmitsAudit(*update.Events)
 		}
-		return filterAdmitsAudit(existing.Events)
+		return webhook.FilterAdmitsAudit(existing.Events)
 	}
 
 	var parsedURL *url.URL
@@ -444,7 +440,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if request.Paused != nil && !*request.Paused {
 		// Everything the pause held back is due now; the dispatcher need not
 		// wait for its next tick to find out.
-		s.nudgeWebhooks()
+		s.webhooks.Nudge()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"webhook": newWebhookView(webhook)})
 }
@@ -531,7 +527,7 @@ func (s *Server) handleReplayWebhookDelivery(w http.ResponseWriter, r *http.Requ
 	s.log.Info("webhook delivery replayed",
 		"webhookId", webhookID, "deliveryId", deliveryID,
 		"type", delivery.Type, "attempts", delivery.Attempts)
-	s.nudgeWebhooks()
+	s.webhooks.Nudge()
 	writeJSON(w, http.StatusAccepted, map[string]any{"delivery": newDeliveryView(delivery)})
 }
 
@@ -642,51 +638,6 @@ func redactURL(parsed *url.URL) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// reservedNamespace reports whether a type, or a pattern, lies in a namespace
-// the hub's own notifications own (spec section 8.1): action, server, and
-// audit. Telemetry may not use them, which is what keeps a plugin from
-// speaking in the hub's voice to every webhook receiver.
-func reservedNamespace(value string) bool {
-	return strings.HasPrefix(value, "action.") || strings.HasPrefix(value, "server.") ||
-		strings.HasPrefix(value, "audit.")
-}
-
-// optInNotification reports whether a notification type is matched only by a
-// pattern that names its namespace, never by the catch-all (spec section
-// 11.1). The audit log is admin-only, and a subscription to everything
-// registered before the notification existed must not start exporting it.
-func optInNotification(notificationType string) bool {
-	return strings.HasPrefix(notificationType, "audit.")
-}
-
-// patternAdmits reports whether one webhook filter pattern matches one
-// notification type, with the opt-in rule applied.
-func patternAdmits(pattern, notificationType string) bool {
-	if pattern == "*" && optInNotification(notificationType) {
-		return false
-	}
-	return (Scope{Pattern: pattern}).matches(notificationType)
-}
-
-// filterAdmitsAudit reports whether a webhook filter matches the opt-in audit
-// notification. An empty filter is the catch-all, which never does.
-func filterAdmitsAudit(events []string) bool {
-	for _, pattern := range events {
-		if patternAdmits(pattern, notifyAuditRecorded) {
-			return true
-		}
-	}
-	return false
-}
-
-// subscribesTelemetry reports whether a pattern can match any telemetry type.
-// The section 8.1 reservation is what makes this decidable: a pattern
-// confined to the reserved namespaces can only ever match the hub's own
-// notifications.
-func subscribesTelemetry(pattern string) bool {
-	return pattern == "*" || !reservedNamespace(pattern)
-}
-
 // refusal is a coverage decision the handler answers with, carried as an
 // error so it can be taken inside a store transaction and told apart from a
 // store failure on the way out.
@@ -723,20 +674,20 @@ func subscriptionCoverage(caller *principal, events []string, namesServers bool)
 	}
 	needsActions, needsServers, needsAdmin := false, namesServers, false
 	for _, pattern := range subscribed {
-		if patternAdmits(pattern, notifyActionCompleted) {
+		if webhook.PatternAdmits(pattern, webhook.ActionCompleted) {
 			// The notification carries any code's record, so nothing narrower
 			// than an unnarrowed actions:read can cover it.
 			needsActions = true
 		}
-		if patternAdmits(pattern, notifyServerLinkLost) || patternAdmits(pattern, notifyServerLinkRestore) {
+		if webhook.PatternAdmits(pattern, webhook.LinkLost) || webhook.PatternAdmits(pattern, webhook.LinkRestored) {
 			needsServers = true
 		}
-		if patternAdmits(pattern, notifyAuditRecorded) {
+		if webhook.PatternAdmits(pattern, webhook.AuditRecorded) {
 			// The audit log is read under admin alone (spec section 10.5), and
 			// an export of it is a reading of it.
 			needsAdmin = true
 		}
-		if subscribesTelemetry(pattern) {
+		if webhook.SubscribesTelemetry(pattern) {
 			if !caller.covers(resourceEvents, verbRead, pattern) {
 				return forbidden("subscribing to " + pattern + " requires a scope covering events:read:" + pattern +
 					"; a webhook is a standing export of what it matches")
@@ -762,15 +713,15 @@ func subscriptionCoverage(caller *principal, events []string, namesServers bool)
 // already rendered is an export of that type wherever the URL now points.
 func notificationCoverage(caller *principal, notificationType string) *refusal {
 	switch {
-	case notificationType == notifyActionCompleted:
+	case notificationType == webhook.ActionCompleted:
 		if !caller.covers(resourceActions, verbRead, "*") {
 			return forbidden("a pending action.completed delivery requires actions:read to be redirected or replayed")
 		}
-	case notificationType == notifyServerLinkLost || notificationType == notifyServerLinkRestore:
+	case notificationType == webhook.LinkLost || notificationType == webhook.LinkRestored:
 		if !caller.allowsAny(resourceServers, verbRead) {
 			return forbidden("a pending " + notificationType + " delivery requires servers:read to be redirected or replayed")
 		}
-	case optInNotification(notificationType):
+	case webhook.OptIn(notificationType):
 		if !caller.isAdmin() {
 			return forbidden("a delivery of " + notificationType + " requires admin to be redirected or replayed")
 		}
@@ -781,40 +732,4 @@ func notificationCoverage(caller *principal, notificationType string) *refusal {
 		}
 	}
 	return nil
-}
-
-// webhookMatches decides whether one notification concerns one webhook: the
-// server filter is exact membership, the event filter the section 10.1 pattern
-// grammar, and empty filters mean everything (spec section 11.2).
-func webhookMatches(webhook store.Webhook, notificationType, serverID string) bool {
-	if len(webhook.ServerIDs) > 0 {
-		observed := false
-		for _, candidate := range webhook.ServerIDs {
-			if candidate == serverID {
-				observed = true
-				break
-			}
-		}
-		if !observed {
-			return false
-		}
-	}
-	if optInNotification(notificationType) && !webhook.AuditGranted {
-		// A filter naming the audit namespace that no token able to read the
-		// audit log ever authorized, one registered while the namespace was
-		// ordinary telemetry above all, is not a request for the access
-		// record (spec section 11.1).
-		return false
-	}
-	if len(webhook.Events) == 0 {
-		// An empty filter is the catch-all, and the catch-all never admits an
-		// opt-in notification (spec section 11.1).
-		return !optInNotification(notificationType)
-	}
-	for _, pattern := range webhook.Events {
-		if patternAdmits(pattern, notificationType) {
-			return true
-		}
-	}
-	return false
 }
