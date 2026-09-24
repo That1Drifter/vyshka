@@ -23,7 +23,7 @@ arrived, since those entries were written for one stream.
   document to the conformance checks that grade it (issue #130). One row per MUST, MUST
   NOT, and REQUIRED in the numbered sections, 284 in all, each quoting the clause and
   naming the hub checks or plugin stages that fail against an implementation breaking it,
-  or saying why none does: 107 graded, 99 partially graded, 62 ungraded though a
+  or saying why none does: 107 graded, 98 partially graded, 63 ungraded though a
   black-box check could exist, and 16 no wire-level suite can observe. A new test,
   `conformance/coverage`, fails when a clause has no row, a row's quote no longer appears
   in its section, a cited check is no longer declared (read from the suites' syntax

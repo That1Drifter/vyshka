@@ -16,14 +16,16 @@ cited check is no longer declared in either suite, or when the summary below dis
 the rows. A protocol edit that adds or removes a clause, or rewords the words a row quotes,
 therefore fails CI until its row is brought along. A change to the rest of a clause's
 sentence goes unnoticed, so a protocol edit rereads the rows of every clause it touches.
+"Declared" means a `Check` or `Stage` literal in the suite's source; the test does not
+prove the suite registers and runs it.
 
 ## Summary
 
 | Status | Clauses |
 |---|---|
 | graded | 107 |
-| partial | 99 |
-| ungraded | 62 |
+| partial | 98 |
+| ungraded | 63 |
 | n/a | 16 |
 
 284 clauses in all.
@@ -71,7 +73,7 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 2.2 | "`message` is human-readable and MUST NOT be parsed" | plugin | - | ungraded | |
-| 2.2 | "Clients MUST branch on `code`" | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused | partial | Only envelope_invalid is provoked on a poll; ack_out_of_range and bad_request share its status and are never contrasted |
+| 2.2 | "Clients MUST branch on `code`" | plugin | - | ungraded | No two refusals with the same endpoint and status but different recovery are contrasted, so a client that never reads code passes |
 | 2.2 | "and MUST tolerate codes they do not recognize, falling back on the HTTP status." | plugin | - | ungraded | The mock hub never sends an unknown code |
 
 ### 2.3 Inline errors (Plugin API)
@@ -87,12 +89,12 @@ exercises an area without failing on the violation is not cited.
 | 2.3 | "and MUST NOT treat it as success." | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused, plugin:session.renumber | graded | |
 | 2.3 | "In particular it MUST NOT apply an `ack` from such a body." | plugin | - | ungraded | errors.garbledSuccess serves a non-JSON body that carries no ack, so applying an ack from an error body is never provoked |
 | 2.3 | "a plugin MUST keep whatever handling it has for an opaque error alongside its handling of inline ones." | plugin | plugin:errors.batchRefused | graded | Graded in the -legacy-errors run, where the mock ignores the opt-in |
-| 2.3 | "The plugin MUST take the envelope at `details.index` out of its outbox before retrying" | plugin | plugin:errors.batchRefused | partial | Enforced only when the refusal travelled inline; a plugin reading an ordinary 400 body may resend and pass |
+| 2.3 | "The plugin MUST take the envelope at `details.index` out of its outbox before retrying" | plugin | plugin:errors.batchRefused | partial | Enforced only when the refusal travelled inline and polls are sequential; a plugin reading an ordinary 400 body, or overlapping polls, may resend and pass |
 | 2.3 | "MUST NOT count it as delivered" | plugin | - | n/a | Internal outbox bookkeeping, not visible on the wire |
 | 2.3 | "and MUST surface it (log it, set it aside on disk) rather than discard it silently." | plugin | - | n/a | Logs and disk state are outside what a wire-level suite sees |
 | 2.3 | "(one that sends batches which are not such a run) MUST start a new session instead" | plugin | - | ungraded | The mock faults non-contiguous batches themselves, not the recovery from a refusal of one |
 | 2.3 | "log, back off, and retry; MUST NOT start a new session over it." | plugin | - | ungraded | The mock hub never sends an unrecognized 4xx code |
-| 2.3 | "Where the table says back off, the plugin MUST wait at least 1 s before its next attempt" | plugin | plugin:errors.batchRefused, plugin:errors.garbledSuccess, plugin:errors.credentialsRefused | partial | 5xx and unknown-code retries never provoked; credentials path counts attempts, not gaps; stands down when polls overlap |
+| 2.3 | "Where the table says back off, the plugin MUST wait at least 1 s before its next attempt" | plugin | plugin:errors.batchRefused, plugin:errors.garbledSuccess, plugin:errors.credentialsRefused | partial | The enforced gap is 950 ms, not 1 s; 5xx and unknown-code retries never provoked; credentials path counts attempts, not gaps; stands down when polls overlap |
 
 ### 3.1 Baseline: HTTP long-poll (mandatory)
 
@@ -119,11 +121,11 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 3.1.2 | "A hub MUST answer with `200` and an empty `envelopes` array when the hold expires with nothing queued." | hub | hub:plugin.poll.idleHold | graded | |
-| 3.1.2 | "A hub MUST answer immediately, without holding, whenever any unacked envelope is already queued for the session." | hub | hub:plugin.poll.deliver | partial | Timed only for a never-delivered envelope; a delivered but unacked one is not timed |
-| 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | A late ack shows as a resend; ingesting a held poll's envelopes is not observed mid-hold |
+| 3.1.2 | "A hub MUST answer immediately, without holding, whenever any unacked envelope is already queued for the session." | hub | hub:plugin.poll.deliver | partial | Immediately is approximated by 2 s; timed only for a never-delivered envelope, a delivered but unacked one is not timed |
+| 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | The ack's effect is observed through what the answer carries and through prompt progress on more: true; applying the ack or ingesting before an actual hold is not observed |
 | 3.1.2 | "It MUST apply the `ack` first: the ack frees queued work" | hub | - | ungraded | The ack-bearing polls in retransmit and ackContiguous carry no envelopes, so the order of ack and ingest is never observable |
 | 3.1.2 | "A hub MUST validate the whole inbound batch before applying any of it." | hub | - | ungraded | envelopeInvalid's good envelope sits above the gap its malformed ones leave, so an incremental hub also answers ack 0 |
-| 3.1.2 | "A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops being live (superseded, revoked, or expired)" | hub | hub:plugin.poll.supersededDuringHold, hub:plugin.poll.revokedDuringHold, hub:plugin.errors.inlineSupersededHold | partial | Session expiry during a hold is not provoked |
+| 3.1.2 | "A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops being live (superseded, revoked, or expired)" | hub | hub:plugin.poll.supersededDuringHold, hub:plugin.poll.revokedDuringHold, hub:plugin.errors.inlineSupersededHold | partial | As soon as is approximated by about 5 s from the poll's start; session expiry during a hold is not provoked |
 | 3.1.2 | "A hub MUST accept at least 200 envelopes in one poll request." | hub | hub:plugin.poll.batchLimit | graded | |
 | 3.1.2 | "MUST reject anything over its cap with `bad_request` rather than truncate it silently" | hub | hub:plugin.poll.batchLimit | partial | Truncation is caught, but 413 or any code passes where the clause names bad_request |
 | 3.1.2 | "A hub MUST update the server record's `lastSeenAt` on every poll." | hub | hub:plugin.poll.lastSeen | graded | |
@@ -154,11 +156,11 @@ exercises an area without failing on the violation is not cited.
 | 4 | "a receiver MUST NOT parse it or require any particular format." | either | hub:plugin.poll.inbound, plugin:action.roundTrip | partial | Both suites send non-ULID ids; parsing that tolerates failure is invisible |
 | 4 | "so a sender MUST NOT reuse an `id` for a different message on the same server, in any session." | sender | plugin:session.renumber | partial | The mock faults plugin id reuse in and across sessions; hub-minted ids are never compared |
 | 4 | "violates the sender's MUST NOT above but suspends no receiver obligation" | hub | - | ungraded | No check sends an event.batch and a state.* envelope under one id |
-| 4 | "A receiver MUST reject an envelope missing `id`, `type` or `seq`, declaring a version it does not speak, or exceeding a documented length limit on `id` or `type`." | hub | hub:plugin.poll.envelopeInvalid | partial | Length-limit refusal not probed; the plugin as receiver is never sent a malformed envelope |
+| 4 | "A receiver MUST reject an envelope missing `id`, `type` or `seq`, declaring a version it does not speak, or exceeding a documented length limit on `id` or `type`." | either | hub:plugin.poll.envelopeInvalid | partial | Hub side only, and a missing seq is never sent (the fixture sends an explicit 0); length-limit refusal not probed; the plugin as receiver is never sent a malformed envelope |
 | 4 | "A receiver MUST accept an `id` and a `type` of at least 128 characters." | hub | - | ungraded | |
-| 4 | "`0` names a version no implementation speaks and MUST be rejected like any other unknown version." | hub | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent a v of 0 |
-| 4 | "Implementations MUST NOT collapse the two." | hub | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent an envelope without v |
-| 4 | "A receiver MUST NOT reject an envelope over `ts` alone." | hub | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent a bad ts |
+| 4 | "`0` names a version no implementation speaks and MUST be rejected like any other unknown version." | either | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent a v of 0 |
+| 4 | "Implementations MUST NOT collapse the two." | either | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent an envelope without v |
+| 4 | "A receiver MUST NOT reject an envelope over `ts` alone." | either | hub:plugin.poll.inboundTolerance | partial | The plugin as receiver is never sent a bad ts |
 | 4 | "When `ts` is missing or unparseable it MUST substitute its own receipt time wherever it records one." | hub | - | ungraded | No check reads back where the hub records an envelope ts |
 | 4 | "an implementation that decodes the field into a string-typed variable MUST still accept those" | hub | hub:plugin.poll.inboundTolerance | graded | |
 | 4 | "since a sender MUST retransmit unacked envelopes unchanged (section 9.1)" | sender | hub:plugin.poll.retransmit, plugin:outage.bufferAndFlush | graded | |
@@ -331,7 +333,7 @@ exercises an area without failing on the violation is not cited.
 | 8.3 | "Vehicle and entity entries MUST carry `id`, a non-empty string stable for the lifetime of the thing it names" | plugin | plugin:telemetry.wellFormed | partial | Shape and non-emptiness checked; stability over time is not |
 | 8.3 | "Its `world` field MUST be a JSON object, whole in the same sense as a list" | plugin | plugin:telemetry.wellFormed | graded | Hub refusal of a bad world is graded by hub:state.world |
 | 8.3 | "a hub MUST NOT reorder them by `capturedAt`, whose clock it does not own" | hub | hub:state.latestReplaces | graded | |
-| 8.3 | "the latest snapshot per type MUST survive every retention pass" | hub | hub:state.replayAfterPrune | partial | Only the depth trim is forced (and only at the runner's configured depth); the time window is not |
+| 8.3 | "the latest snapshot per type MUST survive every retention pass" | hub | hub:state.replayAfterPrune | partial | Depth trim attempted only at the runner's configured depth, and the check never confirms a retention pass ran; the time window is not probed |
 | 8.3 | "a hub MUST deduplicate an accepted `state.*` envelope on its `id` (per server)" | hub | hub:state.retransmitDedup | partial | Only state.players on one server; per-server isolation and the other state families are not probed |
 | 8.3 | "The dedup record MUST outlive the snapshot's history row" | hub | hub:state.replayAfterPrune | partial | Needs -state-history-depth to match the hub's depth, and never confirms the history row was actually pruned before the replay |
 | 8.3 | "a hub MUST remember an accepted `state.*` `id` for at least that window counted from acceptance" | hub | hub:state.retransmitDedup, hub:state.replayAfterPrune | partial | Replays come seconds after acceptance; a memory shorter than the window but not instant passes |
@@ -362,7 +364,7 @@ exercises an area without failing on the violation is not cited.
 | 9.1 | "and MUST NOT reorder them: a receiver that sorted first would ack a batch its sender never sent in that order" | either | - | ungraded | No check sends either party a descending batch |
 | 9.1 | "A receiver MUST NOT advance its ack past a gap." | either | hub:plugin.poll.inbound, hub:plugin.poll.inboundRenumber, hub:plugin.poll.more | partial | The mock hub never sends a plugin a gap |
 | 9.1 | "A receiver MUST treat an envelope at or below its ack as a duplicate" | either | hub:plugin.poll.inbound, hub:plugin.events.duplicate, plugin:action.redeliveryDedup | graded | |
-| 9.1 | "A receiver MUST NOT lower an ack it has already reported" | hub | hub:plugin.poll.inbound | partial | Hub ack held across a gap only; a plugin lowering its ack is ignored, not faulted |
+| 9.1 | "A receiver MUST NOT lower an ack it has already reported" | either | hub:plugin.poll.inbound | partial | Hub ack held across a gap only; a plugin lowering its ack is ignored, not faulted |
 | 9.1 | "a sender MUST ignore an ack below the one it has already recorded" | sender | hub:plugin.poll.ackContiguous | partial | Hub side only; the mock hub never reports a lower ack to a plugin |
 | 9.1 | "A receiver that answers several requests concurrently MUST derive each reported ack from committed state" | hub | - | ungraded | No check sends concurrent polls |
 | 9.1 | "**Within a session**, a sender MUST retransmit every envelope above the receiver's ack unchanged" | sender | hub:plugin.poll.retransmit, plugin:outage.bufferAndFlush | graded | |
@@ -524,7 +526,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 12.1 | "From the moment its expiry passes, the key MUST read as absent on every operation" | hub | hub:kv.ttl, hub:kv.listPrefix | partial | get, create-only set, and the listing are probed; incr and delete on an expired key are not |
+| 12.1 | "From the moment its expiry passes, the key MUST read as absent on every operation" | hub | hub:kv.ttl, hub:kv.listPrefix | partial | get, create-only set, and the listing are probed, with expiry tolerated for up to 10 s rather than from the instant it passes; incr and delete on an expired key are not |
 
 ### 12.2 Operations
 

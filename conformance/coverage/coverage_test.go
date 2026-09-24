@@ -106,6 +106,24 @@ func (f *fences) inside(line string) bool {
 	return true
 }
 
+// quotedFence opens a fenced block inside a blockquote, which the line reader
+// below does not follow.
+var quotedFence = regexp.MustCompile("^ {0,3}>[ \t>]*(```|~~~)")
+
+// unsupported names a Markdown construct that could hide text from a reader
+// of the rendered page, or show it, without this test following along: an
+// HTML comment, or a fence inside a blockquote. Neither file uses one, and
+// refusing them is simpler than parsing them.
+func unsupported(line string) string {
+	switch {
+	case strings.Contains(line, "<!--"):
+		return "an HTML comment"
+	case quotedFence.MatchString(line):
+		return "a fenced block inside a blockquote"
+	}
+	return ""
+}
+
 // section is one numbered, normative section of the spec: its text with
 // whitespace normalized, and where each clause keyword in it sits.
 type section struct {
@@ -125,6 +143,9 @@ func specSections(t *testing.T) map[string]section {
 		t.Fatal(err)
 	}
 	sections := map[string]section{}
+	// seen holds every section number met, excluded ones included, so a
+	// second heading with an excluded number is caught too.
+	seen := map[string]bool{}
 	var current string
 	var started bool
 	var buf []string
@@ -141,6 +162,9 @@ func specSections(t *testing.T) map[string]section {
 		buf = nil
 	}
 	for i, line := range lines(raw) {
+		if what := unsupported(line); what != "" {
+			t.Errorf("protocol.md:%d: %s is not something this test can read around; rewrite it: %q", i+1, what, line)
+		}
 		if f.inside(line) {
 			continue
 		}
@@ -149,9 +173,10 @@ func specSections(t *testing.T) map[string]section {
 		}
 		if m := numbered.FindStringSubmatch(line); m != nil {
 			flush()
-			if _, dup := sections[m[1]]; dup || m[1] == current {
+			if seen[m[1]] {
 				t.Errorf("protocol.md:%d: section %s is numbered twice; its clauses cannot be told apart", i+1, m[1])
 			}
+			seen[m[1]] = true
 			current, started = m[1], true
 			buf = append(buf, m[2])
 			continue
@@ -208,7 +233,6 @@ func splitCells(line string) []string {
 
 var (
 	sectionCell = regexp.MustCompile(`^\d+(?:\.\d+)*$`)
-	summaryRow  = regexp.MustCompile(`^\| (graded|partial|ungraded|n/a) \|`)
 	totalLine   = regexp.MustCompile(`^(\d+) clauses in all\.$`)
 )
 
@@ -231,19 +255,27 @@ func readTable(t *testing.T) table {
 	tbl := table{summary: map[string][]string{}}
 	var f fences
 	for i, line := range lines(raw) {
+		if what := unsupported(line); what != "" {
+			t.Errorf("COVERAGE.md:%d: %s is not something this test can read around; rewrite it: %q", i+1, what, line)
+		}
 		if f.inside(line) {
 			continue
 		}
-		if m := totalLine.FindStringSubmatch(line); m != nil {
+		if m := totalLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
 			tbl.totals = append(tbl.totals, m[1])
 			continue
 		}
-		if !strings.HasPrefix(line, "|") {
+		if !strings.HasPrefix(strings.TrimLeft(line, " "), "|") {
 			continue
 		}
 		cells := splitCells(line)
-		if m := summaryRow.FindStringSubmatch(line); m != nil && len(cells) >= 2 {
-			tbl.summary[m[1]] = append(tbl.summary[m[1]], cells[1])
+		if _, isStatus := statuses[cells[0]]; isStatus {
+			// A summary row, however its cells are spaced.
+			value := ""
+			if len(cells) >= 2 {
+				value = cells[1]
+			}
+			tbl.summary[cells[0]] = append(tbl.summary[cells[0]], value)
 			continue
 		}
 		if !sectionCell.MatchString(cells[0]) {
