@@ -19,6 +19,16 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-23: `conformance/COVERAGE.md` maps every normative clause of the protocol
+  document to the conformance checks that grade it (issue #130). One row per MUST, MUST
+  NOT, and REQUIRED in the numbered sections, 284 in all, each quoting the clause and
+  naming the hub checks or plugin stages that fail against an implementation breaking it,
+  or saying why none does: 126 graded, 85 partially graded, 57 ungraded though a
+  black-box check could exist, and 16 no wire-level suite can observe. A new test,
+  `conformance/coverage`, fails when a clause has no row, a row's quote no longer appears
+  in its section, a cited check no longer exists, or the summary disagrees with the rows,
+  so a protocol edit fails CI until its rows follow. The ungraded rows are the backlog for
+  new checks.
 - 2026-09-23: a backlog drains at the link's pace (issue #91, protocol draft 0.33,
   section 3.1.2). A poll request may carry `more: true`, saying the plugin cut its batch
   short and holds envelopes behind it; the hub answers such a poll as soon as it has

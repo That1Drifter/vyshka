@@ -11,6 +11,9 @@ or plugin code, because a suite that did could not grade a third-party implement
 | `hub/` | Is this hub compliant? | Runnable: health, error model, enrollment, sessions, envelope exchange, manifests, context enumeration, actions, telemetry, state snapshots, player profiles, scoped tokens and audit, webhooks, key/value store, the installation ban list |
 | `plugin/` | Is this plugin compliant? | Runnable: a mock hub that drives a candidate through enrollment, sessions, manifest publish, action round-trips, forced re-delivery, an outage, a session change with unacked envelopes, a schema-invalid dispatch, a backlog larger than one poll, and, when the manifest declares it, the installation ban list; see `plugin/README.md` |
 
+What passing proves, clause by clause, is in [`COVERAGE.md`](COVERAGE.md): every MUST,
+MUST NOT, and REQUIRED in the spec, with the checks that grade it or the reason none does.
+
 ## Hub suite
 
 Point it at any running hub, with that hub's admin token:
@@ -101,6 +104,11 @@ name, the suite must fail, not follow along.
 
 Checks must fail loudly rather than skip. A check that cannot run is a failing check: silent
 skips are how a suite ends up green against a hub that implements nothing.
+
+A new check that grades a clause the table lists as ungraded or partial updates that row in
+`COVERAGE.md`, citing the check as `hub:<id>` only when the check fails against a hub that
+breaks the clause. A protocol edit that adds or rewords a clause must add or update its row;
+`go test ./conformance/coverage/` says which.
 
 ## Plugin suite
 
