@@ -10,19 +10,20 @@ plugin can break while passing. This table is how those clauses get found; the u
 rows are the backlog for new checks, not a defect list for the reference implementations,
 which grade much of it in their own tests.
 
-`conformance/coverage/coverage_test.go` keeps it honest. It fails when a clause in the spec
-has no row, when a row's excerpt no longer appears in its section, when a cited check no
-longer exists in either suite, or when the summary below disagrees with the rows. A protocol
-edit that adds, removes, or rewords a clause therefore fails CI until its row is brought
-along.
+`conformance/coverage/coverage_test.go` keeps it in step with the spec. It fails when a
+clause in the spec has no row, when a row's excerpt no longer appears in its section, when a
+cited check is no longer declared in either suite, or when the summary below disagrees with
+the rows. A protocol edit that adds or removes a clause, or rewords the words a row quotes,
+therefore fails CI until its row is brought along. A change to the rest of a clause's
+sentence goes unnoticed, so a protocol edit rereads the rows of every clause it touches.
 
 ## Summary
 
 | Status | Clauses |
 |---|---|
-| graded | 126 |
-| partial | 85 |
-| ungraded | 57 |
+| graded | 107 |
+| partial | 99 |
+| ungraded | 62 |
 | n/a | 16 |
 
 284 clauses in all.
@@ -62,7 +63,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 2.1 | "A request carrying a body MUST use `Content-Type: application/json`" | plugin | - | ungraded | The mock hub never inspects the plugin's Content-Type |
 | 2.1 | "a hub MUST reject anything else with `415`." | hub | - | ungraded | |
-| 2.1 | "Receivers MUST ignore unknown fields in any request or response body." | hub | hub:compat.unknownFields, hub:state.latestReplaces, plugin:dispatch.largeParams | partial | Hub: two request endpoints and one snapshot body; plugin: only an unknown params member, never an unknown response field |
+| 2.1 | "Receivers MUST ignore unknown fields in any request or response body." | either | hub:compat.unknownFields, hub:state.latestReplaces | partial | Hub: two request endpoints and one snapshot body. Plugin: never graded (a plugin that fails an action over an unknown params member still passes dispatch.largeParams) |
 | 2.1 | "clients MUST NOT parse them or depend on their length, alphabet, or any prefix." | plugin | plugin:enroll.exchange, plugin:session.start | partial | Mock tokens carry a non-reference prefix, so prefix parsing fails; length and alphabet are never varied |
 
 ### 2.2 Error model
@@ -77,14 +78,14 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 2.3 | "every response the hub would otherwise have sent with a 4xx or 5xx status it MUST instead send with status `200`, the `application/json` content type" | hub | hub:plugin.errors.inlineRefusals, hub:plugin.errors.inlineSupersededHold | partial | Enroll, session, poll, and one KV refusal; not payload_too_large, method_not_allowed, a revoked held poll, or the bans routes |
+| 2.3 | "every response the hub would otherwise have sent with a 4xx or 5xx status it MUST instead send with status `200`, the `application/json` content type" | hub | hub:plugin.errors.inlineRefusals, hub:plugin.errors.inlineSupersededHold, hub:plugin.bans.pull | partial | Enroll, session, poll, one KV refusal, and a bad cursor on the bans POST route; not payload_too_large, method_not_allowed, or a revoked held poll |
 | 2.3 | "`error.status` is REQUIRED in an inline error and carries the HTTP status the hub would have used." | hub | hub:plugin.errors.inlineRefusals, hub:plugin.errors.inlineSupersededHold | graded | |
 | 2.3 | "A value of `errors` other than `inline`, more than one occurrence of the parameter, or a query string the hub cannot parse MUST be refused with `400 bad_request` in ordinary form" | hub | hub:plugin.errors.unknownMode | graded | |
 | 2.3 | "A hub that implements inline errors MUST report `"inlineErrors": true` in the `features` object of the session response (section 5.3)." | hub | hub:plugin.errors.inlineSuccess | graded | |
 | 2.3 | "A success body from any Plugin API endpoint never carries a top-level `error` member; hubs MUST NOT add one." | hub | hub:plugin.errors.inlineSuccess | partial | Checked on enroll, session, and an idle poll only |
 | 2.3 | "A plugin that opted in MUST therefore treat a `200` whose body is a JSON object with an `error` member as the failure it describes" | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused, plugin:session.renumber | graded | |
 | 2.3 | "and MUST NOT treat it as success." | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused, plugin:session.renumber | graded | |
-| 2.3 | "In particular it MUST NOT apply an `ack` from such a body." | plugin | plugin:errors.garbledSuccess | partial | Only a non-JSON body is served; a JSON body with a malformed error member carrying an ack is never provoked |
+| 2.3 | "In particular it MUST NOT apply an `ack` from such a body." | plugin | - | ungraded | errors.garbledSuccess serves a non-JSON body that carries no ack, so applying an ack from an error body is never provoked |
 | 2.3 | "a plugin MUST keep whatever handling it has for an opaque error alongside its handling of inline ones." | plugin | plugin:errors.batchRefused | graded | Graded in the -legacy-errors run, where the mock ignores the opt-in |
 | 2.3 | "The plugin MUST take the envelope at `details.index` out of its outbox before retrying" | plugin | plugin:errors.batchRefused | partial | Enforced only when the refusal travelled inline; a plugin reading an ordinary 400 body may resend and pass |
 | 2.3 | "MUST NOT count it as delivered" | plugin | - | n/a | Internal outbox bookkeeping, not visible on the wire |
@@ -107,11 +108,11 @@ exercises an area without failing on the violation is not cited.
 | 3.1.1 | "A hub MUST honor any requested value in the range **5 s to 60 s** inclusive" | hub | hub:plugin.session.pollTimeout | graded | |
 | 3.1.1 | "and MUST return the effective value in the session response." | hub | hub:plugin.session.pollTimeout, hub:plugin.session.exchange | graded | |
 | 3.1.1 | "it MUST NOT silently apply a value the plugin did not request from inside the range." | hub | hub:plugin.session.pollTimeout | partial | In-range requests must come back exact, but out-of-range requests accept any in-range value, not only the nearest end |
-| 3.1.1 | "The hub MUST send a response no later than the effective `pollTimeout`." | hub | hub:plugin.poll.idleHold | graded | |
+| 3.1.1 | "The hub MUST send a response no later than the effective `pollTimeout`." | hub | hub:plugin.poll.idleHold | partial | idleHold allows about 2 s of slack past a 5 s pollTimeout, so a hub answering slightly late passes |
 | 3.1.1 | "A plugin MUST configure its HTTP client's response timeout to at least the effective `pollTimeout` plus 5 s" | plugin | - | ungraded | The mock hub holds a poll for 1 s, never the negotiated pollTimeout |
 | 3.1.1 | "A plugin that cannot configure a timeout that high MUST request a correspondingly lower `pollTimeout`." | plugin | - | ungraded | |
 | 3.1.1 | "Hubs and plugins MUST NOT rely on partial writes (chunked keepalives, early headers, whitespace padding) to keep a held request alive." | hub | - | ungraded | |
-| 3.1.1 | "so a plugin MUST simply re-poll rather than treat a timeout as a session error." | plugin | plugin:outage.bufferAndFlush | partial | Aborts are connection resets, not client timeouts, and a new session after them is accepted |
+| 3.1.1 | "so a plugin MUST simply re-poll rather than treat a timeout as a session error." | plugin | - | ungraded | No client timeout is ever induced: aborts are connection resets, and a new session after one is accepted |
 
 ### 3.1.2 The poll exchange
 
@@ -120,15 +121,15 @@ exercises an area without failing on the violation is not cited.
 | 3.1.2 | "A hub MUST answer with `200` and an empty `envelopes` array when the hold expires with nothing queued." | hub | hub:plugin.poll.idleHold | graded | |
 | 3.1.2 | "A hub MUST answer immediately, without holding, whenever any unacked envelope is already queued for the session." | hub | hub:plugin.poll.deliver | partial | Timed only for a never-delivered envelope; a delivered but unacked one is not timed |
 | 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | A late ack shows as a resend; ingesting a held poll's envelopes is not observed mid-hold |
-| 3.1.2 | "It MUST apply the `ack` first: the ack frees queued work" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous | graded | |
-| 3.1.2 | "A hub MUST validate the whole inbound batch before applying any of it." | hub | hub:plugin.poll.envelopeInvalid | partial | The refused poll carries no ack, so leaving the ack unapplied is not graded |
+| 3.1.2 | "It MUST apply the `ack` first: the ack frees queued work" | hub | - | ungraded | The ack-bearing polls in retransmit and ackContiguous carry no envelopes, so the order of ack and ingest is never observable |
+| 3.1.2 | "A hub MUST validate the whole inbound batch before applying any of it." | hub | - | ungraded | envelopeInvalid's good envelope sits above the gap its malformed ones leave, so an incremental hub also answers ack 0 |
 | 3.1.2 | "A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops being live (superseded, revoked, or expired)" | hub | hub:plugin.poll.supersededDuringHold, hub:plugin.poll.revokedDuringHold, hub:plugin.errors.inlineSupersededHold | partial | Session expiry during a hold is not provoked |
 | 3.1.2 | "A hub MUST accept at least 200 envelopes in one poll request." | hub | hub:plugin.poll.batchLimit | graded | |
 | 3.1.2 | "MUST reject anything over its cap with `bad_request` rather than truncate it silently" | hub | hub:plugin.poll.batchLimit | partial | Truncation is caught, but 413 or any code passes where the clause names bad_request |
 | 3.1.2 | "A hub MUST update the server record's `lastSeenAt` on every poll." | hub | hub:plugin.poll.lastSeen | graded | |
 | 3.1.2 | "It MUST NOT set it on a request that carries no envelopes" | plugin | plugin:poll.more | graded | The mock faults it on arrival, in whichever stage is running |
 | 3.1.2 | "and MUST NOT set it when the batch carries everything it holds." | plugin | plugin:poll.more | partial | Caught only when the follow-up poll then carries nothing; stands down when polls overlap |
-| 3.1.2 | "the next poll the plugin sends in that session MUST carry envelopes if any it left behind that batch are still unacked" | plugin | plugin:poll.more | graded | Stands down for a candidate with overlapping polls |
+| 3.1.2 | "the next poll the plugin sends in that session MUST carry envelopes if any it left behind that batch are still unacked" | plugin | plugin:poll.more | partial | Stands down (ungraded) for a candidate with overlapping polls |
 | 3.1.2 | "`details.index` is REQUIRED and names the envelope's position in the batch" | hub | hub:plugin.poll.envelopeInvalid, hub:plugin.errors.inlineRefusals | graded | |
 
 ### 3.2 Upgrade: WebSocket (optional)
@@ -171,7 +172,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 5 | "The enrollment token is burned: a second enroll attempt with it MUST fail." | hub | hub:plugin.enroll.singleUse | graded | |
 | 5 | "A hub MUST store only an irreversible digest of every credential it issues." | hub | - | n/a | Storage layout is not observable over the wire |
-| 5 | "Each secret is returned exactly once, in the response that mints it, and MUST NOT be retrievable afterwards through any API." | hub | hub:admin.servers.create, hub:admin.tokens.lifecycle | partial | Enrollment token and admin token secrets checked; server secret and session token never searched for |
+| 5 | "Each secret is returned exactly once, in the response that mints it, and MUST NOT be retrievable afterwards through any API." | hub | hub:admin.servers.create, hub:admin.tokens.lifecycle | partial | Enrollment token and admin token lists searched, but the token list is decoded into modeled fields first, so an extra secret member is never seen; server secret and session token never searched |
 
 ### 5.1 Server records (Admin API)
 
@@ -201,7 +202,7 @@ exercises an area without failing on the violation is not cited.
 | 5.3 | "`serverId` and `serverSecret` are REQUIRED." | plugin | plugin:session.start | graded | |
 | 5.3 | "A hub MUST report it when it holds one" | hub | hub:plugin.session.manifestRevision | graded | |
 | 5.3 | "and MUST omit it when it holds none" | hub | hub:plugin.session.manifestRevision | graded | |
-| 5.3 | "a plugin MUST tolerate the field's absence, since a hub predating this draft never sends it." | plugin | plugin:session.start | graded | The mock hub never sends manifestRevision |
+| 5.3 | "a plugin MUST tolerate the field's absence, since a hub predating this draft never sends it." | plugin | plugin:poll.repolls | graded | The mock hub never sends manifestRevision; a plugin that rejects the session response stops polling |
 | 5.3 | "A hub implementing section 13 MUST report it on every session response" | hub | hub:plugin.bans.pull | partial | One session response is checked |
 | 5.3 | "A plugin MUST tolerate its absence, which means the hub serves no list" | plugin | - | ungraded | The mock hub always sends bansRevision |
 | 5.3 | "A hub MUST support the current and previous major version (section 14)" | hub | - | ungraded | No check sends an explicit protocolVersion |
@@ -248,7 +249,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 6.2 | "For each custom context it declares, a plugin MUST answer a `context.enumerate` request (hub -> plugin) with a `context.entries` reply (plugin -> hub)" | plugin | plugin:context.enumerate | graded | At most five declared contexts are asked about |
+| 6.2 | "For each custom context it declares, a plugin MUST answer a `context.enumerate` request (hub -> plugin) with a `context.entries` reply (plugin -> hub)" | plugin | plugin:context.enumerate | partial | At most five declared contexts are asked about; a sixth goes unasked |
 | 6.2 | "`entries` is REQUIRED in the reply." | plugin | plugin:context.enumerate | graded | |
 | 6.2 | "A plugin MUST NOT treat such a request as a fault of the link." | plugin | plugin:context.enumerate | partial | Only the reply to an undeclared context is required; a plugin that answers and then drops its session passes |
 | 6.2 | "a hub that never sends `context.enumerate` is conformant, so a plugin MUST NOT wait for one" | plugin | - | ungraded | The harness always enumerates before dispatching, so a plugin waiting on it is never exposed |
@@ -258,7 +259,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 6.3 | "Hubs MUST accept undeclared custom events (storing them with a generic label)" | hub | hub:plugin.events.ingest | graded | |
+| 6.3 | "Hubs MUST accept undeclared custom events (storing them with a generic label)" | hub | hub:plugin.events.ingest | partial | Acceptance and storage graded; the generic label is not checked |
 
 ### 6.4 Validation and rejection
 
@@ -267,7 +268,7 @@ exercises an area without failing on the violation is not cited.
 | 6.4 | "A hub MUST validate a `manifest.publish` body before storing it," | hub | hub:plugin.manifest.invalid, hub:plugin.manifest.contextAnnotation, hub:plugin.manifest.kvNamespaceAnnotation, hub:plugin.manifest.capabilities, hub:action.dispatch.excluded | partial | Missing or duplicated action codes and the length limits are never sent |
 | 6.4 | "and MUST reject the whole manifest when any of its `params` or event `payload` schemas uses a keyword outside the section 6.1 subset" | hub | hub:plugin.manifest.invalid | partial | Only a `params` schema is tested, never an event `payload` schema |
 | 6.4 | "A hub MUST NOT fail the poll or end the session over a manifest it rejected" | hub | hub:plugin.manifest.invalid, hub:plugin.manifest.rejectStorm | graded | |
-| 6.4 | "a rejected manifest MUST NOT touch the stored one" | hub | hub:plugin.manifest.invalid, hub:plugin.manifest.contextAnnotation | graded | |
+| 6.4 | "a rejected manifest MUST NOT touch the stored one" | hub | hub:plugin.manifest.invalid, hub:plugin.manifest.contextAnnotation | partial | Only the stored revision is compared after a rejection, not the stored manifest body |
 | 6.4 | "The rejection MUST NOT be silent:" | hub | hub:plugin.manifest.invalid, hub:plugin.manifest.rejectStorm | graded | |
 | 6.4 | "the hub MUST queue a `manifest.reject` envelope (hub -> plugin) unless the server's outbound queue is at its bound (section 9.2)" | hub | hub:plugin.manifest.invalid | graded | |
 | 6.4 | "A hub that suppresses a notice under this cap MUST record the suppression where the operator can see it." | hub | - | n/a | Where it is recorded (a log) is unspecified and not on the wire |
@@ -327,12 +328,12 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 8.3 | "Player entries MUST carry `player`, the platform-qualified identity of section 8.2" | plugin | plugin:telemetry.wellFormed | graded | Hub enforcement of a missing `player` is graded by hub:state.rejectWhole |
-| 8.3 | "Vehicle and entity entries MUST carry `id`, a non-empty string stable for the lifetime of the thing it names" | plugin | plugin:telemetry.wellFormed | graded | Stability over time is not checked |
+| 8.3 | "Vehicle and entity entries MUST carry `id`, a non-empty string stable for the lifetime of the thing it names" | plugin | plugin:telemetry.wellFormed | partial | Shape and non-emptiness checked; stability over time is not |
 | 8.3 | "Its `world` field MUST be a JSON object, whole in the same sense as a list" | plugin | plugin:telemetry.wellFormed | graded | Hub refusal of a bad world is graded by hub:state.world |
 | 8.3 | "a hub MUST NOT reorder them by `capturedAt`, whose clock it does not own" | hub | hub:state.latestReplaces | graded | |
 | 8.3 | "the latest snapshot per type MUST survive every retention pass" | hub | hub:state.replayAfterPrune | partial | Only the depth trim is forced (and only at the runner's configured depth); the time window is not |
-| 8.3 | "a hub MUST deduplicate an accepted `state.*` envelope on its `id` (per server)" | hub | hub:state.retransmitDedup | graded | |
-| 8.3 | "The dedup record MUST outlive the snapshot's history row" | hub | hub:state.replayAfterPrune | graded | Needs -state-history-depth to match the hub's depth |
+| 8.3 | "a hub MUST deduplicate an accepted `state.*` envelope on its `id` (per server)" | hub | hub:state.retransmitDedup | partial | Only state.players on one server; per-server isolation and the other state families are not probed |
+| 8.3 | "The dedup record MUST outlive the snapshot's history row" | hub | hub:state.replayAfterPrune | partial | Needs -state-history-depth to match the hub's depth, and never confirms the history row was actually pruned before the replay |
 | 8.3 | "a hub MUST remember an accepted `state.*` `id` for at least that window counted from acceptance" | hub | hub:state.retransmitDedup, hub:state.replayAfterPrune | partial | Replays come seconds after acceptance; a memory shorter than the window but not instant passes |
 
 ### 8.5 Reading events (Admin API)
@@ -365,7 +366,7 @@ exercises an area without failing on the violation is not cited.
 | 9.1 | "a sender MUST ignore an ack below the one it has already recorded" | sender | hub:plugin.poll.ackContiguous | partial | Hub side only; the mock hub never reports a lower ack to a plugin |
 | 9.1 | "A receiver that answers several requests concurrently MUST derive each reported ack from committed state" | hub | - | ungraded | No check sends concurrent polls |
 | 9.1 | "**Within a session**, a sender MUST retransmit every envelope above the receiver's ack unchanged" | sender | hub:plugin.poll.retransmit, plugin:outage.bufferAndFlush | graded | |
-| 9.1 | "**Across a session change**, `seq` is the one field that MUST change." | sender | hub:plugin.poll.queueOutlivesSession, plugin:session.renumber | graded | |
+| 9.1 | "**Across a session change**, `seq` is the one field that MUST change." | sender | hub:plugin.poll.queueOutlivesSession, plugin:session.renumber | partial | Plugin side graded by session.renumber; the hub check compares id and seq only, with an envelope whose seq is 1 on both sessions |
 | 9.1 | "an envelope still unacked when a session ends MUST be renumbered into the new session's space, keeping its `id`, `type`, `ts` and `body`" | sender | hub:plugin.poll.queueOutlivesSession, plugin:session.renumber | partial | Plugin side compares every field; hub side compares only `id` and `seq` |
 
 ### 9.2 Hub -> plugin
@@ -373,8 +374,8 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 9.2 | "an envelope that is unacked when a session ends MUST be delivered on the next session" | hub | hub:plugin.poll.queueOutlivesSession | graded | |
-| 9.2 | "the plugin MUST keep a small LRU of executed action ids" | plugin | plugin:action.idDedup | graded | The LRU itself is internal; graded through its effect |
-| 9.2 | "and MUST NOT execute the same `actionId` twice." | plugin | plugin:action.idDedup, plugin:action.redeliveryDedup | graded | |
+| 9.2 | "the plugin MUST keep a small LRU of executed action ids" | plugin | plugin:action.idDedup | partial | Graded through action.result messages: a plugin that executes twice but suppresses the second result passes; the LRU itself is internal |
+| 9.2 | "and MUST NOT execute the same `actionId` twice." | plugin | plugin:action.idDedup, plugin:action.redeliveryDedup | partial | Both stages count action.result messages; a second execution with its result suppressed passes |
 | 9.2 | "A hub MUST bound its per-server queue (reference default 5 000 envelopes)" | hub | - | ungraded | No check fills a queue to its bound |
 | 9.2 | "and MUST refuse new work with `outbound_queue_full` when the bound is reached" | hub | - | ungraded | No check fills a queue to its bound |
 
@@ -409,11 +410,11 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 10.2 | "A hub MUST enforce scopes on every Admin API call." | hub | hub:admin.tokens.scopeEnforced, hub:state.guards, hub:kv.confinement, hub:webhooks.scope, hub:admin.players.notes, hub:admin.bans.scopes | partial | not every route is probed: server creation, enrollment tokens, credential revocation, and context entries are not |
 | 10.2 | "Where the scope needed depends on a value in the request, the check MUST run against that value" | hub | hub:admin.tokens.scopeEnforced, hub:admin.tokens.idempotencyKeyIsNotAnOracle, hub:kv.confinement | partial | GET of an action is never refused on its code alone to an unbound token |
-| 10.2 | "A route whose path names a server (`/api/v1/servers/{id}/...`) MUST refuse a bound token whose binding does not include that id, with `forbidden`" | hub | hub:admin.tokens.serverBinding | graded | |
+| 10.2 | "A route whose path names a server (`/api/v1/servers/{id}/...`) MUST refuse a bound token whose binding does not include that id, with `forbidden`" | hub | hub:admin.tokens.serverBinding | partial | serverBinding probes a fixed route list; context entries and other server routes are not in it |
 | 10.2 | "`GET /api/v1/actions/{actionId}` MUST refuse with `forbidden` when the action's server is outside the binding" | hub | hub:admin.tokens.serverBinding | graded | |
 | 10.2 | "`GET /api/v1/servers` MUST answer only the servers in the binding, never `forbidden`" | hub | hub:admin.tokens.serverBinding | graded | |
 | 10.2 | "The dispatch check MUST run **before** the manifest is consulted" | hub | hub:admin.tokens.scopeEnforced, hub:admin.audit.recordsMutations | graded | |
-| 10.2 | "A hub MUST therefore authorize the retry against **both** codes" | hub | hub:admin.tokens.idempotencyKeyIsNotAnOracle | graded | |
+| 10.2 | "A hub MUST therefore authorize the retry against **both** codes" | hub | hub:admin.tokens.idempotencyKeyIsNotAnOracle | partial | Allowed requested code with a forbidden stored code is probed; a forbidden requested code with an allowed stored code is not |
 | 10.2 | "Authorizing a read MUST NOT itself change state." | hub | - | ungraded | |
 | 10.2 | "Hubs that expire actions lazily on read (section 7) MUST establish the scope before applying that expiry" | hub | - | ungraded | |
 | 10.2 | "A hub MUST NOT mint a token carrying a scope its minter does not itself hold." | hub | hub:admin.tokens.scopeEnforced | partial | only a dispatch-scoped token minting `admin` is probed |
@@ -430,10 +431,10 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 10.4 | "mints a token: `scopes` is REQUIRED" | hub | hub:admin.tokens.grammarEnforced | partial | an empty list is probed; a mint with the member absent is not |
+| 10.4 | "mints a token: `scopes` is REQUIRED" | hub | - | ungraded | Every fixture carries scopes (an empty list is a different refusal); a mint with the member absent is never sent |
 | 10.4 | "MUST NOT be empty. `servers` is OPTIONAL and is the binding of section 10.1" | hub | hub:admin.tokens.grammarEnforced | graded | |
 | 10.4 | "A hub MUST validate it before minting: an id it does not know is `not_found`" | hub | hub:admin.tokens.serverBinding, hub:admin.bans.scopes | graded | |
-| 10.4 | "The `secret` is returned in this response and MUST NOT be retrievable afterwards" | hub | hub:admin.tokens.lifecycle | partial | only the token listing is searched; the audit record of the mint is not |
+| 10.4 | "The `secret` is returned in this response and MUST NOT be retrievable afterwards" | hub | hub:admin.tokens.lifecycle | partial | The token list is decoded into modeled fields before the search, so an extra secret member is never seen; the audit record of the mint is not searched |
 | 10.4 | "Revocation MUST take effect on the next request." | hub | hub:admin.tokens.lifecycle | graded | |
 | 10.4 | "The record itself MUST survive, so that the audit log's references to it keep resolving" | hub | hub:admin.tokens.lifecycle | graded | |
 | 10.4 | "revoking an already revoked token is idempotent and MUST NOT move the recorded revocation time" | hub | - | ungraded | |
@@ -472,7 +473,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 11.1 | "A refused batch stores nothing and therefore notifies nothing, and a hub MUST NOT privilege core events over custom events here" | hub | hub:webhooks.signedDelivery | partial | custom events are delivered; core events are never delivered alongside them for comparison |
 | 11.1 | "A hub MUST therefore deliver `audit.recorded` only to a webhook whose registration or latest edit was authorized" | hub | hub:webhooks.auditRecords | partial | catch-all and non-admin registration probed; a non-admin edit to `audit.*` is not |
-| 11.1 | "a hub MAY derive differently but MUST have classified the link as lost no later than four times the `pollTimeout` plus 30 s" | hub | hub:webhooks.linkTransitions | graded | |
+| 11.1 | "a hub MAY derive differently but MUST have classified the link as lost no later than four times the `pollTimeout` plus 30 s" | hub | hub:webhooks.linkTransitions | partial | linkTransitions waits up to 70 s for the notification, so the classification bound itself is not established |
 | 11.1 | "A hub MUST expose its current classification on the server record as `linkState`" | hub | hub:webhooks.linkTransitions | partial | only `up` is read; `down` after a loss and `unknown` are not |
 | 11.1 | "a hub MUST have classified a reachable server `up`, and an unreachable one `down`" | hub | hub:webhooks.linkTransitions | partial | the `up` bound is read from `linkState`; `down` is inferred from the notification only |
 
@@ -513,7 +514,7 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 11.5 | "A failed delivery MUST be retried with increasing delays" | hub | hub:webhooks.retryVisible | partial | one retry is required; the delays are never shown to increase |
-| 11.5 | "the first retry MUST be **scheduled** no more than 60 s after the failed attempt" | hub | hub:webhooks.retryVisible | graded | |
+| 11.5 | "the first retry MUST be **scheduled** no more than 60 s after the failed attempt" | hub | hub:webhooks.retryVisible | partial | retryVisible allows nextAttemptAt up to 70 s after the event, looser than 60 s after the failed attempt |
 | 11.5 | "When its schedule is exhausted, the delivery MUST be marked **dead** and never tried again" | hub | - | ungraded | |
 | 11.5 | "the delivery, its attempt count, and its last failure MUST be retained and readable through the deliveries page" | hub | - | ungraded | |
 | 11.5 | "A replay whose delivery has an attempt in flight at that moment MUST win" | hub | - | ungraded | |
@@ -536,7 +537,7 @@ exercises an area without failing on the violation is not cited.
 | 12.2 | "and the sum MUST stay inside that range; otherwise the answer is `conflict` and nothing changes" | hub | - | ungraded | |
 | 12.2 | "Concurrent incrs MUST each land exactly once" | hub | hub:kv.incrAtomic | graded | |
 | 12.2 | "A hub MUST serve both spellings." | hub | hub:kv.postSpellings, hub:kv.pluginWrite | graded | |
-| 12.2 | "A key whose expiry has passed MUST NOT appear, whether or not the hub has physically deleted it yet" | hub | hub:kv.listPrefix | graded | |
+| 12.2 | "A key whose expiry has passed MUST NOT appear, whether or not the hub has physically deleted it yet" | hub | hub:kv.listPrefix | partial | listPrefix tolerates the expired key until it disappears within 10 s, so a hub listing it briefly after expiry passes |
 | 12.2 | "clients MUST NOT parse one or derive one" | admin client | - | n/a | no suite plays an admin client |
 | 12.2 | "a hub MUST NOT return the same key on two pages of one walk nor skip one that was present and live when the walk began" | hub | hub:kv.listPaging | partial | only a walk over a namespace nobody writes during the walk |
 | 12.2 | "A cursor whose key has since been deleted or expired MUST still resume correctly" | hub | - | ungraded | |
@@ -559,7 +560,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 13.1 | "It MUST take a ban off the active list no later than 60 s after its `expiresAt`" | hub | hub:plugin.bans.expiry | graded | |
+| 13.1 | "It MUST take a ban off the active list no later than 60 s after its `expiresAt`" | hub | hub:plugin.bans.expiry | partial | The 65 s deadline starts after the first read past expiry, so removal slightly past 60 s passes |
 
 ### 13.2 Managing the list (Admin API)
 
@@ -572,7 +573,7 @@ exercises an area without failing on the violation is not cited.
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
 | 13.3 | "A hub MUST queue a `bans.changed` for every server whose stored manifest declares the `bans` capability" | hub | hub:plugin.bans.changed | partial | only a ban placed is probed; a lift and an expiry sweep are not |
-| 13.3 | "and MUST NOT queue one for a server whose manifest does not" | hub | hub:plugin.bans.changed | graded | |
+| 13.3 | "and MUST NOT queue one for a server whose manifest does not" | hub | hub:plugin.bans.changed | partial | The incapable server is checked after a ban is created only; lift and expiry are not followed by a poll |
 | 13.3 | "A hub MUST also queue one, carrying the current revision, when it accepts a manifest that declares the capability" | hub | - | ungraded | |
 | 13.3 | "the acceptance and any change of the list MUST be ordered" | hub | - | ungraded | |
 | 13.3 | "a hub MUST draw it from letters, digits, `-`, and `_` alone" | hub | hub:plugin.bans.pull | graded | |
@@ -582,7 +583,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 13.4 | "A plugin that declares the `bans` capability MUST:" | plugin | plugin:bans.sync | partial | walking, whole-revision application, and reporting are graded; persistence, own-clock expiry, platform filtering, and enforcement are not |
+| 13.4 | "A plugin that declares the `bans` capability MUST:" | plugin | plugin:bans.sync | partial | A complete walk before reporting, and the reported revision, are graded; persistence, own-clock expiry, platform filtering, and enforcement are not |
 | 13.4 | "It MUST NOT report a revision it has not applied" | plugin | plugin:bans.sync | partial | only evidence is every page having been served; application itself is unobservable |
 
 ### 14 Versioning and compatibility
