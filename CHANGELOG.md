@@ -54,8 +54,9 @@ arrived, since those entries were written for one stream.
   dispatcher's own fan-out of it has committed, with a receipt a minute old so the
   millisecond tie never arises: left alone, the dispatcher had already fanned it out
   before the webhook existed, so the old test passed with the registration boundary
-  removed. Each barrier waits for a delivery of its own type, so a forbidden delivery
-  cannot stand in for it.
+  removed. The signed-delivery and backfill barriers each wait for a delivery of their
+  own type, so a forbidden delivery cannot stand in for it; the pause test's barrier is
+  a twin webhook with a receiver of its own.
 
 ### [0.2.0] - 2026-09-23
 
