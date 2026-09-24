@@ -238,24 +238,24 @@ var stages = []Stage{
 		Section: "9.1",
 		Run: func(h *harness) error {
 			hub := h.hub
-			var before, executedBefore int
-			hub.view(func() {
-				before = hub.actions[actionRoundTrip].results
-				executedBefore = len(hub.actions[actionRoundTrip].executions)
-			})
+			var before int
+			hub.view(func() { before = hub.actions[actionRoundTrip].results })
 			if err := hub.redeliver(h.firstDispatch); err != nil {
 				return err
 			}
 			if err := h.awaitMorePolls(2, "after the forced re-delivery"); err != nil {
 				return err
 			}
-			var after, executedAfter int
+			// The witnesses are counted over the action's whole life, not from
+			// a baseline: the one for the first execution may arrive after its
+			// result, so only a second distinct one is a second execution.
+			var after, executed int
 			hub.view(func() {
 				after = hub.actions[actionRoundTrip].results
-				executedAfter = len(hub.actions[actionRoundTrip].executions)
+				executed = len(hub.actions[actionRoundTrip].executions)
 			})
-			if executedAfter != executedBefore {
-				return fmt.Errorf("the plugin reported %d new execution(s) of %s for a redelivered envelope; an envelope at or below the ack is a duplicate, acknowledged again and processed no further (section 9.1), and the same actionId is never executed twice (section 9.2)", executedAfter-executedBefore, actionRoundTrip)
+			if executed > 1 {
+				return fmt.Errorf("the plugin reported %d executions of %s once its dispatch was redelivered; an envelope at or below the ack is a duplicate, acknowledged again and processed no further (section 9.1), and the same actionId is never executed twice (section 9.2)", executed, actionRoundTrip)
 			}
 			if after != before {
 				return fmt.Errorf("the plugin sent %d new action.result envelope(s) for a redelivered envelope; an envelope at or below the ack is a duplicate, acknowledged again and processed no further (section 9.1)", after-before)
@@ -269,11 +269,8 @@ var stages = []Stage{
 		Section: "9.2",
 		Run: func(h *harness) error {
 			hub := h.hub
-			var before, executedBefore int
-			hub.view(func() {
-				before = hub.actions[actionRoundTrip].results
-				executedBefore = len(hub.actions[actionRoundTrip].executions)
-			})
+			var before int
+			hub.view(func() { before = hub.actions[actionRoundTrip].results })
 			duplicate := h.dispatch(actionRoundTrip)
 			err := hub.await(h.checkTimeout, "the plugin to ack the duplicate dispatch", func() bool {
 				return duplicate.acked
@@ -284,13 +281,16 @@ var stages = []Stage{
 			if err := h.awaitMorePolls(2, "after the duplicate actionId dispatch"); err != nil {
 				return err
 			}
-			var after, executedAfter int
+			// The witnesses are counted over the action's whole life, not from
+			// a baseline: the one for the first execution may arrive after its
+			// result, so only a second distinct one is a second execution.
+			var after, executed int
 			hub.view(func() {
 				after = hub.actions[actionRoundTrip].results
-				executedAfter = len(hub.actions[actionRoundTrip].executions)
+				executed = len(hub.actions[actionRoundTrip].executions)
 			})
-			if executedAfter != executedBefore {
-				return fmt.Errorf("the plugin reported another execution of %s when that actionId arrived in a fresh envelope; a plugin keeps an LRU of executed action ids and never executes the same actionId twice (section 9.2)", actionRoundTrip)
+			if executed > 1 {
+				return fmt.Errorf("the plugin reported %d executions of %s once that actionId arrived in a fresh envelope; a plugin keeps an LRU of executed action ids and never executes the same actionId twice (section 9.2)", executed, actionRoundTrip)
 			}
 			if after != before {
 				return fmt.Errorf("the plugin sent another action.result when actionId %s arrived in a fresh envelope; a plugin keeps an LRU of executed action ids and never executes the same actionId twice (section 9.2), and to a black-box grader a repeated result is indistinguishable from a repeated execution, so a recognized duplicate is acked and answered with silence", actionRoundTrip)

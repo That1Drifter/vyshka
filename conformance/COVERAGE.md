@@ -87,7 +87,7 @@ exercises an area without failing on the violation is not cited.
 | 2.3 | "A success body from any Plugin API endpoint never carries a top-level `error` member; hubs MUST NOT add one." | hub | hub:plugin.errors.inlineSuccess | partial | Checked on enroll, session, and an idle poll only |
 | 2.3 | "A plugin that opted in MUST therefore treat a `200` whose body is a JSON object with an `error` member as the failure it describes" | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused, plugin:session.renumber | graded | |
 | 2.3 | "and MUST NOT treat it as success." | plugin | plugin:errors.batchRefused, plugin:errors.credentialsRefused, plugin:session.renumber | graded | |
-| 2.3 | "In particular it MUST NOT apply an `ack` from such a body." | plugin | plugin:errors.garbledSuccess | partial | Provoked only for a candidate that opted in to inline errors, which meets a JSON body whose `error` is a string and whose `ack` covers the swallowed batch on its retry; a candidate that did not opt in, or the -legacy-errors run, meets only the non-JSON body, which carries no ack |
+| 2.3 | "In particular it MUST NOT apply an `ack` from such a body." | plugin | plugin:errors.garbledSuccess | partial | Provoked only for a candidate that opted in to inline errors, which meets a JSON body whose `error` is a string and whose `ack` covers the swallowed batch on its retry; a candidate that did not opt in, or the -legacy-errors run, meets only the non-JSON body, which carries no ack; with more than one poll in flight the stage is ungraded, since a poll already in flight may have delivered the batch the ack covers |
 | 2.3 | "a plugin MUST keep whatever handling it has for an opaque error alongside its handling of inline ones." | plugin | plugin:errors.batchRefused | graded | Graded in the -legacy-errors run, where the mock ignores the opt-in |
 | 2.3 | "The plugin MUST take the envelope at `details.index` out of its outbox before retrying" | plugin | plugin:errors.batchRefused | partial | Enforced only when the refusal travelled inline and polls are sequential; a plugin reading an ordinary 400 body, or overlapping polls, may resend and pass |
 | 2.3 | "MUST NOT count it as delivered" | plugin | - | n/a | Internal outbox bookkeeping, not visible on the wire |
@@ -174,7 +174,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 5 | "The enrollment token is burned: a second enroll attempt with it MUST fail." | hub | hub:plugin.enroll.singleUse | graded | |
 | 5 | "A hub MUST store only an irreversible digest of every credential it issues." | hub | - | n/a | Storage layout is not observable over the wire |
-| 5 | "Each secret is returned exactly once, in the response that mints it, and MUST NOT be retrievable afterwards through any API." | hub | hub:admin.servers.create, hub:admin.tokens.lifecycle | partial | Enrollment token and admin token lists searched, the token list as sent; server secret and session token never searched |
+| 5 | "Each secret is returned exactly once, in the response that mints it, and MUST NOT be retrievable afterwards through any API." | hub | hub:admin.servers.create, hub:admin.tokens.lifecycle | partial | Enrollment token and admin token lists searched, the token list decoded whole, so unmodeled members and JSON escapes are seen; server secret and session token never searched |
 
 ### 5.1 Server records (Admin API)
 
@@ -436,7 +436,7 @@ exercises an area without failing on the violation is not cited.
 | 10.4 | "mints a token: `scopes` is REQUIRED" | hub | - | ungraded | Every fixture carries scopes (an empty list is a different refusal); a mint with the member absent is never sent |
 | 10.4 | "MUST NOT be empty. `servers` is OPTIONAL and is the binding of section 10.1" | hub | hub:admin.tokens.grammarEnforced | graded | |
 | 10.4 | "A hub MUST validate it before minting: an id it does not know is `not_found`" | hub | hub:admin.tokens.serverBinding, hub:admin.bans.scopes | graded | |
-| 10.4 | "The `secret` is returned in this response and MUST NOT be retrievable afterwards" | hub | hub:admin.tokens.lifecycle | partial | The token list is searched as sent, before and after revocation; the audit record of the mint is not searched |
+| 10.4 | "The `secret` is returned in this response and MUST NOT be retrievable afterwards" | hub | hub:admin.tokens.lifecycle | partial | The token list is searched decoded whole, unmodeled members and JSON escapes included, before and after revocation; the audit record of the mint is not searched |
 | 10.4 | "Revocation MUST take effect on the next request." | hub | hub:admin.tokens.lifecycle | graded | |
 | 10.4 | "The record itself MUST survive, so that the audit log's references to it keep resolving" | hub | hub:admin.tokens.lifecycle | graded | |
 | 10.4 | "revoking an already revoked token is idempotent and MUST NOT move the recorded revocation time" | hub | - | ungraded | |

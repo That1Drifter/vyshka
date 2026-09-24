@@ -421,6 +421,9 @@ var errorStages = []Stage{
 				return fmt.Errorf("the plugin re-enrolled over a malformed 200")
 			}
 			if hub.overlappingPolls.Load() != overlapsBefore {
+				if !final.AckAt.IsZero() {
+					return ungraded{"the candidate had more than one poll in flight during this stage, so neither the pause before its retry nor whether it applied the ack of the malformed answer could be graded: a poll already in flight may have delivered the batch that ack covered (section 3.1 asks for one poll at a time); everything else passed"}
+				}
 				return ungraded{"the candidate had more than one poll in flight during this stage, so the pause before its retry could not be graded (section 3.1 asks for one poll at a time); everything else passed"}
 			}
 			if inlineExpected && final.AckAt.IsZero() {

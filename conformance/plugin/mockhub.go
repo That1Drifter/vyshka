@@ -1600,25 +1600,32 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 // recordWitnessesLocked counts the execution witnesses an event.batch
 // carries against the action each names.
 func (h *mockHub) recordWitnessesLocked(envelope *inboundEnvelope) {
+	// Each event's data is decoded only once its type names a witness: data
+	// is any object the candidate likes, and one event whose data does not fit
+	// the witness shape must not hide the witnesses beside it.
 	var body struct {
 		Events []struct {
-			T    string `json:"t"`
-			Data struct {
-				ActionID string `json:"actionId"`
-			} `json:"data"`
+			T    string          `json:"t"`
+			Data json.RawMessage `json:"data"`
 		} `json:"events"`
 	}
 	if json.Unmarshal([]byte(envelope.Body), &body) != nil {
 		return
 	}
 	for index, event := range body.Events {
-		if event.T != executionWitnessType || event.Data.ActionID == "" {
+		if event.T != executionWitnessType {
 			continue
 		}
-		track := h.actions[event.Data.ActionID]
+		var data struct {
+			ActionID string `json:"actionId"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || data.ActionID == "" {
+			continue
+		}
+		track := h.actions[data.ActionID]
 		if track == nil {
 			track = &actionTrack{}
-			h.actions[event.Data.ActionID] = track
+			h.actions[data.ActionID] = track
 		}
 		if track.executions == nil {
 			track.executions = map[string]bool{}

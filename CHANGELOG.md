@@ -80,17 +80,19 @@ arrived, since those entries were written for one stream.
   instead of booting a whole hub.
 - 2026-09-24: the four conformance checks the coverage audit found unable to see the
   violation they name now fail on it (issue #134, the check bugs; the timing and
-  narrow-probe items stay open there). `admin.tokens.lifecycle` searches the token list
-  as the hub sent it, before and after revocation, so a secret in a member the suite does
-  not model is found. `plugin.poll.envelopeInvalid` sends its valid envelope first, at
-  seq 1 after the refusals left nothing applied, so a hub applying a batch envelope by
-  envelope answers ack 1 instead of hiding behind a gap, and then sends it alone to show
-  the 0 was the refusal. The plugin suite's `errors.garbledSuccess` meets a candidate that
+  narrow-probe items stay open there). `admin.tokens.lifecycle` searches the whole token
+  list decoded, before and after revocation, so a secret in a member the suite does not
+  model, or written with JSON escapes, is found. `plugin.poll.envelopeInvalid` sends its
+  valid envelope first, at seq 1 after the refusals left nothing applied, so a hub
+  applying a batch envelope by envelope answers ack 1 instead of hiding behind a gap; the
+  envelope is an `event.batch`, so the event feed also shows a hub that applied its effect
+  and held back only the ack. It is then sent alone to show the refusal was the batch's. The plugin suite's `errors.garbledSuccess` meets a candidate that
   asked for inline errors with a second malformed `200` on its retry, a JSON object whose
   `error` is a string and whose `ack` covers the swallowed batch, which the plugin must
   not apply. `action.idDedup` and `action.redeliveryDedup` also count executions through
   an execution witness, a `conformance.executed` event per execution that the reference
-  driver now emits; a harness convention, so a candidate without it is graded on its
+  driver now emits, failing on a second distinct witness at any point in the action's
+  life; a harness convention, so a candidate without it is graded on its
   results as before. Each was shown failing against a hub or driver broken the way its
   `COVERAGE.md` row described. The whole-batch validation clause of section 3.1.2 moved
   from ungraded to graded, the section 2.3 ack clause from ungraded to partial, and the

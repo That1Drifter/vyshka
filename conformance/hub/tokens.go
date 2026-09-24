@@ -194,13 +194,15 @@ func syntheticServerIDs(n int) []string {
 }
 
 func (e Env) listTokens(ctx context.Context) ([]tokenRecord, error) {
-	records, _, err := e.listTokensRaw(ctx)
+	records, _, err := e.listTokensWhole(ctx)
 	return records, err
 }
 
-// listTokensRaw is listTokens that also returns the response body as the hub
-// sent it, for searches that must see members tokenRecord does not model.
-func (e Env) listTokensRaw(ctx context.Context) ([]tokenRecord, []byte, error) {
+// listTokensWhole is listTokens that also returns the whole response body
+// decoded as generic JSON, for searches that must see members tokenRecord
+// does not model. Searching the decoded value rather than the bytes as sent
+// also sees a string the hub wrote with JSON escapes.
+func (e Env) listTokensWhole(ctx context.Context) ([]tokenRecord, any, error) {
 	const path = "/api/v1/tokens"
 	resp, body, err := e.do(ctx, http.MethodGet, path, e.AdminToken, nil)
 	if err != nil {
@@ -216,7 +218,11 @@ func (e Env) listTokensRaw(ctx context.Context) ([]tokenRecord, []byte, error) {
 	if err := json.Unmarshal(body, &listed); err != nil {
 		return nil, nil, fmt.Errorf("GET %s: decode body %q: %w", path, truncate(body), err)
 	}
-	return listed.Tokens, body, nil
+	var whole any
+	if err := json.Unmarshal(body, &whole); err != nil {
+		return nil, nil, fmt.Errorf("GET %s: decode body %q: %w", path, truncate(body), err)
+	}
+	return listed.Tokens, whole, nil
 }
 
 type auditRecord struct {
