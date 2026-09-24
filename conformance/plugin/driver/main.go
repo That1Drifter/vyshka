@@ -753,6 +753,13 @@ func (d *driver) handle(delivered envelope) {
 		}
 		d.markExecuted(body.ActionID)
 		d.send("action.ack", map[string]any{"actionId": body.ActionID})
+		// Each execution is witnessed with the harness's execution event, so
+		// the dedup stages can see an execution and not only its result.
+		d.send("event.batch", map[string]any{"events": []map[string]any{{
+			"t":    "conformance.executed",
+			"ts":   time.Now().UTC().Format(time.RFC3339),
+			"data": map[string]any{"actionId": body.ActionID},
+		}}})
 
 		var params map[string]any
 		if err := json.Unmarshal(body.Params, &params); err != nil || params == nil {

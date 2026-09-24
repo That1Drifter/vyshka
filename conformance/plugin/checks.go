@@ -246,8 +246,17 @@ var stages = []Stage{
 			if err := h.awaitMorePolls(2, "after the forced re-delivery"); err != nil {
 				return err
 			}
-			var after int
-			hub.view(func() { after = hub.actions[actionRoundTrip].results })
+			// The witnesses are counted over the action's whole life, not from
+			// a baseline: the one for the first execution may arrive after its
+			// result, so only a second distinct one is a second execution.
+			var after, executed int
+			hub.view(func() {
+				after = hub.actions[actionRoundTrip].results
+				executed = len(hub.actions[actionRoundTrip].executions)
+			})
+			if executed > 1 {
+				return fmt.Errorf("the plugin reported %d executions of %s once its dispatch was redelivered; an envelope at or below the ack is a duplicate, acknowledged again and processed no further (section 9.1), and the same actionId is never executed twice (section 9.2)", executed, actionRoundTrip)
+			}
 			if after != before {
 				return fmt.Errorf("the plugin sent %d new action.result envelope(s) for a redelivered envelope; an envelope at or below the ack is a duplicate, acknowledged again and processed no further (section 9.1)", after-before)
 			}
@@ -272,8 +281,17 @@ var stages = []Stage{
 			if err := h.awaitMorePolls(2, "after the duplicate actionId dispatch"); err != nil {
 				return err
 			}
-			var after int
-			hub.view(func() { after = hub.actions[actionRoundTrip].results })
+			// The witnesses are counted over the action's whole life, not from
+			// a baseline: the one for the first execution may arrive after its
+			// result, so only a second distinct one is a second execution.
+			var after, executed int
+			hub.view(func() {
+				after = hub.actions[actionRoundTrip].results
+				executed = len(hub.actions[actionRoundTrip].executions)
+			})
+			if executed > 1 {
+				return fmt.Errorf("the plugin reported %d executions of %s once that actionId arrived in a fresh envelope; a plugin keeps an LRU of executed action ids and never executes the same actionId twice (section 9.2)", executed, actionRoundTrip)
+			}
 			if after != before {
 				return fmt.Errorf("the plugin sent another action.result when actionId %s arrived in a fresh envelope; a plugin keeps an LRU of executed action ids and never executes the same actionId twice (section 9.2), and to a black-box grader a repeated result is indistinguishable from a repeated execution, so a recognized duplicate is acked and answered with silence", actionRoundTrip)
 			}

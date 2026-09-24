@@ -80,6 +80,7 @@ func (h *mockHub) armGarble() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.garbleArmed = true
+	h.garbleAckArmed = false
 	h.garbled = nil
 }
 
@@ -342,7 +343,7 @@ var errorStages = []Stage{
 	},
 	{
 		ID:      "errors.garbledSuccess",
-		Title:   "A 200 that is not JSON changes no session or delivery state",
+		Title:   "A malformed 200 changes no session or delivery state, and its ack is not applied",
 		Section: "2.3",
 		Run: func(h *harness) error {
 			hub := h.hub
@@ -355,6 +356,10 @@ var errorStages = []Stage{
 			// The garbled answer swallows a batch the plugin is waiting on an
 			// ack for, so the stage can see both that the plugin polls again
 			// and that it still delivers what the garbage did not acknowledge.
+			// A candidate that opted in to inline errors then meets a second
+			// malformed answer on its retry, a JSON object whose error member
+			// is not an object with a code, carrying an ack over the whole
+			// batch: applying it would drop envelopes the hub never took.
 			overlapsBefore := hub.overlappingPolls.Load()
 			hub.armGarble()
 			h.dispatch(actionGarbled)
@@ -373,20 +378,36 @@ var errorStages = []Stage{
 			if err != nil {
 				return fmt.Errorf("%w; a 200 whose body is not a JSON object is retried after backoff on the same session (section 2.3)", err)
 			}
-			err = hub.await(h.checkTimeout, "the batch the garbled answer swallowed to be sent again", func() bool {
-				return hub.allAcceptedAfterLocked(garbled.IDs, garbled.GenAt)
+			err = hub.await(h.checkTimeout, "the batch the garbled answers swallowed to be sent again", func() bool {
+				return hub.allAcceptedAfterLocked(hub.garbled.IDs, garbled.GenAt)
 			})
 			if err != nil {
+				var ackAt time.Time
+				var ackServed int64
+				hub.view(func() { ackAt, ackServed = hub.garbled.AckAt, hub.garbled.AckServed })
+				if !ackAt.IsZero() {
+					return fmt.Errorf("%w; the second malformed answer carried ack %d, which a plugin MUST NOT apply from such a body, so it must still deliver every envelope the batch carried (sections 2.3, 9.3)", err, ackServed)
+				}
 				return fmt.Errorf("%w; the garbled answer acked nothing, so the plugin must still deliver every envelope it carried (section 9.3)", err)
 			}
 			// The pause is measured to the retry itself, the poll that carried
 			// a swallowed envelope again, and only for a candidate that keeps
 			// one poll in flight: with overlapping polls, one carrying the
 			// same envelope may already have been on its way.
-			var retryAt time.Time
-			hub.view(func() { retryAt = hub.garbled.RetryAt })
-			if pause := retryAt.Sub(garbled.At); pause < minBackoff && hub.overlappingPolls.Load() == overlapsBefore {
+			var final garbleRecord
+			var inlineExpected bool
+			hub.view(func() {
+				final = *hub.garbled
+				inlineExpected = hub.inlineSeen && !hub.legacyErrors
+			})
+			sequential := hub.overlappingPolls.Load() == overlapsBefore
+			if pause := final.RetryAt.Sub(garbled.At); pause < minBackoff && sequential {
 				return fmt.Errorf("the plugin sent the swallowed batch again %s after a malformed 200; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
+			}
+			if !final.AckAt.IsZero() {
+				if pause := final.AckRetryAt.Sub(final.AckAt); pause < minBackoff && sequential {
+					return fmt.Errorf("the plugin sent the swallowed batch again %s after a 200 whose error member was not an object with a code; a malformed response is retried after backoff, at least 1 s (section 2.3)", pause)
+				}
 			}
 			var ordinalAfter, enrollAfter int
 			hub.view(func() {
@@ -400,7 +421,13 @@ var errorStages = []Stage{
 				return fmt.Errorf("the plugin re-enrolled over a malformed 200")
 			}
 			if hub.overlappingPolls.Load() != overlapsBefore {
+				if !final.AckAt.IsZero() {
+					return ungraded{"the candidate had more than one poll in flight during this stage, so neither the pause before its retry nor whether it applied the ack of the malformed answer could be graded: a poll already in flight may have delivered the batch that ack covered (section 3.1 asks for one poll at a time); everything else passed"}
+				}
 				return ungraded{"the candidate had more than one poll in flight during this stage, so the pause before its retry could not be graded (section 3.1 asks for one poll at a time); everything else passed"}
+			}
+			if inlineExpected && final.AckAt.IsZero() {
+				return ungraded{"the candidate asked for inline errors but its retry of the swallowed batch did not, so the malformed answer carrying an ack was never served and whether the plugin applies such an ack was not graded; everything else passed"}
 			}
 			return nil
 		},

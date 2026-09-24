@@ -142,7 +142,12 @@ type mockHub struct {
 	//
 	// garbleArmed answers the next poll that carries envelopes with a 200
 	// whose body is not JSON, without ingesting them, recording in garbled
-	// what the plugin will have to send again.
+	// what the plugin will have to send again. When that poll opted in to
+	// inline errors, garbleAckArmed then answers the poll carrying them again
+	// with a JSON object whose error member is a string, not an object with a
+	// code (malformed, section 2.3), and whose ack covers the whole batch: a
+	// plugin that applies an ack from such a body drops envelopes the hub
+	// never took and never sends them again.
 	rejectArmed     bool
 	rejectRemaining int
 	rejected        *batchRejection
@@ -179,9 +184,10 @@ type mockHub struct {
 	refusedSessions     int
 	// sessionStarts is when each session ordinal was issued, so a stage can
 	// measure the pause between a refusal and a replacement session.
-	sessionStarts map[int]time.Time
-	garbleArmed   bool
-	garbled       *garbleRecord
+	sessionStarts  map[int]time.Time
+	garbleArmed    bool
+	garbleAckArmed bool
+	garbled        *garbleRecord
 
 	// The installation ban list (spec section 13) the bans stage walks the
 	// candidate through; see bans.go.
@@ -273,6 +279,13 @@ type garbleRecord struct {
 	// arrived, so the stage can grade the pause before the retry itself
 	// rather than before some poll the plugin already had in flight.
 	RetryAt time.Time
+	// AckAt is when that retry was answered with the malformed body carrying
+	// an ack, and AckServed the ack it carried; zero when none was served
+	// (the candidate did not opt in to inline errors). AckRetryAt is when the
+	// swallowed envelopes arrived once more after it.
+	AckAt      time.Time
+	AckServed  int64
+	AckRetryAt time.Time
 }
 
 // batchField is the framing of one envelope in a batch as the provocations
@@ -383,7 +396,20 @@ type manifestInfo struct {
 type actionTrack struct {
 	acks    int
 	results int
+	// executions holds the execution witnesses (executionWitnessType)
+	// naming this action, one per event, keyed by the envelope id and the
+	// event's index in its batch so a retransmitted batch is not a second
+	// execution.
+	executions map[string]bool
 }
+
+// executionWitnessType is the event a candidate may emit each time it
+// executes an action, carrying the actionId in its data. It is a convention
+// of this harness, not of the protocol: a black-box grader cannot see a game
+// effect, so a candidate that wants its execution graded, and not only its
+// action.result messages, reports each execution this way. The reference
+// driver does.
+const executionWitnessType = "conformance.executed"
 
 type renumberExpectation struct {
 	oldSeq  int64
@@ -1090,6 +1116,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			}
 			h.rememberContentLocked(ids[firstFresh:], 0)
 			h.garbled = record
+			h.garbleAckArmed = inline
 			h.signalLocked()
 			h.mu.Unlock()
 			w.Header().Set("Content-Type", "text/html")
@@ -1097,20 +1124,40 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
 			return
 		}
-	}
-
-	if h.garbled != nil && h.garbled.RetryAt.IsZero() && len(request.Envelopes) > 0 {
-		// The retry is the poll that carries a swallowed envelope again, not
-		// whichever poll the plugin already had in flight.
-		ids := batchIDs(request.Envelopes)
-	retry:
-		for _, one := range ids {
-			for _, swallowed := range h.garbled.IDs {
-				if one.ID == swallowed {
-					h.garbled.RetryAt = time.Now()
-					break retry
+		if h.garbleAckArmed && inline && firstFresh >= 0 && h.garbled != nil && carriesAny(ids, h.garbled.IDs) {
+			h.garbleAckArmed = false
+			now := time.Now()
+			h.garbled.RetryAt = now
+			h.garbled.AckAt = now
+			h.garbled.AckServed = ids[len(ids)-1].Seq
+			// Whatever joined the batch since the first answer is swallowed
+			// too and owed again.
+			for _, one := range ids[firstFresh:] {
+				if !carriesAny([]batchField{one}, h.garbled.IDs) {
+					h.garbled.IDs = append(h.garbled.IDs, one.ID)
 				}
 			}
+			h.rememberContentLocked(ids[firstFresh:], 0)
+			body := map[string]any{
+				"error":              "this harness sends an error member that is not an object with a code; the body is malformed and its ack must not be applied",
+				"envelopes":          []any{},
+				"ack":                h.garbled.AckServed,
+				"pollTimeoutSeconds": h.pollTimeoutSeconds,
+			}
+			h.signalLocked()
+			h.mu.Unlock()
+			writeJSONBody(w, http.StatusOK, body)
+			return
+		}
+	}
+
+	if h.garbled != nil && len(request.Envelopes) > 0 && carriesAny(batchIDs(request.Envelopes), h.garbled.IDs) {
+		// The retry is the poll that carries a swallowed envelope again, not
+		// whichever poll the plugin already had in flight.
+		if h.garbled.RetryAt.IsZero() {
+			h.garbled.RetryAt = time.Now()
+		} else if !h.garbled.AckAt.IsZero() && h.garbled.AckRetryAt.IsZero() {
+			h.garbled.AckRetryAt = time.Now()
 		}
 	}
 	h.pollsThisSession++
@@ -1393,6 +1440,18 @@ func trace(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "mock: "+format+"\n", args...)
 }
 
+// carriesAny reports whether a batch carries any of the given ids.
+func carriesAny(batch []batchField, ids []string) bool {
+	for _, one := range batch {
+		for _, id := range ids {
+			if one.ID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // rememberContentLocked snapshots fresh envelopes a provocation is about to
 // refuse or swallow, so their return can be checked for changes. shift is
 // how far down their seq may legally move within the session.
@@ -1527,6 +1586,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 	case "event.batch":
 		h.telemetry.batches++
 		h.telemetry.events += h.validateEventBatchLocked(envelope)
+		h.recordWitnessesLocked(envelope)
 
 	case "state.players", "state.vehicles", "state.entities", "state.world":
 		h.telemetry.snapshots++
@@ -1534,6 +1594,43 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 
 	case "bans.applied":
 		h.interpretBansAppliedLocked(envelope)
+	}
+}
+
+// recordWitnessesLocked counts the execution witnesses an event.batch
+// carries against the action each names.
+func (h *mockHub) recordWitnessesLocked(envelope *inboundEnvelope) {
+	// Each event's data is decoded only once its type names a witness: data
+	// is any object the candidate likes, and one event whose data does not fit
+	// the witness shape must not hide the witnesses beside it.
+	var body struct {
+		Events []struct {
+			T    string          `json:"t"`
+			Data json.RawMessage `json:"data"`
+		} `json:"events"`
+	}
+	if json.Unmarshal([]byte(envelope.Body), &body) != nil {
+		return
+	}
+	for index, event := range body.Events {
+		if event.T != executionWitnessType {
+			continue
+		}
+		var data struct {
+			ActionID string `json:"actionId"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || data.ActionID == "" {
+			continue
+		}
+		track := h.actions[data.ActionID]
+		if track == nil {
+			track = &actionTrack{}
+			h.actions[data.ActionID] = track
+		}
+		if track.executions == nil {
+			track.executions = map[string]bool{}
+		}
+		track.executions[envelope.ID+"#"+strconv.Itoa(index)] = true
 	}
 }
 
