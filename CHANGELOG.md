@@ -50,9 +50,12 @@ arrived, since those entries were written for one stream.
   fans an earlier event out no later than the pass that fans out a later one, and runs
   its passes one at a time. The three tests took about 8 s of fixed sleeps and now run in
   under half a second, and each fails with the rule it guards broken. The backfill test
-  also hands its history event back to the outbox after registering: left alone, the
-  dispatcher had already fanned it out before the webhook existed, so the old test passed
-  with the registration boundary removed.
+  also hands its history event back to the outbox after registering, once the
+  dispatcher's own fan-out of it has committed, with a receipt a minute old so the
+  millisecond tie never arises: left alone, the dispatcher had already fanned it out
+  before the webhook existed, so the old test passed with the registration boundary
+  removed. Each barrier waits for a delivery of its own type, so a forbidden delivery
+  cannot stand in for it.
 
 ### [0.2.0] - 2026-09-23
 

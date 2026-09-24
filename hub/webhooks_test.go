@@ -93,6 +93,26 @@ func (tr *testReceiver) awaitReceived(t *testing.T, n int, patience time.Duratio
 	t.Fatalf("receiver saw %d deliveries, want at least %d", tr.count(), n)
 }
 
+// awaitType waits for the receiver to have accepted a generic-json delivery of
+// one notification type, for a barrier that a delivery of anything else must
+// not satisfy.
+func (tr *testReceiver) awaitType(t *testing.T, notificationType string, patience time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(patience)
+	for time.Now().Before(deadline) {
+		for i := range tr.count() {
+			var payload struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(tr.get(i).Body, &payload) == nil && payload.Type == notificationType {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("receiver saw no %s delivery among %d", notificationType, tr.count())
+}
+
 // registerWebhook registers one webhook and returns its id and secret.
 func registerWebhook(t *testing.T, server *hub.Server, body map[string]any) (string, string) {
 	t.Helper()
@@ -321,12 +341,14 @@ func TestSignedDeliveryEndToEnd(t *testing.T) {
 	}
 
 	// A non-matching type must not fire. The proof is by ordering, not by a
-	// settle window: the non-matching event is fanned out no later than the
-	// pass that fans out the matching one sent after it, so once that one's
-	// delivery arrives, the record already holds whatever the first became.
+	// settle window: one fan-out read takes every unnotified event up to its
+	// batch bound, far above this test's handful, so the non-matching event is
+	// fanned out no later than the pass that fans out the matching one sent
+	// after it, and once that one arrives the record already holds whatever
+	// the first became.
 	sendEvent(t, server, serverID, session.SessionToken, "example-mod.raid.start", 2)
 	sendEvent(t, server, serverID, session.SessionToken, "core.player.connect", 3)
-	receiver.awaitReceived(t, 2, 10*time.Second)
+	receiver.awaitType(t, "core.player.connect", 10*time.Second)
 	deliveries := webhookDeliveries(t, server, webhookID)
 	if len(deliveries) != 2 {
 		t.Fatalf("webhook holds %d deliveries after a non-matching and a matching event, want 2: %+v", len(deliveries), deliveries)
@@ -478,22 +500,41 @@ func TestRegistrationIsNotABackfill(t *testing.T) {
 	created, session := enrolledSession(t, server, "webhook-boundary")
 	serverID := created.Server.ID
 
-	// The event lands first, the webhook second.
+	// The event lands first, the webhook second. Left alone, the dispatcher
+	// fans the event out before the webhook exists, and the boundary is never
+	// asked anything; so once that fan-out has committed (its flag is set, and
+	// the one dispatcher runs its passes one at a time, so no pass still holds
+	// the event), the event is handed back to the outbox with a receipt a
+	// minute old. That is the backlog the boundary is for: a migration, or a
+	// pass that had not reached the event yet, leaves history unnotified at
+	// registration. The older receipt keeps the test off the millisecond tie,
+	// which the boundary deliberately resolves toward delivery.
 	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 1)
-	webhookID, _ := registerWebhook(t, server, map[string]any{
-		"url": receiver.server.URL, "events": []string{"core.player.*"},
-	})
-
-	// Left alone, the dispatcher fans the event out before the webhook exists,
-	// and the boundary is never asked anything. Handing the event back to the
-	// outbox is the backlog the boundary is for: a migration, or a pass that
-	// had not reached it yet, leaves history unnotified at registration.
 	side, err := store.Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open a second handle on the hub's database: %v", err)
 	}
 	defer side.Close()
-	rearmed, err := side.DB().Exec(`UPDATE events SET notified = 0 WHERE server_id = ?`, serverID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var notified int
+		if err := side.DB().QueryRow(`SELECT notified FROM events WHERE server_id = ?`, serverID).Scan(&notified); err != nil {
+			t.Fatalf("read the event's outbox flag: %v", err)
+		}
+		if notified != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the dispatcher never fanned the event out")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	webhookID, _ := registerWebhook(t, server, map[string]any{
+		"url": receiver.server.URL, "events": []string{"core.player.*"},
+	})
+	landedBefore := time.Now().UTC().Add(-time.Minute).Format("2006-01-02T15:04:05.000Z")
+	rearmed, err := side.DB().Exec(`UPDATE events SET notified = 0, received_at = ? WHERE server_id = ?`,
+		landedBefore, serverID)
 	if err != nil {
 		t.Fatalf("hand the event back to the outbox: %v", err)
 	}
@@ -503,12 +544,14 @@ func TestRegistrationIsNotABackfill(t *testing.T) {
 
 	// Fresh traffic after registration flows normally, and is also the
 	// barrier for the negative: the history event is fanned out no later than
-	// the pass that fans out this one, so once this delivery arrives the
-	// record is final for both.
-	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 2)
-	receiver.awaitReceived(t, 1, 10*time.Second)
-	if deliveries := webhookDeliveries(t, server, webhookID); len(deliveries) != 1 {
-		t.Fatalf("webhook holds %d deliveries, want 1: pre-registration history was delivered: %+v", len(deliveries), deliveries)
+	// the pass that fans out this one, so once this one arrives the record is
+	// final for both. It has a type of its own, so a history delivery cannot
+	// pass for it.
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.connect", 2)
+	receiver.awaitType(t, "core.player.connect", 10*time.Second)
+	deliveries := webhookDeliveries(t, server, webhookID)
+	if len(deliveries) != 1 || deliveries[0]["type"] != "core.player.connect" {
+		t.Fatalf("webhook holds %+v, want the one delivery of the fresh event: pre-registration history was delivered", deliveries)
 	}
 }
 
@@ -778,8 +821,9 @@ func TestPausedWebhookIsNotDelivered(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	// Both deliveries of the first event were created together and fall due
-	// together, so a hub that ignored the pause would attempt the paused one
-	// in the pass that sends the twin its copy. Passes run one at a time, and
+	// together, well inside one pass's delivery batch, so a hub that ignored
+	// the pause would attempt the paused one in the pass that sends the twin
+	// its copy. Passes run one at a time, and
 	// the second event's copy can only go out in a later pass, so once the
 	// twin has it, that pass has finished with the paused delivery.
 	twin.awaitReceived(t, 1, 10*time.Second)
