@@ -41,6 +41,23 @@ arrived, since those entries were written for one stream.
   past their deadline and naming the shortfall when no poll said `more`; the reference
   driver sets it.
 
+#### Changed
+
+- 2026-09-23: three webhook tests prove their negatives by ordering instead of a fixed
+  sleep (issue #131). A non-matching type, pre-registration history, and a paused
+  webhook's delivery are each followed by traffic that must be delivered, and the
+  negative is read from the delivery record once that traffic arrives: the dispatcher
+  fans an earlier event out no later than the pass that fans out a later one, and runs
+  its passes one at a time. The three tests took about 8 s of fixed sleeps and now run in
+  under half a second, and each fails with the rule it guards broken. The backfill test
+  also hands its history event back to the outbox after registering, once the
+  dispatcher's own fan-out of it has committed, with a receipt a minute old so the
+  millisecond tie never arises: left alone, the dispatcher had already fanned it out
+  before the webhook existed, so the old test passed with the registration boundary
+  removed. The signed-delivery and backfill barriers each wait for a delivery of their
+  own type, so a forbidden delivery cannot stand in for it; the pause test's barrier is
+  a twin webhook with a receiver of its own.
+
 ### [0.2.0] - 2026-09-23
 
 Everything that landed after 0.1.0: the hub side of the post-release DayZ slices (server
