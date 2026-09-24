@@ -18,6 +18,7 @@ import (
 
 	"github.com/That1Drifter/vyshka/hub"
 	"github.com/That1Drifter/vyshka/hub/internal/dbtest"
+	"github.com/That1Drifter/vyshka/hub/store"
 )
 
 // receivedDelivery is one POST a test receiver accepted.
@@ -319,11 +320,21 @@ func TestSignedDeliveryEndToEnd(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// A non-matching type must not fire; a settle window bounds the negative.
+	// A non-matching type must not fire. The proof is by ordering, not by a
+	// settle window: the non-matching event is fanned out no later than the
+	// pass that fans out the matching one sent after it, so once that one's
+	// delivery arrives, the record already holds whatever the first became.
 	sendEvent(t, server, serverID, session.SessionToken, "example-mod.raid.start", 2)
-	time.Sleep(2500 * time.Millisecond)
-	if receiver.count() != 1 {
-		t.Errorf("receiver saw %d deliveries after a non-matching event, want 1", receiver.count())
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.connect", 3)
+	receiver.awaitReceived(t, 2, 10*time.Second)
+	deliveries := webhookDeliveries(t, server, webhookID)
+	if len(deliveries) != 2 {
+		t.Fatalf("webhook holds %d deliveries after a non-matching and a matching event, want 2: %+v", len(deliveries), deliveries)
+	}
+	for _, delivery := range deliveries {
+		if delivery["type"] == "example-mod.raid.start" {
+			t.Errorf("a non-matching event became a delivery: %+v", delivery)
+		}
 	}
 }
 
@@ -460,7 +471,8 @@ func TestFailingTargetIsRetriedThenDeadLettered(t *testing.T) {
 // never replayed into a new webhook (spec section 11.2).
 func TestRegistrationIsNotABackfill(t *testing.T) {
 	t.Parallel()
-	server := newTestServer(t)
+	databaseURL := dbtest.URL(t)
+	server := newTestServerAt(t, databaseURL)
 	receiver := newTestReceiver(t, http.StatusNoContent)
 
 	created, session := enrolledSession(t, server, "webhook-boundary")
@@ -468,17 +480,36 @@ func TestRegistrationIsNotABackfill(t *testing.T) {
 
 	// The event lands first, the webhook second.
 	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 1)
-	registerWebhook(t, server, map[string]any{
+	webhookID, _ := registerWebhook(t, server, map[string]any{
 		"url": receiver.server.URL, "events": []string{"core.player.*"},
 	})
-	time.Sleep(3 * time.Second)
-	if receiver.count() != 0 {
-		t.Fatalf("receiver saw %d deliveries of pre-registration history, want 0", receiver.count())
+
+	// Left alone, the dispatcher fans the event out before the webhook exists,
+	// and the boundary is never asked anything. Handing the event back to the
+	// outbox is the backlog the boundary is for: a migration, or a pass that
+	// had not reached it yet, leaves history unnotified at registration.
+	side, err := store.Open(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("open a second handle on the hub's database: %v", err)
+	}
+	defer side.Close()
+	rearmed, err := side.DB().Exec(`UPDATE events SET notified = 0 WHERE server_id = ?`, serverID)
+	if err != nil {
+		t.Fatalf("hand the event back to the outbox: %v", err)
+	}
+	if n, _ := rearmed.RowsAffected(); n != 1 {
+		t.Fatalf("handed %d events back to the outbox, want 1", n)
 	}
 
-	// Fresh traffic after registration flows normally.
+	// Fresh traffic after registration flows normally, and is also the
+	// barrier for the negative: the history event is fanned out no later than
+	// the pass that fans out this one, so once this delivery arrives the
+	// record is final for both.
 	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 2)
 	receiver.awaitReceived(t, 1, 10*time.Second)
+	if deliveries := webhookDeliveries(t, server, webhookID); len(deliveries) != 1 {
+		t.Fatalf("webhook holds %d deliveries, want 1: pre-registration history was delivered: %+v", len(deliveries), deliveries)
+	}
 }
 
 // The action and server namespaces are reserved at ingest (spec section 8.1),
@@ -704,6 +735,13 @@ func TestPausedWebhookIsNotDelivered(t *testing.T) {
 		"url": receiver.server.URL, "events": []string{"core.player.*"},
 		"serverIds": []string{serverID},
 	})
+	// An active twin with the same subscription is the barrier for the
+	// negative below: its deliveries show the dispatcher's passes going by.
+	twin := newTestReceiver(t, http.StatusNoContent)
+	registerWebhook(t, server, map[string]any{
+		"url": twin.server.URL, "events": []string{"core.player.*"},
+		"serverIds": []string{serverID},
+	})
 
 	var paused struct {
 		Webhook struct {
@@ -724,8 +762,7 @@ func TestPausedWebhookIsNotDelivered(t *testing.T) {
 	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 1)
 
 	// The delivery is queued: pause holds what the hub owes, it does not drop
-	// it. Waiting for the record first also gives the dispatcher every chance
-	// to make the attempt the test then asserts it did not make.
+	// it.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		deliveries := webhookDeliveries(t, server, webhookID)
@@ -740,12 +777,21 @@ func TestPausedWebhookIsNotDelivered(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	time.Sleep(2500 * time.Millisecond)
+	// Both deliveries of the first event were created together and fall due
+	// together, so a hub that ignored the pause would attempt the paused one
+	// in the pass that sends the twin its copy. Passes run one at a time, and
+	// the second event's copy can only go out in a later pass, so once the
+	// twin has it, that pass has finished with the paused delivery.
+	twin.awaitReceived(t, 1, 10*time.Second)
+	sendEvent(t, server, serverID, session.SessionToken, "core.player.death", 2)
+	twin.awaitReceived(t, 2, 10*time.Second)
 	if receiver.count() != 0 {
 		t.Fatalf("a paused webhook was delivered to %d times", receiver.count())
 	}
-	if attempts := webhookDeliveries(t, server, webhookID)[0]["attempts"].(float64); attempts != 0 {
-		t.Errorf("a paused webhook's delivery was attempted %v times", attempts)
+	for _, delivery := range webhookDeliveries(t, server, webhookID) {
+		if attempts := delivery["attempts"].(float64); attempts != 0 {
+			t.Errorf("a paused webhook's delivery was attempted %v times", attempts)
+		}
 	}
 
 	// Pausing twice does not move the instant.
@@ -773,7 +819,7 @@ func TestPausedWebhookIsNotDelivered(t *testing.T) {
 	if resumed.Webhook.PausedAt != nil {
 		t.Errorf("resuming left pausedAt at %v", *resumed.Webhook.PausedAt)
 	}
-	receiver.awaitReceived(t, 1, 10*time.Second)
+	receiver.awaitReceived(t, 2, 10*time.Second)
 }
 
 // A dead delivery replays with the same id and the same bytes, one further
