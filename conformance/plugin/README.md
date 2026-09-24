@@ -40,7 +40,7 @@ PASS  dispatch.largeParams       A dispatch carrying large params is acked and a
 PASS  poll.more                  A backlog is sent a batch at a time, each poll saying whether more is queued
 PASS  bans.sync                  A plugin declaring bans walks the list whole and reports what it applied
 PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
-PASS  errors.garbledSuccess      A 200 that is not JSON changes no session or delivery state
+PASS  errors.garbledSuccess      A malformed 200 changes no session or delivery state, and its ack is not applied
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
 
 19 checks, 0 failed
@@ -93,7 +93,12 @@ nothing, because a repeated `action.result` is indistinguishable from a repeated
 to an observer that cannot see the game. The hub treats messages about terminal actions as
 no-ops either way (spec section 7), so silence costs nothing. The mirror limitation is
 honest too: a plugin that re-executes the game-side effect while staying silent on the wire
-is beyond what any black-box grader can catch.
+is beyond what a black-box grader can catch unless the plugin reports its executions. A
+candidate that wants that graded may emit an execution witness, an event of type
+`conformance.executed` whose `data` carries the `actionId`, once each time it executes an
+action; the reference driver does. The two dedup stages then fail on a witnessed second
+execution as well as on a second result. The witness is a convention of this harness, not
+of the protocol, and a candidate without one is graded on its results alone.
 
 Dispatches carry an `expiresAt` of now plus `-check-timeout`, and the harness waits just
 past that deadline for the result, so a slow action is never failed while still inside the
@@ -131,6 +136,9 @@ candidate's first declared action should be one it can run 150 times in a burst.
 The three error-recovery stages (spec section 2.3) provoke a refusal the way a real hub
 would and watch what the candidate does: a batch refused as `envelope_invalid`, a `200`
 whose body is not JSON, and `credentials_revoked` on a session request. A candidate that
+asked for inline errors meets a second malformed `200` when it sends the swallowed batch
+again: a JSON object whose `error` member is a string rather than an object with a code,
+carrying an `ack` over the whole batch, which it must not apply (spec section 2.3). A candidate that
 can read the refusal (it asked for inline errors, or its HTTP client shows it a 4xx body)
 is expected to set the named envelope aside and resend the rest; one that cannot (run the
 harness with `-legacy-errors` to stand in for such a hub) is expected to open at most one

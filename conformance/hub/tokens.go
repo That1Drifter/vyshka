@@ -194,12 +194,29 @@ func syntheticServerIDs(n int) []string {
 }
 
 func (e Env) listTokens(ctx context.Context) ([]tokenRecord, error) {
+	records, _, err := e.listTokensRaw(ctx)
+	return records, err
+}
+
+// listTokensRaw is listTokens that also returns the response body as the hub
+// sent it, for searches that must see members tokenRecord does not model.
+func (e Env) listTokensRaw(ctx context.Context) ([]tokenRecord, []byte, error) {
+	const path = "/api/v1/tokens"
+	resp, body, err := e.do(ctx, http.MethodGet, path, e.AdminToken, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("GET %s: %w", path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("GET %s: want status %d, got %d, body %q",
+			path, http.StatusOK, resp.StatusCode, truncate(body))
+	}
 	var listed struct {
 		Tokens []tokenRecord `json:"tokens"`
 	}
-	err := e.expect(ctx, http.MethodGet, "/api/v1/tokens", e.AdminToken,
-		nil, http.StatusOK, &listed)
-	return listed.Tokens, err
+	if err := json.Unmarshal(body, &listed); err != nil {
+		return nil, nil, fmt.Errorf("GET %s: decode body %q: %w", path, truncate(body), err)
+	}
+	return listed.Tokens, body, nil
 }
 
 type auditRecord struct {

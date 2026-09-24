@@ -1524,12 +1524,21 @@ var checks = []Check{
 				}
 			}
 
+			// Every refusal applied nothing, so a plugin following section 3.1.2
+			// has shifted its outbox back down and numbers from 1 again. The
+			// valid envelope goes first at seq 1, where a hub that applied the
+			// batch envelope by envelope would apply it and answer ack 1; above
+			// a gap it would answer ack 0 either way and prove nothing.
+			plugin.outboundSeq = 0
+			good := plugin.nextOutbound(unknownType(), nil)
+			badVersion := plugin.nextOutbound(unknownType(), nil)
+			badVersion.V = 99
+
 			// The error must name which envelope of the batch was wrong, or a
 			// plugin sending 200 at a time cannot act on it.
-			good := plugin.nextOutbound(unknownType(), nil)
 			_, body, err := env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll",
 				plugin.Session.SessionToken,
-				pollRequest{Envelopes: []envelope{good, futureVersion}})
+				pollRequest{Envelopes: []envelope{good, badVersion}})
 			if err != nil {
 				return err
 			}
@@ -1560,8 +1569,20 @@ var checks = []Check{
 				return err
 			}
 			if settled.Ack != 0 {
-				return fmt.Errorf("ack = %d, want 0: a poll rejected for a malformed envelope must apply nothing at all",
-					settled.Ack)
+				return fmt.Errorf("ack = %d, want 0: a poll rejected for a malformed envelope must apply nothing at all, "+
+					"including the valid envelope ahead of it", settled.Ack)
+			}
+
+			// The same envelope sent on its own is applied, so the ack of 0
+			// above was the batch refusal and not an envelope the hub would
+			// never have taken.
+			alone, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{good}})
+			if err != nil {
+				return err
+			}
+			if alone.Ack != good.Seq {
+				return fmt.Errorf("ack = %d after the valid envelope was sent alone, want %d",
+					alone.Ack, good.Seq)
 			}
 			return nil
 		},
@@ -3032,8 +3053,10 @@ var checks = []Check{
 			}
 
 			// The list must never carry the secret back: a hub that could show
-			// it again would be storing it, not a digest of it.
-			listed, err := env.listTokens(ctx)
+			// it again would be storing it, not a digest of it. The search runs
+			// over the body as sent, so a member the suite does not model is
+			// searched too.
+			listed, raw, err := env.listTokensRaw(ctx)
 			if err != nil {
 				return err
 			}
@@ -3046,11 +3069,7 @@ var checks = []Check{
 			if !found {
 				return fmt.Errorf("the minted token %s is missing from the token list", minted.Token.ID)
 			}
-			encoded, err := json.Marshal(listed)
-			if err != nil {
-				return err
-			}
-			if strings.Contains(string(encoded), minted.Secret) {
+			if strings.Contains(string(raw), minted.Secret) {
 				return fmt.Errorf("the token list leaked a token secret")
 			}
 
@@ -3064,10 +3083,14 @@ var checks = []Check{
 			}
 
 			// The record survives revocation, so the audit log's references to
-			// it keep resolving after the credential is gone.
-			listed, err = env.listTokens(ctx)
+			// it keep resolving after the credential is gone; revoking it does
+			// not make its secret listable either.
+			listed, raw, err = env.listTokensRaw(ctx)
 			if err != nil {
 				return err
+			}
+			if strings.Contains(string(raw), minted.Secret) {
+				return fmt.Errorf("the token list leaked a revoked token's secret")
 			}
 			for _, record := range listed {
 				if record.ID != minted.Token.ID {
