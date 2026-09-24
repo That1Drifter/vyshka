@@ -122,7 +122,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 3.1.2 | "A hub MUST answer with `200` and an empty `envelopes` array when the hold expires with nothing queued." | hub | hub:plugin.poll.idleHold | graded | |
 | 3.1.2 | "A hub MUST answer immediately, without holding, whenever any unacked envelope is already queued for the session." | hub | hub:plugin.poll.deliver | partial | Immediately is approximated by 2 s; timed only for a never-delivered envelope, a delivered but unacked one is not timed |
-| 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | The ack's effect is observed through what the answer carries and through prompt progress on more: true; applying the ack or ingesting before an actual hold is not observed |
+| 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | Request-ack effects are observed through what the answer carries, and inbound progress on a more: true poll; applying the ack or ingesting before an actual hold is not observed |
 | 3.1.2 | "It MUST apply the `ack` first: the ack frees queued work" | hub | - | ungraded | The ack-bearing polls in retransmit and ackContiguous carry no envelopes, so the order of ack and ingest is never observable |
 | 3.1.2 | "A hub MUST validate the whole inbound batch before applying any of it." | hub | - | ungraded | envelopeInvalid's good envelope sits above the gap its malformed ones leave, so an incremental hub also answers ack 0 |
 | 3.1.2 | "A hub MUST answer a held poll with `401 session_invalid` as soon as its session stops being live (superseded, revoked, or expired)" | hub | hub:plugin.poll.supersededDuringHold, hub:plugin.poll.revokedDuringHold, hub:plugin.errors.inlineSupersededHold | partial | As soon as is approximated by about 5 s from the poll's start; session expiry during a hold is not provoked |
@@ -526,7 +526,7 @@ exercises an area without failing on the violation is not cited.
 
 | § | Clause | Binds | Graded by | Status | Notes |
 |---|---|---|---|---|---|
-| 12.1 | "From the moment its expiry passes, the key MUST read as absent on every operation" | hub | hub:kv.ttl, hub:kv.listPrefix | partial | get, create-only set, and the listing are probed, with expiry tolerated for up to 10 s rather than from the instant it passes; incr and delete on an expired key are not |
+| 12.1 | "From the moment its expiry passes, the key MUST read as absent on every operation" | hub | hub:kv.ttl, hub:kv.listPrefix | partial | get, create-only set, and the listing are probed, with expiry tolerated for up to 10 s rather than from the instant it passes; create-only set runs only after get already reads the key absent, so its own view of an expired key is not established; incr and delete on an expired key are not |
 
 ### 12.2 Operations
 

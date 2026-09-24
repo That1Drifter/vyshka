@@ -106,20 +106,22 @@ func (f *fences) inside(line string) bool {
 	return true
 }
 
-// quotedFence opens a fenced block inside a blockquote, which the line reader
-// below does not follow.
-var quotedFence = regexp.MustCompile("^ {0,3}>[ \t>]*(```|~~~)")
+// containedFence opens a fenced block that is not at the start of a line: one
+// inside a blockquote or a list item (after any run of container markers), or
+// one indented four or more, which only a list item's continuation makes a
+// fence. The line reader below follows none of those containers.
+var containedFence = regexp.MustCompile("^(?:[ \t]*(?:>|[-*+]|[0-9]+[.)])[ \t>*+.)0-9-]*|[ \t]{4,})(```|~~~)")
 
 // unsupported names a Markdown construct that could hide text from a reader
 // of the rendered page, or show it, without this test following along: an
-// HTML comment, or a fence inside a blockquote. Neither file uses one, and
+// HTML comment, or a fence inside a container. Neither file uses one, and
 // refusing them is simpler than parsing them.
 func unsupported(line string) string {
 	switch {
 	case strings.Contains(line, "<!--"):
 		return "an HTML comment"
-	case quotedFence.MatchString(line):
-		return "a fenced block inside a blockquote"
+	case containedFence.MatchString(line):
+		return "a fenced block inside a blockquote, a list, or an indent"
 	}
 	return ""
 }
@@ -245,7 +247,10 @@ type table struct {
 }
 
 // readTable parses the coverage table, skipping anything inside a fenced code
-// block, which renders as text rather than as a row.
+// block, which renders as text rather than as a row. The file keeps to one
+// spelling of a table so that what this reads is what renders: no line
+// starts with whitespace (an indent of four is a code block), and a line
+// holding a pipe is a row that starts and ends with one.
 func readTable(t *testing.T) table {
 	t.Helper()
 	raw, err := os.ReadFile(tablePath)
@@ -258,14 +263,20 @@ func readTable(t *testing.T) table {
 		if what := unsupported(line); what != "" {
 			t.Errorf("COVERAGE.md:%d: %s is not something this test can read around; rewrite it: %q", i+1, what, line)
 		}
+		if strings.TrimSpace(line) != "" && strings.TrimLeft(line, " \t") != line {
+			t.Errorf("COVERAGE.md:%d: a line may not start with whitespace, which can make it render as code: %q", i+1, line)
+		}
+		if strings.Contains(line, "|") && !(strings.HasPrefix(line, "|") && strings.HasSuffix(strings.TrimRight(line, " \t"), "|")) {
+			t.Errorf("COVERAGE.md:%d: a line holding a pipe must be a table row that starts and ends with one: %q", i+1, line)
+		}
 		if f.inside(line) {
 			continue
 		}
-		if m := totalLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+		if m := totalLine.FindStringSubmatch(line); m != nil {
 			tbl.totals = append(tbl.totals, m[1])
 			continue
 		}
-		if !strings.HasPrefix(strings.TrimLeft(line, " "), "|") {
+		if !strings.HasPrefix(line, "|") {
 			continue
 		}
 		cells := splitCells(line)
