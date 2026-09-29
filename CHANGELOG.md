@@ -154,9 +154,10 @@ arrived, since those entries were written for one stream.
   lost before it plants the next ban (issue #140). Revisions are
   `max(current+1, clock in ms)`, so when all three bans landed in one millisecond the
   post-restore ban took the lost revision again, and the test failed 33 runs in 300
-  locally; 600 now pass. A real restore always follows the clock past what it lost, so
-  the guarantee under test was never broken, and the test still fails with the clock
-  floor removed from the revision minting.
+  locally; 600 now pass. The guarantee under test holds only once the clock has passed
+  what was minted before the restore (the limit spec section 13.1 states), which the test
+  now establishes instead of assuming, and it still fails with the clock floor removed
+  from the revision minting.
 
 ### [0.2.0] - 2026-09-23
 
