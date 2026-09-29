@@ -216,3 +216,80 @@ func TestRunRefusesBadArguments(t *testing.T) {
 		t.Error("a missing directory was accepted")
 	}
 }
+
+// The release carries two binaries, the hub and the command-line client, and
+// -exec names both as one comma-separated list. Run through the flag, not
+// through collect, so the parsing is what is graded: both binaries come out
+// executable, everything else does not, and a binary left out of the list
+// comes out 0644 (the list, not the file name, decides).
+func TestExecListMarksEveryNamedMember(t *testing.T) {
+	for _, tc := range []struct {
+		suffix, hub, cli string
+	}{
+		{"tar.gz", "vyshka-hub", "vyshka"},
+		{"zip", "vyshka-hub.exe", "vyshka.exe"},
+	} {
+		dir := filepath.Join(t.TempDir(), "vyshka-hub_0.1.0_test")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{tc.hub, tc.cli, "README.md"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, list := range []struct {
+			flag string
+			exec map[string]bool
+		}{
+			{tc.hub + "," + tc.cli, map[string]bool{tc.hub: true, tc.cli: true}},
+			{tc.hub, map[string]bool{tc.hub: true}},
+		} {
+			out := filepath.Join(t.TempDir(), "x."+tc.suffix)
+			if err := run([]string{"-out", out, "-epoch", "1758067200", "-exec", list.flag, dir}); err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]int64{}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.suffix == "zip" {
+				zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, f := range zr.File {
+					got[filepath.Base(f.Name)] = int64(f.Mode().Perm())
+				}
+			} else {
+				gz, err := gzip.NewReader(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				tr := tar.NewReader(gz)
+				for {
+					h, err := tr.Next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if h.Typeflag == tar.TypeReg {
+						got[filepath.Base(h.Name)] = h.Mode
+					}
+				}
+			}
+			for _, name := range []string{tc.hub, tc.cli, "README.md"} {
+				want := int64(0o644)
+				if list.exec[name] {
+					want = 0o755
+				}
+				if got[name] != want {
+					t.Errorf("%s with -exec %q: %s has mode %o, want %o", tc.suffix, list.flag, name, got[name], want)
+				}
+			}
+		}
+	}
+}

@@ -5,8 +5,11 @@
 // has no executable bit to inherit, and a zip tool's idea of local time
 // differs between hosts). scripts/release-hub.sh calls it once per archive.
 //
-//	go run ./scripts/archive -out dist/x.tar.gz -epoch 1758067200 -exec vyshka-hub dist/x
-//	go run ./scripts/archive -out dist/x.zip -epoch 1758067200 -exec vyshka-hub.exe dist/x
+//	go run ./scripts/archive -out dist/x.tar.gz -epoch 1758067200 -exec vyshka-hub,vyshka dist/x
+//	go run ./scripts/archive -out dist/x.zip -epoch 1758067200 -exec vyshka-hub.exe,vyshka.exe dist/x
+//
+// -exec takes the base names of the members stored executable as a comma-separated
+// list; every other member is stored 0644.
 //
 // The directory's base name becomes the top-level directory inside the
 // archive, so the archive unpacks into a folder of that name.
