@@ -51,13 +51,6 @@ const ProtocolDraft = "0.33"
 // script.
 const defaultTimeout = 30 * time.Second
 
-// maxResponseBytes caps how much of one answer is read, as a guard against
-// something that is not a hub answering without end. It sits far above any
-// legal page: the largest is a page of full action records, up to 500 of
-// them each near the hub's 1 MiB request cap, and a caller asking for one
-// gets it.
-const maxResponseBytes = 1 << 30
-
 // Client talks to one hub with one token. It is safe for concurrent use.
 type Client struct {
 	base      *url.URL
@@ -273,12 +266,13 @@ func (c *Client) send(ctx context.Context, method string, segments []string, que
 	}
 	defer response.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	// Answers are read whole and unbounded: a legal page can be large (a
+	// page of full action records near the hub's request cap each, escaped
+	// on the way out), and any fixed bound refuses some legal answer. What
+	// bounds a request is the HTTP client's timeout and the caller's ctx.
+	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return answer{}, &TransportError{Op: op, Err: fmt.Errorf("reading the answer: %w", err)}
-	}
-	if len(data) > maxResponseBytes {
-		return answer{}, &TransportError{Op: op, Err: fmt.Errorf("the answer exceeds %d bytes", maxResponseBytes)}
 	}
 	return answer{status: response.StatusCode, header: response.Header, body: data, op: op}, nil
 }

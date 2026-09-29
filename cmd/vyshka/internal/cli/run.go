@@ -95,9 +95,11 @@ func cmdRun(e *env, args []string) error {
 	// Checked here, before any confirmation or dispatch: a params_invalid
 	// round trip would say the same thing later, less clearly.
 	coerced, err := params.Coerce(action.Params, paramArgs)
-	if err != nil && retry && action.Params != nil {
+	if err != nil && retry {
+		// Lenient cannot fail on a value, only on a malformed argument,
+		// which the first dispatch would have refused the same way.
 		fmt.Fprintf(e.stderr, "notice: %v; %s\n", err, asWritten)
-		coerced, err = params.Coerce(nil, paramArgs)
+		coerced, err = params.Lenient(paramArgs)
 	}
 	if err != nil {
 		return usagef("%v", err)

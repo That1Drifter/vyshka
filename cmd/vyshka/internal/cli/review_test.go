@@ -19,17 +19,22 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 	t.Parallel()
 	h := newTestHub(t)
 	const secret = "vya_SLIPPEDTOKENSLIPPEDTOKEN00"
+	// A token is opaque and may hold a backslash, which an error that quotes
+	// its argument escapes: that spelling must go too.
+	const slashy = `vya_SLIPPED\TOKEN`
 	for _, args := range [][]string{
 		{"---token=" + secret, "version"},
 		{"version", "---token=" + secret},
 		{"kv", "---token=" + secret, "get", "ns", "key"},
 		{"run", "Anywhere", "x.y", "---token=" + secret},
+		{"version", "--http-timeout", "--token=" + slashy},
+		{"---token=" + slashy, "version"},
 	} {
 		got := h.runWith(runOptions{env: map[string]string{"VYSHKA_TOKEN": ""}}, args...)
 		if got.code != ExitUsage {
 			t.Errorf("%v: %v\nwant exit 1", args, got)
 		}
-		if strings.Contains(got.stdout+got.stderr, secret) {
+		if strings.Contains(got.stdout+got.stderr, "SLIPPED") {
 			t.Errorf("%v: the token reached the output:\n%v", args, got)
 		}
 		if !strings.Contains(got.stderr, "[redacted]") {
@@ -84,7 +89,9 @@ func TestRunIdempotentRetrySurvivesAManifestChange(t *testing.T) {
 	p := h.plugin("Retry")
 	p.publishManifest(testManifest(1))
 
-	args := []string{"run", "Retry", "example-mod.heal", "--target", "76561198000000001", "amount=5", "--idempotency-key", "beat-1"}
+	// reason is a string in the schema; as text, 1e400 would not survive a
+	// reading as JSON, which the schema-less retry must not attempt.
+	args := []string{"run", "Retry", "example-mod.heal", "--target", "76561198000000001", "amount=5", "reason=1e400", "--idempotency-key", "beat-1"}
 	first := h.run(args...)
 	if first.code != ExitOK {
 		t.Fatalf("first dispatch: %v", first)
@@ -134,12 +141,17 @@ func TestWaitReportsATerminalFirstReadAtOnce(t *testing.T) {
 	id := actionIDFrom(t, got.stdout)
 	p.finish(p.nextDispatch().ActionID, true, map[string]any{"pong": true}, "")
 
+	reads := h.actionReads.Load()
 	got = h.run("job", id, "--wait", "--timeout", "50ms")
 	if got.code != ExitOK || !strings.Contains(got.stdout, `"pong": true`) {
 		t.Fatalf("job --wait on a completed action: %v", got)
 	}
 	if strings.TrimSpace(got.stderr) != "completed" {
 		t.Errorf("progress = %q, want the one state completed", got.stderr)
+	}
+	// The terminal record came from the first read; nothing read it again.
+	if n := h.actionReads.Load() - reads; n != 1 {
+		t.Errorf("a completed action was read %d times, want once", n)
 	}
 	got = h.run("job", id, "--wait", "--timeout", "50ms", "--json")
 	if got.code != ExitOK || strings.Count(strings.TrimSpace(got.stdout), "\n") != 0 {
@@ -257,5 +269,41 @@ func TestEventsByIDNeedsOnlyEventsRead(t *testing.T) {
 	got = h.runWith(narrow, "events", "Narrow")
 	if got.code != ExitRefused {
 		t.Errorf("events by name with an events:read token: %v\nwant exit 4", got)
+	}
+}
+
+// Ids are opaque, so a name of any shape still resolves, an id of any shape
+// is tried as given, and a not_found that is not about the server stands.
+func TestServerArgumentIsTriedAsIDThenAsName(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t)
+	const idShaped = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	p := h.plugin(idShaped)
+	p.pushEvents(event("test.named", time.Now(), map[string]any{}))
+	p.pushPlayers(time.Now(), map[string]any{"player": map[string]any{"platform": "steam", "id": "1"}, "name": "One"})
+
+	for _, args := range [][]string{
+		{"events", idShaped},
+		{"state", idShaped, "players"},
+		{"events", p.serverID},
+		{"state", p.serverID, "players"},
+		{"servers", "show", idShaped},
+		{"servers", "show", p.serverID},
+	} {
+		if got := h.run(args...); got.code != ExitOK {
+			t.Errorf("%v: %v\nwant exit 0", args, got)
+		}
+	}
+	// No vehicles snapshot was ever accepted: that not_found is about the
+	// snapshot, and is reported, not turned into a search for a server
+	// named like the id.
+	got := h.run("state", p.serverID, "vehicles")
+	if got.code != ExitRefused || !strings.Contains(got.stderr, "not_found") {
+		t.Errorf("state of a snapshot never accepted: %v\nwant exit 4 with not_found", got)
+	}
+	// An argument that is neither an id nor a name lists the candidates.
+	got = h.run("events", "nothing like it")
+	if got.code != ExitUsage || !strings.Contains(got.stderr, idShaped) {
+		t.Errorf("events of an unknown server: %v\nwant exit 1 naming the servers", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,8 +98,14 @@ func redactSecrets(message string, args []string) string {
 		if !inline && i+1 < len(args) {
 			value = args[i+1]
 		}
-		if value != "" {
-			message = strings.ReplaceAll(message, value, "[redacted]")
+		if value == "" {
+			continue
+		}
+		message = strings.ReplaceAll(message, value, "[redacted]")
+		// Some errors quote the argument (`invalid value %q`), which
+		// escapes a backslash or a quote in it: that spelling goes too.
+		if quoted := strconv.Quote(value); quoted != `"`+value+`"` {
+			message = strings.ReplaceAll(message, quoted[1:len(quoted)-1], "[redacted]")
 		}
 	}
 	return message

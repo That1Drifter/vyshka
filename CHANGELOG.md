@@ -35,7 +35,8 @@ arrived, since those entries were written for one stream.
   case-insensitive substring. `run` types its parameters from the live manifest schema
   (`k=v` coerced by the declared type, arrays split on commas so a vector is `x,y[,z]`,
   `k:=json` for what `k=v` cannot say), fails an unknown key or a schema violation before
-  any request, resolves `--player` against the players snapshot (exact id, else exact
+  the action is dispatched (the manifest is read first), resolves `--player` against the
+  players snapshot (exact id, else exact
   name, else a unique case-insensitive substring; several matches are refused and listed)
   and prints the snapshot's age beside the resolution, asks before a `destructive` action
   unless `--yes` and refuses without it when stdin is not a terminal (read from the
@@ -50,7 +51,8 @@ arrived, since those entries were written for one stream.
   only `events:read` reads a feed by id. It never reads a snapshot back to confirm a move
   it just made. `events --follow` tails with a 60 s lookback (never below a `--since` the
   user gave) so a late arrival is not missed, and `--json` prints the hub's object on one
-  line on every command. Exit codes carry the outcome: 0 success (with `--wait`, completed),
+  line on every command whose answer has a body (`kv delete` prints nothing). Exit codes
+  carry the outcome: 0 success (with `--wait`, completed),
   1 usage or local error, 2 the action failed, 3 it expired, 4 the hub refused the request,
   5 transport error, 6 `--wait` ran out of time with the action in flight. The client
   tolerates unknown fields and prints an unknown state or danger value verbatim, so a

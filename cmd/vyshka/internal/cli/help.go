@@ -34,7 +34,8 @@ Global flags, accepted before the command and after it:
   --profile NAME      config file profile to use
   --config PATH       config file to read
   --json              print the hub's JSON, one object per line, and nothing
-                      else on stdout
+                      else on stdout (kv delete, which the hub answers with
+                      no body, prints nothing)
   --http-timeout D    timeout for each HTTP request (default 30s)
 
 Environment:

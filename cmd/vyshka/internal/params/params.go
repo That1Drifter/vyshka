@@ -84,6 +84,37 @@ func Coerce(schema *client.ParamsSchema, args []string) (map[string]any, error) 
 	return result, nil
 }
 
+// Lenient builds a params object from args with no schema and no way to
+// fail on a value: a key=value is JSON when it parses as JSON within range
+// and the text itself otherwise, and key:=<json> is read as JSON. It is for
+// a retry carrying an idempotency key after the manifest changed underneath
+// it: the hub answers such a retry with the original action whatever the
+// body says (spec section 7), so nothing about a value may keep the retry
+// from going out. Only a malformed argument (no =, a key given twice, raw
+// JSON that does not parse) is an error, and those would have failed the
+// first dispatch the same way.
+func Lenient(args []string) (map[string]any, error) {
+	result := make(map[string]any, len(args))
+	for _, arg := range args {
+		key, text, raw, err := split(arg)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := result[key]; duplicate {
+			return nil, fmt.Errorf("param %q is given twice", key)
+		}
+		value, err := parseJSON(text)
+		switch {
+		case err != nil && raw:
+			return nil, fmt.Errorf("%s: %s is not valid JSON: %v", key, strconv.Quote(text), err)
+		case err != nil:
+			value = text
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
 // split reads one argument. The first `=` ends the key, and a `:` right
 // before it marks the raw JSON form, so a value may itself contain `=`.
 func split(arg string) (key, text string, raw bool, err error) {

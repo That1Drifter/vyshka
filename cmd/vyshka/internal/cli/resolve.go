@@ -1,49 +1,35 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/That1Drifter/vyshka/client"
 )
 
-// idAlphabet is Crockford base32, the encoding of every id the hub mints.
-const idAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-// looksLikeID reports whether arg has the shape of a hub-assigned id: 26
-// characters of Crockford base32 (a ULID, spec section 4). A name can be
-// given that shape on purpose, so the test only decides which lookup to try
-// first.
-func looksLikeID(arg string) bool {
-	if len(arg) != 26 {
-		return false
-	}
-	for _, r := range strings.ToUpper(arg) {
-		if !strings.ContainsRune(idAlphabet, r) {
-			return false
-		}
-	}
-	return true
-}
-
-// resolveServer turns a SERVER argument into a record: the id itself when it
-// has an id's shape and the hub knows it, else a server whose name matches it
-// exactly (any case), else the one server whose name contains it. Anything
-// short of exactly one match is a usage error listing the candidates. Only
-// not_found falls through from the id lookup to the names: any other refusal
+// resolveServer turns a SERVER argument into a record: the server with that
+// id when the hub knows one, else a server whose name matches it exactly
+// (any case), else the one server whose name contains it. Ids are opaque
+// (spec section 2.1), so every argument is tried as an id first, whatever
+// its shape. Only not_found falls through to the names: any other refusal
 // is the hub's answer about this id and is reported as such, rather than
 // hidden behind a name search that could land on a different server.
 func (e *env) resolveServer(c *client.Client, arg string) (client.Server, error) {
-	if looksLikeID(arg) {
-		server, err := c.GetServer(e.ctx, arg)
-		if err == nil {
-			return server, nil
-		}
-		if !client.IsNotFound(err) {
-			return client.Server{}, err
-		}
+	server, err := c.GetServer(e.ctx, arg)
+	if err == nil {
+		return server, nil
 	}
+	if !client.IsNotFound(err) {
+		return client.Server{}, err
+	}
+	return e.resolveServerByName(c, arg)
+}
 
+// resolveServerByName finds the server whose name matches arg exactly (any
+// case), else the one whose name contains it. Anything short of exactly one
+// match is a usage error listing the candidates.
+func (e *env) resolveServerByName(c *client.Client, arg string) (client.Server, error) {
 	list, err := c.ListServers(e.ctx)
 	if err != nil {
 		return client.Server{}, err
@@ -73,17 +59,38 @@ func (e *env) resolveServer(c *client.Client, arg string) (client.Server, error)
 	return client.Server{}, usagef("%q matches more than one server; name one by id%s", arg, serverList(matches))
 }
 
-// resolveServerID is resolveServer for a command that needs only the id. An
-// argument with an id's shape is taken as the id with no lookup at all, so a
-// token that may read a server's events but not its record can still read
-// them by id (the command's own request answers not_found for an unknown
-// one); a name still goes through the list.
-func (e *env) resolveServerID(c *client.Client, arg string) (string, error) {
-	if looksLikeID(arg) {
-		return arg, nil
+// byIDThenName runs do with arg as the server id and, when the hub answers
+// not_found for it and no server has that id, once more with the id of the
+// server named arg. A command that needs only the id thus reads nothing but
+// its own endpoint on the common path, so a token granted that endpoint
+// alone (an events:read token reading a feed) is enough, and an id of any
+// shape is taken as given, ids being opaque (spec section 2.1). ambiguous
+// says the command's not_found can be about something other than the
+// server (a snapshot never accepted, a context not declared): the record is
+// then looked up to tell the two apart before the names are tried.
+func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func(serverID string) error) error {
+	err := do(arg)
+	if !client.IsNotFound(err) {
+		return err
 	}
-	server, err := e.resolveServer(c, arg)
-	return server.ID, err
+	if ambiguous {
+		if _, lookup := c.GetServer(e.ctx, arg); lookup == nil || !client.IsNotFound(lookup) {
+			// The server exists, or cannot be read: the not_found was
+			// about something else, and stands.
+			return err
+		}
+	}
+	server, byName := e.resolveServerByName(c, arg)
+	if byName != nil {
+		var usage *usageError
+		if errors.As(byName, &usage) {
+			// No server of that name either: say so, with the candidates.
+			return byName
+		}
+		// The list could not be read, so the id's own answer stands.
+		return err
+	}
+	return do(server.ID)
 }
 
 func serverList(servers []client.Server) string {

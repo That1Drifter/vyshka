@@ -2,8 +2,43 @@ package testplugin
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
+
+// A poll's batch is framed within the per-poll event budget: six
+// event.batch envelopes of 200 events go out five at a time with more set,
+// five exactly fill it, and an envelope alone always goes.
+func TestBatchStaysWithinTheEventBudget(t *testing.T) {
+	queued := func(batches int) *Plugin {
+		p := &Plugin{}
+		p.ctx, p.cancel = context.WithCancel(context.Background())
+		for range batches {
+			p.enqueueLocked("event.batch", json.RawMessage(`{}`), maxEventsPerBatch)
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		batches, want int
+		more          bool
+	}{
+		{6, 5, true},
+		{5, 5, false},
+		{1, 1, false},
+		{12, 5, true},
+	} {
+		p := queued(tc.batches)
+		request, _, cancel := p.beginPoll()
+		cancel()
+		if len(request.Envelopes) != tc.want || request.More != tc.more {
+			t.Errorf("%d batches queued: the poll carries %d with more=%v, want %d with more=%v",
+				tc.batches, len(request.Envelopes), request.More, tc.want, tc.more)
+		}
+		if p.outSent != int64(tc.want) {
+			t.Errorf("%d batches queued: outSent = %d, want %d", tc.batches, p.outSent, tc.want)
+		}
+	}
+}
 
 // An ack above the highest seq ever sent is a hub fault, not a reason to
 // drop envelopes that never travelled: it is recorded as fatal and the

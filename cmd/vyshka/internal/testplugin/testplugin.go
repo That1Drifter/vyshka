@@ -329,6 +329,11 @@ func (p *Plugin) ServerID() string { return p.serverID }
 // Emit queues events as event.batch envelopes, split at the 200 events a hub
 // accepts per batch. No events queues nothing.
 func (p *Plugin) Emit(events ...Event) {
+	type framed struct {
+		body   json.RawMessage
+		events int
+	}
+	var batches []framed
 	for len(events) > 0 {
 		n := min(len(events), maxEventsPerBatch)
 		batch := make([]map[string]any, 0, n)
@@ -342,9 +347,22 @@ func (p *Plugin) Emit(events ...Event) {
 			}
 			batch = append(batch, wire)
 		}
-		p.enqueueCounted("event.batch", map[string]any{"events": batch}, n)
+		encoded, err := json.Marshal(map[string]any{"events": batch})
+		if err != nil {
+			p.fail(fmt.Errorf("testplugin: encode event.batch body: %w", err))
+			return
+		}
+		batches = append(batches, framed{encoded, n})
 		events = events[n:]
 	}
+	// Queued under one hold of the lock, so the next poll sees every batch
+	// of one Emit at once and frames them within the budget together,
+	// rather than a poll slipping in between with the first one alone.
+	p.mu.Lock()
+	for _, batch := range batches {
+		p.enqueueLocked("event.batch", batch.body, batch.events)
+	}
+	p.mu.Unlock()
 }
 
 // Snapshot queues a state.<kind> envelope. kind is players, vehicles,
@@ -416,22 +434,18 @@ func (p *Plugin) fail(err error) {
 
 // enqueue frames one envelope of ours and queues it until the hub acks it.
 func (p *Plugin) enqueue(typ string, body any) {
-	p.enqueueCounted(typ, body, 0)
-}
-
-// enqueueCounted is enqueue for an event.batch, which says how many events
-// it carries so a poll can stay within the hub's budget.
-func (p *Plugin) enqueueCounted(typ string, body any, events int) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		p.fail(fmt.Errorf("testplugin: encode %s body: %w", typ, err))
 		return
 	}
 	p.mu.Lock()
-	p.enqueueLocked(typ, encoded, events)
+	p.enqueueLocked(typ, encoded, 0)
 	p.mu.Unlock()
 }
 
+// enqueueLocked queues one envelope; events says how many events an
+// event.batch carries, so a poll can stay within the hub's budget.
 func (p *Plugin) enqueueLocked(typ string, body json.RawMessage, events int) {
 	p.outSeq++
 	p.idCounter++

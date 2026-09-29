@@ -31,6 +31,24 @@ func TestRootConstraintsAreValidated(t *testing.T) {
 	}
 }
 
+// Lenient never fails on a value: what does not read as JSON within range
+// is the text itself, and only a malformed argument is an error.
+func TestLenientNeverFailsOnAValue(t *testing.T) {
+	got, err := Lenient([]string{"x=1e400", "n=5", "s=hello", "b=true", "j:={\"a\":1}"})
+	if err != nil {
+		t.Fatalf("Lenient: %v", err)
+	}
+	if got["x"] != "1e400" || got["n"] != int64(5) || got["s"] != "hello" || got["b"] != true {
+		t.Errorf("Lenient read %v", got)
+	}
+	if _, err := Lenient([]string{"x=1", "x=2"}); err == nil {
+		t.Error("a key given twice passed")
+	}
+	if _, err := Lenient([]string{"j:={not json"}); err == nil {
+		t.Error("raw JSON that does not parse passed")
+	}
+}
+
 // Enum members compare as the hub compares them, as decoded JSON values, so
 // a negative zero equals zero on both sides.
 func TestNegativeZeroComparesAsZero(t *testing.T) {

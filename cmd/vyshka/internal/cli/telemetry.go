@@ -34,32 +34,41 @@ func cmdState(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	serverID, err := e.resolveServerID(c, positionals[0])
-	if err != nil {
-		return err
-	}
-
-	if *history > 0 {
-		history, err := c.StateHistory(e.ctx, serverID, stateType, *history)
+	// An id is opaque (spec section 2.1): the argument is tried as the id
+	// first, and only a not_found about the server sends it through the
+	// names (a not_found here can also mean no snapshot of this type yet).
+	return e.byIDThenName(c, positionals[0], true, func(serverID string) error {
+		if *history > 0 {
+			return e.printStateHistory(c, serverID, stateType, *history)
+		}
+		snapshot, err := c.GetState(e.ctx, serverID, stateType)
 		if err != nil {
 			return err
 		}
-		if e.g.json {
-			return e.emitJSON(rawOr(history.Raw, history))
-		}
-		tw := e.table()
-		fmt.Fprintln(tw, "CAPTURED\tAGE\tRECEIVED\tENTRIES")
-		for _, snapshot := range history.Snapshots {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", formatTime(snapshot.CapturedAt), age(snapshot.CapturedAt),
-				formatTime(snapshot.ReceivedAt), entryCount(snapshot, stateType))
-		}
-		return tw.Flush()
-	}
+		return e.printSnapshot(snapshot, stateType)
+	})
+}
 
-	snapshot, err := c.GetState(e.ctx, serverID, stateType)
+func (e *env) printStateHistory(c *client.Client, serverID, stateType string, limit int) error {
+	history, err := c.StateHistory(e.ctx, serverID, stateType, limit)
 	if err != nil {
 		return err
 	}
+	if e.g.json {
+		return e.emitJSON(rawOr(history.Raw, history))
+	}
+	tw := e.table()
+	fmt.Fprintln(tw, "CAPTURED\tAGE\tRECEIVED\tENTRIES")
+	for _, snapshot := range history.Snapshots {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", formatTime(snapshot.CapturedAt), age(snapshot.CapturedAt),
+			formatTime(snapshot.ReceivedAt), entryCount(snapshot, stateType))
+	}
+	return tw.Flush()
+}
+
+// printSnapshot prints one snapshot, its capture time and age first: a
+// snapshot is whatever the plugin last sent, however old.
+func (e *env) printSnapshot(snapshot client.StateSnapshot, stateType string) error {
 	if e.g.json {
 		return e.emitJSON(rawOr(snapshot.Raw, snapshot))
 	}
@@ -216,17 +225,20 @@ func cmdEvents(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	// The feed needs events:read alone; the record behind it would need
-	// servers:read as well, so an id is used as given and only a name is
-	// looked up.
-	serverID, err := e.resolveServerID(c, positionals[0])
-	if err != nil {
-		return err
-	}
-	if *follow {
-		return e.followEvents(c, serverID, query, *interval)
-	}
+	// The feed needs events:read alone, and an id is opaque (spec section
+	// 2.1): the argument is tried as the id first, with no lookup of the
+	// record behind it, and only a not_found sends it through the names.
+	return e.byIDThenName(c, positionals[0], false, func(serverID string) error {
+		if *follow {
+			return e.followEvents(c, serverID, query, *interval)
+		}
+		return e.printEventPages(c, serverID, query, *all)
+	})
+}
 
+// printEventPages prints one page of a feed, newest first, or every page
+// with all.
+func (e *env) printEventPages(c *client.Client, serverID string, query client.EventQuery, all bool) error {
 	tw := e.table()
 	if !e.g.json {
 		fmt.Fprintln(tw, "OCCURRED\tTYPE\tDATA")
@@ -249,7 +261,7 @@ func cmdEvents(e *env, args []string) error {
 		if page.NextCursor == "" {
 			break
 		}
-		if !*all {
+		if !all {
 			more = true
 			break
 		}
@@ -390,14 +402,19 @@ func cmdContexts(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	serverID, err := e.resolveServerID(c, positionals[0])
-	if err != nil {
-		return err
-	}
-	entries, err := c.EnumerateContext(e.ctx, serverID, positionals[1], *refresh)
-	if err != nil {
-		return err
-	}
+	// An id is opaque (spec section 2.1): the argument is tried as the id
+	// first, and only a not_found about the server sends it through the
+	// names (a not_found here can also mean no manifest or no such context).
+	return e.byIDThenName(c, positionals[0], true, func(serverID string) error {
+		entries, err := c.EnumerateContext(e.ctx, serverID, positionals[1], *refresh)
+		if err != nil {
+			return err
+		}
+		return e.printContextEntries(entries)
+	})
+}
+
+func (e *env) printContextEntries(entries client.ContextEntries) error {
 	if e.g.json {
 		return e.emitJSON(rawOr(entries.Raw, entries))
 	}

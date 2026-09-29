@@ -158,7 +158,8 @@ vyshka run Livonia vyshka.teleport --player Ivan position=7500,7600 --wait
 vyshka run Livonia vyshka.weather preset=storm transitionSeconds=60 --wait
 ```
 
-`stat=health` and `value=100` are typed from the manifest's schema before anything is sent:
+`stat=health` and `value=100` are typed from the manifest's schema before the action is
+dispatched:
 `value` is a number there, so `100` goes out as one, and `position=7500,7600` becomes the
 two-element vector. `--player Ivan` is resolved against the players snapshot. With `--wait`
 the command follows the action through queued, delivered, and running, prints the plugin's

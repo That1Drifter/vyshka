@@ -40,8 +40,10 @@ type testHub struct {
 	dispatches atomic.Int64
 	// actionReadDelay, in milliseconds, is how long every read of an action
 	// record is held before the hub answers it: a slow hub, for proving
-	// that a wait's deadline covers its first read too.
+	// that a wait's deadline covers its first read too. actionReads counts
+	// those reads, for proving a record is not read twice.
 	actionReadDelay atomic.Int64
+	actionReads     atomic.Int64
 }
 
 func newTestHub(t *testing.T) *testHub {
@@ -64,8 +66,11 @@ func newTestHub(t *testing.T) *testHub {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/actions") {
 			h.dispatches.Add(1)
 		}
-		if delay := h.actionReadDelay.Load(); delay > 0 && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v1/actions/") {
-			time.Sleep(time.Duration(delay) * time.Millisecond)
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v1/actions/") {
+			h.actionReads.Add(1)
+			if delay := h.actionReadDelay.Load(); delay > 0 {
+				time.Sleep(time.Duration(delay) * time.Millisecond)
+			}
 		}
 		handler.ServeHTTP(w, r)
 	}))
