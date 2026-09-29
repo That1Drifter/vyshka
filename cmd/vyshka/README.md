@@ -104,9 +104,14 @@ process list keep it. The client never prints the token.
 
 ### Naming a server
 
-Every command that takes `SERVER` accepts an id or a name: the id or the name exactly, else
-a case-insensitive substring of a name when exactly one server matches. A name that matches
-none, or more than one, is a local error (exit 1).
+Every command that takes `SERVER` accepts an id or a name: the argument is tried as an id
+first, and when the hub knows no server it may address by that id, as a name (the name
+exactly, else a case-insensitive substring of a name when exactly one server matches). A
+name that matches none, or more than one, is a local error (exit 1). Ids are opaque, so
+nothing about an argument's shape decides the reading; a script that must not have the two
+readings confused (a server could be named like another server's id) writes `id:X` or
+`name:X` and gets that reading alone. When an argument the hub refused as an id is taken as
+a name, the command says so on stderr.
 
 ## Quick start
 

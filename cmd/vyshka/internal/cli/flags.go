@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -69,54 +70,88 @@ func (e *env) flagSet(name string) (*flag.FlagSet, func()) {
 // parse parses a command's arguments, flags anywhere among the positionals,
 // and folds the global flags in. topic names the help page -h shows.
 func (e *env) parse(fs *flag.FlagSet, apply func(), args []string, topic string) ([]string, error) {
-	positionals, err := parseInterspersed(fs, args)
+	positionals, err := parseFlags(fs, args, true)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil, &helpRequest{command: topic}
 		}
-		return nil, usagef("%s; run \"vyshka help %s\" for usage", redactSecrets(err.Error(), args), topic)
+		return nil, usagef("%s; run \"vyshka help %s\" for usage", e.flagMessage(err), topic)
 	}
 	apply()
 	return positionals, nil
 }
 
-// redactSecrets rewrites a flag parser's error message so that no argument
-// value appears in it when the command line carries a token. The parser
-// echoes the offending argument in some of its errors (`bad flag syntax:
-// ---token=...`, `invalid value "..." for flag -x: ...`), in spellings that
-// depend on the formatter (quoted, escaped, or byte-escaped), so the values
-// are dropped rather than searched for: the flag's name is what the user
-// needs to fix the line. A command line with no token on it keeps the
-// parser's message whole, values and all, since nothing on it is secret.
-func redactSecrets(message string, args []string) string {
-	if !argsCarryToken(args) {
-		return message
+// flagMessage words a flag error for stderr. With a token anywhere on the
+// command line it carries no value at all, since the value that failed could
+// be the token itself (`--http-timeout --token=...`) and no formatting of it
+// is safe to echo; otherwise it reads as the flag package's would, value and
+// all, which is what a typo needs.
+func (e *env) flagMessage(err error) string {
+	var failed *flagError
+	if e.secret && errors.As(err, &failed) {
+		return failed.redacted()
 	}
-	const (
-		badSyntax    = "bad flag syntax: "
-		invalidValue = "invalid value "
-		invalidBool  = "invalid boolean value "
-	)
-	switch {
-	case strings.HasPrefix(message, badSyntax):
-		arg := strings.TrimPrefix(message, badSyntax)
+	return err.Error()
+}
+
+// flagError is what went wrong with one flag: which flag, what kind of
+// problem, and for a value the flag refused, the value and the flag's own
+// complaint. The parsing is done by hand (parseFlags) rather than by the
+// flag package precisely so that this is known as data, not recovered from
+// prose that echoes the values.
+type flagError struct {
+	kind    flagFault
+	arg     string // the argument as typed, for a syntax fault
+	name    string // the flag's name, for the other faults
+	boolean bool
+	value   string
+	err     error
+}
+
+type flagFault int
+
+const (
+	faultSyntax  flagFault = iota // dashes with no name, or a name starting with - or =
+	faultUnknown                  // no such flag
+	faultMissing                  // a flag that takes a value, given last
+	faultValue                    // the flag refused its value
+)
+
+// Error reads as the flag package's messages do, values included.
+func (e *flagError) Error() string {
+	switch e.kind {
+	case faultSyntax:
+		return "bad flag syntax: " + e.arg
+	case faultUnknown:
+		return "flag provided but not defined: -" + e.name
+	case faultMissing:
+		return "flag needs an argument: -" + e.name
+	case faultValue:
+		if e.boolean {
+			return fmt.Sprintf("invalid boolean value %q for -%s: %v", e.value, e.name, e.err)
+		}
+	}
+	return fmt.Sprintf("invalid value %q for flag -%s: %v", e.value, e.name, e.err)
+}
+
+// redacted is the same message with every value left out, the flag's own
+// complaint included, since that quotes the value in a spelling of its own.
+func (e *flagError) redacted() string {
+	switch e.kind {
+	case faultSyntax:
+		arg := e.arg
 		if name, _, inline := strings.Cut(arg, "="); inline {
 			arg = name + "=[redacted]"
 		}
-		return badSyntax + arg
-	case strings.HasPrefix(message, invalidValue) || strings.HasPrefix(message, invalidBool):
-		// `invalid value %q for flag -%s: %v` and its boolean twin; the flag
-		// name runs to the colon that starts the underlying error.
-		for _, marker := range []string{" for flag -", " for -"} {
-			if at := strings.LastIndex(message, marker); at >= 0 {
-				name, _, _ := strings.Cut(message[at+len(marker):], ":")
-				return "invalid value [redacted] for flag -" + name
-			}
+		return "bad flag syntax: " + arg
+	case faultUnknown, faultMissing:
+		return e.Error()
+	case faultValue:
+		if e.boolean {
+			return "invalid boolean value [redacted] for -" + e.name
 		}
-		return "invalid flag value [redacted]"
 	}
-	// The other messages name a flag, never a value.
-	return message
+	return "invalid value [redacted] for flag -" + e.name
 }
 
 // argsCarryToken reports whether a token was given on the command line, in
@@ -162,46 +197,64 @@ func leadingGlobals(args []string) (flags, rest []string) {
 	return flags, nil
 }
 
-// parseInterspersed lets flags follow positionals (`vyshka run SERVER CODE
-// amount=5 --wait`), which the flag package alone does not: it stops at the
-// first non-flag. It walks args, hands every flag (with its value, when the
-// flag takes one and no = carries it) to fs, and keeps the rest as
-// positionals. `--` ends flag handling. A lone `-` and a negative number
-// (`kv set ns key -5`) are positionals, since no flag is named like either.
+// parseInterspersed reads a command's arguments with flags anywhere among
+// the positionals (`vyshka run SERVER CODE amount=5 --wait`).
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
-	var flags, positionals []string
+	return parseFlags(fs, args, true)
+}
+
+// parseFlags reads args into fs by hand, following the flag package's own
+// rules (one or two dashes, `--name=value` or a value in the next argument,
+// a boolean flag standing alone, `-h` or `-help` when no such flag exists
+// asking for help) so that what failed is known exactly: the flag package's
+// errors are prose that echoes values, and a value can be a token. With
+// interspersed, flags may sit anywhere among the positionals; otherwise the
+// first positional ends the flags and is returned with everything after it.
+// `--` ends flag handling either way. A lone `-` and a negative number
+// (`kv set ns key -5`) are positionals, since no flag is named like either.
+func parseFlags(fs *flag.FlagSet, args []string, interspersed bool) ([]string, error) {
+	var positionals []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			positionals = append(positionals, args[i+1:]...)
-			break
+			return append(positionals, args[i+1:]...), nil
 		}
 		if !isFlag(arg) {
+			if !interspersed {
+				return append(positionals, args[i:]...), nil
+			}
 			positionals = append(positionals, arg)
 			continue
 		}
-		flags = append(flags, arg)
-		name := strings.TrimLeft(arg, "-")
-		if strings.Contains(name, "=") {
-			continue
+		spec := arg[1:]
+		if spec[0] == '-' {
+			spec = spec[1:]
 		}
+		if spec == "" || spec[0] == '-' || spec[0] == '=' {
+			return nil, &flagError{kind: faultSyntax, arg: arg}
+		}
+		name, value, inline := strings.Cut(spec, "=")
 		defined := fs.Lookup(name)
-		if defined == nil || isBoolFlag(defined) {
-			// An unknown flag is left for fs.Parse to refuse by name.
-			continue
+		if defined == nil {
+			if name == "h" || name == "help" {
+				return nil, flag.ErrHelp
+			}
+			return nil, &flagError{kind: faultUnknown, name: name}
 		}
-		if i+1 < len(args) {
-			flags = append(flags, args[i+1])
+		boolean := isBoolFlag(defined)
+		switch {
+		case boolean && !inline:
+			value = "true"
+		case !boolean && !inline:
+			if i+1 >= len(args) {
+				return nil, &flagError{kind: faultMissing, name: name}
+			}
+			value = args[i+1]
 			i++
 		}
-	}
-	if err := fs.Parse(flags); err != nil {
-		return nil, err
-	}
-	// Everything handed over was a flag or a flag's value, so anything left
-	// is a value the flag package did not consume: say so rather than lose it.
-	if extra := fs.Args(); len(extra) > 0 {
-		return nil, errors.New("unexpected argument " + extra[0])
+		if err := fs.Set(name, value); err != nil {
+			return nil, &flagError{kind: faultValue, name: name, boolean: boolean, value: value, err: err}
+		}
 	}
 	return positionals, nil
 }

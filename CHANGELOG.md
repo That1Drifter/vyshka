@@ -32,7 +32,8 @@ arrived, since those entries were written for one stream.
   `health`, `servers` (list, show, create, and reissue the enrollment token), `actions`
   (the manifest listing, or one action's params schema), `run`, `job`, `state`, `events`,
   `kv`, `player`, and `contexts`; a server is named by id, by exact name, or by a unique
-  case-insensitive substring. `run` types its parameters from the live manifest schema
+  case-insensitive substring, the argument tried as an id first (ids are opaque) and
+  `id:X` or `name:X` asking for one reading alone. `run` types its parameters from the live manifest schema
   (`k=v` coerced by the declared type, arrays split on commas so a vector is `x,y[,z]`,
   `k:=json` for what `k=v` cannot say), fails an unknown key or a schema violation before
   the action is dispatched (the manifest is read first), resolves `--player` against the

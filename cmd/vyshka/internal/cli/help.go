@@ -62,7 +62,9 @@ Exit codes:
   5  the hub could not be reached, or its answer could not be read
   6  --wait ran out of time with the action still in flight
 
-SERVER is a server id, an exact name, or a unique part of a name (any case).
+SERVER is a server id, an exact name, or a unique part of a name (any case):
+tried as an id first, then as a name. id:X or name:X asks for one reading
+alone, for a script that must not have the two confused.
 Errors go to stderr as "vyshka: <message>"; progress and notices go there too.
 
 Run "vyshka help <command>" for a command's arguments and flags.

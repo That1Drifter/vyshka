@@ -17,14 +17,60 @@ import (
 // answer about this id and is reported as such, rather than hidden behind
 // a name search that could land on a different server.
 func (e *env) resolveServer(c *client.Client, arg string) (client.Server, error) {
-	server, err := c.GetServer(e.ctx, arg)
+	kind, value := serverArg(arg)
+	if kind == argName {
+		return e.resolveServerByName(c, value)
+	}
+	server, err := c.GetServer(e.ctx, value)
 	if err == nil {
 		return server, nil
 	}
-	if !notAServerForThisToken(err) {
+	if kind == argID || !notAServerForThisToken(err) {
 		return client.Server{}, err
 	}
-	return e.resolveServerByName(c, arg)
+	server, byName := e.resolveServerByName(c, value)
+	if byName == nil {
+		e.noteNameFallback(value, err, server)
+	}
+	return server, byName
+}
+
+// The readings of a SERVER argument.
+type argKind int
+
+const (
+	argEither argKind = iota // tried as an id, then as a name
+	argID                    // `id:X`: the id X, and nothing else
+	argName                  // `name:X`: the server named X, and nothing else
+)
+
+// serverArg reads a SERVER argument. An argument is tried as an id first and
+// as a name second, which serves an operator at a terminal; a script that
+// must not have the two readings confused (a server could be named like
+// another server's id) writes `id:X` or `name:X`, and gets that reading
+// alone.
+func serverArg(arg string) (argKind, string) {
+	if value, ok := strings.CutPrefix(arg, "id:"); ok {
+		return argID, value
+	}
+	if value, ok := strings.CutPrefix(arg, "name:"); ok {
+		return argName, value
+	}
+	return argEither, arg
+}
+
+// noteNameFallback says on stderr that an argument the hub refused as an id
+// was then taken as a name. After a not_found the two readings cannot point
+// at different servers, so nothing is said; after a forbidden they can (a
+// server named like another's id, under a token bound away from that
+// other), so the choice is made visible and the prefixes that settle it are
+// named.
+func (e *env) noteNameFallback(arg string, probe error, server client.Server) {
+	if client.IsNotFound(probe) {
+		return
+	}
+	fmt.Fprintf(e.stderr, "notice: %q was refused as a server id (%s) and taken as a name: %s; write id:%s or name:%s to say which\n",
+		arg, clean(probe.Error()), serverLabel(server), arg, arg)
 }
 
 // notAServerForThisToken reports whether a refusal says the argument used as
@@ -80,14 +126,22 @@ func (e *env) resolveServerByName(c *client.Client, arg string) (client.Server, 
 // server (a snapshot never accepted, a context not declared): the record is
 // then looked up to tell the two apart before the names are tried.
 func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func(serverID string) error) error {
-	err := do(arg)
-	if !notAServerForThisToken(err) {
+	kind, value := serverArg(arg)
+	if kind == argName {
+		server, err := e.resolveServerByName(c, value)
+		if err != nil {
+			return err
+		}
+		return do(server.ID)
+	}
+	err := do(value)
+	if kind == argID || !notAServerForThisToken(err) {
 		return err
 	}
 	if ambiguous && client.IsNotFound(err) {
 		// A forbidden is about the binding, never about a snapshot or a
 		// context, so only a not_found needs telling apart.
-		_, lookup := c.GetServer(e.ctx, arg)
+		_, lookup := c.GetServer(e.ctx, value)
 		var refusal *client.Error
 		switch {
 		case lookup == nil:
@@ -101,7 +155,7 @@ func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func
 			return err
 		}
 	}
-	server, byName := e.resolveServerByName(c, arg)
+	server, byName := e.resolveServerByName(c, value)
 	if byName != nil {
 		var refusal *client.Error
 		if errors.As(byName, &refusal) {
@@ -112,6 +166,7 @@ func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func
 		// candidates) or a transport failure: both are the truer answer.
 		return byName
 	}
+	e.noteNameFallback(value, err, server)
 	return do(server.ID)
 }
 

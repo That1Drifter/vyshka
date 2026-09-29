@@ -35,6 +35,11 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 		{"version", "--token", secret, "--http-timeout", accented},
 		// Two spellings at once: the shorter must not spoil the longer.
 		{"--token=vya_", "---token=" + secret, "version"},
+		// A value shaped like the parser's own prose, and a token given
+		// before the command with the failing value after it.
+		{"version", "--token", secret, "--http-timeout", " for flag -" + secret},
+		{"--token", secret, "version", "--http-timeout", secret},
+		{"--token", secret, "version", "--json=" + secret},
 	} {
 		got := h.runWith(runOptions{env: map[string]string{"VYSHKA_TOKEN": ""}}, args...)
 		if got.code != ExitUsage {
@@ -44,7 +49,11 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 			strings.Contains(got.stdout+got.stderr, `\x`) {
 			t.Errorf("%v: the token reached the output:\n%v", args, got)
 		}
-		if !strings.Contains(got.stderr, "[redacted]") || !strings.Contains(got.stderr, "-token") && !strings.Contains(got.stderr, "-http-timeout") {
+		named := false
+		for _, flagName := range []string{"-token", "-http-timeout", "-json"} {
+			named = named || strings.Contains(got.stderr, flagName)
+		}
+		if !strings.Contains(got.stderr, "[redacted]") || !named {
 			t.Errorf("%v: the message does not say which flag failed, without its value:\n%v", args, got)
 		}
 	}
@@ -352,13 +361,70 @@ func TestBoundTokenResolvesAServerName(t *testing.T) {
 			t.Errorf("%v with a bound token: %v\nwant exit 0", args, got)
 		}
 	}
-	// The other server is outside the binding by id and invisible by name.
+	// The other server is outside the binding by id and, among what this
+	// token may list, matches no name: the argument matches nothing.
 	got := h.runWith(bound, "events", other.serverID)
-	if got.code != ExitUsage && got.code != ExitRefused {
-		t.Errorf("events of a server outside the binding: %v\nwant a refusal or no match", got)
+	if got.code != ExitUsage || strings.Contains(got.stdout, "test.other") {
+		t.Errorf("events of a server outside the binding: %v\nwant exit 1 and no events", got)
 	}
-	if strings.Contains(got.stdout, "test.other") {
-		t.Errorf("a bound token read another server's events:\n%v", got)
+	// Asked for the id alone, the hub's refusal is the answer.
+	got = h.runWith(bound, "events", "id:"+other.serverID)
+	if got.code != ExitRefused || !strings.Contains(got.stderr, "forbidden") {
+		t.Errorf("events of an id outside the binding, id alone: %v\nwant exit 4 forbidden", got)
+	}
+}
+
+// id: and name: settle the reading of a SERVER argument, and the one case
+// where the two readings can point at different servers, a server named like
+// another's id under a token bound away from that other, is said on stderr.
+func TestServerArgumentPrefixesSettleTheReading(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t)
+	alpha := h.plugin("Alpha")
+	alpha.pushEvents(event("test.alpha", time.Now(), map[string]any{}))
+	// Bravo is named like Alpha's id.
+	bravo := h.plugin(alpha.serverID)
+	bravo.pushEvents(event("test.bravo", time.Now(), map[string]any{}))
+
+	// With an admin token the id wins outright, and the prefixes pick.
+	for _, tc := range []struct {
+		args []string
+		code int
+		want string
+	}{
+		{[]string{"events", alpha.serverID}, ExitOK, "test.alpha"},
+		{[]string{"events", "id:" + alpha.serverID}, ExitOK, "test.alpha"},
+		{[]string{"events", "name:" + alpha.serverID}, ExitOK, "test.bravo"},
+		{[]string{"events", "name:alpha"}, ExitOK, "test.alpha"},
+		{[]string{"servers", "show", "name:" + alpha.serverID}, ExitOK, bravo.serverID},
+		{[]string{"events", "id:Alpha"}, ExitRefused, ""},
+		{[]string{"events", "name:" + bravo.serverID}, ExitUsage, ""},
+	} {
+		got := h.run(tc.args...)
+		if got.code != tc.code || !strings.Contains(got.stdout, tc.want) {
+			t.Errorf("%v: %v\nwant exit %d with %q", tc.args, got, tc.code, tc.want)
+		}
+	}
+
+	// Bound to Bravo alone, Alpha's id is refused, and the argument is then
+	// a name: Bravo's, with a notice; id: keeps it a refusal.
+	var minted struct {
+		Secret string `json:"secret"`
+	}
+	h.mustCall(http.MethodPost, "/api/v1/tokens", testToken, map[string]any{
+		"name": "bravo only", "scopes": []string{"servers:read", "events:read"}, "servers": []string{bravo.serverID},
+	}, &minted, http.StatusCreated)
+	bound := runOptions{env: map[string]string{"VYSHKA_TOKEN": minted.Secret}}
+	got := h.runWith(bound, "events", alpha.serverID)
+	if got.code != ExitOK || !strings.Contains(got.stdout, "test.bravo") {
+		t.Errorf("a bound token reading the name that is Alpha's id: %v\nwant Bravo's events", got)
+	}
+	if !strings.Contains(got.stderr, "notice:") || !strings.Contains(got.stderr, "taken as a name") || !strings.Contains(got.stderr, "id:"+alpha.serverID) {
+		t.Errorf("the fallback from a refused id to a name was not said:\n%s", got.stderr)
+	}
+	got = h.runWith(bound, "events", "id:"+alpha.serverID)
+	if got.code != ExitRefused {
+		t.Errorf("a bound token reading Alpha by id alone: %v\nwant exit 4", got)
 	}
 }
 

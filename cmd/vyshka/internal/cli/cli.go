@@ -75,6 +75,9 @@ type env struct {
 	stderr io.Writer
 	g      globals
 	hub    *client.Client
+	// secret says a token was given on the command line, anywhere on it, so
+	// no flag error may echo a value: the value that failed could be it.
+	secret bool
 }
 
 func newEnv(stdio IO) *env {
@@ -125,17 +128,18 @@ var commands = map[string]func(e *env, args []string) error{
 func (e *env) dispatch(args []string) error {
 	// Global flags before the command. The standard parse stops at the first
 	// non-flag, which is the command name.
+	e.secret = argsCarryToken(args)
 	fs := newFlagSet("vyshka")
 	apply := e.g.bind(fs)
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseFlags(fs, args, false)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return &helpRequest{}
 		}
-		return usagef("%s; run \"vyshka help\" for usage", redactSecrets(err.Error(), args))
+		return usagef("%s; run \"vyshka help\" for usage", e.flagMessage(err))
 	}
 	apply()
 
-	rest := fs.Args()
 	if len(rest) == 0 {
 		writeHelp(e.stderr, "")
 		return usagef("a command is required")
