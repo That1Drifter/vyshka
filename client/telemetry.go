@@ -60,19 +60,15 @@ func (c *Client) GetState(ctx context.Context, serverID, stateType string) (Stat
 
 // StateHistory reads recent snapshots of one type, newest first, the latest
 // included. limit zero means the hub's default; the hub clamps a large one.
-func (c *Client) StateHistory(ctx context.Context, serverID, stateType string, limit int) ([]StateSnapshot, error) {
+func (c *Client) StateHistory(ctx context.Context, serverID, stateType string, limit int) (StateHistoryPage, error) {
 	var query url.Values
 	if limit > 0 {
 		query = url.Values{"limit": {strconv.Itoa(limit)}}
 	}
-	var page struct {
-		Snapshots []StateSnapshot `json:"snapshots"`
-	}
-	if err := c.do(ctx, http.MethodGet,
-		[]string{"api", "v1", "servers", serverID, "state", stateType, "history"}, query, nil, &page); err != nil {
-		return nil, err
-	}
-	return page.Snapshots, nil
+	var page StateHistoryPage
+	err := c.do(ctx, http.MethodGet,
+		[]string{"api", "v1", "servers", serverID, "state", stateType, "history"}, query, nil, &page)
+	return page, err
 }
 
 // PlayerEvents reads the events that refer to one identity across every

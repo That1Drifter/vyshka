@@ -50,6 +50,11 @@ const (
 	maxBatch = 200
 	// maxEventsPerBatch is the largest event.batch a hub accepts (section 8.1).
 	maxEventsPerBatch = 200
+	// maxEventsPerPoll is the per-poll event budget of section 8.1 as the
+	// reference hub applies it: event.batch envelopes past it in one poll are
+	// refused with an event.reject, so a poll's batch stays within it and
+	// the rest waits for the next.
+	maxEventsPerPoll = 1000
 
 	// persistentFailure is how long transport failure has to go on, unbroken,
 	// before the plugin gives up and reports it through Err. A single failed
@@ -145,6 +150,9 @@ type envelope struct {
 	Seq  int64           `json:"seq"`
 	TS   string          `json:"ts"`
 	Body json.RawMessage `json:"body"`
+	// events is how many events an event.batch carries, for the per-poll
+	// budget. Not on the wire.
+	events int
 }
 
 type pollRequest struct {
@@ -190,16 +198,21 @@ type Plugin struct {
 	// inAck is the highest contiguous hub -> plugin seq processed; outSeq the
 	// last seq handed to an envelope of ours; outAck the highest of ours the
 	// hub has acked. outbound holds every envelope above outAck, in seq order.
-	inAck      int64
-	outSeq     int64
-	outAck     int64
-	outbound   []envelope
-	dispatches []Dispatch
-	rejections []map[string]any
-	executed   map[string]bool
-	executedQ  []string
-	err        error
-	idCounter  int64
+	inAck  int64
+	outSeq int64
+	outAck int64
+	// outSent is the highest seq ever put on the wire, aborted polls
+	// included since the hub may have ingested one: the most an ack may
+	// name.
+	outSent         int64
+	outbound        []envelope
+	dispatches      []Dispatch
+	rejections      []map[string]any
+	eventRejections []map[string]any
+	executed        map[string]bool
+	executedQ       []string
+	err             error
+	idCounter       int64
 
 	// cancelPoll aborts the poll in flight, and pollCarried is the highest
 	// outbound seq that poll covers. Something queued above it is not on the
@@ -301,7 +314,7 @@ func Start(ctx context.Context, o Options) (*Plugin, error) {
 	p.client.Timeout = time.Duration(effective+5) * time.Second
 
 	p.mu.Lock()
-	p.enqueueLocked("manifest.publish", manifest)
+	p.enqueueLocked("manifest.publish", manifest, 0)
 	p.mu.Unlock()
 
 	p.wg.Add(1)
@@ -329,7 +342,7 @@ func (p *Plugin) Emit(events ...Event) {
 			}
 			batch = append(batch, wire)
 		}
-		p.enqueue("event.batch", map[string]any{"events": batch})
+		p.enqueueCounted("event.batch", map[string]any{"events": batch}, n)
 		events = events[n:]
 	}
 }
@@ -356,6 +369,15 @@ func (p *Plugin) Rejections() []map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.rejections)
+}
+
+// EventRejections is the body of every event.reject received so far: a
+// batch the hub refused, which a test expecting every emitted event to be
+// stored needs to see rather than have hidden by the fixture.
+func (p *Plugin) EventRejections() []map[string]any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.eventRejections)
 }
 
 // Err is the first fatal transport or session error, or nil. After it is set
@@ -394,26 +416,33 @@ func (p *Plugin) fail(err error) {
 
 // enqueue frames one envelope of ours and queues it until the hub acks it.
 func (p *Plugin) enqueue(typ string, body any) {
+	p.enqueueCounted(typ, body, 0)
+}
+
+// enqueueCounted is enqueue for an event.batch, which says how many events
+// it carries so a poll can stay within the hub's budget.
+func (p *Plugin) enqueueCounted(typ string, body any, events int) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		p.fail(fmt.Errorf("testplugin: encode %s body: %w", typ, err))
 		return
 	}
 	p.mu.Lock()
-	p.enqueueLocked(typ, encoded)
+	p.enqueueLocked(typ, encoded, events)
 	p.mu.Unlock()
 }
 
-func (p *Plugin) enqueueLocked(typ string, body json.RawMessage) {
+func (p *Plugin) enqueueLocked(typ string, body json.RawMessage, events int) {
 	p.outSeq++
 	p.idCounter++
 	p.outbound = append(p.outbound, envelope{
-		V:    p.envelopeV,
-		ID:   p.idPrefix + "-" + strconv.FormatInt(p.idCounter, 10),
-		Type: typ,
-		Seq:  p.outSeq,
-		TS:   stamp(time.Now()),
-		Body: body,
+		V:      p.envelopeV,
+		ID:     p.idPrefix + "-" + strconv.FormatInt(p.idCounter, 10),
+		Type:   typ,
+		Seq:    p.outSeq,
+		TS:     stamp(time.Now()),
+		Body:   body,
+		events: events,
 	})
 	// A poll already on the wire without this envelope would hold it until the
 	// hub's timeout; abort that poll so the next one carries it.
@@ -506,8 +535,25 @@ func (p *Plugin) beginPoll() (pollRequest, context.Context, context.CancelFunc) 
 
 	request := pollRequest{Ack: p.inAck}
 	batch := p.outbound
-	if len(batch) > maxBatch {
-		batch = batch[:maxBatch]
+	// Two limits frame a batch: the 200 envelopes every hub accepts, and
+	// the per-poll event budget, which the event.batch envelopes in one poll
+	// must stay within or the hub refuses the ones over it. Either limit
+	// cuts the batch and says more is waiting.
+	cut := len(batch)
+	events := 0
+	for i, pending := range batch {
+		if i >= maxBatch {
+			cut = i
+			break
+		}
+		events += pending.events
+		if events > maxEventsPerPoll && i > 0 {
+			cut = i
+			break
+		}
+	}
+	if cut < len(batch) {
+		batch = batch[:cut]
 		request.More = true
 	}
 	request.Envelopes = slices.Clone(batch)
@@ -515,6 +561,7 @@ func (p *Plugin) beginPoll() (pollRequest, context.Context, context.CancelFunc) 
 	p.pollCarried = p.outSeq
 	if len(batch) > 0 {
 		p.pollCarried = batch[len(batch)-1].Seq
+		p.outSent = max(p.outSent, p.pollCarried)
 	}
 	pollCtx, cancel := context.WithCancel(p.ctx)
 	p.cancelPoll = cancel
@@ -535,8 +582,18 @@ func (p *Plugin) apply(response pollResponse) (delivered, taken int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Acks are monotonic and never above what was sent.
-	if response.Ack > p.outAck && response.Ack <= p.outSeq {
+	// Acks are monotonic and never above what was sent. An ack past the
+	// highest seq ever put on the wire is a hub fault, and one this fixture
+	// must not paper over by dropping envelopes it never sent: it is
+	// recorded as fatal instead, without the lock-taking fail.
+	if response.Ack > p.outSent {
+		if p.err == nil {
+			p.err = fmt.Errorf("testplugin: the hub acked seq %d, above the %d sent", response.Ack, p.outSent)
+		}
+		p.cancel()
+		return 0, 0
+	}
+	if response.Ack > p.outAck {
 		p.outAck = response.Ack
 		drop := 0
 		for drop < len(p.outbound) && p.outbound[drop].Seq <= p.outAck {
@@ -634,7 +691,7 @@ func (p *Plugin) handleLocked(inbound envelope) {
 			p.opts.Logf("testplugin: cannot answer context %s: %v", body.Context, err)
 			return
 		}
-		p.enqueueLocked("context.entries", encoded)
+		p.enqueueLocked("context.entries", encoded, 0)
 
 	case "manifest.reject":
 		var body map[string]any
@@ -643,6 +700,14 @@ func (p *Plugin) handleLocked(inbound envelope) {
 		}
 		p.rejections = append(p.rejections, body)
 		p.opts.Logf("testplugin: manifest rejected: %s", inbound.Body)
+
+	case "event.reject":
+		var body map[string]any
+		if err := json.Unmarshal(inbound.Body, &body); err != nil {
+			body = map[string]any{"raw": string(inbound.Body)}
+		}
+		p.eventRejections = append(p.eventRejections, body)
+		p.opts.Logf("testplugin: event batch rejected: %s", inbound.Body)
 	}
 }
 

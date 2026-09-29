@@ -51,10 +51,12 @@ const ProtocolDraft = "0.33"
 // script.
 const defaultTimeout = 30 * time.Second
 
-// maxResponseBytes caps how much of one answer is read. The largest legal
-// answer is a state history at its cap (100 snapshots of up to 256 KiB each),
-// which this clears with room to spare; anything beyond it is not a hub.
-const maxResponseBytes = 64 << 20
+// maxResponseBytes caps how much of one answer is read, as a guard against
+// something that is not a hub answering without end. It sits far above any
+// legal page: the largest is a page of full action records, up to 500 of
+// them each near the hub's 1 MiB request cap, and a caller asking for one
+// gets it.
+const maxResponseBytes = 1 << 30
 
 // Client talks to one hub with one token. It is safe for concurrent use.
 type Client struct {
@@ -192,8 +194,17 @@ func escapeSegment(segment string) string {
 func (c *Client) endpoint(segments []string, query url.Values) (*url.URL, error) {
 	target := *c.base
 	var plain, escaped strings.Builder
-	plain.WriteString(strings.TrimSuffix(c.base.Path, "/"))
-	escaped.WriteString(strings.TrimSuffix(c.base.EscapedPath(), "/"))
+	basePlain, baseEscaped := c.base.Path, c.base.EscapedPath()
+	// A trailing slash is dropped from both forms together, and only when it
+	// is a slash in the escaped form too: a prefix ending in %2F decodes to a
+	// slash that belongs to its last segment, not to a separator, and
+	// trimming one form alone would leave the two disagreeing, at which point
+	// net/http falls back to the decoded path and the prefix is lost.
+	if strings.HasSuffix(baseEscaped, "/") {
+		basePlain, baseEscaped = strings.TrimSuffix(basePlain, "/"), strings.TrimSuffix(baseEscaped, "/")
+	}
+	plain.WriteString(basePlain)
+	escaped.WriteString(baseEscaped)
 	for _, segment := range segments {
 		if segment == "" {
 			return nil, errors.New("client: a path parameter is empty")

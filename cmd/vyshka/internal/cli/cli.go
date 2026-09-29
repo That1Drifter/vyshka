@@ -131,7 +131,7 @@ func (e *env) dispatch(args []string) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return &helpRequest{}
 		}
-		return usagef("%v; run \"vyshka help\" for usage", err)
+		return usagef("%s; run \"vyshka help\" for usage", redactSecrets(err.Error(), args))
 	}
 	apply()
 

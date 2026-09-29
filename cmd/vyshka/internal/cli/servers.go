@@ -70,14 +70,18 @@ func cmdHealth(e *env, args []string) error {
 }
 
 func cmdServers(e *env, args []string) error {
-	if len(args) > 0 {
-		switch args[0] {
+	// Global flags may sit between the command and its subcommand; they are
+	// handed on to the subcommand's own parse.
+	flags, rest := leadingGlobals(args)
+	if len(rest) > 0 {
+		subArgs := append(flags, rest[1:]...)
+		switch rest[0] {
 		case "show":
-			return cmdServersShow(e, args[1:])
+			return cmdServersShow(e, subArgs)
 		case "create":
-			return cmdServersCreate(e, args[1:])
+			return cmdServersCreate(e, subArgs)
 		case "token":
-			return cmdServersToken(e, args[1:])
+			return cmdServersToken(e, subArgs)
 		}
 	}
 	fs, apply := e.flagSet("servers")
@@ -92,17 +96,14 @@ func cmdServers(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	servers, err := c.ListServers(e.ctx)
+	list, err := c.ListServers(e.ctx)
 	if err != nil {
 		return err
 	}
 	if e.g.json {
-		list := make([]any, len(servers))
-		for i, server := range servers {
-			list[i] = rawOr(server.Raw, server)
-		}
-		return e.emitJSON(map[string]any{"servers": list})
+		return e.emitJSON(rawOr(list.Raw, list))
 	}
+	servers := list.Servers
 
 	tw := e.table()
 	fmt.Fprintln(tw, "ID\tNAME\tGAME\tLINK\tCREDENTIALS\tPENDING\tLAST SEEN\tPLUGIN")
@@ -307,10 +308,11 @@ func cmdActions(e *env, args []string) error {
 		return e.printActionTable(record.Manifest.Actions)
 	}
 
-	servers, err := c.ListServers(e.ctx)
+	list, err := c.ListServers(e.ctx)
 	if err != nil {
 		return err
 	}
+	servers := list.Servers
 	type listed struct {
 		Server   any `json:"server"`
 		Manifest any `json:"manifest"`

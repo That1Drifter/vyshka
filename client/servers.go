@@ -8,14 +8,10 @@ import (
 )
 
 // ListServers reads every server record the token may see, newest first.
-func (c *Client) ListServers(ctx context.Context) ([]Server, error) {
-	var page struct {
-		Servers []Server `json:"servers"`
-	}
-	if err := c.do(ctx, http.MethodGet, []string{"api", "v1", "servers"}, nil, nil, &page); err != nil {
-		return nil, err
-	}
-	return page.Servers, nil
+func (c *Client) ListServers(ctx context.Context) (ServerList, error) {
+	var list ServerList
+	err := c.do(ctx, http.MethodGet, []string{"api", "v1", "servers"}, nil, nil, &list)
+	return list, err
 }
 
 // GetServer reads one server record.

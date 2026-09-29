@@ -249,8 +249,9 @@ choice made on a stale snapshot is visible.
 **The params.** Each `k=v` is coerced by the type the manifest declares for `k`: integer,
 number, boolean, string, or null. An array takes its elements split on commas, so a vector
 is `x,y` or `x,y,z`. A key the schema does not declare, or a value that breaks the schema,
-fails locally with exit 1 before any request goes out. For what `k=v` cannot express, such
-as an object, `k:=<json>` passes the JSON as written:
+fails locally with exit 1 before the action is dispatched (the manifest is read from the
+hub first; nothing reaches the game server). For what `k=v` cannot express, such as an
+object, `k:=<json>` passes the JSON as written:
 
 ```
 vyshka run Livonia vyshka.weather 'dynamicFog:={"distanceDensity":0.4,"heightDensity":0.2}' --wait
@@ -271,7 +272,10 @@ out with the action still in flight the command exits 6 and prints the action id
 `vyshka job`.
 
 `--idempotency-key K` gives the hub a key that makes a retried dispatch the same action
-rather than a second one.
+rather than a second one. With a key, an action the current manifest no longer declares, or
+params its schema now refuses, go out as written after a notice, because the hub answers a
+retry with the original action whatever the manifest says now (spec section 7); refusing
+locally would strand an accepted action whose first answer was lost.
 
 The client does not read a snapshot back to confirm a move it has just made: a teleport
 completes when the plugin says so, and the next `state` shows the new position when the
@@ -307,8 +311,9 @@ vyshka events SERVER [--type PATTERN]... [--since T] [--until T] [--limit N] [--
 
 One page of the event feed, newest first. `--type` is repeatable and each is an exact
 event type, a `namespace.*` pattern, or `*`; the terms are ORed, and none means every type
-(spec section 8.5). `--since` and `--until` bound the time range, and `--limit` sets the
-page size. `--all` walks every page instead of stopping at the first.
+(spec section 8.5). `--since` and `--until` bound the time range, each an RFC 3339 time or
+a duration meaning that long ago (`--since 15m`), and `--limit` sets the page size. `--all`
+walks every page instead of stopping at the first.
 
 `--follow` tails the feed: events print oldest first as they arrive, and with `--json` each
 is one object on its own line. Every read looks back 60 seconds so that an event that
@@ -374,7 +379,10 @@ stdout stays the data.
 `--json`, on every command, prints the hub's object as one line. A command that follows,
 `events --follow`, prints one object per line. Progress and notices still go to stderr, so
 `vyshka ... --json | jq ...` reads clean data. `kv get` is the one command whose plain
-output is already JSON: the value alone on stdout.
+output is already JSON: the value alone on stdout. Two exceptions to "the hub's object":
+`kv delete` prints nothing under `--json`, since the hub answers it with no body, and
+`actions` without a server prints one array the command assembles, a `{server, manifest}`
+pair per server.
 
 A script that acts on the outcome of a dispatch reads the exit code:
 
@@ -383,7 +391,7 @@ vyshka run Livonia vyshka.broadcast message="Restart in five minutes" --wait
 case $? in
   0) ;;
   2) echo "the plugin ran it and it failed" ;;
-  3) echo "it expired before the server took it" ;;
+  3) echo "it expired before the plugin finished it" ;;
   6) echo "still in flight, see vyshka job" ;;
   *) echo "could not dispatch it" ;;
 esac

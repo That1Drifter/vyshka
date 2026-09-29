@@ -38,6 +38,10 @@ type testHub struct {
 	url        string
 	configDir  string
 	dispatches atomic.Int64
+	// actionReadDelay, in milliseconds, is how long every read of an action
+	// record is held before the hub answers it: a slow hub, for proving
+	// that a wait's deadline covers its first read too.
+	actionReadDelay atomic.Int64
 }
 
 func newTestHub(t *testing.T) *testHub {
@@ -59,6 +63,9 @@ func newTestHub(t *testing.T) *testHub {
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/actions") {
 			h.dispatches.Add(1)
+		}
+		if delay := h.actionReadDelay.Load(); delay > 0 && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v1/actions/") {
+			time.Sleep(time.Duration(delay) * time.Millisecond)
 		}
 		handler.ServeHTTP(w, r)
 	}))

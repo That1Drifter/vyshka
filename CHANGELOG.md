@@ -38,11 +38,18 @@ arrived, since those entries were written for one stream.
   any request, resolves `--player` against the players snapshot (exact id, else exact
   name, else a unique case-insensitive substring; several matches are refused and listed)
   and prints the snapshot's age beside the resolution, asks before a `destructive` action
-  unless `--yes` and refuses without it when stdin is not a terminal, and with `--wait`
+  unless `--yes` and refuses without it when stdin is not a terminal (read from the
+  console itself, `GetConsoleMode` on Windows and the `TIOCGWINSZ` ioctl elsewhere, since
+  the null device a script redirects from is a character device too; `golang.org/x/sys`,
+  already in the module graph, becomes a direct dependency for it), and with `--wait`
   follows the action from queued through delivered and running to a terminal state until
-  `--timeout` or, by default, the action's own expiry plus a few seconds. It never reads a
-  snapshot back to confirm a move it just made. `events --follow` tails with a 60 s
-  lookback so a late arrival is not missed, and `--json` prints the hub's object on one
+  `--timeout` or, by default, the action's own expiry plus a few seconds. A retry carrying
+  `--idempotency-key` goes out as written when the manifest has changed underneath it,
+  since the hub answers a retry with the original action (spec section 7), and `events`,
+  `state`, and `contexts` take a server id without reading its record, so a token holding
+  only `events:read` reads a feed by id. It never reads a snapshot back to confirm a move
+  it just made. `events --follow` tails with a 60 s lookback (never below a `--since` the
+  user gave) so a late arrival is not missed, and `--json` prints the hub's object on one
   line on every command. Exit codes carry the outcome: 0 success (with `--wait`, completed),
   1 usage or local error, 2 the action failed, 3 it expired, 4 the hub refused the request,
   5 transport error, 6 `--wait` ran out of time with the action in flight. The client

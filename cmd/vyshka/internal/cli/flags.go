@@ -74,10 +74,61 @@ func (e *env) parse(fs *flag.FlagSet, apply func(), args []string, topic string)
 		if errors.Is(err, flag.ErrHelp) {
 			return nil, &helpRequest{command: topic}
 		}
-		return nil, usagef("%v; run \"vyshka help %s\" for usage", err, topic)
+		return nil, usagef("%s; run \"vyshka help %s\" for usage", redactSecrets(err.Error(), args), topic)
 	}
 	apply()
 	return positionals, nil
+}
+
+// redactSecrets removes token values from a flag parser's error message. The
+// parser echoes the offending argument in some of its errors (`bad flag
+// syntax: ---token=...`), and a token typed with a slip of the hand must not
+// reach stderr that way: neutral flag defaults keep it out of help, this
+// keeps it out of the errors.
+func redactSecrets(message string, args []string) string {
+	for i, arg := range args {
+		if !isFlag(arg) {
+			continue
+		}
+		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if name != "token" {
+			continue
+		}
+		if !inline && i+1 < len(args) {
+			value = args[i+1]
+		}
+		if value != "" {
+			message = strings.ReplaceAll(message, value, "[redacted]")
+		}
+	}
+	return message
+}
+
+// leadingGlobals splits the global flags that precede a subcommand name
+// (`vyshka kv --json get ns key`) from the rest, so they can be handed to the
+// subcommand's own parse and read there: the global flags are accepted
+// before the command and after it, and between a command and its subcommand
+// is after it. rest starts at the subcommand name, or is nil when only flags
+// were given.
+func leadingGlobals(args []string) (flags, rest []string) {
+	probe := newFlagSet("probe")
+	(&globals{}).bind(probe)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !isFlag(arg) || arg == "--" {
+			return flags, args[i:]
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") {
+			continue
+		}
+		if defined := probe.Lookup(name); defined != nil && !isBoolFlag(defined) && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	return flags, nil
 }
 
 // parseInterspersed lets flags follow positionals (`vyshka run SERVER CODE

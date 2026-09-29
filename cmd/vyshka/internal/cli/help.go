@@ -113,15 +113,17 @@ listed under a heading, and one whose plugin never published a manifest says
 Flags:
   --code CODE    print that one action with its full params schema
 
---json prints the manifest record as the hub stores it; without SERVER, one
-JSON array of {"server": <record>, "manifest": <record or null>}.
+--json prints the manifest record as the hub stores it; with --code, that one
+action's declaration; without SERVER, one JSON array the command assembles,
+{"server": <record>, "manifest": <record or null>} per server.
 `,
 
 	"run": `Usage: vyshka run SERVER CODE [k=v | k:=json ...] [flags]
 
-Dispatches an action. Params are checked against the action's declared
-schema before anything is sent, so a typo or an out-of-range value is caught
-at the terminal (exit 1) and never reaches the hub.
+Dispatches an action. The manifest is read from the hub first, and params
+are checked against the action's declared schema before the action is
+dispatched, so a typo or an out-of-range value is caught at the terminal
+(exit 1) and never reaches the game server.
 
   key=value     typed by the schema: integer, number, boolean, string, null,
                 or an array as comma-separated items (position=4501.2,320.1,9800.4;
@@ -145,7 +147,10 @@ Flags:
                             is printed beside the match, since it can lag.
   --ttl D                   deadline for a terminal state (at least 1s;
                             default the hub's, 120s)
-  --idempotency-key K       a retry with the same key returns the original action
+  --idempotency-key K       a retry with the same key returns the original action;
+                            with a key, an action the manifest no longer declares,
+                            or params its schema now refuses, go out as written
+                            (after a notice) for the hub to answer
   --wait                    wait for the outcome
   --timeout D               how long --wait waits (default: until the action's
                             deadline, plus 5s)
@@ -214,7 +219,8 @@ is at that revision (0: only if the key does not exist); a mismatch exits 4
 and prints the current revision.
 
 incr adds --delta (default 1; negative to subtract) and prints the new value.
-delete succeeds when the key is already gone, and says so.
+delete succeeds when the key is already gone, and says so; the hub answers it
+with no body, so --json prints nothing for it.
 
 Flags:
   --if-revision R    compare-and-swap guard (set)

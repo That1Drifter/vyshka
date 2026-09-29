@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -63,20 +64,41 @@ func cmdRun(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	// A retry with an idempotency key is answered with the original action
+	// whatever the manifest says now (spec section 7), so with a key the
+	// manifest is advice rather than a gate: an action it no longer declares,
+	// or params its current schema refuses, go out as written and the hub
+	// decides. Refusing here would strand an accepted action whose first
+	// answer was lost, which is what the key exists to recover.
+	retry := *idempotencyKey != ""
+	asWritten := fmt.Sprintf("sending the retry with key %s as written", strconv.Quote(clean(*idempotencyKey)))
+	action := client.ManifestAction{Code: code}
 	record, err := c.GetManifest(e.ctx, server.ID)
-	if client.IsNotFound(err) {
+	switch {
+	case client.IsNotFound(err) && !retry:
 		return usagef("%s has no manifest, so it declares no action to run", serverLabel(server))
-	}
-	if err != nil {
+	case client.IsNotFound(err):
+		fmt.Fprintf(e.stderr, "notice: %s has no manifest; %s\n", serverLabel(server), asWritten)
+	case err != nil:
 		return err
-	}
-	action, err := findAction(server, record, code)
-	if err != nil {
-		return err
+	default:
+		declared, err := findAction(server, record, code)
+		switch {
+		case err == nil:
+			action = declared
+		case !retry:
+			return err
+		default:
+			fmt.Fprintf(e.stderr, "notice: %v; %s\n", err, asWritten)
+		}
 	}
 	// Checked here, before any confirmation or dispatch: a params_invalid
 	// round trip would say the same thing later, less clearly.
 	coerced, err := params.Coerce(action.Params, paramArgs)
+	if err != nil && retry && action.Params != nil {
+		fmt.Fprintf(e.stderr, "notice: %v; %s\n", err, asWritten)
+		coerced, err = params.Coerce(nil, paramArgs)
+	}
 	if err != nil {
 		return usagef("%v", err)
 	}
@@ -131,7 +153,11 @@ func (e *env) confirm(action client.ManifestAction, server client.Server, yes bo
 				clean(action.Code))
 		}
 		fmt.Fprintf(e.stderr, "run %s on %s (destructive)? [y/N] ", clean(action.Code), clean(server.Name))
-		answer, err := bufio.NewReader(e.stdio.Stdin).ReadString('\n')
+		answer, err := readLine(e.ctx, e.stdio.Stdin)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(e.stderr)
+			return usagef("interrupted at the confirmation; nothing was dispatched")
+		}
 		if err != nil && err != io.EOF {
 			return usagef("reading the confirmation: %v", err)
 		}
@@ -150,6 +176,28 @@ func (e *env) confirm(action client.ManifestAction, server client.Server, yes bo
 		fmt.Fprintf(e.stderr, "warning: %s is marked warning by its plugin\n", clean(action.Code))
 	}
 	return nil
+}
+
+// readLine reads one line, giving up when ctx ends: a prompt on a terminal
+// must yield to Ctrl-C, and a blocking read cannot see the signal by itself.
+// On interruption the reading goroutine is left behind, which is fine for a
+// process on its way out.
+func readLine(ctx context.Context, r io.Reader) (string, error) {
+	type lineResult struct {
+		line string
+		err  error
+	}
+	done := make(chan lineResult, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		done <- lineResult{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case got := <-done:
+		return got.line, got.err
+	}
 }
 
 func cmdJob(e *env, args []string) error {
@@ -231,52 +279,60 @@ func (e *env) printJob(action client.Action) error {
 }
 
 // waitAction follows one action to its outcome and turns the outcome into
-// the exit code. Without a timeout it waits until the action's own deadline
+// the exit code. With no --timeout it waits until the action's own deadline
 // plus waitSlack, measured from the action's lifetime rather than from
 // expiresAt against the local clock, so a skewed clock cannot end the wait
 // before the hub has expired the action. justDispatched says the action was
-// created a moment ago, when its whole lifetime is still ahead.
+// created a moment ago, when its whole lifetime is still ahead. The first
+// read counts against --timeout like every later one, and an action already
+// terminal on that read is reported from it: nothing is read a second time
+// to learn what the first read said.
 func (e *env) waitAction(c *client.Client, actionID string, timeout time.Duration, justDispatched bool) error {
-	first, err := c.GetAction(e.ctx, actionID)
+	ctx, cancel := e.ctx, context.CancelFunc(func() {})
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(e.ctx, timeout)
+	}
+	defer cancel()
+
+	progress := &stateProgress{w: e.stderr}
+	first, err := c.GetAction(ctx, actionID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return e.waitCutShort(timeout, actionID, client.Action{})
+		}
 		return err
 	}
-	if timeout <= 0 {
-		lifetime := max(first.ExpiresAt.Sub(first.CreatedAt), 0)
-		remaining := lifetime
-		if !justDispatched {
-			remaining = min(max(time.Until(first.ExpiresAt), 0), lifetime)
-		}
-		timeout = remaining + waitSlack
-	}
-
-	ctx, cancel := context.WithTimeout(e.ctx, timeout)
-	defer cancel()
-	progress := &stateProgress{w: e.stderr}
-	final, err := c.WaitAction(ctx, actionID, client.WaitOptions{
-		Interval: waitInterval,
-		OnChange: progress.add,
-	})
-	progress.end()
-
-	if err != nil {
-		if ctx.Err() == nil {
-			return err
-		}
-		// Out of time, or interrupted: the action is still in flight.
-		last := final
-		if last.ID == "" {
-			last = first
-		}
-		if e.g.json {
-			if jsonErr := e.emitJSON(rawOr(last.Raw, last)); jsonErr != nil {
-				return jsonErr
+	progress.add(first)
+	final := first
+	if !first.Terminal() {
+		if timeout <= 0 {
+			lifetime := max(first.ExpiresAt.Sub(first.CreatedAt), 0)
+			remaining := lifetime
+			if !justDispatched {
+				remaining = min(max(time.Until(first.ExpiresAt), 0), lifetime)
 			}
+			timeout = remaining + waitSlack
+			ctx, cancel = context.WithTimeout(e.ctx, timeout)
+			defer cancel()
 		}
-		return &exitError{code: ExitWaitTimeout, message: fmt.Sprintf(
-			"stopped waiting after %s with action %s still %s; read it later with \"vyshka job %s\"",
-			timeout, clean(actionID), cell(last.State), clean(actionID))}
+		final, err = c.WaitAction(ctx, actionID, client.WaitOptions{
+			Interval: waitInterval,
+			OnChange: progress.add,
+		})
+		if err != nil {
+			progress.end()
+			if ctx.Err() == nil {
+				return err
+			}
+			// Out of time, or interrupted: the action is still in flight,
+			// and the last record read says where it got to.
+			if final.ID == "" {
+				final = first
+			}
+			return e.waitCutShort(timeout, actionID, final)
+		}
 	}
+	progress.end()
 
 	if e.g.json {
 		if err := e.emitJSON(rawOr(final.Raw, final)); err != nil {
@@ -306,24 +362,53 @@ func (e *env) waitAction(c *client.Client, actionID string, timeout time.Duratio
 		return &exitError{code: ExitActionExpired, message: fmt.Sprintf(
 			"action %s expired at %s before the plugin finished it", clean(actionID), formatTime(final.ExpiresAt))}
 	}
-	// WaitAction returns only on a state Terminal() knows, so this is a
-	// terminal state from a newer hub; report it as it is.
+	// Terminal() knows only the three terminal states of this draft, so a
+	// state it does not know is waited on until the deadline; this branch
+	// is for the day it learns another, so that day cannot exit 0 by
+	// accident.
 	return &exitError{code: ExitUsage, message: fmt.Sprintf("action %s ended in state %s", clean(actionID), cell(final.State))}
 }
 
+// waitCutShort reports a wait that ended before the action did: out of time,
+// or interrupted. The action is still in flight, so the id is named for a
+// later read. last is the record last read, or empty when none was.
+func (e *env) waitCutShort(timeout time.Duration, actionID string, last client.Action) error {
+	if e.g.json && last.ID != "" {
+		if err := e.emitJSON(rawOr(last.Raw, last)); err != nil {
+			return err
+		}
+	}
+	why := fmt.Sprintf("stopped waiting after %s", timeout)
+	if e.ctx.Err() != nil {
+		why = "interrupted"
+	}
+	state := "not yet read"
+	if last.ID != "" {
+		state = "still " + cell(last.State)
+	}
+	return &exitError{code: ExitWaitTimeout, message: fmt.Sprintf(
+		"%s with action %s %s; read it later with \"vyshka job %s\"", why, clean(actionID), state, clean(actionID))}
+}
+
 // stateProgress prints an action's states on one stderr line as they
-// change: queued -> delivered -> running -> completed.
+// change: queued -> delivered -> running -> completed. A state equal to the
+// last one printed is not repeated, so a wait that starts from a record it
+// has already shown adds nothing for it.
 type stateProgress struct {
 	w       io.Writer
 	started bool
+	last    string
 }
 
 func (p *stateProgress) add(action client.Action) {
+	if p.started && action.State == p.last {
+		return
+	}
 	if p.started {
 		fmt.Fprint(p.w, " -> ")
 	}
 	fmt.Fprint(p.w, cell(action.State))
-	p.started = true
+	p.started, p.last = true, action.State
 }
 
 func (p *stateProgress) end() {

@@ -34,33 +34,29 @@ func cmdState(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	server, err := e.resolveServer(c, positionals[0])
+	serverID, err := e.resolveServerID(c, positionals[0])
 	if err != nil {
 		return err
 	}
 
 	if *history > 0 {
-		snapshots, err := c.StateHistory(e.ctx, server.ID, stateType, *history)
+		history, err := c.StateHistory(e.ctx, serverID, stateType, *history)
 		if err != nil {
 			return err
 		}
 		if e.g.json {
-			list := make([]any, len(snapshots))
-			for i, snapshot := range snapshots {
-				list[i] = rawOr(snapshot.Raw, snapshot)
-			}
-			return e.emitJSON(map[string]any{"snapshots": list})
+			return e.emitJSON(rawOr(history.Raw, history))
 		}
 		tw := e.table()
 		fmt.Fprintln(tw, "CAPTURED\tAGE\tRECEIVED\tENTRIES")
-		for _, snapshot := range snapshots {
+		for _, snapshot := range history.Snapshots {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", formatTime(snapshot.CapturedAt), age(snapshot.CapturedAt),
 				formatTime(snapshot.ReceivedAt), entryCount(snapshot, stateType))
 		}
 		return tw.Flush()
 	}
 
-	snapshot, err := c.GetState(e.ctx, server.ID, stateType)
+	snapshot, err := c.GetState(e.ctx, serverID, stateType)
 	if err != nil {
 		return err
 	}
@@ -220,12 +216,15 @@ func cmdEvents(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	server, err := e.resolveServer(c, positionals[0])
+	// The feed needs events:read alone; the record behind it would need
+	// servers:read as well, so an id is used as given and only a name is
+	// looked up.
+	serverID, err := e.resolveServerID(c, positionals[0])
 	if err != nil {
 		return err
 	}
 	if *follow {
-		return e.followEvents(c, server.ID, query, *interval)
+		return e.followEvents(c, serverID, query, *interval)
 	}
 
 	tw := e.table()
@@ -234,7 +233,7 @@ func cmdEvents(e *env, args []string) error {
 	}
 	more := false
 	for {
-		page, err := c.ListEvents(e.ctx, server.ID, query)
+		page, err := c.ListEvents(e.ctx, serverID, query)
 		if err != nil {
 			return err
 		}
@@ -330,7 +329,12 @@ func (e *env) followEvents(c *client.Client, serverID string, query client.Event
 
 		next := client.EventQuery{Types: query.Types, Limit: query.Limit, Since: query.Since}
 		if !newest.IsZero() {
+			// The lookback never reaches below a --since the user gave: that
+			// bound excluded history on purpose.
 			since := newest.Add(-followLookback)
+			if query.Since != nil && query.Since.After(since) {
+				since = *query.Since
+			}
 			next.Since = &since
 		}
 		var fresh []client.Event
@@ -340,11 +344,13 @@ func (e *env) followEvents(c *client.Client, serverID string, query client.Event
 				if e.ctx.Err() != nil {
 					return nil
 				}
-				// A hub restarting mid-tail is worth waiting out; a refusal
-				// (a revoked token, say) is not.
+				// A hub restarting mid-tail, or a proxy answering for one
+				// that is down, is worth waiting out; a refusal of the
+				// request itself (a revoked token, say) is not.
 				var transport *client.TransportError
-				if errors.As(err, &transport) {
-					fmt.Fprintln(e.stderr, "vyshka: "+transport.Error()+"; retrying")
+				var refusal *client.Error
+				if errors.As(err, &transport) || errors.As(err, &refusal) && refusal.Status >= 500 {
+					fmt.Fprintln(e.stderr, "vyshka: "+err.Error()+"; retrying")
 					fresh = nil
 					break
 				}
@@ -384,11 +390,11 @@ func cmdContexts(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	server, err := e.resolveServer(c, positionals[0])
+	serverID, err := e.resolveServerID(c, positionals[0])
 	if err != nil {
 		return err
 	}
-	entries, err := c.EnumerateContext(e.ctx, server.ID, positionals[1], *refresh)
+	entries, err := c.EnumerateContext(e.ctx, serverID, positionals[1], *refresh)
 	if err != nil {
 		return err
 	}

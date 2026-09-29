@@ -62,6 +62,18 @@ func (s *Server) UnmarshalJSON(data []byte) error {
 	return jsonUnmarshalRaw(data, (*plain)(s), &s.Raw)
 }
 
+// ServerList is the answer to a server listing, newest first. Raw is the
+// whole answer as the hub sent it.
+type ServerList struct {
+	Servers []Server        `json:"servers"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+func (l *ServerList) UnmarshalJSON(data []byte) error {
+	type plain ServerList
+	return jsonUnmarshalRaw(data, (*plain)(l), &l.Raw)
+}
+
 // PluginDescriptor is what a plugin last said about itself. Advisory.
 type PluginDescriptor struct {
 	Name       string   `json:"name"`
@@ -384,6 +396,19 @@ func (s *StateSnapshot) UnmarshalJSON(data []byte) error {
 	return jsonUnmarshalRaw(data, (*plain)(s), &s.Raw)
 }
 
+// StateHistoryPage is the answer to a history read: recent snapshots of one
+// type, newest first, the latest included. Raw is the whole answer as the
+// hub sent it.
+type StateHistoryPage struct {
+	Snapshots []StateSnapshot `json:"snapshots"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+func (p *StateHistoryPage) UnmarshalJSON(data []byte) error {
+	type plain StateHistoryPage
+	return jsonUnmarshalRaw(data, (*plain)(p), &p.Raw)
+}
+
 // PlayerEntry is one entry of a players snapshot.
 type PlayerEntry struct {
 	Player   Identity       `json:"player"`
@@ -512,8 +537,26 @@ type KVKey struct {
 
 // KVNamespace is one namespace holding live keys the token may read.
 type KVNamespace struct {
-	Namespace string `json:"namespace"`
-	Keys      int    `json:"keys"`
+	Namespace string          `json:"namespace"`
+	Keys      int             `json:"keys"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+func (n *KVNamespace) UnmarshalJSON(data []byte) error {
+	type plain KVNamespace
+	return jsonUnmarshalRaw(data, (*plain)(n), &n.Raw)
+}
+
+// KVNamespaceList is the answer to a namespace listing, name ascending. It
+// is not paged. Raw is the whole answer as the hub sent it.
+type KVNamespaceList struct {
+	Namespaces []KVNamespace   `json:"namespaces"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+func (l *KVNamespaceList) UnmarshalJSON(data []byte) error {
+	type plain KVNamespaceList
+	return jsonUnmarshalRaw(data, (*plain)(l), &l.Raw)
 }
 
 // PageQuery is the paging of the player profile's action and note reads.

@@ -12,12 +12,12 @@
 package params
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,7 +33,6 @@ import (
 // otherwise.
 func Coerce(schema *client.ParamsSchema, args []string) (map[string]any, error) {
 	result := make(map[string]any, len(args))
-	order := make([]string, 0, len(args))
 	declared := schema != nil && len(schema.Properties) > 0
 
 	for _, arg := range args {
@@ -71,25 +70,16 @@ func Coerce(schema *client.ParamsSchema, args []string) (map[string]any, error) 
 			return nil, err
 		}
 		result[key] = value
-		order = append(order, key)
 	}
 
 	if schema == nil {
 		return result, nil
 	}
-	for _, key := range order {
-		if err := validate(key, schema.Properties[key], result[key]); err != nil {
-			return nil, err
-		}
-	}
-	var missing []string
-	for _, name := range schema.Required {
-		if _, present := result[name]; !present {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing required params: %s", strings.Join(missing, ", "))
+	// The whole object is checked as the hub checks it, root constraints
+	// included: a schema can carry enum or not at its root as well as on its
+	// properties, and required is a root constraint too.
+	if err := validate("", schema, result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -249,19 +239,23 @@ func normalize(value any) (any, error) {
 
 // validate checks one value against its schema the way the hub will: type,
 // enum, not.enum, numeric bounds, and, below it, required members and items.
-// A nil schema admits anything.
+// A nil schema admits anything. An empty path is the params object itself.
 func validate(path string, schema *client.ParamsSchema, value any) error {
 	if schema == nil {
 		return nil
 	}
+	at := path
+	if at == "" {
+		at = "params"
+	}
 	if schema.Type != "" && !typeMatches(schema.Type, value) {
-		return fmt.Errorf("%s: expected %s, got %s", path, schema.Type, typeName(value))
+		return fmt.Errorf("%s: expected %s, got %s", at, schema.Type, typeName(value))
 	}
-	if schema.Enum != nil && !containsJSON(schema.Enum, value) {
-		return fmt.Errorf("%s: %s is not one of the allowed values: %s", path, encode(value), encodeList(schema.Enum))
+	if schema.Enum != nil && !containsValue(schema.Enum, value) {
+		return fmt.Errorf("%s: %s is not one of the allowed values: %s", at, encode(value), encodeList(schema.Enum))
 	}
-	if schema.Not != nil && containsJSON(schema.Not.Enum, value) {
-		return fmt.Errorf("%s: %s is excluded by the schema", path, encode(value))
+	if schema.Not != nil && containsValue(schema.Not.Enum, value) {
+		return fmt.Errorf("%s: %s is excluded by the schema", at, encode(value))
 	}
 
 	switch typed := value.(type) {
@@ -273,24 +267,31 @@ func validate(path string, schema *client.ParamsSchema, value any) error {
 			}
 		}
 		if len(missing) > 0 {
+			if path == "" {
+				return fmt.Errorf("missing required params: %s", strings.Join(missing, ", "))
+			}
 			return fmt.Errorf("%s: missing required members: %s", path, strings.Join(missing, ", "))
 		}
 		for _, name := range sortedKeys(schema.Properties) {
 			if member, present := typed[name]; present {
-				if err := validate(path+"."+name, schema.Properties[name], member); err != nil {
+				child := name
+				if path != "" {
+					child = path + "." + name
+				}
+				if err := validate(child, schema.Properties[name], member); err != nil {
 					return err
 				}
 			}
 		}
 	case []any:
 		for i, item := range typed {
-			if err := validate(path+"["+strconv.Itoa(i)+"]", schema.Items, item); err != nil {
+			if err := validate(at+"["+strconv.Itoa(i)+"]", schema.Items, item); err != nil {
 				return err
 			}
 		}
 	default:
 		if number, ok := asNumber(value); ok {
-			return checkBounds(path, schema, value, number)
+			return checkBounds(at, schema, value, number)
 		}
 	}
 	return nil
@@ -373,21 +374,36 @@ func typeName(value any) string {
 	return fmt.Sprintf("%T", value)
 }
 
-// containsJSON compares by JSON encoding, which is how deep equality over
-// JSON values reads once numbers are involved: an int64 5 from the command
-// line and a float64 5 from the schema both encode as 5.
-func containsJSON(members []any, value any) bool {
-	want, err := json.Marshal(value)
-	if err != nil {
+// containsValue compares the way the hub compares enum members: both sides
+// are read as the JSON values they encode to (every number a float64, so an
+// int64 5 from the command line equals a schema's 5) and compared deeply,
+// under which a negative zero equals zero, as it does for the hub. Comparing
+// the encodings themselves would not do: -0 and 0 encode differently.
+func containsValue(members []any, value any) bool {
+	want, ok := canonical(value)
+	if !ok {
 		return false
 	}
 	for _, member := range members {
-		got, err := json.Marshal(member)
-		if err == nil && bytes.Equal(got, want) {
+		if got, ok := canonical(member); ok && reflect.DeepEqual(got, want) {
 			return true
 		}
 	}
 	return false
+}
+
+// canonical is a value as it reads after one trip through JSON: what the hub
+// sees of it.
+func canonical(value any) (any, bool) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var out any
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func encode(value any) string {

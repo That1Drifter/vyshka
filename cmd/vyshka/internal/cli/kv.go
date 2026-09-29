@@ -11,26 +11,34 @@ import (
 )
 
 func cmdKV(e *env, args []string) error {
-	if len(args) == 0 {
+	// Global flags may sit between the command and its subcommand; they are
+	// handed on to the subcommand's own parse.
+	flags, rest := leadingGlobals(args)
+	if len(rest) == 0 {
+		// Flags alone, or nothing: -h wants the help page, anything else the
+		// list of subcommands.
+		fs, apply := e.flagSet("kv")
+		if _, err := e.parse(fs, apply, args, "kv"); err != nil {
+			return err
+		}
 		return usagef("kv takes get, set, incr, delete, list, or namespaces; run \"vyshka help kv\" for usage")
 	}
-	switch args[0] {
+	subArgs := append(flags, rest[1:]...)
+	switch rest[0] {
 	case "get":
-		return cmdKVGet(e, args[1:])
+		return cmdKVGet(e, subArgs)
 	case "set":
-		return cmdKVSet(e, args[1:])
+		return cmdKVSet(e, subArgs)
 	case "incr":
-		return cmdKVIncr(e, args[1:])
+		return cmdKVIncr(e, subArgs)
 	case "delete":
-		return cmdKVDelete(e, args[1:])
+		return cmdKVDelete(e, subArgs)
 	case "list":
-		return cmdKVList(e, args[1:])
+		return cmdKVList(e, subArgs)
 	case "namespaces":
-		return cmdKVNamespaces(e, args[1:])
-	case "-h", "--help", "-help":
-		return &helpRequest{command: "kv"}
+		return cmdKVNamespaces(e, subArgs)
 	}
-	return usagef("unknown kv subcommand %q; want get, set, incr, delete, list, or namespaces", args[0])
+	return usagef("unknown kv subcommand %q; want get, set, incr, delete, list, or namespaces", rest[0])
 }
 
 // kvArgs parses a kv subcommand that takes NS and KEY.
@@ -281,16 +289,14 @@ func cmdKVNamespaces(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	namespaces, err := c.KVListNamespaces(e.ctx)
+	list, err := c.KVListNamespaces(e.ctx)
 	if err != nil {
 		return err
 	}
 	if e.g.json {
-		if namespaces == nil {
-			namespaces = []client.KVNamespace{}
-		}
-		return e.emitJSON(map[string]any{"namespaces": namespaces})
+		return e.emitJSON(rawOr(list.Raw, list))
 	}
+	namespaces := list.Namespaces
 	if len(namespaces) == 0 {
 		fmt.Fprintln(e.stdout, "no namespaces hold keys this token may read")
 		return nil

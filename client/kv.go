@@ -62,12 +62,8 @@ func (c *Client) KVListKeys(ctx context.Context, namespace string, query KVListQ
 
 // KVListNamespaces reads the namespaces holding at least one live key that
 // the token's grants cover, with their key counts. It is not paged.
-func (c *Client) KVListNamespaces(ctx context.Context) ([]KVNamespace, error) {
-	var page struct {
-		Namespaces []KVNamespace `json:"namespaces"`
-	}
-	if err := c.do(ctx, http.MethodGet, []string{"api", "v1", "kv"}, nil, nil, &page); err != nil {
-		return nil, err
-	}
-	return page.Namespaces, nil
+func (c *Client) KVListNamespaces(ctx context.Context) (KVNamespaceList, error) {
+	var list KVNamespaceList
+	err := c.do(ctx, http.MethodGet, []string{"api", "v1", "kv"}, nil, nil, &list)
+	return list, err
 }
