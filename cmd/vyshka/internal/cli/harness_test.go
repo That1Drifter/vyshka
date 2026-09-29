@@ -44,6 +44,9 @@ type testHub struct {
 	// those reads, for proving a record is not read twice.
 	actionReadDelay atomic.Int64
 	actionReads     atomic.Int64
+	// listFails cuts the connection on every server listing: the hub
+	// reachable for one request and not the next.
+	listFails atomic.Bool
 }
 
 func newTestHub(t *testing.T) *testHub {
@@ -71,6 +74,17 @@ func newTestHub(t *testing.T) *testHub {
 			if delay := h.actionReadDelay.Load(); delay > 0 {
 				time.Sleep(time.Duration(delay) * time.Millisecond)
 			}
+		}
+		if h.listFails.Load() && r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers" {
+			// Hijacking and closing is a connection cut mid-answer, which
+			// the client sees as a transport failure.
+			if hijacker, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hijacker.Hijack(); err == nil {
+					conn.Close()
+					return
+				}
+			}
+			panic(http.ErrAbortHandler)
 		}
 		handler.ServeHTTP(w, r)
 	}))

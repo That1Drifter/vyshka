@@ -12,18 +12,29 @@ import (
 // id when the hub knows one, else a server whose name matches it exactly
 // (any case), else the one server whose name contains it. Ids are opaque
 // (spec section 2.1), so every argument is tried as an id first, whatever
-// its shape. Only not_found falls through to the names: any other refusal
-// is the hub's answer about this id and is reported as such, rather than
-// hidden behind a name search that could land on a different server.
+// its shape. Only an answer saying the argument is not a server this token
+// can address falls through to the names: any other refusal is the hub's
+// answer about this id and is reported as such, rather than hidden behind
+// a name search that could land on a different server.
 func (e *env) resolveServer(c *client.Client, arg string) (client.Server, error) {
 	server, err := c.GetServer(e.ctx, arg)
 	if err == nil {
 		return server, nil
 	}
-	if !client.IsNotFound(err) {
+	if !notAServerForThisToken(err) {
 		return client.Server{}, err
 	}
 	return e.resolveServerByName(c, arg)
+}
+
+// notAServerForThisToken reports whether a refusal says the argument used as
+// an id names no server this token can address: not_found, or forbidden,
+// which a token bound to particular servers answers for any id outside its
+// binding before the id is even looked up (spec section 10.2), a name
+// included. Neither is evidence about a server of that name.
+func notAServerForThisToken(err error) bool {
+	var refusal *client.Error
+	return errors.As(err, &refusal) && (refusal.Code == "not_found" || refusal.Status == 403)
 }
 
 // resolveServerByName finds the server whose name matches arg exactly (any
@@ -70,25 +81,36 @@ func (e *env) resolveServerByName(c *client.Client, arg string) (client.Server, 
 // then looked up to tell the two apart before the names are tried.
 func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func(serverID string) error) error {
 	err := do(arg)
-	if !client.IsNotFound(err) {
+	if !notAServerForThisToken(err) {
 		return err
 	}
-	if ambiguous {
-		if _, lookup := c.GetServer(e.ctx, arg); lookup == nil || !client.IsNotFound(lookup) {
-			// The server exists, or cannot be read: the not_found was
-			// about something else, and stands.
+	if ambiguous && client.IsNotFound(err) {
+		// A forbidden is about the binding, never about a snapshot or a
+		// context, so only a not_found needs telling apart.
+		_, lookup := c.GetServer(e.ctx, arg)
+		var refusal *client.Error
+		switch {
+		case lookup == nil:
+			// The server exists: the not_found was about something else.
+			return err
+		case !errors.As(lookup, &refusal):
+			// The hub could not be reached: say that, not "no such server".
+			return lookup
+		case !client.IsNotFound(lookup):
+			// The record cannot be read, so the id's own answer stands.
 			return err
 		}
 	}
 	server, byName := e.resolveServerByName(c, arg)
 	if byName != nil {
-		var usage *usageError
-		if errors.As(byName, &usage) {
-			// No server of that name either: say so, with the candidates.
-			return byName
+		var refusal *client.Error
+		if errors.As(byName, &refusal) {
+			// The list is refused, so the id's own answer stands.
+			return err
 		}
-		// The list could not be read, so the id's own answer stands.
-		return err
+		// A usage error (no server of that name either, with the
+		// candidates) or a transport failure: both are the truer answer.
+		return byName
 	}
 	return do(server.ID)
 }

@@ -35,7 +35,8 @@ Global flags, accepted before the command and after it:
   --config PATH       config file to read
   --json              print the hub's JSON, one object per line, and nothing
                       else on stdout (kv delete, which the hub answers with
-                      no body, prints nothing)
+                      no body, prints nothing; actions with no SERVER prints
+                      an array the command assembles)
   --http-timeout D    timeout for each HTTP request (default 30s)
 
 Environment:

@@ -55,6 +55,14 @@ const (
 	// refused with an event.reject, so a poll's batch stays within it and
 	// the rest waits for the next.
 	maxEventsPerPoll = 1000
+	// maxPollBytes bounds the bodies framed into one poll, under the hub's
+	// 1 MiB request cap with room for the envelopes around them: a poll over
+	// the cap is refused whole with payload_too_large, which this plugin
+	// treats as fatal. maxBatchBytes bounds one event.batch body, so that a
+	// single envelope always fits a poll.
+	maxPollBytes     = 768 << 10
+	maxBatchBytes    = 256 << 10
+	envelopeOverhead = 256
 
 	// persistentFailure is how long transport failure has to go on, unbroken,
 	// before the plugin gives up and reports it through Err. A single failed
@@ -333,28 +341,40 @@ func (p *Plugin) Emit(events ...Event) {
 		body   json.RawMessage
 		events int
 	}
+	// A batch closes at 200 events, or sooner when its encoded size would
+	// pass maxBatchBytes, so every envelope fits a poll.
 	var batches []framed
-	for len(events) > 0 {
-		n := min(len(events), maxEventsPerBatch)
-		batch := make([]map[string]any, 0, n)
-		for _, event := range events[:n] {
-			wire := map[string]any{"t": event.Type}
-			if !event.At.IsZero() {
-				wire["ts"] = stamp(event.At)
-			}
-			if event.Data != nil {
-				wire["data"] = event.Data
-			}
-			batch = append(batch, wire)
-		}
-		encoded, err := json.Marshal(map[string]any{"events": batch})
-		if err != nil {
-			p.fail(fmt.Errorf("testplugin: encode event.batch body: %w", err))
+	var batch [][]byte
+	size := 0
+	flush := func() {
+		if len(batch) == 0 {
 			return
 		}
-		batches = append(batches, framed{encoded, n})
-		events = events[n:]
+		body := append([]byte(`{"events":[`), bytes.Join(batch, []byte(","))...)
+		body = append(body, "]}"...)
+		batches = append(batches, framed{body, len(batch)})
+		batch, size = nil, 0
 	}
+	for _, event := range events {
+		wire := map[string]any{"t": event.Type}
+		if !event.At.IsZero() {
+			wire["ts"] = stamp(event.At)
+		}
+		if event.Data != nil {
+			wire["data"] = event.Data
+		}
+		encoded, err := json.Marshal(wire)
+		if err != nil {
+			p.fail(fmt.Errorf("testplugin: encode event: %w", err))
+			return
+		}
+		if len(batch) > 0 && (len(batch) == maxEventsPerBatch || size+len(encoded)+1 > maxBatchBytes) {
+			flush()
+		}
+		batch = append(batch, encoded)
+		size += len(encoded) + 1
+	}
+	flush()
 	// Queued under one hold of the lock, so the next poll sees every batch
 	// of one Emit at once and frames them within the budget together,
 	// rather than a poll slipping in between with the first one alone.
@@ -549,19 +569,21 @@ func (p *Plugin) beginPoll() (pollRequest, context.Context, context.CancelFunc) 
 
 	request := pollRequest{Ack: p.inAck}
 	batch := p.outbound
-	// Two limits frame a batch: the 200 envelopes every hub accepts, and
-	// the per-poll event budget, which the event.batch envelopes in one poll
-	// must stay within or the hub refuses the ones over it. Either limit
-	// cuts the batch and says more is waiting.
+	// Three limits frame a batch: the 200 envelopes every hub accepts, the
+	// per-poll event budget, which the event.batch envelopes in one poll
+	// must stay within or the hub refuses the ones over it, and the request
+	// body cap. Any of them cuts the batch and says more is waiting; the
+	// first envelope always goes, whatever its size.
 	cut := len(batch)
-	events := 0
+	events, size := 0, 0
 	for i, pending := range batch {
 		if i >= maxBatch {
 			cut = i
 			break
 		}
 		events += pending.events
-		if events > maxEventsPerPoll && i > 0 {
+		size += len(pending.Body) + envelopeOverhead
+		if (events > maxEventsPerPoll || size > maxPollBytes) && i > 0 {
 			cut = i
 			break
 		}

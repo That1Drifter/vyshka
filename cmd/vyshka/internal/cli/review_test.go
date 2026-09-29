@@ -19,9 +19,11 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 	t.Parallel()
 	h := newTestHub(t)
 	const secret = "vya_SLIPPEDTOKENSLIPPEDTOKEN00"
-	// A token is opaque and may hold a backslash, which an error that quotes
-	// its argument escapes: that spelling must go too.
+	// A token is opaque: one may hold a backslash, which an error that quotes
+	// its argument escapes, or a non-ASCII rune, which a duration's error
+	// spells byte by byte. No spelling of any value may come out.
 	const slashy = `vya_SLIPPED\TOKEN`
+	const accented = "vya_SLIPPEDtökén"
 	for _, args := range [][]string{
 		{"---token=" + secret, "version"},
 		{"version", "---token=" + secret},
@@ -29,17 +31,28 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 		{"run", "Anywhere", "x.y", "---token=" + secret},
 		{"version", "--http-timeout", "--token=" + slashy},
 		{"---token=" + slashy, "version"},
+		{"version", "--http-timeout", "--token=" + accented},
+		{"version", "--token", secret, "--http-timeout", accented},
+		// Two spellings at once: the shorter must not spoil the longer.
+		{"--token=vya_", "---token=" + secret, "version"},
 	} {
 		got := h.runWith(runOptions{env: map[string]string{"VYSHKA_TOKEN": ""}}, args...)
 		if got.code != ExitUsage {
 			t.Errorf("%v: %v\nwant exit 1", args, got)
 		}
-		if strings.Contains(got.stdout+got.stderr, "SLIPPED") {
+		if strings.Contains(got.stdout+got.stderr, "SLIPPED") || strings.Contains(got.stdout+got.stderr, "TOKEN") ||
+			strings.Contains(got.stdout+got.stderr, `\x`) {
 			t.Errorf("%v: the token reached the output:\n%v", args, got)
 		}
-		if !strings.Contains(got.stderr, "[redacted]") {
-			t.Errorf("%v: the message does not show where the token was:\n%v", args, got)
+		if !strings.Contains(got.stderr, "[redacted]") || !strings.Contains(got.stderr, "-token") && !strings.Contains(got.stderr, "-http-timeout") {
+			t.Errorf("%v: the message does not say which flag failed, without its value:\n%v", args, got)
 		}
+	}
+	// With no token on the command line, the parser's message keeps its
+	// value, which is what a typo needs.
+	got := h.run("version", "--http-timeout", "soon")
+	if got.code != ExitUsage || !strings.Contains(got.stderr, `"soon"`) {
+		t.Errorf("a plain flag error lost its value: %v", got)
 	}
 }
 
@@ -305,5 +318,59 @@ func TestServerArgumentIsTriedAsIDThenAsName(t *testing.T) {
 	got = h.run("events", "nothing like it")
 	if got.code != ExitUsage || !strings.Contains(got.stderr, idShaped) {
 		t.Errorf("events of an unknown server: %v\nwant exit 1 naming the servers", got)
+	}
+}
+
+// A token bound to particular servers is refused for any id outside its
+// binding before the id is looked up, a name used as one included: the name
+// still resolves through the list of what the token may see.
+func TestBoundTokenResolvesAServerName(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t)
+	p := h.plugin("Livonia")
+	p.pushEvents(event("test.bound", time.Now(), map[string]any{}))
+	p.pushPlayers(time.Now(), map[string]any{"player": map[string]any{"platform": "steam", "id": "1"}, "name": "One"})
+	other := h.plugin("Chernarus")
+	other.pushEvents(event("test.other", time.Now(), map[string]any{}))
+
+	var minted struct {
+		Secret string `json:"secret"`
+	}
+	h.mustCall(http.MethodPost, "/api/v1/tokens", testToken, map[string]any{
+		"name": "one server", "scopes": []string{"servers:read", "events:read"}, "servers": []string{p.serverID},
+	}, &minted, http.StatusCreated)
+	bound := runOptions{env: map[string]string{"VYSHKA_TOKEN": minted.Secret}}
+
+	for _, args := range [][]string{
+		{"events", "Livonia"},
+		{"events", p.serverID},
+		{"state", "Livonia", "players"},
+		{"servers", "show", "Livonia"},
+	} {
+		got := h.runWith(bound, args...)
+		if got.code != ExitOK {
+			t.Errorf("%v with a bound token: %v\nwant exit 0", args, got)
+		}
+	}
+	// The other server is outside the binding by id and invisible by name.
+	got := h.runWith(bound, "events", other.serverID)
+	if got.code != ExitUsage && got.code != ExitRefused {
+		t.Errorf("events of a server outside the binding: %v\nwant a refusal or no match", got)
+	}
+	if strings.Contains(got.stdout, "test.other") {
+		t.Errorf("a bound token read another server's events:\n%v", got)
+	}
+}
+
+// When the name search fails below the protocol, that failure is the
+// answer, not the id probe's not_found.
+func TestNameSearchTransportFailureIsReported(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t)
+	h.createServer("Livonia")
+	h.listFails.Store(true)
+	got := h.run("events", "Livonia")
+	if got.code != ExitTransport {
+		t.Errorf("events by name with the list unreachable: %v\nwant exit 5", got)
 	}
 }

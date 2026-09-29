@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -81,34 +80,59 @@ func (e *env) parse(fs *flag.FlagSet, apply func(), args []string, topic string)
 	return positionals, nil
 }
 
-// redactSecrets removes token values from a flag parser's error message. The
-// parser echoes the offending argument in some of its errors (`bad flag
-// syntax: ---token=...`), and a token typed with a slip of the hand must not
-// reach stderr that way: neutral flag defaults keep it out of help, this
-// keeps it out of the errors.
+// redactSecrets rewrites a flag parser's error message so that no argument
+// value appears in it when the command line carries a token. The parser
+// echoes the offending argument in some of its errors (`bad flag syntax:
+// ---token=...`, `invalid value "..." for flag -x: ...`), in spellings that
+// depend on the formatter (quoted, escaped, or byte-escaped), so the values
+// are dropped rather than searched for: the flag's name is what the user
+// needs to fix the line. A command line with no token on it keeps the
+// parser's message whole, values and all, since nothing on it is secret.
 func redactSecrets(message string, args []string) string {
-	for i, arg := range args {
+	if !argsCarryToken(args) {
+		return message
+	}
+	const (
+		badSyntax    = "bad flag syntax: "
+		invalidValue = "invalid value "
+		invalidBool  = "invalid boolean value "
+	)
+	switch {
+	case strings.HasPrefix(message, badSyntax):
+		arg := strings.TrimPrefix(message, badSyntax)
+		if name, _, inline := strings.Cut(arg, "="); inline {
+			arg = name + "=[redacted]"
+		}
+		return badSyntax + arg
+	case strings.HasPrefix(message, invalidValue) || strings.HasPrefix(message, invalidBool):
+		// `invalid value %q for flag -%s: %v` and its boolean twin; the flag
+		// name runs to the colon that starts the underlying error.
+		for _, marker := range []string{" for flag -", " for -"} {
+			if at := strings.LastIndex(message, marker); at >= 0 {
+				name, _, _ := strings.Cut(message[at+len(marker):], ":")
+				return "invalid value [redacted] for flag -" + name
+			}
+		}
+		return "invalid flag value [redacted]"
+	}
+	// The other messages name a flag, never a value.
+	return message
+}
+
+// argsCarryToken reports whether a token was given on the command line, in
+// any spelling of the flag (`--token X`, `--token=X`, or one with a slip
+// like `---token=X`).
+func argsCarryToken(args []string) bool {
+	for _, arg := range args {
 		if !isFlag(arg) {
 			continue
 		}
-		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
-		if name != "token" {
-			continue
-		}
-		if !inline && i+1 < len(args) {
-			value = args[i+1]
-		}
-		if value == "" {
-			continue
-		}
-		message = strings.ReplaceAll(message, value, "[redacted]")
-		// Some errors quote the argument (`invalid value %q`), which
-		// escapes a backslash or a quote in it: that spelling goes too.
-		if quoted := strconv.Quote(value); quoted != `"`+value+`"` {
-			message = strings.ReplaceAll(message, quoted[1:len(quoted)-1], "[redacted]")
+		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if name == "token" {
+			return true
 		}
 	}
-	return message
+	return false
 }
 
 // leadingGlobals splits the global flags that precede a subcommand name
