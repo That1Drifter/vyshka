@@ -146,14 +146,27 @@ func (e *env) dispatch(args []string) error {
 	}
 	name, commandArgs := rest[0], rest[1:]
 	if name == "help" {
-		if len(commandArgs) > 1 {
+		// Global flags are accepted after help like after any command, and
+		// an argument that is not a known topic is not echoed: what a user
+		// put there by mistake could be anything, a token included.
+		helpFlags := newFlagSet("help")
+		applyHelp := e.g.bind(helpFlags)
+		topics, err := parseFlags(helpFlags, commandArgs, true)
+		if err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return &helpRequest{}
+			}
+			return usagef("%s; run \"vyshka help\" for usage", e.flagMessage(err))
+		}
+		applyHelp()
+		if len(topics) > 1 {
 			return usagef("help takes at most one command name")
 		}
 		topic := ""
-		if len(commandArgs) == 1 {
-			topic = commandArgs[0]
+		if len(topics) == 1 {
+			topic = topics[0]
 			if _, known := helpTexts[topic]; !known {
-				return usagef("no help for %q; run \"vyshka help\" for the commands", topic)
+				return usagef("no help for that; run \"vyshka help\" for the commands")
 			}
 		}
 		return &helpRequest{command: topic}

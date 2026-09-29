@@ -17,7 +17,10 @@ import (
 // answer about this id and is reported as such, rather than hidden behind
 // a name search that could land on a different server.
 func (e *env) resolveServer(c *client.Client, arg string) (client.Server, error) {
-	kind, value := serverArg(arg)
+	kind, value, err := serverArg(arg)
+	if err != nil {
+		return client.Server{}, err
+	}
 	if kind == argName {
 		return e.resolveServerByName(c, value)
 	}
@@ -48,15 +51,20 @@ const (
 // as a name second, which serves an operator at a terminal; a script that
 // must not have the two readings confused (a server could be named like
 // another server's id) writes `id:X` or `name:X`, and gets that reading
-// alone.
-func serverArg(arg string) (argKind, string) {
-	if value, ok := strings.CutPrefix(arg, "id:"); ok {
-		return argID, value
+// alone. An empty value, in any reading, is refused here: a name search for
+// nothing would match every server, and a script with an unset variable in
+// `name:$SERVER` must not land on whichever one is visible.
+func serverArg(arg string) (argKind, string, error) {
+	kind, value := argEither, arg
+	if rest, ok := strings.CutPrefix(arg, "id:"); ok {
+		kind, value = argID, rest
+	} else if rest, ok := strings.CutPrefix(arg, "name:"); ok {
+		kind, value = argName, rest
 	}
-	if value, ok := strings.CutPrefix(arg, "name:"); ok {
-		return argName, value
+	if strings.TrimSpace(value) == "" {
+		return kind, "", usagef("SERVER is empty; pass a server id or name")
 	}
-	return argEither, arg
+	return kind, value, nil
 }
 
 // noteNameFallback says on stderr that an argument the hub refused as an id
@@ -87,6 +95,11 @@ func notAServerForThisToken(err error) bool {
 // case), else the one whose name contains it. Anything short of exactly one
 // match is a usage error listing the candidates.
 func (e *env) resolveServerByName(c *client.Client, arg string) (client.Server, error) {
+	if strings.TrimSpace(arg) == "" {
+		// Guarded again here, since an empty fragment is contained by every
+		// name and would match them all.
+		return client.Server{}, usagef("SERVER is empty; pass a server id or name")
+	}
 	list, err := c.ListServers(e.ctx)
 	if err != nil {
 		return client.Server{}, err
@@ -126,7 +139,10 @@ func (e *env) resolveServerByName(c *client.Client, arg string) (client.Server, 
 // server (a snapshot never accepted, a context not declared): the record is
 // then looked up to tell the two apart before the names are tried.
 func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func(serverID string) error) error {
-	kind, value := serverArg(arg)
+	kind, value, err := serverArg(arg)
+	if err != nil {
+		return err
+	}
 	if kind == argName {
 		server, err := e.resolveServerByName(c, value)
 		if err != nil {
@@ -134,7 +150,7 @@ func (e *env) byIDThenName(c *client.Client, arg string, ambiguous bool, do func
 		}
 		return do(server.ID)
 	}
-	err := do(value)
+	err = do(value)
 	if kind == argID || !notAServerForThisToken(err) {
 		return err
 	}

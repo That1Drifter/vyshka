@@ -63,6 +63,51 @@ func TestMalformedTokenFlagIsRedacted(t *testing.T) {
 	if got.code != ExitUsage || !strings.Contains(got.stderr, `"soon"`) {
 		t.Errorf("a plain flag error lost its value: %v", got)
 	}
+
+	// help takes the global flags too, and never echoes an argument it
+	// does not know as a topic.
+	for _, args := range [][]string{
+		{"help", "--token=" + secret},
+		{"help", "--token", secret, "run"},
+		{"help", "run", "--token=" + secret},
+	} {
+		got := h.run(args...)
+		if got.code != ExitOK || !strings.Contains(got.stdout, "Usage") {
+			t.Errorf("%v: %v\nwant the help text", args, got)
+		}
+		if strings.Contains(got.stdout+got.stderr, "SLIPPED") {
+			t.Errorf("%v: the token reached the output:\n%v", args, got)
+		}
+	}
+	got = h.run("help", secret)
+	if got.code != ExitUsage || strings.Contains(got.stderr, "SLIPPED") {
+		t.Errorf("help with an unknown topic: %v\nwant exit 1 without the argument echoed", got)
+	}
+}
+
+// An empty SERVER, bare or behind a selector, is refused before any lookup:
+// an empty name is contained by every name.
+func TestEmptyServerArgumentIsRefused(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t)
+	p := h.plugin("Only")
+	p.publishManifest(testManifest(1))
+	for _, args := range [][]string{
+		{"run", "name:", "example-mod.ping"},
+		{"run", "id:", "example-mod.ping"},
+		{"run", "", "example-mod.ping"},
+		{"events", "name:"},
+		{"events", "id:"},
+		{"servers", "show", "name: "},
+	} {
+		got := h.run(args...)
+		if got.code != ExitUsage || !strings.Contains(got.stderr, "SERVER is empty") {
+			t.Errorf("%v: %v\nwant exit 1 saying SERVER is empty", args, got)
+		}
+	}
+	if sent := h.dispatches.Load(); sent != 0 {
+		t.Errorf("%d dispatches reached the hub from an empty SERVER", sent)
+	}
 }
 
 // The global flags are accepted between a command and its subcommand too.
