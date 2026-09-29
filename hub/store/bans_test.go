@@ -98,6 +98,17 @@ func TestBanRevisionsDoNotRepeatAcrossARestore(t *testing.T) {
 	if _, err := st.DB().ExecContext(ctx, `UPDATE ban_list SET revision = ?`, before); err != nil {
 		t.Fatal(err)
 	}
+	// The guarantee holds once the clock has moved past everything the hub
+	// minted before the restore (the limit section 13.1 states). Here all
+	// three bans can land inside one millisecond, so wait for the clock to
+	// pass the lost revision rather than let C take max(before+1, now) = lost
+	// again.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().UnixMilli() <= lost; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the clock never passed the pre-restore revision %d", lost)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	after := plantBan(t, st, "C").Revision
 	if after <= lost {
 		t.Errorf("after a restore to %d, the next change took revision %d, not above the %d handed out before the restore", before, after, lost)
