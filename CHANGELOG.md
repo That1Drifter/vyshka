@@ -148,6 +148,16 @@ arrived, since those entries were written for one stream.
   from ungraded to graded, the section 2.3 ack clause from ungraded to partial, and the
   notes of the other rows say what is still out of reach.
 
+#### Fixed
+
+- 2026-09-29: the ban restore test waits for the clock to pass the revision the restore
+  lost before it plants the next ban (issue #140). Revisions are
+  `max(current+1, clock in ms)`, so when all three bans landed in one millisecond the
+  post-restore ban took the lost revision again, and the test failed 33 runs in 300
+  locally; 600 now pass. A real restore always follows the clock past what it lost, so
+  the guarantee under test was never broken, and the test still fails with the clock
+  floor removed from the revision minting.
+
 ### [0.2.0] - 2026-09-23
 
 Everything that landed after 0.1.0: the hub side of the post-release DayZ slices (server
