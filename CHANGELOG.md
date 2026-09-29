@@ -19,6 +19,56 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-29: `vyshka`, a command-line client of the Admin API, and the Go client package
+  under it (issue #138; no protocol change). `cmd/vyshka` is one binary that speaks only
+  the public Admin API and imports nothing from `hub/`, a client like any other, built on
+  `client/`, a hand-written Go client that covers the endpoints the command uses; tokens,
+  audit, bans, and webhooks stay with issue #96, which keeps generation from the OpenAPI
+  document and the TypeScript client. Configuration resolves flag, then environment, then a
+  JSON config file with named profiles (`--url`, `--token`, `--profile`, `--config`,
+  `VYSHKA_URL`, `VYSHKA_TOKEN`, `VYSHKA_PROFILE`, `VYSHKA_CONFIG`), the token taking the
+  `file:` indirection of the hub's `-admin-token` and never printed. The commands are
+  `version` (the client's version and the protocol draft it was written against, 0.33),
+  `health`, `servers` (list, show, create, and reissue the enrollment token), `actions`
+  (the manifest listing, or one action's params schema), `run`, `job`, `state`, `events`,
+  `kv`, `player`, and `contexts`; a server is named by id, by exact name, or by a unique
+  case-insensitive substring, the argument tried as an id first (ids are opaque) and
+  `id:X` or `name:X` asking for one reading alone. `run` types its parameters from the live manifest schema
+  (`k=v` coerced by the declared type, arrays split on commas so a vector is `x,y[,z]`,
+  `k:=json` for what `k=v` cannot say), fails an unknown key or a schema violation before
+  the action is dispatched (the manifest is read first), resolves `--player` against the
+  players snapshot (exact id, else exact
+  name, else a unique case-insensitive substring; several matches are refused and listed)
+  and prints the snapshot's age beside the resolution, asks before a `destructive` action
+  unless `--yes` and refuses without it when stdin is not a terminal (read from the
+  console itself, `GetConsoleMode` on Windows and the `TIOCGWINSZ` ioctl elsewhere, since
+  the null device a script redirects from is a character device too; `golang.org/x/sys`,
+  already in the module graph, becomes a direct dependency for it), and with `--wait`
+  follows the action from queued through delivered and running to a terminal state until
+  `--timeout` or, by default, the action's own expiry plus a few seconds. A retry carrying
+  `--idempotency-key` goes out as written when the manifest has changed underneath it,
+  since the hub answers a retry with the original action (spec section 7), and `events`,
+  `state`, and `contexts` take a server id without reading its record, so a token holding
+  only `events:read` reads a feed by id. It never reads a snapshot back to confirm a move
+  it just made. `events --follow` tails with a 60 s lookback (never below a `--since` the
+  user gave) so a late arrival is not missed, and `--json` prints the hub's object on one
+  line on every command whose answer has a body (`kv delete` prints nothing, and `actions`
+  with no server prints an array the command assembles). Exit codes
+  carry the outcome: 0 success (with `--wait`, completed),
+  1 usage or local error, 2 the action failed, 3 it expired, 4 the hub refused the request,
+  5 transport error, 6 `--wait` ran out of time with the action in flight. The client
+  tolerates unknown fields and prints an unknown state or danger value verbatim, so a
+  newer hub keeps working. Graded by Go tests under `cmd/vyshka` that boot a hub in
+  process and drive the command (`run --wait` through every terminal state and exit code,
+  events, key/value, state, player resolution, confirmation), and a smoke test that builds
+  the binary and runs it against a hub with a long-polling fake plugin; both run with
+  `go test ./...`. The hub release archives carry `vyshka` (`vyshka.exe`) beside
+  `vyshka-hub`: `scripts/release-hub.sh` builds it for every platform with its version
+  linked in and stores both binaries executable (`scripts/archive`'s `-exec` already took
+  a comma-separated list; a test now covers two names), and the release workflow runs the
+  unpacked Linux `vyshka version` and compares its first line with the tag. The container
+  image is unchanged. `cmd/vyshka/README.md` is the reference, and `README.md`,
+  `ROADMAP.md`, `RELEASING.md`, and `.gitignore` follow.
 - 2026-09-23: `conformance/COVERAGE.md` maps every normative clause of the protocol
   document to the conformance checks that grade it (issue #130). One row per MUST, MUST
   NOT, and REQUIRED in the numbered sections, 284 in all, each quoting the clause and

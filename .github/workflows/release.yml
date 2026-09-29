@@ -91,8 +91,11 @@ jobs:
         run: scripts/release-hub.sh "$VERSION"
 
       - name: Grade the Linux binary with the hub conformance suite
-        # The archive that ships, not a rebuild: unpacked, its version
-        # checked, and the same suite CI runs pointed at it.
+        # The archive that ships, not a rebuild: unpacked, the versions of
+        # both binaries in it checked (the hub prints its version alone; the
+        # client prints it on its first line and the protocol draft it was
+        # written against on the second), and the same suite CI runs pointed
+        # at the hub.
         env:
           # Not a secret: this hub exists for the length of one step and
           # listens on loopback.
@@ -105,6 +108,13 @@ jobs:
           reported="$("$bin" version)"
           if [ "$reported" != "$VERSION" ]; then
             echo "the binary reports $reported, expected $VERSION" >&2
+            exit 1
+          fi
+          cli="$RUNNER_TEMP/vyshka-hub_${NUMBER}_linux_amd64/vyshka"
+          cli_output="$("$cli" version)"
+          cli_reported="${cli_output%%$'\n'*}"
+          if [ "$cli_reported" != "$VERSION" ]; then
+            echo "the client reports $cli_reported on its first line, expected $VERSION" >&2
             exit 1
           fi
           "$bin" serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/release.db" &
@@ -180,7 +190,7 @@ jobs:
           {
             echo "Hub $VERSION. The changes are under \"Hub\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
             echo
-            echo "Archives carry the static binary, LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download with \`sha256sum --ignore-missing -c SHA256SUMS\`. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
+            echo "Archives carry two static binaries, the hub (\`vyshka-hub\`) and the \`vyshka\` command-line client for the Admin API (cmd/vyshka/README.md), LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download with \`sha256sum --ignore-missing -c SHA256SUMS\`. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
             echo
             echo "Container image (linux/amd64, linux/arm64):"
             echo

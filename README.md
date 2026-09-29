@@ -82,8 +82,9 @@ document keeps its draft number in its header and has no tag (`RELEASING.md`). A
 release carries:
 
 - `vyshka-hub_<version>_<os>_<arch>.tar.gz` for Linux and macOS (amd64 and arm64) and
-  `vyshka-hub_<version>_windows_amd64.zip`: the static binary, LICENSE, this README, and on
-  Linux the systemd unit with its environment example. `SHA256SUMS` covers all of them, and
+  `vyshka-hub_<version>_windows_amd64.zip`: two static binaries, the hub (`vyshka-hub`) and
+  the `vyshka` command-line client (see below), LICENSE, this README, and on Linux the
+  systemd unit with its environment example. `SHA256SUMS` covers all of them, and
   the binaries rebuild byte-for-byte from the tagged commit with the same Go toolchain.
 - The container image `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and
   linux/arm64: the same binary on a distroless base, running as a non-root user.
@@ -99,6 +100,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -v vyshka-data:/data \
 
 # From source
 go install github.com/That1Drifter/vyshka/hub/cmd/vyshka-hub@latest
+go install github.com/That1Drifter/vyshka/cmd/vyshka@latest
 ```
 
 [`deploy/README.md`](deploy/README.md) has the two reference layouts, the container with
@@ -147,6 +149,26 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-events.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-tokens.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-panel.sh    # then open http://127.0.0.1:8080/
 ```
+
+## Command-line client
+
+`vyshka` is a command-line client of the Admin API: one binary for what an operator or a
+script does with the hub, in place of hand-written curl. It registers servers and mints
+their enrollment tokens, lists a server's actions, dispatches one with its parameters
+checked against the manifest and waits for the outcome (`vyshka run --wait`, one exit code
+per outcome), follows the event feed, reads state snapshots, and works the key/value store.
+It rides in the hub release archives beside `vyshka-hub`, or installs with
+`go install github.com/That1Drifter/vyshka/cmd/vyshka@latest`.
+
+```
+export VYSHKA_URL=http://127.0.0.1:8080 VYSHKA_TOKEN=vya_local_dev_token
+vyshka servers
+vyshka run Livonia vyshka.heal --player Ivan --wait
+vyshka events Livonia --type 'core.player.*' --follow
+```
+
+[`cmd/vyshka/README.md`](cmd/vyshka/README.md) is the reference: configuration, every
+command, output, and exit codes.
 
 ## Why
 

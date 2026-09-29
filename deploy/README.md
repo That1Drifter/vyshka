@@ -61,8 +61,9 @@ are a reason to put a TLS-terminating proxy near the game server, not to open th
 
 For a host without Docker. The Linux release archive
 (`vyshka-hub_<version>_linux_<arch>.tar.gz` from the GitHub release, checked against
-`SHA256SUMS`) carries the binary, `vyshka-hub.service`, and `hub.env.example`; the same two
-files live here for a build from source.
+`SHA256SUMS`) carries the two binaries (`vyshka-hub`, and the `vyshka` command-line client
+of `cmd/vyshka/README.md`), `vyshka-hub.service`, and `hub.env.example`; the same two files
+live here for a build from source.
 
 ```
 tar -xzf vyshka-hub_<version>_linux_amd64.tar.gz && cd vyshka-hub_<version>_linux_amd64

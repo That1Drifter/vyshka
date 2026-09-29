@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Builds the hub's release archives into dist/: one static binary per
-# platform with LICENSE and README beside it, the systemd unit and its
-# environment example in the Linux archives, and SHA256SUMS over all of it.
+# Builds the hub's release archives into dist/: per platform, the hub
+# (vyshka-hub) and the command-line client (vyshka) as static binaries with
+# LICENSE and README beside them, the systemd unit and its environment
+# example in the Linux archives, and SHA256SUMS over all of it.
 #
 #   scripts/release-hub.sh v0.1.0
 #
 # The binaries are reproducible for a given Go toolchain (-trimpath, no cgo,
 # the version linked in) and so are the archives, written by scripts/archive
 # rather than the host's tar or zip: entries sorted, owned by nobody, dated
-# by the commit in UTC (SOURCE_DATE_EPOCH overrides), the binary alone
+# by the commit in UTC (SOURCE_DATE_EPOCH overrides), the two binaries alone
 # executable. The release workflow runs this on a hub-v* tag; run it at the
 # tagged commit with the same Go version, on any host, to check a published
 # archive against the repository.
@@ -37,12 +38,19 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   stage="$dist/$name"
   mkdir -p "$stage"
   bin="vyshka-hub"
+  cli="vyshka"
   if [ "$os" = windows ]; then
     bin="vyshka-hub.exe"
+    cli="vyshka.exe"
   fi
   (cd "$root" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
     -ldflags="-s -w -X github.com/That1Drifter/vyshka/hub.Version=$version" \
     -o "$stage/$bin" ./hub/cmd/vyshka-hub)
+  # The client stamps its own version variable. The hub's -X rides along for
+  # the same tag; the linker ignores it where the hub package is not linked.
+  (cd "$root" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+    -ldflags="-s -w -X github.com/That1Drifter/vyshka/hub.Version=$version -X github.com/That1Drifter/vyshka/client.Version=$version" \
+    -o "$stage/$cli" ./cmd/vyshka)
   cp "$root/LICENSE" "$root/README.md" "$stage/"
   if [ "$os" = linux ]; then
     cp "$root/deploy/vyshka-hub.service" "$root/deploy/hub.env.example" "$stage/"
@@ -51,7 +59,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   if [ "$os" = windows ]; then
     suffix="zip"
   fi
-  (cd "$root" && go run ./scripts/archive -out "$dist/$name.$suffix" -epoch "$epoch" -exec "$bin" "$stage")
+  (cd "$root" && go run ./scripts/archive -out "$dist/$name.$suffix" -epoch "$epoch" -exec "$bin,$cli" "$stage")
   rm -rf "$stage"
 done
 (cd "$dist" && sha256sum -- * > SHA256SUMS)

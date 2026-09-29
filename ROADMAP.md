@@ -1,6 +1,8 @@
 # Roadmap
 
-**As of:** 2026-09-23 (hub 0.2.0 and DayZ plugin 0.8.0 released; the backlog signal of #91
+**As of:** 2026-09-29 (the `vyshka` command-line client of #138 landed, with the
+hand-written Go client package under it, and rides in the hub release archives; hub 0.2.0
+and DayZ plugin 0.8.0 released 2026-09-23; the backlog signal of #91
 landed as protocol draft 0.33: a poll saying `more` is answered at once, so a backlog
 drains a batch per round trip; the installation ban list of #80 landed as protocol draft 0.32: one
 list for every server, pulled a page at a time by each plugin declaring the new `bans`
@@ -321,9 +323,20 @@ spec reader is not surprised.
   trigger, and nothing on this roadmap depends on it: the identity shape froze on DayZ
   evidence and protocol 1.0 gates on a third-party plugin rather than on this project
   writing a second one. A roadmap review reopens it.
+- **Command-line client** (#138): shipped 2026-09-29. `vyshka`, one binary over the Admin
+  API for operators and scripts: servers, the manifest, dispatching an action and waiting
+  for its outcome, events (following them), state snapshots, the key/value store, player
+  profiles, and custom contexts (`cmd/vyshka/README.md`). It is built on a hand-written Go
+  client package at `client/`, speaks only the public Admin API, and is a client like any
+  other, the stance this roadmap takes on bots. It ships in the hub release archives beside
+  `vyshka-hub`. It entered as a proposed item and landed before a review had to rule on
+  it, so nothing is proposed.
 - **Admin API client libraries** (#96): committed 2026-09-17, when the release tooling
-  landed. Generated from `spec/openapi-admin.yaml`, Go and TypeScript first. After the
-  post-release DayZ slices unless a consumer asks sooner.
+  landed. Go and TypeScript first, generated from `spec/openapi-admin.yaml`. The Go side
+  now has a hand-written client, `client/` (#138), that the command-line client consumes;
+  it covers only the endpoints that client uses, and tokens, audit, bans, and webhooks are
+  left to this item. #96 keeps generation from the OpenAPI document and the TypeScript
+  client. After the post-release DayZ slices unless a consumer asks sooner.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, the same
   trigger. A versioned binary third-party implementers can run without cloning this
   repository, and a badge policy for what "conformant" may claim.
