@@ -6,7 +6,7 @@ no tag. Nothing is published by hand.
 
 | Artifact | Its version lives in | Tag | What the tag publishes |
 |---|---|---|---|
-| Hub (the binary, the panel it embeds, the container image) | The tag; linked into the binary (`vyshka-hub version`, `/healthz`) | `hub-v<major>.<minor>.<patch>` | A GitHub release with one archive per platform and `SHA256SUMS`; `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and linux/arm64, plus `:latest` unless the version is a prerelease |
+| Hub (the binary, the panel it embeds, the `vyshka` command-line client, the container image) | The tag; linked into both binaries (`vyshka-hub version`, `/healthz`, `vyshka version`) | `hub-v<major>.<minor>.<patch>` | A GitHub release with one archive per platform and `SHA256SUMS`; `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and linux/arm64, plus `:latest` unless the version is a prerelease |
 | DayZ plugin | `PLUGIN_VERSION` in `plugins/dayz/mod/scripts/3_Game/Vyshka/VyshkaPlugin.c`, which the manifest reports and `mod.cpp` carries | `dayz-plugin-v<version>`, equal to `PLUGIN_VERSION` or the workflow refuses | A GitHub release with `vyshka-dayz-plugin_<version>.zip` (the `@Vyshka` folder), `Vyshka.pbo.sha256`, and `SHA256SUMS` |
 | Protocol document | The header of `spec/protocol.md` (draft number and date until 1.0) | None | Nothing; the document is its own record, and a change lands with the implementation that needs it |
 
@@ -37,9 +37,13 @@ gh run watch
 ```
 
 The workflow tests, builds the archives with `scripts/release-hub.sh`, unpacks the Linux
-archive and runs the hub conformance suite against that binary, uploads the archives,
-builds the image for both platforms, and only then creates the release and pushes the
-image. Afterwards:
+archive, checks that both binaries in it report the tag (`vyshka-hub version`, and the
+first line of `vyshka version`, which puts the protocol draft it was written against on
+the second) and runs the hub conformance suite against the hub binary, uploads the
+archives, builds the image for both platforms, and only then creates the release and
+pushes the image. Each archive carries the `vyshka` command-line client (`cmd/vyshka`)
+beside `vyshka-hub`, built from the same tag for the same platform; the image carries the
+hub alone. Afterwards:
 
 - `gh release view hub-v0.1.0` lists the assets. Download one with `SHA256SUMS` and run
   `sha256sum --ignore-missing -c SHA256SUMS` (the manifest lists every archive; without
