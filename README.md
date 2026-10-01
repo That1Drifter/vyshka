@@ -170,6 +170,22 @@ vyshka events Livonia --type 'core.player.*' --follow
 [`cmd/vyshka/README.md`](cmd/vyshka/README.md) is the reference: configuration, every
 command, output, and exit codes.
 
+## Client libraries
+
+Two libraries cover every operation of the Admin API, for writing a bot, a dashboard, or
+an integration without hand-rolling HTTP:
+
+- **Go**: [`client/`](client/), the package the command-line client is built on
+  (`go get github.com/That1Drifter/vyshka/client`). It is hand-written and held to
+  `spec/openapi-admin.yaml` by its tests: every operation has a method, every request it
+  sends is one the document declares, and every record matches its schema.
+- **TypeScript**: [`client/typescript/`](client/typescript/README.md), generated from the
+  same document and released with the hub as an npm tarball under the hub's version.
+
+Both carry the protocol draft they were built against. CI calls every operation in the
+document through the TypeScript client against a live hub and grades every answer against
+the document, so the hub, the document, and both clients cannot drift apart unnoticed.
+
 ## Why
 
 Server admins who want remote actions, live maps, and event feeds today mostly rely on

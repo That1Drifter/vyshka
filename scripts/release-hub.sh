@@ -2,7 +2,8 @@
 # Builds the hub's release archives into dist/: per platform, the hub
 # (vyshka-hub) and the command-line client (vyshka) as static binaries with
 # LICENSE and README beside them, the systemd unit and its environment
-# example in the Linux archives, and SHA256SUMS over all of it.
+# example in the Linux archives; the TypeScript client's npm tarball; and
+# SHA256SUMS over all of it. Needs Go, and Node.js 20 or later with npm.
 #
 #   scripts/release-hub.sh v0.1.0
 #
@@ -62,6 +63,23 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   (cd "$root" && go run ./scripts/archive -out "$dist/$name.$suffix" -epoch "$epoch" -exec "$bin,$cli" "$stage")
   rm -rf "$stage"
 done
+
+# The TypeScript client of the Admin API (client/typescript) as an npm
+# tarball carrying the hub's version: vyshka-admin-client-<number>.tgz,
+# installed with `npm install <its release URL>`. It is packed from a staged
+# copy, so the tracked package.json keeps its development version, and with
+# the scripts and development dependencies taken out, since neither means
+# anything to an installer. npm pack dates every entry 1985-10-26 and sorts
+# them, so for the locked TypeScript the tarball is the same bytes anywhere.
+ts="$root/client/typescript"
+(cd "$ts" && npm ci --no-audit --no-fund >/dev/null && npm run --silent check-generated && npm run --silent build)
+tsstage="$(mktemp -d)"
+trap 'rm -rf "$tsstage"' EXIT
+cp -R "$ts/dist" "$ts/package.json" "$ts/README.md" "$tsstage/"
+cp "$root/LICENSE" "$tsstage/"
+(cd "$tsstage" && npm pkg set "version=$number" && npm pkg delete scripts devDependencies &&
+  npm pack --ignore-scripts --pack-destination "$dist" >/dev/null)
+
 (cd "$dist" && sha256sum -- * > SHA256SUMS)
 echo "release-hub: built $version with $(go version | awk '{print $3}') into $dist" >&2
 cat "$dist/SHA256SUMS"

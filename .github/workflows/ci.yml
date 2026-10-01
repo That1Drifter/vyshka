@@ -1,10 +1,14 @@
 name: CI
 
-# Three jobs in parallel, because the hub conformance suite holds real
+# Four jobs in parallel, because the hub conformance suite holds real
 # long-polls and waits out real TTLs (about five minutes a pass) and nothing
-# it grades depends on the Go suite or on the other database:
+# it grades depends on the Go suite, the other database, or the TypeScript
+# client:
 #
 #   test                        gofmt, vet, go test (SQLite and Postgres), spec documents
+#   typescript-client           the generated client: freshness, types, and every
+#                               operation against a live hub, graded on the
+#                               OpenAPI document
 #   conformance-sqlite          the hub suite against the built binary on SQLite,
 #                               and the plugin suite against the reference driver
 #   conformance-postgres        the hub suite against a hub on Postgres; pushes to
@@ -178,6 +182,63 @@ jobs:
                       target = target[part]
               print(f"{path}: ok, {len(set(refs))} refs resolved")
           PY
+
+  typescript-client:
+    name: TypeScript client
+    # Every pull request: the generated types must match the OpenAPI document
+    # they were generated from, and the package, driven against a live hub
+    # with the reference plugin driver behind it, calls every operation the
+    # document declares and grades every answer against it (members the
+    # document does not declare included), so a hub that drifts from the
+    # document fails here whichever side moved. About a minute.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client/typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/typescript/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Check the generated files
+        run: npm run check-generated
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build the hub and the reference driver
+        working-directory: .
+        run: |
+          go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
+          go build -o bin/conformance-driver ./conformance/plugin/driver
+
+      - name: Test, the live run included
+        env:
+          # Not a secret: this hub exists for the length of one step and
+          # listens on loopback.
+          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
+          VYSHKA_TEST_TOKEN: vya_ci_admin_token_not_a_secret
+          VYSHKA_TEST_URL: http://127.0.0.1:8090
+          VYSHKA_TEST_LIVE: required
+          VYSHKA_TEST_DRIVER: ${{ github.workspace }}/bin/conformance-driver
+        run: |
+          "$GITHUB_WORKSPACE/bin/vyshka-hub" serve -addr 127.0.0.1:8090 -db "$RUNNER_TEMP/ts.db" &
+          hub_pid=$!
+          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/healthz > /dev/null
+          npm test
 
   conformance-sqlite:
     name: Conformance on SQLite

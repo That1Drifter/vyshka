@@ -6,7 +6,7 @@ no tag. Nothing is published by hand.
 
 | Artifact | Its version lives in | Tag | What the tag publishes |
 |---|---|---|---|
-| Hub (the binary, the panel it embeds, the `vyshka` command-line client, the container image) | The tag; linked into both binaries (`vyshka-hub version`, `/healthz`, `vyshka version`) | `hub-v<major>.<minor>.<patch>` | A GitHub release with one archive per platform and `SHA256SUMS`; `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and linux/arm64, plus `:latest` unless the version is a prerelease |
+| Hub (the binary, the panel it embeds, the `vyshka` command-line client, the TypeScript client package, the container image) | The tag; linked into both binaries (`vyshka-hub version`, `/healthz`, `vyshka version`) and stamped into the TypeScript package's `package.json` | `hub-v<major>.<minor>.<patch>` | A GitHub release with one archive per platform, `vyshka-admin-client-<version>.tgz`, and `SHA256SUMS`; `ghcr.io/that1drifter/vyshka-hub:<version>` for linux/amd64 and linux/arm64, plus `:latest` unless the version is a prerelease |
 | DayZ plugin | `PLUGIN_VERSION` in `plugins/dayz/mod/scripts/3_Game/Vyshka/VyshkaPlugin.c`, which the manifest reports and `mod.cpp` carries | `dayz-plugin-v<version>`, equal to `PLUGIN_VERSION` or the workflow refuses | A GitHub release with `vyshka-dayz-plugin_<version>.zip` (the `@Vyshka` folder), `Vyshka.pbo.sha256`, and `SHA256SUMS` |
 | Protocol document | The header of `spec/protocol.md` (draft number and date until 1.0) | None | Nothing; the document is its own record, and a change lands with the implementation that needs it |
 
@@ -43,7 +43,10 @@ the second) and runs the hub conformance suite against the hub binary, uploads t
 archives, builds the image for both platforms, and only then creates the release and
 pushes the image. Each archive carries the `vyshka` command-line client (`cmd/vyshka`)
 beside `vyshka-hub`, built from the same tag for the same platform; the image carries the
-hub alone. Afterwards:
+hub alone. The release also carries `vyshka-admin-client-<version>.tgz`, the TypeScript
+client (`client/typescript`) packed under the hub's version, which the workflow installs
+into an empty project, checks for the tag's version, and points at the same hub before
+anything is published. Afterwards:
 
 - `gh release view hub-v0.1.0` lists the assets. Download one with `SHA256SUMS` and run
   `sha256sum --ignore-missing -c SHA256SUMS` (the manifest lists every archive; without
@@ -62,7 +65,9 @@ hub alone. Afterwards:
   The binaries match byte for byte from a checkout that honours `.gitattributes` (every
   text file LF, which is what the embedded panel files and the packed README need), and
   so do the archives on any host, because `scripts/archive` writes them rather than the
-  host's tar or zip.
+  host's tar or zip. The TypeScript tarball needs Node.js 20 or later as well; npm pack
+  dates and orders its entries itself, so it matches for the TypeScript version the
+  package lock pins.
 
 ## The DayZ plugin
 

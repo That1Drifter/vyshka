@@ -6,6 +6,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
 	github.com/jackc/pgx/v5 v5.11.0
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.56.0
 )

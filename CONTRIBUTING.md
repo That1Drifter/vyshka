@@ -53,6 +53,12 @@ technical quality.
   that targets `main`, CI runs the Go suite on both databases, the hub conformance suite
   against a hub on SQLite, and the plugin conformance suite against the reference driver;
   a push to `main` also runs the hub suite against a hub on Postgres.
+- An Admin API change edits `spec/openapi-admin.yaml` in the same PR, regenerates the
+  TypeScript client (`npm run generate` in `client/typescript`), and gives the Go client
+  (`client/`) a method or a field for it. Tests fail on each half that is missed: a hub
+  route the document lacks, stale generated types, an operation without a Go method, a
+  record that does not match its schema, and, in the TypeScript client's live run, a
+  hub answer the document does not describe.
 
 ## License
 

@@ -331,12 +331,20 @@ spec reader is not surprised.
   other, the stance this roadmap takes on bots. It ships in the hub release archives beside
   `vyshka-hub`. It entered as a proposed item and landed before a review had to rule on
   it, so nothing is proposed.
-- **Admin API client libraries** (#96): committed 2026-09-17, when the release tooling
-  landed. Go and TypeScript first, generated from `spec/openapi-admin.yaml`. The Go side
-  now has a hand-written client, `client/` (#138), that the command-line client consumes;
-  it covers only the endpoints that client uses, and tokens, audit, bans, and webhooks are
-  left to this item. #96 keeps generation from the OpenAPI document and the TypeScript
-  client. After the post-release DayZ slices unless a consumer asks sooner.
+- **Admin API client libraries** (#96): shipped 2026-09-30, committed 2026-09-17 when the
+  release tooling landed. Go and TypeScript, each covering every operation of
+  `spec/openapi-admin.yaml`. The scope questions settled as follows. Generator: the
+  TypeScript client is generated (openapi-typescript for the types, openapi-fetch for the
+  requests), while the Go client (`client/`, begun for the command-line client in #138)
+  stays hand-written and a test holds it to the document, since it already did what a
+  generated one could not (dot-segment identities, the hub's own JSON kept beside every
+  record). Publishing: the TypeScript package is a tarball on each hub release under the
+  hub's version, and the Go client is `go get` from this module; an npm registry can come
+  later without changing the package. Versioning: both carry the protocol draft they were
+  built against, and the TypeScript package the OpenAPI document's version too. CI calls
+  every operation through the TypeScript client against a live hub and grades every
+  answer against the document, which is how the document's four missing operations and a
+  server record's empty link state came to light.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, the same
   trigger. A versioned binary third-party implementers can run without cloning this
   repository, and a badge policy for what "conformant" may claim.

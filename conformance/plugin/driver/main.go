@@ -502,11 +502,15 @@ func (d *driver) run(game string) {
 			if !d.telemetrySent {
 				// One batch and one snapshot, once per process, so the
 				// harness has telemetry to grade (spec section 8). A real
-				// plugin publishes as its game produces them.
+				// plugin publishes as its game produces them. The hello
+				// names the snapshot's player as a top-level member, so a
+				// hub's player profile (section 8.6) has an event to show.
 				now := time.Now().UTC().Format(time.RFC3339)
 				d.send("event.batch", map[string]any{"events": []map[string]any{
 					{"t": "core.server.start", "ts": now, "data": map[string]any{"game": game}},
-					{"t": "conformance-driver.hello", "ts": now},
+					{"t": "conformance-driver.hello", "ts": now, "data": map[string]any{
+						"player": map[string]any{"platform": "conformance", "id": "driver-1"},
+					}},
 				}})
 				d.send("state.players", map[string]any{
 					"capturedAt": now,
