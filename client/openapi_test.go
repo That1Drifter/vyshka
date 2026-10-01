@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -597,6 +598,17 @@ func TestEveryRequestIsOneTheDocumentDeclares(t *testing.T) {
 // value, must satisfy its schema.
 func (api *openAPI) queryFaults(param map[string]any, values []string) []string {
 	schema := api.resolve(param["schema"])
+	// A keyword this check does not grade is a fault rather than a pass: the
+	// document could constrain a parameter in a way no test here would see.
+	graded := scalarKeywords
+	if schema["type"] == "array" {
+		graded = arrayKeywords
+	}
+	for keyword := range schema {
+		if !graded[keyword] {
+			return []string{fmt.Sprintf("has a schema using %s, which this check does not grade; teach it", keyword)}
+		}
+	}
 	if schema["type"] != "array" {
 		if len(values) != 1 {
 			return []string{fmt.Sprintf("is sent %d times, and the document declares one value", len(values))}
@@ -644,6 +656,20 @@ func (api *openAPI) queryFaults(param map[string]any, values []string) []string 
 	return faults
 }
 
+// The schema keywords queryFaults and queryValueFault grade, for a list
+// parameter and for a single value (a list's items included); the
+// annotations carry no constraint.
+var (
+	arrayKeywords = map[string]bool{
+		"type": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true,
+		"default": true, "description": true, "example": true, "examples": true,
+	}
+	scalarKeywords = map[string]bool{
+		"type": true, "enum": true, "format": true, "pattern": true, "minLength": true, "maxLength": true,
+		"minimum": true, "maximum": true, "default": true, "description": true, "example": true, "examples": true,
+	}
+)
+
 // schemaNumber reads a numeric schema keyword, which YAML decodes as an int
 // or a float64 depending on how the document spells it.
 func schemaNumber(v any) (float64, bool) {
@@ -658,6 +684,24 @@ func schemaNumber(v any) (float64, bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// exactNumber is schemaNumber without the rounding: the keyword as an exact
+// rational, from an integer exactly and from a float64 at its exact value.
+func exactNumber(v any) (*big.Rat, bool) {
+	switch n := v.(type) {
+	case int:
+		return new(big.Rat).SetInt64(int64(n)), true
+	case int64:
+		return new(big.Rat).SetInt64(n), true
+	case uint64:
+		return new(big.Rat).SetUint64(n), true
+	case float64:
+		if r := new(big.Rat).SetFloat64(n); r != nil {
+			return r, true
+		}
+	}
+	return nil, false
 }
 
 // queryValueFault checks one query value against its parameter's schema:
@@ -675,19 +719,22 @@ func queryValueFault(schema map[string]any, value string) string {
 		if err != nil {
 			return "is not an integer"
 		}
-		for keyword, inside := range map[string]func(float64) bool{
-			"minimum": func(bound float64) bool { return float64(n) >= bound },
-			"maximum": func(bound float64) bool { return float64(n) <= bound },
+		// Compared as exact rationals: a float64 of the value would round
+		// anything past 2^53 onto a neighbouring bound.
+		value := new(big.Rat).SetInt64(n)
+		for keyword, inside := range map[string]func(int) bool{
+			"minimum": func(cmp int) bool { return cmp >= 0 },
+			"maximum": func(cmp int) bool { return cmp <= 0 },
 		} {
 			raw, ok := schema[keyword]
 			if !ok {
 				continue
 			}
-			bound, isNumber := schemaNumber(raw)
+			bound, isNumber := exactNumber(raw)
 			if !isNumber {
 				return fmt.Sprintf("has a %s of %v, which is not a number", keyword, raw)
 			}
-			if !inside(bound) {
+			if !inside(value.Cmp(bound)) {
 				return fmt.Sprintf("is outside its %s of %v", keyword, raw)
 			}
 		}
@@ -931,4 +978,24 @@ func (api *openAPI) structFaults(operation string, goType reflect.Type, schema m
 	}
 	sort.Strings(faults)
 	return faults
+}
+
+// Integer bounds compare exactly, past where a float64 can tell neighbours
+// apart, and a bound spelled as a float still bounds.
+func TestQueryValueBoundsAreExact(t *testing.T) {
+	for _, tc := range []struct {
+		schema map[string]any
+		value  string
+		fault  bool
+	}{
+		{map[string]any{"type": "integer", "maximum": 9007199254740992}, "9007199254740993", true},
+		{map[string]any{"type": "integer", "maximum": 9007199254740992}, "9007199254740992", false},
+		{map[string]any{"type": "integer", "minimum": -9007199254740992}, "-9007199254740993", true},
+		{map[string]any{"type": "integer", "minimum": 11.0}, "10", true},
+		{map[string]any{"type": "integer", "minimum": 10.5}, "11", false},
+	} {
+		if got := queryValueFault(tc.schema, tc.value) != ""; got != tc.fault {
+			t.Errorf("%v against %v: fault %v, want %v", tc.value, tc.schema, got, tc.fault)
+		}
+	}
 }
