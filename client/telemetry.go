@@ -90,6 +90,23 @@ func (c *Client) PlayerActions(ctx context.Context, platform, playerID string, q
 	return page, err
 }
 
+// CreatePlayerNote writes a note on one identity and returns it as stored.
+// Requires notes:write.
+func (c *Client) CreatePlayerNote(ctx context.Context, platform, playerID, text string) (Note, error) {
+	var answer struct {
+		Note Note `json:"note"`
+	}
+	err := c.do(ctx, http.MethodPost, []string{"api", "v1", "players", platform, playerID, "notes"},
+		nil, map[string]string{"text": text}, &answer)
+	return answer.Note, err
+}
+
+// DeletePlayerNote deletes one note. There is no edit. Requires notes:write.
+func (c *Client) DeletePlayerNote(ctx context.Context, platform, playerID, noteID string) error {
+	return c.do(ctx, http.MethodDelete, []string{"api", "v1", "players", platform, playerID, "notes", noteID},
+		nil, nil, nil)
+}
+
 // PlayerNotes reads the operator notes on one identity, newest first.
 func (c *Client) PlayerNotes(ctx context.Context, platform, playerID string, query PageQuery) (NotePage, error) {
 	var page NotePage

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.12.0
+  version: 0.13.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
@@ -51,6 +51,10 @@ tags:
       The installation ban list (spec section 13): one list for every server,
       pulled by each plugin that declares the `bans` capability. Records are
       kept after a lift or an expiry.
+  - name: webhooks
+    description: |
+      Registering, editing, pausing, and deleting webhooks, and reading and
+      replaying their deliveries (spec section 11).
   - name: kv
     description: |
       The per-mod key/value store (spec section 12), the same operations the
@@ -1268,6 +1272,74 @@ paths:
         required: true
         schema:
           type: string
+    patch:
+      tags: [webhooks]
+      operationId: updateWebhook
+      summary: Edit a webhook's registration in place, or pause and resume it.
+      description: |
+        Requires `webhooks:manage` (spec section 11.2). An absent member leaves
+        that field unchanged and a present one replaces it whole; `url`,
+        `events`, `serverIds`, `template`, and `redact` are validated exactly as
+        at registration. A body naming no member this draft knows, an empty
+        body included, is `bad_request`. The coverage rule is re-applied to the
+        resulting subscription, and an edit that changes `url` must also be
+        covered for the type of every delivery still pending. `paused: true`
+        sets `pausedAt` (pausing twice does not move it), `paused: false`
+        clears it. The secret is never rotated or returned by an edit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  maxLength: 2048
+                events:
+                  type: array
+                  maxItems: 20
+                  items: { $ref: "#/components/schemas/EventPattern" }
+                serverIds:
+                  type: array
+                  maxItems: 50
+                  items: { type: string }
+                template:
+                  type: string
+                  enum: [generic-json, discord]
+                redact:
+                  type: array
+                  maxItems: 20
+                  items: { $ref: "#/components/schemas/RedactPath" }
+                paused:
+                  type: boolean
+                  description: Pause (true) or resume (false) delivery attempts.
+            example:
+              paused: true
+      responses:
+        "200":
+          description: The registration as it stands after the edit, without the secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhook]
+                properties:
+                  webhook: { $ref: "#/components/schemas/WebhookRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            Missing `webhooks:manage`, or the token's grants do not cover the
+            resulting subscription or, on a change of `url`, a pending delivery.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such webhook, or a serverIds entry names no server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     delete:
       tags: [webhooks]
       operationId: deleteWebhook
@@ -1332,6 +1404,115 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/webhooks/{webhookId}/deliveries/{deliveryId}/replay:
+    parameters:
+      - name: webhookId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: deliveryId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [webhooks]
+      operationId: replayWebhookDelivery
+      summary: Re-arm one delivery for a further attempt.
+      description: |
+        Requires `webhooks:manage`, and coverage of the delivery's type as for
+        a filter naming exactly it (spec section 11.5). Sets the delivery back
+        to `pending` with `nextAttemptAt` now and clears `deliveredAt`; the
+        id, the stored body, and so the signature are unchanged, and
+        `attempts`, `lastStatus`, and `lastError` stand until the next attempt
+        overwrites them. Allowed in every state. The request carries no body;
+        one sent anyway is ignored.
+      responses:
+        "202":
+          description: The delivery as re-armed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Missing `webhooks:manage`, or the token is not covered for the delivery's type.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such webhook, or no delivery of that id on it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/kv:
+    get:
+      tags: [kv]
+      operationId: listKVNamespaces
+      summary: List the namespaces holding live keys the token may read.
+      description: |
+        Requires some `kv:rw` grant. Every namespace that holds at least one
+        live key and that the token's grants cover, name ascending, with its
+        live key count (spec section 12.2). A namespace the grants do not
+        cover is omitted rather than refused. Not paged.
+      responses:
+        "200":
+          description: The namespaces.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KVNamespaceList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/kv/{namespace}:
+    parameters:
+      - $ref: "#/components/parameters/KVNamespace"
+    get:
+      tags: [kv]
+      operationId: listKVKeys
+      summary: List one page of a namespace's live keys, key ascending.
+      description: |
+        Requires `kv:rw:{namespace}`. Keys in byte order, without their values;
+        an expired key never appears (spec section 12.2).
+      parameters:
+        - name: prefix
+          in: query
+          required: false
+          description: |
+            A literal prefix of the key, not a pattern. A prefix drawn outside
+            the key alphabet matches nothing rather than failing.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Page size. Values above the hub's cap (500) are clamped
+            rather than refused, so the schema declares no maximum a
+            validating client would enforce for the server.
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          description: An opaque nextCursor from a previous page. Never parse or construct one.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of keys.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KVKeyPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/v1/kv/{namespace}/{key}:
     parameters:
@@ -1632,19 +1813,20 @@ components:
               referenceKey: { type: string, minLength: 1, maxLength: 128 }
               label: { type: string, maxLength: 200 }
               position:
-                type: array
-                minItems: 2
-                maxItems: 3
-                items: { type: number }
-                nullable: true
+                oneOf:
+                  - type: array
+                    minItems: 2
+                    maxItems: 3
+                    items: { type: number }
+                  - type: "null"
               data:
-                type: object
-                additionalProperties: true
-                nullable: true
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - type: "null"
             additionalProperties: true
         reason:
-          type: string
-          nullable: true
+          oneOf: [{ type: string }, { type: "null" }]
           description: |
             The plugin's reason when it sent one (a context it does not
             declare, a list that did not fit in one reply), null otherwise.
@@ -1995,6 +2177,9 @@ components:
         createdAt:
           type: string
           format: date-time
+        pausedAt:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: When the webhook was paused, or null while it is active (spec section 11.2).
 
     RedactPath:
       type: string
@@ -2041,9 +2226,8 @@ components:
           format: date-time
           description: Present while the delivery is pending.
         deliveredAt:
-          type: string
-          format: date-time
-          nullable: true
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+          description: When the delivery succeeded; null until it does, and again after a replay.
 
     StateSnapshot:
       type: object
@@ -2091,6 +2275,47 @@ components:
           type: string
           format: date-time
           description: Present only when the key carries a TTL.
+
+    KVKeyPage:
+      type: object
+      description: One page of a namespace's live keys (spec section 12.2); values are not included.
+      required: [namespace, keys]
+      properties:
+        namespace: { type: string }
+        keys:
+          type: array
+          description: Key ascending, in byte order.
+          items:
+            type: object
+            required: [key, revision]
+            properties:
+              key: { type: string }
+              revision: { type: integer, minimum: 1 }
+              expiresAt:
+                type: string
+                format: date-time
+                description: Present only when the key carries a TTL.
+        nextCursor:
+          type: string
+          description: Opaque position to resume from. Absent on the last page.
+
+    KVNamespaceList:
+      type: object
+      description: The namespaces holding live keys the token's grants cover (spec section 12.2). Never paged.
+      required: [namespaces]
+      properties:
+        namespaces:
+          type: array
+          description: Name ascending.
+          items:
+            type: object
+            required: [namespace, keys]
+            properties:
+              namespace: { type: string }
+              keys:
+                type: integer
+                minimum: 1
+                description: How many live keys the namespace holds.
 
     KVWriteResult:
       type: object

@@ -2,11 +2,11 @@
 // operator-facing half of the protocol (spec/protocol.md, with
 // spec/openapi-admin.yaml as its machine-readable companion).
 //
-// It is hand-written and covers what the vyshka command needs: health, server
-// records and enrollment tokens, manifests, context enumeration, action
-// dispatch and observation, the event feed, state snapshots, the key/value
-// store, and player profiles. Tokens, the audit log, bans, and webhooks are
-// out of scope for now; issue 96 tracks a full generated client.
+// It is hand-written and covers every operation of the Admin API document,
+// one method each, plus the hub's health check and a wait for an action's
+// outcome. A test in this package holds it to the document: every operation
+// has a method, every request it sends is one the document declares, and
+// every record's members match the schema it decodes.
 //
 // Every method takes a context first. A refusal from the hub comes back as
 // *Error, carrying the protocol error code to branch on; a failure to reach

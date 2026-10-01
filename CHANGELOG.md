@@ -19,6 +19,39 @@ arrived, since those entries were written for one stream.
 
 #### Added
 
+- 2026-09-30: Admin API client libraries for Go and TypeScript, every operation of
+  `spec/openapi-admin.yaml` in each (issue #96; no protocol change). The Go client
+  (`client/`) stays hand-written and grows to cover the whole document: tokens
+  (`ListTokens`, `CreateToken`, `RevokeToken`), the audit log (`ListAudit`), bans
+  (`ListBans`, `CreateBan`, `GetBan`, `LiftBan`), webhooks (`ListWebhooks`,
+  `CreateWebhook`, `UpdateWebhook`, `DeleteWebhook`, `WebhookDeliveries`,
+  `ReplayDelivery`), note writes (`CreatePlayerNote`, `DeletePlayerNote`), and raw
+  envelopes (`QueueEnvelope`); `UpdateWebhook` sends a pointer to a nil slice as `[]`,
+  since the hub reads `null` as absent. A test parses the document and holds the client to
+  it in place of generation: every operation has a method and every exported method an
+  operation; each method, called with every option set against a recording server, sends a
+  path and method that resolve to its operation alone, every query parameter and body
+  member the operation declares and nothing else; and each record type has the members of
+  the schema it decodes or encodes, of matching JSON types, a nullable member held in a
+  type that can hold null. Another test grades the new methods against a hub booted in
+  process. The TypeScript client (`client/typescript`, `@vyshka/admin-client`) is
+  generated: openapi-typescript writes its types from the document (`npm run generate`;
+  CI fails when the committed output is stale), openapi-fetch carries the requests, and a
+  thin layer adds a constructor that refuses an unusable URL or token and does not follow
+  redirects, path parameters refused locally when empty, `.`, or `..` (fetch's URL parser
+  would resolve them to another route), `unwrap` throwing `AdminApiError` with the
+  protocol error code, and `waitForAction`. It runs anywhere `fetch` does, carries
+  `PROTOCOL_DRAFT` and `OPENAPI_VERSION`, and is released with the hub as
+  `vyshka-admin-client-<version>.tgz` on the hub's GitHub release under the hub's version
+  (`scripts/release-hub.sh` packs it reproducibly; the release workflow installs the
+  tarball and points it at the graded hub before publishing). No npm registry. A new CI
+  job, TypeScript client, runs its live test: every operation in the document called
+  through the package against a hub with the reference plugin driver enrolled, every
+  answer graded against the document by a JSON Schema validator plus a check that refuses
+  any member the document does not declare, and the run failing if an operation went
+  uncalled. `TestAdminRoutesAreTheOpenAPIOperations` reads the hub's routes and fails on a
+  route the document lacks or an operation the hub does not serve. `go.yaml.in/yaml/v3`
+  joins the module for the tests that read the document.
 - 2026-09-29: `vyshka`, a command-line client of the Admin API, and the Go client package
   under it (issue #138; no protocol change). `cmd/vyshka` is one binary that speaks only
   the public Admin API and imports nothing from `hub/`, a client like any other, built on
@@ -105,6 +138,15 @@ arrived, since those entries were written for one stream.
 
 #### Changed
 
+- 2026-09-30: `spec/openapi-admin.yaml` 0.13.0 catches up with the hub (issue #96). It
+  gains the four Admin API operations the hub served and the document never declared:
+  `updateWebhook` (`PATCH /api/v1/webhooks/{webhookId}`), `replayWebhookDelivery`,
+  `listKVNamespaces` (`GET /api/v1/kv`), and `listKVKeys` (`GET /api/v1/kv/{namespace}`),
+  with the `KVKeyPage` and `KVNamespaceList` schemas; `WebhookRecord` gains `pausedAt`;
+  and the four members written with OpenAPI 3.0's `nullable: true`, which a 3.1 document
+  ignores (`ContextEntries` `position`, `data`, and `reason`, and
+  `WebhookDelivery.deliveredAt`), become `oneOf` with null, so a generator types them as
+  the null the hub sends. The `webhooks` tag is declared. The protocol text is unchanged.
 - 2026-09-23: three webhook tests prove their negatives by ordering instead of a fixed
   sleep (issue #131). A non-matching type, pre-registration history, and a paused
   webhook's delivery are each followed by traffic that must be delivered, and the
@@ -150,6 +192,11 @@ arrived, since those entries were written for one stream.
 
 #### Fixed
 
+- 2026-09-30: creating a server answers with `linkState` `unknown`, as every later read
+  does (issue #96). The store returned the record it had built before the insert, which
+  left the link state empty where the column default fills it in, so the 201 carried
+  `"linkState": ""`, a value spec section 11.1 does not have. The TypeScript client's live
+  run found it; `TestCreatedServerRecordMatchesARead` holds the 201 record equal to a read.
 - 2026-09-29: the ban restore test waits for the clock to pass the revision the restore
   lost before it plants the next ban (issue #140). Revisions are
   `max(current+1, clock in ms)`, so when all three bans landed in one millisecond the

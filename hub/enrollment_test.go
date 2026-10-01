@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -508,6 +509,33 @@ func TestCreateServerValidatesInput(t *testing.T) {
 	if code := errorCode(t, server, http.MethodPost, "/api/v1/servers", testAdminToken,
 		map[string]any{"name": "   "}, http.StatusBadRequest); code != "bad_request" {
 		t.Errorf("blank name: code = %q, want bad_request", code)
+	}
+}
+
+// The record a creation answers with is the record a read returns: a new
+// server's link is unknown (spec section 11.1) in the 201 as on every GET,
+// not an empty string the store's column default fills in only later.
+func TestCreatedServerRecordMatchesARead(t *testing.T) {
+	server := newTestServer(t)
+
+	var created struct {
+		Server map[string]any `json:"server"`
+	}
+	if status := call(t, server, http.MethodPost, "/api/v1/servers", testAdminToken,
+		map[string]any{"name": "fresh", "game": "dayz"}, &created); status != http.StatusCreated {
+		t.Fatalf("create server: status = %d, want 201", status)
+	}
+	if got := created.Server["linkState"]; got != "unknown" {
+		t.Errorf("created linkState = %v, want unknown", got)
+	}
+
+	var read map[string]any
+	if status := call(t, server, http.MethodGet, "/api/v1/servers/"+created.Server["id"].(string),
+		testAdminToken, nil, &read); status != http.StatusOK {
+		t.Fatalf("read server: status = %d, want 200", status)
+	}
+	if !reflect.DeepEqual(created.Server, read) {
+		t.Errorf("the 201 record differs from a read:\n created %v\n    read %v", created.Server, read)
 	}
 }
 

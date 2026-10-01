@@ -1,0 +1,48 @@
+{
+  "name": "@vyshka/admin-client",
+  "version": "0.0.0-dev",
+  "description": "TypeScript client for the Admin API of a Vyshka hub, generated from spec/openapi-admin.yaml.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/That1Drifter/vyshka.git",
+    "directory": "client/typescript"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "check-generated": "node scripts/generate.mjs --check",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && npm run build && tsc -p tsconfig.test.json",
+    "test": "npm run build && node --test test/*.test.ts",
+    "prepack": "npm run check-generated && npm run build"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "yaml": "2.9.1"
+  }
+}

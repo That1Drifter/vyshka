@@ -80,6 +80,12 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/typescript/package-lock.json
+
       - name: Test
         env:
           VYSHKA_E2E: required
@@ -121,6 +127,26 @@ jobs:
           hub_pid=$!
           trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
           go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+
+          # The TypeScript client's tarball that ships, installed into an
+          # empty project: it must carry the tag's version and reach the
+          # same hub.
+          app="$RUNNER_TEMP/ts-client"
+          mkdir -p "$app"
+          cd "$app"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE/dist/vyshka-admin-client-$NUMBER.tgz" >/dev/null
+          installed="$(node -p 'require("@vyshka/admin-client/package.json").version')"
+          if [ "$installed" != "$NUMBER" ]; then
+            echo "the TypeScript client tarball says $installed, expected $NUMBER" >&2
+            exit 1
+          fi
+          VYSHKA_URL=http://127.0.0.1:8080 node --input-type=module -e '
+            import { createAdminClient, unwrap, PROTOCOL_DRAFT } from "@vyshka/admin-client";
+            const client = createAdminClient({ baseUrl: process.env.VYSHKA_URL, token: process.env.VYSHKA_ADMIN_TOKEN });
+            const { servers } = await unwrap(client.GET("/api/v1/servers"));
+            console.log(`the TypeScript client reads ${servers.length} server records (protocol draft ${PROTOCOL_DRAFT})`);
+          '
 
       - uses: actions/upload-artifact@v4
         with:
@@ -184,6 +210,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.meta.outputs.version }}
+          NUMBER: ${{ steps.meta.outputs.number }}
           PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -191,6 +218,8 @@ jobs:
             echo "Hub $VERSION. The changes are under \"Hub\" in [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
             echo
             echo "Archives carry two static binaries, the hub (\`vyshka-hub\`) and the \`vyshka\` command-line client for the Admin API (cmd/vyshka/README.md), LICENSE, README, and on Linux the systemd unit with its environment example (deploy/README.md). Check a download with \`sha256sum --ignore-missing -c SHA256SUMS\`. Built with $(go version | awk '{print $3}'): the same toolchain at this commit rebuilds the same binaries (scripts/release-hub.sh)."
+            echo
+            echo "\`vyshka-admin-client-$NUMBER.tgz\` is the TypeScript client of the Admin API (client/typescript/README.md), generated from the OpenAPI document at this tag: \`npm install https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/vyshka-admin-client-$NUMBER.tgz\`."
             echo
             echo "Container image (linux/amd64, linux/arm64):"
             echo

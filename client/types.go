@@ -604,3 +604,318 @@ func (p *NotePage) UnmarshalJSON(data []byte) error {
 	type plain NotePage
 	return jsonUnmarshalRaw(data, (*plain)(p), &p.Raw)
 }
+
+// EnvelopeRequest is the body of a raw envelope queue: a namespaced type and
+// an object body, nil sent as nothing so the hub's default {} applies. The
+// type families the hub models itself (action.*, manifest.*) are refused.
+type EnvelopeRequest struct {
+	Type string         `json:"type"`
+	Body map[string]any `json:"body,omitempty"`
+}
+
+// QueuedEnvelope is a queued envelope as the hub assigned it. It has no
+// sequence number yet: those belong to the session that delivers it.
+type QueuedEnvelope struct {
+	ID   string          `json:"id"`
+	Type string          `json:"type"`
+	TS   time.Time       `json:"ts"`
+	Raw  json.RawMessage `json:"-"`
+}
+
+func (e *QueuedEnvelope) UnmarshalJSON(data []byte) error {
+	type plain QueuedEnvelope
+	return jsonUnmarshalRaw(data, (*plain)(e), &e.Raw)
+}
+
+// Token is an Admin API credential's record (spec section 10). It never
+// carries the secret.
+type Token struct {
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Scopes []string `json:"scopes"`
+	// Servers is the server binding; empty for an unbound token.
+	Servers   []string  `json:"servers"`
+	CreatedAt time.Time `json:"createdAt"`
+	// CreatedBy is the id of the token that minted this one, empty when a
+	// bootstrap credential did.
+	CreatedBy string `json:"createdBy,omitempty"`
+	// ExpiresAt is nil for a token that does not expire on its own.
+	ExpiresAt *time.Time `json:"expiresAt"`
+	// RevokedAt is nil while the token is live.
+	RevokedAt *time.Time      `json:"revokedAt"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+func (t *Token) UnmarshalJSON(data []byte) error {
+	type plain Token
+	return jsonUnmarshalRaw(data, (*plain)(t), &t.Raw)
+}
+
+// TokenList is the answer to a token listing, newest first, revoked and
+// expired records included.
+type TokenList struct {
+	Tokens []Token         `json:"tokens"`
+	Raw    json.RawMessage `json:"-"`
+}
+
+func (l *TokenList) UnmarshalJSON(data []byte) error {
+	type plain TokenList
+	return jsonUnmarshalRaw(data, (*plain)(l), &l.Raw)
+}
+
+// CreateTokenRequest is the body of a token mint. Servers empty mints an
+// unbound token; ExpiresInSeconds zero mints one that does not expire.
+type CreateTokenRequest struct {
+	Name             string   `json:"name"`
+	Scopes           []string `json:"scopes"`
+	Servers          []string `json:"servers,omitempty"`
+	ExpiresInSeconds int64    `json:"expiresInSeconds,omitempty"`
+}
+
+// CreatedToken is a minted token's record and its secret, which the hub
+// keeps only a digest of: this is the only time the secret is available.
+type CreatedToken struct {
+	Token  Token           `json:"token"`
+	Secret string          `json:"secret"`
+	Raw    json.RawMessage `json:"-"`
+}
+
+func (c *CreatedToken) UnmarshalJSON(data []byte) error {
+	type plain CreatedToken
+	return jsonUnmarshalRaw(data, (*plain)(c), &c.Raw)
+}
+
+// AuditQuery filters one page of the audit log. Zero values are left out.
+type AuditQuery struct {
+	TokenID  string
+	ServerID string
+	// Since is inclusive and Until exclusive, both on the entry's time.
+	Since, Until *time.Time
+	Limit        int
+	Cursor       string
+}
+
+// AuditRecord is one authenticated mutation (spec section 10.5), refused
+// ones included.
+type AuditRecord struct {
+	ID string    `json:"id"`
+	At time.Time `json:"at"`
+	// TokenID is empty for a bootstrap credential; TokenName is the name the
+	// credential had at the time.
+	TokenID   string `json:"tokenId"`
+	TokenName string `json:"tokenName"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	Status    int    `json:"status"`
+	SourceIP  string `json:"sourceIp"`
+	// PayloadDigest is the request body's SHA-256 in lowercase hex, empty
+	// when there was none or it was never read.
+	PayloadDigest string          `json:"payloadDigest"`
+	ServerID      string          `json:"serverId,omitempty"`
+	Detail        map[string]any  `json:"detail"`
+	Raw           json.RawMessage `json:"-"`
+}
+
+func (r *AuditRecord) UnmarshalJSON(data []byte) error {
+	type plain AuditRecord
+	return jsonUnmarshalRaw(data, (*plain)(r), &r.Raw)
+}
+
+// AuditPage is one page of the audit log, newest first.
+type AuditPage struct {
+	Records    []AuditRecord   `json:"records"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+func (p *AuditPage) UnmarshalJSON(data []byte) error {
+	type plain AuditPage
+	return jsonUnmarshalRaw(data, (*plain)(p), &p.Raw)
+}
+
+// Ban is one ban on the installation list (spec section 13.1), kept after a
+// lift or an expiry.
+type Ban struct {
+	ID     string   `json:"id"`
+	Player Identity `json:"player"`
+	Reason string   `json:"reason"`
+	// Name is the name the player was known by, empty when none was given.
+	Name string `json:"name"`
+	// ServerID is the server the ban arose on, provenance only; nil when
+	// none was named.
+	ServerID  *string   `json:"serverId"`
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy BanAuthor `json:"createdBy"`
+	// ExpiresAt is nil for a ban that does not end on its own.
+	ExpiresAt *time.Time `json:"expiresAt"`
+	// State is active, lifted, or expired in this draft.
+	State    string          `json:"state"`
+	LiftedAt *time.Time      `json:"liftedAt"`
+	LiftedBy *BanAuthor      `json:"liftedBy"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+func (b *Ban) UnmarshalJSON(data []byte) error {
+	type plain Ban
+	return jsonUnmarshalRaw(data, (*plain)(b), &b.Raw)
+}
+
+// BanAuthor is the credential that made or lifted a ban, under the name it
+// had then. TokenID is empty for a bootstrap credential.
+type BanAuthor struct {
+	TokenID   string `json:"tokenId"`
+	TokenName string `json:"tokenName"`
+}
+
+// BanQuery filters one page of the ban list. Zero values are left out.
+type BanQuery struct {
+	// State is active (the hub's default) or all, which adds the lifted and
+	// the expired.
+	State string
+	// Player narrows the page to one identity's ban history.
+	Player *Identity
+	Limit  int
+	Cursor string
+}
+
+// BanPage is one page of the ban list, newest first, with the revision of
+// the active list read together with it.
+type BanPage struct {
+	Revision   int64           `json:"revision"`
+	Bans       []Ban           `json:"bans"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+func (p *BanPage) UnmarshalJSON(data []byte) error {
+	type plain BanPage
+	return jsonUnmarshalRaw(data, (*plain)(p), &p.Raw)
+}
+
+// CreateBanRequest is the body of a ban. DurationSeconds zero is a ban that
+// does not end on its own; Name and ServerID are left out when empty.
+type CreateBanRequest struct {
+	Player          Identity `json:"player"`
+	Reason          string   `json:"reason"`
+	DurationSeconds int64    `json:"durationSeconds,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	ServerID        string   `json:"serverId,omitempty"`
+}
+
+// BanChange is a ban as a create or a lift left it, with the revision of the
+// active list after the change.
+type BanChange struct {
+	Ban      Ban             `json:"ban"`
+	Revision int64           `json:"revision"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+func (c *BanChange) UnmarshalJSON(data []byte) error {
+	type plain BanChange
+	return jsonUnmarshalRaw(data, (*plain)(c), &c.Raw)
+}
+
+// Webhook is a webhook's registration (spec section 11.2). It never carries
+// the signing secret.
+type Webhook struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
+	// Events is empty for a webhook subscribed to every type.
+	Events []string `json:"events"`
+	// ServerIDs is empty for a webhook observing every server.
+	ServerIDs []string `json:"serverIds"`
+	// Template is generic-json or discord in this draft.
+	Template  string    `json:"template"`
+	Redact    []string  `json:"redact"`
+	CreatedAt time.Time `json:"createdAt"`
+	// PausedAt is nil while the webhook is active.
+	PausedAt *time.Time      `json:"pausedAt"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+func (w *Webhook) UnmarshalJSON(data []byte) error {
+	type plain Webhook
+	return jsonUnmarshalRaw(data, (*plain)(w), &w.Raw)
+}
+
+// WebhookList is the answer to a webhook listing, newest first.
+type WebhookList struct {
+	Webhooks []Webhook       `json:"webhooks"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+func (l *WebhookList) UnmarshalJSON(data []byte) error {
+	type plain WebhookList
+	return jsonUnmarshalRaw(data, (*plain)(l), &l.Raw)
+}
+
+// CreateWebhookRequest is the body of a registration. Empty members are left
+// out: every type, every server, the generic-json template, nothing redacted.
+type CreateWebhookRequest struct {
+	URL       string   `json:"url"`
+	Events    []string `json:"events,omitempty"`
+	ServerIDs []string `json:"serverIds,omitempty"`
+	Template  string   `json:"template,omitempty"`
+	Redact    []string `json:"redact,omitempty"`
+}
+
+// CreatedWebhook is a new registration and its signing secret, returned here
+// and nowhere else.
+type CreatedWebhook struct {
+	Webhook Webhook         `json:"webhook"`
+	Secret  string          `json:"secret"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+func (c *CreatedWebhook) UnmarshalJSON(data []byte) error {
+	type plain CreatedWebhook
+	return jsonUnmarshalRaw(data, (*plain)(c), &c.Raw)
+}
+
+// UpdateWebhookRequest is the body of an edit. A nil member is left out and
+// its field stays as it is; a present one replaces the field whole, so a
+// pointer to an empty (or nil) slice clears a list. Paused pauses (true) or
+// resumes (false) delivery attempts.
+type UpdateWebhookRequest struct {
+	URL       *string   `json:"url,omitempty"`
+	Events    *[]string `json:"events,omitempty"`
+	ServerIDs *[]string `json:"serverIds,omitempty"`
+	Template  *string   `json:"template,omitempty"`
+	Redact    *[]string `json:"redact,omitempty"`
+	Paused    *bool     `json:"paused,omitempty"`
+}
+
+// Delivery is one webhook delivery (spec section 11.5).
+type Delivery struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	ServerID string `json:"serverId"`
+	// State is pending, delivered, or dead in this draft.
+	State    string `json:"state"`
+	Attempts int    `json:"attempts"`
+	// LastStatus is nil when the last failure was transport-level, or there
+	// was none.
+	LastStatus *int      `json:"lastStatus,omitempty"`
+	LastError  string    `json:"lastError,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+	// NextAttemptAt is set while the delivery is pending.
+	NextAttemptAt *time.Time      `json:"nextAttemptAt,omitempty"`
+	DeliveredAt   *time.Time      `json:"deliveredAt"`
+	Raw           json.RawMessage `json:"-"`
+}
+
+func (d *Delivery) UnmarshalJSON(data []byte) error {
+	type plain Delivery
+	return jsonUnmarshalRaw(data, (*plain)(d), &d.Raw)
+}
+
+// DeliveryList is a webhook's most recent deliveries, newest first.
+type DeliveryList struct {
+	Deliveries []Delivery      `json:"deliveries"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+func (l *DeliveryList) UnmarshalJSON(data []byte) error {
+	type plain DeliveryList
+	return jsonUnmarshalRaw(data, (*plain)(l), &l.Raw)
+}

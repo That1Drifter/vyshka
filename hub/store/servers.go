@@ -219,11 +219,15 @@ func joinTransports(values []string) string { return strings.Join(values, ",") }
 // optional: empty means "whatever enrolls here".
 func (s *Store) CreateServer(ctx context.Context, name, game string) (Server, error) {
 	now := time.Now().UTC()
+	// The record returned is the one a read would return: link_state takes
+	// its column default, so the struct carries the same value rather than
+	// an empty string the API would pass on.
 	server := Server{
 		ID:        id.NewAt(now),
 		Name:      name,
 		Game:      game,
 		CreatedAt: now.Truncate(time.Millisecond),
+		LinkState: LinkUnknown,
 	}
 
 	if _, err := s.db.ExecContext(ctx,

@@ -47,6 +47,17 @@ func (c *Client) RevokeServerCredentials(ctx context.Context, serverID string) e
 	return c.do(ctx, http.MethodDelete, []string{"api", "v1", "servers", serverID, "credentials"}, nil, nil, nil)
 }
 
+// QueueEnvelope queues one raw envelope for a server, delivered on its next
+// session if it has none now. Requires admin. The types the hub models
+// itself go through their own endpoints and are refused here.
+func (c *Client) QueueEnvelope(ctx context.Context, serverID string, request EnvelopeRequest) (QueuedEnvelope, error) {
+	var answer struct {
+		Envelope QueuedEnvelope `json:"envelope"`
+	}
+	err := c.do(ctx, http.MethodPost, []string{"api", "v1", "servers", serverID, "envelopes"}, nil, request, &answer)
+	return answer.Envelope, err
+}
+
 // GetManifest reads a server's stored manifest. A server that never had a
 // manifest accepted answers not_found, like an unknown server.
 func (c *Client) GetManifest(ctx context.Context, serverID string) (ManifestRecord, error) {
