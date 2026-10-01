@@ -600,13 +600,11 @@ func (api *openAPI) queryFaults(param map[string]any, values []string) []string 
 	schema := api.resolve(param["schema"])
 	// A keyword this check does not grade is a fault rather than a pass: the
 	// document could constrain a parameter in a way no test here would see.
-	graded := scalarKeywords
+	// A list's own keywords are checked here, and every single value's, a
+	// list's items included, in queryValueFault.
 	if schema["type"] == "array" {
-		graded = arrayKeywords
-	}
-	for keyword := range schema {
-		if !graded[keyword] {
-			return []string{fmt.Sprintf("has a schema using %s, which this check does not grade; teach it", keyword)}
+		if fault := ungradedKeyword(schema, arrayKeywords); fault != "" {
+			return []string{fault}
 		}
 	}
 	if schema["type"] != "array" {
@@ -686,6 +684,15 @@ func schemaNumber(v any) (float64, bool) {
 	return 0, false
 }
 
+func ungradedKeyword(schema map[string]any, graded map[string]bool) string {
+	for keyword := range schema {
+		if !graded[keyword] {
+			return fmt.Sprintf("has a schema using %s, which this check does not grade; teach it", keyword)
+		}
+	}
+	return ""
+}
+
 // exactNumber is schemaNumber without the rounding: the keyword as an exact
 // rational, from an integer exactly and from a float64 at its exact value.
 func exactNumber(v any) (*big.Rat, bool) {
@@ -708,6 +715,9 @@ func exactNumber(v any) (*big.Rat, bool) {
 // the type it must parse as, and the enum, format, pattern, and bounds the
 // document gives it. Empty means the value is acceptable.
 func queryValueFault(schema map[string]any, value string) string {
+	if fault := ungradedKeyword(schema, scalarKeywords); fault != "" {
+		return fault
+	}
 	if enum := asList(schema["enum"]); len(enum) > 0 {
 		if !slices.ContainsFunc(enum, func(member any) bool { return fmt.Sprint(member) == value }) {
 			return fmt.Sprintf("is none of %v", enum)
