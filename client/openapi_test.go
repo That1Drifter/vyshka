@@ -9,12 +9,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -55,11 +58,17 @@ var clientExtras = map[string]string{
 }
 
 // recordExceptions are member differences between a record type and its
-// schema that are deliberate, keyed by Go type and JSON member name.
+// schema that are deliberate, keyed by operation, Go type, and JSON member
+// name, so an exception excuses the one answer it was written for and no
+// other that happens to use the same type.
 var recordExceptions = map[string]string{
-	"Event.roles": "one Event type serves both feeds; only the player feed's schema (an allOf) declares roles",
-	"ContextEntries.reason": "a null reason and an absent one mean the same thing, so it decodes to the empty " +
-		"string as documented on the field",
+	"listEvents:Event.roles": "one Event type serves both feeds; only the player feed's schema (an allOf) declares roles",
+	"enumerateContext:ContextEntries.reason": "a null reason and an absent one mean the same thing, so it decodes " +
+		"to the empty string as documented on the field",
+}
+
+func excepted(operation, typeName, member string) bool {
+	return recordExceptions[operation+":"+typeName+"."+member] != ""
 }
 
 func operationCases() []operationCase {
@@ -538,15 +547,29 @@ func TestEveryRequestIsOneTheDocumentDeclares(t *testing.T) {
 			t.Errorf("%s: %s %s resolves to %v in the document", tc.operation, request.method, request.path, hits)
 		}
 
-		declared := map[string]bool{}
+		declared := map[string]map[string]any{}
 		for _, p := range op.params {
 			if p["in"] == "query" {
-				declared[p["name"].(string)] = true
+				declared[p["name"].(string)] = api.resolve(p["schema"])
 			}
 		}
-		for name := range request.query {
-			if !declared[name] {
+		for name, values := range request.query {
+			schema, ok := declared[name]
+			if !ok {
 				t.Errorf("%s: sends query parameter %s, which the document does not declare", tc.operation, name)
+				continue
+			}
+			// A repeatable parameter is an array schema whose items each
+			// value must satisfy; any other is sent once.
+			if schema["type"] == "array" {
+				schema = api.resolve(schema["items"])
+			} else if len(values) != 1 {
+				t.Errorf("%s: sends query parameter %s %d times, and the document declares one", tc.operation, name, len(values))
+			}
+			for _, value := range values {
+				if fault := queryValueFault(schema, value); fault != "" {
+					t.Errorf("%s: query parameter %s=%q %s", tc.operation, name, value, fault)
+				}
 			}
 		}
 		for name := range declared {
@@ -574,6 +597,52 @@ func TestEveryRequestIsOneTheDocumentDeclares(t *testing.T) {
 			}
 		}
 	}
+}
+
+// queryValueFault checks one query value against its parameter's schema:
+// the type it must parse as, and the enum, format, pattern, and bounds the
+// document gives it. Empty means the value is acceptable.
+func queryValueFault(schema map[string]any, value string) string {
+	if enum := asList(schema["enum"]); len(enum) > 0 {
+		if !slices.ContainsFunc(enum, func(member any) bool { return fmt.Sprint(member) == value }) {
+			return fmt.Sprintf("is none of %v", enum)
+		}
+	}
+	switch schema["type"] {
+	case "integer":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return "is not an integer"
+		}
+		if minimum, ok := schema["minimum"].(int); ok && n < int64(minimum) {
+			return fmt.Sprintf("is below the minimum %d", minimum)
+		}
+		if maximum, ok := schema["maximum"].(int); ok && n > int64(maximum) {
+			return fmt.Sprintf("is above the maximum %d", maximum)
+		}
+	case "boolean":
+		if value != "true" && value != "false" {
+			return "is not true or false"
+		}
+	case "string":
+		if schema["format"] == "date-time" {
+			if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+				return "is not an RFC 3339 date-time"
+			}
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(value) {
+			return "does not match " + pattern
+		}
+		if minimum, ok := schema["minLength"].(int); ok && utf8.RuneCountInString(value) < minimum {
+			return fmt.Sprintf("is shorter than %d", minimum)
+		}
+		if maximum, ok := schema["maxLength"].(int); ok && utf8.RuneCountInString(value) > maximum {
+			return fmt.Sprintf("is longer than %d", maximum)
+		}
+	default:
+		return fmt.Sprintf("has a schema of type %v, which this check does not know", schema["type"])
+	}
+	return ""
 }
 
 // bodyFaults compares a request body with its schema both ways: a member the
@@ -640,7 +709,7 @@ func TestRecordsMatchTheirSchemas(t *testing.T) {
 		case fn.NumOut() == 1 && answer != nil:
 			t.Errorf("%s: %s returns no record, and the document declares a body", tc.operation, tc.method)
 		case fn.NumOut() == 2:
-			for _, fault := range api.typeFaults(fn.Out(0), answer, fn.Out(0).Name(), "", false) {
+			for _, fault := range api.typeFaults(tc.operation, fn.Out(0), answer, fn.Out(0).Name(), "", false) {
 				t.Errorf("%s answer: %s", tc.operation, fault)
 			}
 		}
@@ -659,7 +728,7 @@ func TestRecordsMatchTheirSchemas(t *testing.T) {
 				t.Errorf("%s: %s takes %s, and the document declares no body", tc.operation, tc.method, in)
 				continue
 			}
-			for _, fault := range api.typeFaults(in, schema, in.Name(), "", true) {
+			for _, fault := range api.typeFaults(tc.operation, in, schema, in.Name(), "", true) {
 				t.Errorf("%s request: %s", tc.operation, fault)
 			}
 		}
@@ -672,9 +741,9 @@ var (
 )
 
 // typeFaults compares a Go type with a schema: JSON types, members both
-// ways, and nullability. owner names the struct a member belongs to, for
-// recordExceptions.
-func (api *openAPI) typeFaults(goType reflect.Type, schema map[string]any, owner, path string, request bool) []string {
+// ways, and nullability. operation and owner (the struct a member belongs
+// to) are what recordExceptions are keyed by.
+func (api *openAPI) typeFaults(operation string, goType reflect.Type, schema map[string]any, owner, path string, request bool) []string {
 	schema, nullable := api.nonNull(schema)
 	at := path
 	if at == "" {
@@ -698,7 +767,7 @@ func (api *openAPI) typeFaults(goType reflect.Type, schema map[string]any, owner
 		if i := strings.LastIndex(name, "."); i >= 0 {
 			name = name[i+1:]
 		}
-		if recordExceptions[owner+"."+name] == "" {
+		if !excepted(operation, owner, name) {
 			faults = append(faults, fmt.Sprintf("%s is nullable, and %s cannot hold null", at, goType))
 		}
 	}
@@ -732,20 +801,20 @@ func (api *openAPI) typeFaults(goType reflect.Type, schema map[string]any, owner
 			faults = append(faults, fmt.Sprintf("%s is a list, and the schema is %q", at, kind))
 			break
 		}
-		faults = append(faults, api.typeFaults(goType.Elem(), api.resolve(schema["items"]), owner, path+"[]", request)...)
+		faults = append(faults, api.typeFaults(operation, goType.Elem(), api.resolve(schema["items"]), owner, path+"[]", request)...)
 	case reflect.Map:
 		if extra, ok := schema["additionalProperties"]; !ok || extra == false {
 			faults = append(faults, fmt.Sprintf("%s is a map, and the schema is not an open object", at))
 		}
 	case reflect.Struct:
-		faults = append(faults, api.structFaults(goType, schema, path, request)...)
+		faults = append(faults, api.structFaults(operation, goType, schema, path, request)...)
 	default:
 		faults = append(faults, fmt.Sprintf("%s has kind %s, which this check does not know", at, goType.Kind()))
 	}
 	return faults
 }
 
-func (api *openAPI) structFaults(goType reflect.Type, schema map[string]any, path string, request bool) []string {
+func (api *openAPI) structFaults(operation string, goType reflect.Type, schema map[string]any, path string, request bool) []string {
 	props, open := api.properties(schema)
 	if len(props) == 0 {
 		if open {
@@ -772,15 +841,15 @@ func (api *openAPI) structFaults(goType reflect.Type, schema map[string]any, pat
 	for name, field := range fields {
 		prop, ok := props[name]
 		if !ok {
-			if recordExceptions[goType.Name()+"."+name] == "" {
+			if !excepted(operation, goType.Name(), name) {
 				faults = append(faults, fmt.Sprintf("%s.%s (%s) is no member of the schema", goType.Name(), field.Name, name))
 			}
 			continue
 		}
-		faults = append(faults, api.typeFaults(field.Type, prop, goType.Name(), path+"."+name, request)...)
+		faults = append(faults, api.typeFaults(operation, field.Type, prop, goType.Name(), path+"."+name, request)...)
 	}
 	for name := range props {
-		if _, ok := fields[name]; !ok && recordExceptions[goType.Name()+"."+name] == "" {
+		if _, ok := fields[name]; !ok && !excepted(operation, goType.Name(), name) {
 			faults = append(faults, fmt.Sprintf("%s has no field for the schema's member %s", goType.Name(), name))
 		}
 	}

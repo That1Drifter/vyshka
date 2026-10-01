@@ -31,13 +31,16 @@ arrived, since those entries were written for one stream.
   it in place of generation: every operation has a method and every exported method an
   operation; each method, called with every option set against a recording server, sends a
   path and method that resolve to its operation alone, every query parameter and body
-  member the operation declares and nothing else; and each record type has the members of
+  member the operation declares and nothing else, each query value parsing as its
+  parameter's schema says (type, enum, date-time format, pattern, bounds); and each record type has the members of
   the schema it decodes or encodes, of matching JSON types, a nullable member held in a
-  type that can hold null. Another test grades the new methods against a hub booted in
+  type that can hold null, with the two deliberate differences excused for the one
+  operation each was written for. Another test grades the new methods against a hub booted in
   process. The TypeScript client (`client/typescript`, `@vyshka/admin-client`) is
   generated: openapi-typescript writes its types from the document (`npm run generate`;
   CI fails when the committed output is stale), openapi-fetch carries the requests, and a
-  thin layer adds a constructor that refuses an unusable URL or token and does not follow
+  thin layer adds a constructor that refuses an unusable URL or token, sends the token
+  whatever spelling of `Authorization` the caller's headers carry, and does not follow
   redirects, path parameters refused locally when empty, `.`, or `..` (fetch's URL parser
   would resolve them to another route), `unwrap` throwing `AdminApiError` with the
   protocol error code, and `waitForAction`. It runs anywhere `fetch` does, carries
@@ -49,7 +52,9 @@ arrived, since those entries were written for one stream.
   through the package against a hub with the reference plugin driver enrolled, every
   answer graded against the document by a JSON Schema validator plus a check that refuses
   any member the document does not declare, and the run failing if an operation went
-  uncalled. `TestAdminRoutesAreTheOpenAPIOperations` reads the hub's routes and fails on a
+  uncalled. The reference plugin driver's hello event now names its player, and the live
+  run dispatches an action in the player context, so both player feeds are graded with
+  records in them. `TestAdminRoutesAreTheOpenAPIOperations` reads the hub's routes and fails on a
   route the document lacks or an operation the hub does not serve. `go.yaml.in/yaml/v3`
   joins the module for the tests that read the document.
 - 2026-09-29: `vyshka`, a command-line client of the Admin API, and the Go client package
@@ -142,7 +147,8 @@ arrived, since those entries were written for one stream.
   gains the four Admin API operations the hub served and the document never declared:
   `updateWebhook` (`PATCH /api/v1/webhooks/{webhookId}`), `replayWebhookDelivery`,
   `listKVNamespaces` (`GET /api/v1/kv`), and `listKVKeys` (`GET /api/v1/kv/{namespace}`),
-  with the `KVKeyPage` and `KVNamespaceList` schemas; `WebhookRecord` gains `pausedAt`;
+  with the `KVKeyPage` and `KVNamespaceList` schemas; `WebhookRecord` gains `pausedAt`, and
+  it and `redact`, which the hub always sends, are required;
   and the four members written with OpenAPI 3.0's `nullable: true`, which a 3.1 document
   ignores (`ContextEntries` `position`, `data`, and `reason`, and
   `WebhookDelivery.deliveredAt`), become `oneOf` with null, so a generator types them as

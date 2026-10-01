@@ -77,7 +77,7 @@ test("the caller's headers cannot replace the token", async () => {
     baseUrl: "http://hub.example",
     token,
     fetch,
-    headers: { Authorization: "Bearer someone-else", "X-Trace": "1" },
+    headers: { Authorization: "Bearer someone-else", authorization: "Bearer another", "X-Trace": "1" },
   });
   await unwrap(client.GET("/api/v1/servers"));
   assert.equal(seen[0]?.headers.get("Authorization"), `Bearer ${token}`);

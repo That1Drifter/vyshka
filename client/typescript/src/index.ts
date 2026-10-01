@@ -51,14 +51,16 @@ export function createAdminClient(options: AdminClientOptions): AdminClient {
   if (/[\s\p{Cc}]/u.test(options.token)) {
     throw new TypeError("vyshka: the token contains whitespace or a control character");
   }
+  // A Headers object, not a spread: header names are case-insensitive, and an
+  // object holding both "Authorization" and "authorization" would otherwise
+  // reach the request with whichever spelling came last winning.
+  const headers = new Headers(options.headers);
+  headers.set("Accept", "application/json");
+  headers.set("Authorization", `Bearer ${options.token}`);
   return createClient<paths>({
     baseUrl,
     fetch: options.fetch,
-    headers: {
-      ...options.headers,
-      Accept: "application/json",
-      Authorization: `Bearer ${options.token}`,
-    },
+    headers,
     pathSerializer: strictPathSerializer,
     redirect: "manual",
   });

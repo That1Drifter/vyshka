@@ -2152,7 +2152,7 @@ components:
 
     WebhookRecord:
       type: object
-      required: [id, url, events, serverIds, template, createdAt]
+      required: [id, url, events, serverIds, template, redact, createdAt, pausedAt]
       properties:
         id:
           type: string

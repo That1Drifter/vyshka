@@ -144,13 +144,30 @@ test("the hub's answers satisfy the OpenAPI document, every operation", { skip: 
       }),
     );
 
-    // The player profile.
+    // The player profile: the driver's hello names its player, and an action
+    // dispatched in the player context against it, so neither feed is empty
+    // and their records are graded, not just their envelopes.
     const player = { platform: "conformance", playerId: "driver-1" };
-    const playerEvents = await unwrap(
-      client.GET("/api/v1/players/{platform}/{playerId}/events", { params: { path: player } }),
+    const playerEvents = await eventually("the player's events", async () => {
+      const page = await unwrap(client.GET("/api/v1/players/{platform}/{playerId}/events", { params: { path: player } }));
+      assert.ok(page.events.length > 0, "an event refers to the player");
+      return page;
+    });
+    assert.deepEqual(playerEvents.events[0]?.roles, ["player"]);
+    const targeted = await unwrap(
+      client.POST("/api/v1/servers/{serverId}/actions", {
+        ...server,
+        body: { code: "conformance-driver.echo", context: "player", referenceKey: "driver-1", params: { amount: 1 } },
+      }),
     );
-    assert.ok(Array.isArray(playerEvents.events));
-    await unwrap(client.GET("/api/v1/players/{platform}/{playerId}/actions", { params: { path: player } }));
+    await waitForAction(client, targeted.actionId, { intervalMs: 100 });
+    const playerActions = await unwrap(
+      client.GET("/api/v1/players/{platform}/{playerId}/actions", { params: { path: player } }),
+    );
+    assert.deepEqual(
+      playerActions.actions.map((a) => a.id),
+      [targeted.actionId],
+    );
     const { note } = await unwrap(
       client.POST("/api/v1/players/{platform}/{playerId}/notes", { params: { path: player }, body: { text: `noted ${run}` } }),
     );

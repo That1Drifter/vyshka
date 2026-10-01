@@ -1188,11 +1188,11 @@ export interface components {
             /** @enum {string} */
             template: "generic-json" | "discord";
             /** @description Paths stripped from every delivery's `data`; empty strips nothing. */
-            redact?: components["schemas"]["RedactPath"][];
+            redact: components["schemas"]["RedactPath"][];
             /** Format: date-time */
             createdAt: string;
             /** @description When the webhook was paused, or null while it is active (spec section 11.2). */
-            pausedAt?: string | null;
+            pausedAt: string | null;
         };
         /**
          * @description Member names joined by `.`: the first selects a member of the
