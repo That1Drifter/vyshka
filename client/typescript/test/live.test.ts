@@ -164,8 +164,10 @@ test("the hub's answers satisfy the OpenAPI document, every operation", { skip: 
     const playerActions = await unwrap(
       client.GET("/api/v1/players/{platform}/{playerId}/actions", { params: { path: player } }),
     );
+    // The feed spans every server, and a hub that has run this test before
+    // holds earlier runs' actions against the same identity.
     assert.deepEqual(
-      playerActions.actions.map((a) => a.id),
+      playerActions.actions.filter((a) => a.serverId === serverId).map((a) => a.id),
       [targeted.actionId],
     );
     const { note } = await unwrap(

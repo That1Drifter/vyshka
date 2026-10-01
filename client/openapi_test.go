@@ -550,26 +550,17 @@ func TestEveryRequestIsOneTheDocumentDeclares(t *testing.T) {
 		declared := map[string]map[string]any{}
 		for _, p := range op.params {
 			if p["in"] == "query" {
-				declared[p["name"].(string)] = api.resolve(p["schema"])
+				declared[p["name"].(string)] = p
 			}
 		}
 		for name, values := range request.query {
-			schema, ok := declared[name]
+			param, ok := declared[name]
 			if !ok {
 				t.Errorf("%s: sends query parameter %s, which the document does not declare", tc.operation, name)
 				continue
 			}
-			// A repeatable parameter is an array schema whose items each
-			// value must satisfy; any other is sent once.
-			if schema["type"] == "array" {
-				schema = api.resolve(schema["items"])
-			} else if len(values) != 1 {
-				t.Errorf("%s: sends query parameter %s %d times, and the document declares one", tc.operation, name, len(values))
-			}
-			for _, value := range values {
-				if fault := queryValueFault(schema, value); fault != "" {
-					t.Errorf("%s: query parameter %s=%q %s", tc.operation, name, value, fault)
-				}
+			for _, fault := range api.queryFaults(param, values) {
+				t.Errorf("%s: query parameter %s %s", tc.operation, name, fault)
 			}
 		}
 		for name := range declared {
@@ -599,6 +590,76 @@ func TestEveryRequestIsOneTheDocumentDeclares(t *testing.T) {
 	}
 }
 
+// queryFaults checks what the client sent for one query parameter against
+// the parameter: an array is sent the one way this client sends lists, one
+// repetition of the parameter per item (style form, exploded, the
+// defaults), within the array's bounds, and each item, like any other
+// value, must satisfy its schema.
+func (api *openAPI) queryFaults(param map[string]any, values []string) []string {
+	schema := api.resolve(param["schema"])
+	if schema["type"] != "array" {
+		if len(values) != 1 {
+			return []string{fmt.Sprintf("is sent %d times, and the document declares one value", len(values))}
+		}
+		if fault := queryValueFault(schema, values[0]); fault != "" {
+			return []string{fmt.Sprintf("%q %s", values[0], fault)}
+		}
+		return nil
+	}
+	var faults []string
+	if style, ok := param["style"]; ok && style != "form" {
+		faults = append(faults, fmt.Sprintf("has style %v, and this client sends a list as repeated parameters", style))
+	}
+	if explode, ok := param["explode"]; ok && explode != true {
+		faults = append(faults, "is not exploded, and this client sends a list as repeated parameters")
+	}
+	for keyword, check := range map[string]func(float64) bool{
+		"minItems": func(bound float64) bool { return float64(len(values)) >= bound },
+		"maxItems": func(bound float64) bool { return float64(len(values)) <= bound },
+	} {
+		if raw, ok := schema[keyword]; ok {
+			bound, isNumber := schemaNumber(raw)
+			if !isNumber {
+				faults = append(faults, fmt.Sprintf("has a %s of %v, which is not a number", keyword, raw))
+			} else if !check(bound) {
+				faults = append(faults, fmt.Sprintf("is sent %d times, outside its %s of %v", len(values), keyword, raw))
+			}
+		}
+	}
+	if schema["uniqueItems"] == true {
+		seen := map[string]bool{}
+		for _, value := range values {
+			if seen[value] {
+				faults = append(faults, fmt.Sprintf("repeats %q, and the document requires unique items", value))
+			}
+			seen[value] = true
+		}
+	}
+	items := api.resolve(schema["items"])
+	for _, value := range values {
+		if fault := queryValueFault(items, value); fault != "" {
+			faults = append(faults, fmt.Sprintf("%q %s", value, fault))
+		}
+	}
+	return faults
+}
+
+// schemaNumber reads a numeric schema keyword, which YAML decodes as an int
+// or a float64 depending on how the document spells it.
+func schemaNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
 // queryValueFault checks one query value against its parameter's schema:
 // the type it must parse as, and the enum, format, pattern, and bounds the
 // document gives it. Empty means the value is acceptable.
@@ -614,11 +675,21 @@ func queryValueFault(schema map[string]any, value string) string {
 		if err != nil {
 			return "is not an integer"
 		}
-		if minimum, ok := schema["minimum"].(int); ok && n < int64(minimum) {
-			return fmt.Sprintf("is below the minimum %d", minimum)
-		}
-		if maximum, ok := schema["maximum"].(int); ok && n > int64(maximum) {
-			return fmt.Sprintf("is above the maximum %d", maximum)
+		for keyword, inside := range map[string]func(float64) bool{
+			"minimum": func(bound float64) bool { return float64(n) >= bound },
+			"maximum": func(bound float64) bool { return float64(n) <= bound },
+		} {
+			raw, ok := schema[keyword]
+			if !ok {
+				continue
+			}
+			bound, isNumber := schemaNumber(raw)
+			if !isNumber {
+				return fmt.Sprintf("has a %s of %v, which is not a number", keyword, raw)
+			}
+			if !inside(bound) {
+				return fmt.Sprintf("is outside its %s of %v", keyword, raw)
+			}
 		}
 	case "boolean":
 		if value != "true" && value != "false" {
@@ -633,11 +704,16 @@ func queryValueFault(schema map[string]any, value string) string {
 		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(value) {
 			return "does not match " + pattern
 		}
-		if minimum, ok := schema["minLength"].(int); ok && utf8.RuneCountInString(value) < minimum {
-			return fmt.Sprintf("is shorter than %d", minimum)
+		length := float64(utf8.RuneCountInString(value))
+		if raw, ok := schema["minLength"]; ok {
+			if bound, isNumber := schemaNumber(raw); !isNumber || length < bound {
+				return fmt.Sprintf("is outside its minLength of %v", raw)
+			}
 		}
-		if maximum, ok := schema["maxLength"].(int); ok && utf8.RuneCountInString(value) > maximum {
-			return fmt.Sprintf("is longer than %d", maximum)
+		if raw, ok := schema["maxLength"]; ok {
+			if bound, isNumber := schemaNumber(raw); !isNumber || length > bound {
+				return fmt.Sprintf("is outside its maxLength of %v", raw)
+			}
 		}
 	default:
 		return fmt.Sprintf("has a schema of type %v, which this check does not know", schema["type"])
