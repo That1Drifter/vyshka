@@ -11,13 +11,21 @@ has a section of its own that only names the current draft: it keeps draft numbe
 until 1.0, its header is its history, and a protocol change is recorded under the hub or
 plugin entry that carried it. Dates mark when a change landed on `main`. Everything that
 landed before the first tag stays under **Before the first release** in the order it
-arrived, since those entries were written for one stream.
+arrived, since those entries were written for one stream. Since 2026-10-03 an entry is
+one or two lines that name the pull request, which carries the detail; the longer entries
+before that date stay as they were written.
 
 ## Hub
 
 ### [Unreleased]
 
 #### Added
+
+- 2026-10-03: `scripts/deploy-branch-hub.sh` and `deploy/branch-hub.compose.yml` run any
+  branch as a disposable second hub beside a live one (issue #144).
+
+- 2026-10-03: `scripts/e2e.sh` boots a fresh hub and runs the hub conformance suite and
+  every `scripts/demo-*.sh` against it; CI's SQLite conformance job runs it (issue #144).
 
 - 2026-09-30: Admin API client libraries for Go and TypeScript, every operation of
   `spec/openapi-admin.yaml` in each (issue #96; no protocol change). The Go client
@@ -143,6 +151,9 @@ arrived, since those entries were written for one stream.
   driver sets it.
 
 #### Changed
+
+- 2026-10-03: Changelog entries shrink to one or two lines naming the PR, and `ROADMAP.md`
+  to a dated header and one line per landed slice (issue #144).
 
 - 2026-10-03: Testing is end-to-end first. A slice is done when the conformance suite passes
   with a check for the new behavior and the feature is shown working on a real hub, with one

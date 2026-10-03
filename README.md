@@ -150,6 +150,12 @@ VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-tokens.sh
 VYSHKA_ADMIN_TOKEN=vya_local_dev_token scripts/demo-panel.sh    # then open http://127.0.0.1:8080/
 ```
 
+`scripts/e2e.sh` runs all of them unattended: it builds the hub, boots it on a scratch port
+with a throwaway database, runs the hub conformance suite and then every
+`scripts/demo-*.sh`, and exits nonzero if any failed (`--no-conformance` skips the
+five-minute suite; naming demos, as in `scripts/e2e.sh --no-conformance kv`, runs only
+those). CI runs it on every pull request that touches the hub.
+
 ## Command-line client
 
 `vyshka` is a command-line client of the Admin API: one binary for what an operator or a
