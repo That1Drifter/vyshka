@@ -19,6 +19,11 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+### [0.3.0] - 2026-10-03
+
+Everything after 0.2.0: the `vyshka` command-line client (#138), the Go and TypeScript
+Admin API clients (#96), and protocol draft 0.33's poll `more` (#91). Tag `hub-v0.3.0`.
+
 #### Added
 
 - 2026-10-03: `scripts/deploy-branch-hub.sh` and `deploy/branch-hub.compose.yml` run any
