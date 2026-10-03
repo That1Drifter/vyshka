@@ -593,6 +593,11 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 ### [Unreleased]
 
+### [0.9.0] - 2026-10-03
+
+The poll `more` signal of #91 (protocol draft 0.33). Tag `dayz-plugin-v0.9.0`. Pair it
+with hub 0.3.0, which answers such a poll at once; an older hub ignores the member.
+
 #### Added
 
 - 2026-09-23: a poll that leaves envelopes behind says so (issue #91, plugin 0.9.0,
