@@ -46,7 +46,8 @@ technical quality.
 - Update `CHANGELOG.md` in the same PR as any notable change (new or removed files,
   protocol edits, decisions). Entries are dated (YYYY-MM-DD) under the **Unreleased**
   heading of the artifact they change (hub or DayZ plugin; a protocol edit goes with the
-  implementation that carries it); typo and wording fixes do not need entries. A slice that
+  implementation that carries it), one or two lines naming the PR, whose body carries the
+  detail; typo and wording fixes do not need entries. A slice that
   changes the DayZ mod bumps `PLUGIN_VERSION`. Tags and releases are described in
   `RELEASING.md`.
 - Plugin and hub changes must keep their conformance suites green. On every pull request

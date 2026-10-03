@@ -14,6 +14,7 @@ instead of using the SQLite file; the accepted URL forms are in the repository R
 | `nginx-vyshka.conf.example` | A server block with the two settings a hub needs from its proxy: a read timeout above the 60 s poll hold, and a body cap at or above the hub's 1 MiB |
 | `vyshka-hub.service` | A systemd unit for the static binary: a dedicated user, the state under `/var/lib/vyshka`, the admin token as a systemd credential, confinement a static Go binary tolerates |
 | `hub.env.example` | The unit's environment file, `/etc/vyshka/hub.env`: listen address, database URL, maps directory, log level |
+| `branch-hub.compose.yml` | A disposable second hub beside a live one, running whatever branch `scripts/deploy-branch-hub.sh` last deployed |
 
 ## The container with compose
 
@@ -91,3 +92,29 @@ Upgrading is the new binary over `/usr/local/bin/vyshka-hub` and `sudo systemctl
 vyshka-hub`; migrations run on boot. The unit's stop timeout is above the hub's 15 s drain,
 and the same nginx server block terminates TLS in front of it. Logs go to the journal
 (`journalctl -u vyshka-hub`), one JSON line per request.
+
+## A branch hub beside a live one
+
+To try unreleased work over a real network without touching a hub that serves live game
+servers, run a second, disposable hub on the same box from `branch-hub.compose.yml`. It
+has its own container (`vyshka-hub-branch`), loopback port (8090), database, and admin
+token, and it joins the reverse proxy's network so a subdomain of its own can point at it.
+Nothing is built on the box: `scripts/deploy-branch-hub.sh` cross-compiles the current
+checkout here, copies the binary and the compose file over ssh, restarts the container,
+and waits until `/healthz` reports the version it built (the branch name and commit,
+with `-dirty` for uncommitted changes).
+
+```
+# once, on the box
+sudo mkdir -p /opt/vyshka-branch && sudo chown "$USER" /opt/vyshka-branch
+echo VYSHKA_PROXY_NETWORK=<proxy-project>_default > /opt/vyshka-branch/.env
+
+# from any branch, here
+VYSHKA_DEPLOY_HOST=<ssh-host> scripts/deploy-branch-hub.sh            # keep the data
+VYSHKA_DEPLOY_HOST=<ssh-host> scripts/deploy-branch-hub.sh --reset    # start empty
+```
+
+The first run creates the admin token (`sudo cat /opt/vyshka-branch/admin-token`).
+`--reset` keeps the old database beside the new one as `data.<timestamp>`. The proxy
+needs a server block like `nginx-vyshka.conf.example` with its own `limit_conn_zone`
+names and `proxy_pass` to `http://vyshka-hub-branch:8080`.

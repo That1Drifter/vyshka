@@ -1,0 +1,50 @@
+# A disposable second hub that runs whatever branch was last deployed to it,
+# beside a live hub on the same box. scripts/deploy-branch-hub.sh copies this
+# file and a freshly built binary into the hub's directory and restarts it;
+# nothing here is built on the box. It has its own container name, port,
+# database, and admin token, so the live hub never notices it.
+#
+# The directory also holds `.env` naming the reverse proxy's network
+# (VYSHKA_PROXY_NETWORK=<project>_default), written once by hand, and
+# `admin-token`, which the deploy script creates on first run.
+services:
+  hub:
+    image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+    container_name: vyshka-hub-branch
+    restart: unless-stopped
+    entrypoint: ["/opt/vyshka/vyshka-hub"]
+    command: ["serve"]
+    ports:
+      # Loopback only, for the deploy script's health check; the public name
+      # is the proxy's, over the network below.
+      - "127.0.0.1:${VYSHKA_BRANCH_PORT:-8090}:8080"
+    volumes:
+      - ./bin:/opt/vyshka:ro
+      - ./data:/data
+    environment:
+      VYSHKA_ADDR: 0.0.0.0:8080
+      DATABASE_URL: /data/vyshka.db
+      VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
+    secrets:
+      - admin_token
+    networks:
+      - web
+    stop_grace_period: 30s
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  web:
+    external: true
+    name: ${VYSHKA_PROXY_NETWORK:?set VYSHKA_PROXY_NETWORK in .env beside this file}
+
+secrets:
+  admin_token:
+    file: ./admin-token

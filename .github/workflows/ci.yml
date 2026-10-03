@@ -9,8 +9,9 @@ name: CI
 #   typescript-client           the generated client: freshness, types, and every
 #                               operation against a live hub, graded on the
 #                               OpenAPI document
-#   conformance-sqlite          the hub suite against the built binary on SQLite,
-#                               and the plugin suite against the reference driver
+#   conformance-sqlite          scripts/e2e.sh (the hub suite and every demo
+#                               script against a built hub on SQLite), and the
+#                               plugin suite against the reference driver
 #   conformance-postgres        the hub suite against a hub on Postgres; pushes to
 #                               main, and pull requests that touch hub/store/, so
 #                               most pull requests wait for one pass and main is
@@ -255,20 +256,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build -o bin/vyshka-hub ./hub/cmd/vyshka-hub
-
-      - name: Run the hub conformance suite against a live hub on SQLite
-        env:
-          # Not a secret: this hub exists for the length of one job and listens
-          # on loopback. The suite needs a known admin token to grade the
-          # Admin API realm at all.
-          VYSHKA_ADMIN_TOKEN: vya_ci_admin_token_not_a_secret
-        run: |
-          ./bin/vyshka-hub serve -addr 127.0.0.1:8080 -db "$RUNNER_TEMP/ci.db" &
-          hub_pid=$!
-          trap 'kill "$hub_pid" 2>/dev/null || true' EXIT
-          go run ./conformance/hub -url http://127.0.0.1:8080 -wait 30s
+      - name: Run the hub conformance suite and every demo against a live hub on SQLite
+        # scripts/e2e.sh builds the hub, boots it on a fresh database, runs
+        # the suite, then each scripts/demo-*.sh, and fails if any of them did.
+        run: scripts/e2e.sh
 
       - name: Run the plugin conformance suite against the reference driver
         run: go run ./conformance/plugin -- go run ./conformance/plugin/driver
