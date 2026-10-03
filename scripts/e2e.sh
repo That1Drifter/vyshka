@@ -91,7 +91,7 @@ for demo in "${wanted[@]}"; do
   if [ "$demo" = scripts/demo-panel.sh ]; then
     # The panel demo serves a fake plugin until it is stopped. It passes if
     # its setup completes and the plugin is still serving a few seconds on.
-    "$demo" > "$run_dir/panel.out" 2>&1 &
+    bash "$demo" > "$run_dir/panel.out" 2>&1 &
     panel_pid=$!
     sleep 6
     if kill -0 "$panel_pid" 2>/dev/null && grep -q "Ctrl-C to stop" "$run_dir/panel.out"; then
@@ -105,7 +105,7 @@ for demo in "${wanted[@]}"; do
       cat "$run_dir/panel.out"
       record FAIL "$demo"
     fi
-  elif "$demo"; then
+  elif bash "$demo"; then
     record PASS "$demo"
   else
     record FAIL "$demo"
