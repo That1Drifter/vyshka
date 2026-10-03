@@ -48,7 +48,8 @@ The first tagged release is out: hub 0.1.0 (`hub-v0.1.0`, static binaries for Li
 and Windows plus the container image) and DayZ plugin 0.7.0 (`dayz-plugin-v0.7.0`), both
 on 2026-09-17 (issue #69). The second followed on 2026-09-23: hub 0.2.0 (`hub-v0.2.0`) and
 DayZ plugin 0.8.0 (`dayz-plugin-v0.8.0`), carrying every Horizon 1 slice that landed after
-the first tag. Releases are described in `RELEASING.md`.
+the first tag. Hub 0.3.0 (`hub-v0.3.0`) followed on 2026-10-03 with the command-line client
+and the client libraries. Releases are described in `RELEASING.md`.
 
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
 custom contexts moved to Horizon 1 with a DayZ customer, `--auto-tls` to Horizon 2, and the
@@ -87,8 +88,9 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-09-23: hub 0.2.0 and DayZ plugin 0.8.0 released.
 - 2026-09-29: the `vyshka` command-line client (#138).
 - 2026-09-30: Admin API client libraries for Go and TypeScript (#96).
-- 2026-10-03: end-to-end-first testing (#143); `scripts/e2e.sh` and one-line changelog
-  entries (#144).
+- 2026-10-03: end-to-end-first testing (#143); `scripts/e2e.sh`, the branch hub, and
+  one-line changelog entries (#144).
+- 2026-10-03: hub 0.3.0 released (#144).
 
 ## Horizon 2: operations, as promised in the design notes
 
