@@ -24,8 +24,9 @@ only the words the roadmap and the working process lean on.
 ## Work units
 
 - **Slice**: one issue, one branch, the spec change first where there is one, the
-  conformance suite grading the new behavior, the two-round adversarial review, and a
-  changelog entry in the landing commit. The only unit in which committed work lands.
+  conformance suite passing with a check for the new behavior, the feature shown working on
+  a real hub, one adversarial review round (a second only when the first finds a real
+  sequencing, dedup, auth, or data bug), and a changelog entry in the landing commit. The only unit in which committed work lands.
 - **Spike**: a measurement of an engine or platform limit, kept under `spikes/` with its
   results, done before anything is designed around the number. A spike produces a fact,
   not a feature.
