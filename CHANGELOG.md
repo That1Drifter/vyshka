@@ -144,6 +144,14 @@ arrived, since those entries were written for one stream.
 
 #### Changed
 
+- 2026-10-03: Testing is end-to-end first. A slice is done when the conformance suite passes
+  with a check for the new behavior and the feature is shown working on a real hub, with one
+  adversarial review round by default; the in-process hub tests are frozen rather than
+  grown. `COVERAGE.md` is advisory: its drift test skips unless
+  `VYSHKA_COVERAGE_AUDIT=1` is set. `ROADMAP.md` parks the published conformance tool
+  (#97), drops #116 and #134, and reorders Horizon 2 to backup, TLS, rate limits, metrics,
+  capacity, then the config file. No protocol change.
+
 - 2026-09-30: `spec/openapi-admin.yaml` 0.13.0 catches up with the hub (issue #96). It
   gains the four Admin API operations the hub served and the document never declared:
   `updateWebhook` (`PATCH /api/v1/webhooks/{webhookId}`), `replayWebhookDelivery`,

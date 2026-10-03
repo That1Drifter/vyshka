@@ -1,6 +1,9 @@
 # Roadmap
 
-**As of:** 2026-09-29 (the `vyshka` command-line client of #138 landed, with the
+**As of:** 2026-10-03 (testing moved to end-to-end first: a slice is done when the
+conformance suite passes and the feature is shown working on a real hub, with one review
+round by default; #97 parked, #116 and #134 dropped, Horizon 2 reordered; the Admin API
+client libraries of #96 landed 2026-09-30; the `vyshka` command-line client of #138 landed, with the
 hand-written Go client package under it, and rides in the hub release archives; hub 0.2.0
 and DayZ plugin 0.8.0 released 2026-09-23; the backlog signal of #91
 landed as protocol draft 0.33: a poll saying `more` is answered at once, so a backlog
@@ -40,8 +43,9 @@ There are no proposed items after the review of 2026-09-14. A new idea enters as
 and must leave that state at the next review.
 
 Every committed item is delivered as a slice: one issue, one branch, the spec change first
-where there is one, the conformance suite grading the new behavior, the two-round
-adversarial review, and a `CHANGELOG.md` entry in the landing commit. Engine limits that
+where there is one, the conformance suite passing with a check for the new behavior, the
+feature shown working on a real hub (the DayZ harness or the staging server for a game
+feature), one adversarial review round, and a `CHANGELOG.md` entry in the landing commit. Engine limits that
 constrain a plugin are measured under `spikes/` before anything is designed around them.
 
 The ordering rule is **DayZ first, to the first tagged release**. The design persona is one
@@ -279,26 +283,28 @@ it early:
 ## Horizon 2: operations, as promised in the design notes
 
 Section 12 of the design notes describes an operational surface that is still mostly on
-paper. Each is a small slice on its own, after the release unless the release needs it.
+paper. Each is a small slice on its own, in this order since 2026-10-03, and each is shown
+working against the staging hub: backup first because staging holds live data, then TLS,
+rate limits, metrics, the capacity measurement, and the config file last.
 
-- **`/metrics` for Prometheus** (#82): poll latency, queue depths, action outcomes by code,
-  dropped envelopes, webhook failure rate, and the sweep counters. The hub already counts
-  most of these; the endpoint and the naming are the work.
 - **Backup endpoint with retention tooling** (#83): `POST /api/v1/admin/backup` taking a
   consistent SQLite snapshot, a documented Postgres story, a command that reports table
   sizes and what the sweeps will remove, and an explicit `vacuum` for SQLite. Its restore
   runbook is the small-team answer to a hub outage.
-- **Config file** (#84): one TOML file as an alternative to flags and environment variables,
-  with `file:` indirection for secrets. Flags stay.
 - **`--auto-tls`** (#85): embedded ACME. Under the design persona the game servers live on
   other boxes than the hub, so every plugin connects over TLS and this is the default
   deployment story, not a single-box convenience.
 - **Rate limits per credential** (#86): per-server and per-token bounds on the Plugin and
   Admin APIs. Hardening, not scaling: the Plugin API is internet-facing, so a leaked server
   credential must be bounded in what it can do to the hub.
+- **`/metrics` for Prometheus** (#82): poll latency, queue depths, action outcomes by code,
+  dropped envelopes, webhook failure rate, and the sweep counters. The hub already counts
+  most of these; the endpoint and the naming are the work.
 - **Measured capacity** (#87, spike): replaces the "20 servers at 100 players" estimate,
   which has no provenance, with a number under `spikes/`. That number is also the trigger
   for the parked multi-instance hub and what the rate-limit defaults are set against.
+- **Config file** (#84): one TOML file as an alternative to flags and environment variables,
+  with `file:` indirection for secrets. Flags stay.
 
 ## Horizon 3: protocol items the spec names and the hub does not implement
 
@@ -345,9 +351,8 @@ spec reader is not surprised.
   every operation through the TypeScript client against a live hub and grades every
   answer against the document, which is how the document's four missing operations and a
   server record's empty link state came to light.
-- **Conformance suites as a published tool** (#97): committed 2026-09-17, the same
-  trigger. A versioned binary third-party implementers can run without cloning this
-  repository, and a badge policy for what "conformant" may claim.
+- **Conformance suites as a published tool** (#97): committed 2026-09-17, parked
+  2026-10-03 (see the parked table). Anyone can `go run` the suites from this module today.
 - **Protocol 1.0**: committed, no date. The freeze happens after at least one third-party
   plugin has been written from the spec alone. Until then `v` stays at 1 with draft
   numbering, and every envelope-level change is discussed in an issue first.
@@ -366,6 +371,7 @@ Collected here so no trigger is lost in a horizon:
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |
 | Multi-instance hub | A single installation exceeds the capacity measured in #87 |
+| Conformance suites as a published tool (#97): versioned suite binaries on the release and a policy for what "conformant" may claim | A third-party implementer asks for them |
 
 ## Not on the roadmap
 
@@ -390,6 +396,10 @@ re-proposed by accident:
   outbound half shipped as the `discord` webhook template); "delete all unclaimed vehicles"
   as a plugin action (depends on an ownership mod; documented as a mod-surface example);
   the "unattended operation" gate (undefined, replaced by the first tagged release).
+- Dropped 2026-10-03: tightening the conformance checks' timing slack and narrow probes
+  (#134; tighter bounds mostly bring flakes, and the four checks that could not see their
+  violation were fixed by #137); hardening the plugin suite's param synthesis against
+  manifests with tens of thousands of schema entries (#116; no real plugin is that shape).
 
 ## Keeping this document honest
 

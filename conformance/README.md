@@ -13,6 +13,7 @@ or plugin code, because a suite that did could not grade a third-party implement
 
 What passing proves, clause by clause, is in [`COVERAGE.md`](COVERAGE.md): every MUST,
 MUST NOT, and REQUIRED in the spec, with the checks that grade it or the reason none does.
+The table is advisory since 2026-10-03 and can lag the spec between resyncs.
 
 ## Hub suite
 
@@ -105,10 +106,11 @@ name, the suite must fail, not follow along.
 Checks must fail loudly rather than skip. A check that cannot run is a failing check: silent
 skips are how a suite ends up green against a hub that implements nothing.
 
-A new check that grades a clause the table lists as ungraded or partial updates that row in
-`COVERAGE.md`, citing the check as `hub:<id>` only when the check fails against a hub that
-breaks the clause. A protocol edit that adds or rewords a clause must add or update its row;
-`go test ./conformance/coverage/` says which.
+A new check that grades a clause the table lists as ungraded or partial may update that row
+in `COVERAGE.md`, citing the check as `hub:<id>` only when the check fails against a hub that
+breaks the clause. To see which rows a protocol edit left behind, run
+`VYSHKA_COVERAGE_AUDIT=1 go test ./conformance/coverage/`; without the variable the test
+skips.
 
 ## Plugin suite
 
