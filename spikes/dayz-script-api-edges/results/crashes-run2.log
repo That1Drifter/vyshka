@@ -1,0 +1,28 @@
+== profile/crash_2026-10-10_14-52-02.log
+Unhandled exception
+
+Program: C:\Program Files (x86)\Steam\steamapps\common\DayZServer\DayZServer_x64.exe
+Reason: Access violation. Illegal write by 0x7ffef3e0c5b3 at 0x460400dbc0
+
+
+Class:      'VyshkaEdgeProbe'
+Function: 'MeasureLine'
+Stack trace:
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:508 Function MeasureLine
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:487 Function PhaseB
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:248 Function Start
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate
+== profile/crash_2026-10-10_14-52-25.log
+Unhandled exception
+
+Program: C:\Program Files (x86)\Steam\steamapps\common\DayZServer\DayZServer_x64.exe
+Reason: Access violation. Illegal write by 0x7ffef3e0c5b3 at 0x2ea6e0dd00
+
+
+Class:      'VyshkaEdgeProbe'
+Function: 'MeasureLine'
+Stack trace:
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:508 Function MeasureLine
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:487 Function PhaseB
+$CurrentDir:mpmissions\vyshkaEdgeSpike.chernarusplus\init.c:248 Function Start
+scripts/3_Game/dayzgame.c:3000 Function OnUpdate

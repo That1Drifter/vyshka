@@ -1,0 +1,14 @@
+stub 2026/10/10 14:49:10.391664 GET /status?code=200 -> 200
+stub 2026/10/10 14:49:12.641803 GET /status?code=204 -> 204
+stub 2026/10/10 14:49:14.891754 GET /status?code=302 -> 302
+stub 2026/10/10 14:49:17.141861 GET /status?code=403 -> 403
+stub 2026/10/10 14:49:19.391808 GET /status?code=404 -> 404
+stub 2026/10/10 14:49:21.641517 GET /status?code=429 -> 429
+stub 2026/10/10 14:49:23.892039 GET /status?code=502 -> 502
+stub 2026/10/10 14:49:26.140836 GET /status?code=503 -> 503
+stub 2026/10/10 14:49:28.391992 GET /hold?ms=150000 arrived
+stub 2026/10/10 14:51:28.393420 /hold?ms=150000 client gone after 120.003s
+stub 2026/10/10 14:51:30.651784 GET /hold?ms=6000 arrived
+stub 2026/10/10 14:51:33.661747 /hold?ms=6000 client gone after 3.010s
+stub 2026/10/10 14:51:35.901504 GET /hold?ms=5000 arrived
+stub 2026/10/10 14:51:40.901837 /hold?ms=5000 answered after 5.000s

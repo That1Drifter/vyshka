@@ -1,0 +1,6 @@
+14:48:15.642 runner: boot 1: pid 37208
+14:48:18.353 runner: boot 1: script log script_2026-10-10_14-48-18.log
+runner: script error: SCRIPT    (E): Can't compile mission init script'!
+
+Cause, from that script log: init.c(496): Broken expression (missing ;?), a local named "out",
+which is a reserved word in Enforce Script (the out parameter modifier). Renamed to "writer".

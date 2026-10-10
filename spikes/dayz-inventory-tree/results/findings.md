@@ -102,6 +102,11 @@ their containers (131 items gone for 14 deletes, nothing left on the ground).
   every one of the 786 public clothing classes (`walk clothing=786 ... best=0`): the
   script config reader does not return that key, so cargo dimensions must be read from an
   instance (`GetInventory().GetCargo().GetWidth()` and `GetHeight()`), as the loadout does.
+
+  Correction (2026-10-10, `../../dayz-script-api-edges`): the reader returns the key; the
+  path was wrong. Clothing declares `itemsCargoSize` on the class, and `CfgVehicles <class>
+  itemsCargoSize` returns a grid for 345 of the 786 classes. The `Cargo` subclass path is
+  where containers keep it.
 - A weapon created for a character with empty hands lands in the hands whatever slot was
   asked for, through `CreateAttachmentEx` (run 2) and through an explicit attachment
   `InventoryLocation` with `LocationCreateEntity` alike (run 3: `slot=Shoulder class=M4A1+5

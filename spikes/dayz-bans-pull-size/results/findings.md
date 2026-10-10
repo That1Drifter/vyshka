@@ -93,7 +93,8 @@ One line written with `VyshkaFiles.WriteAll` (`FPrint`), read back with
 The crash report names `ReadAll` at `vyshkafiles.c:55`, the `FGets` line, with a fault
 address in an unknown module: the engine, not the script VM. The first failing length is
 somewhere in 65 521 through 65 536 inclusive, which reads as a 64 KiB buffer; the exact
-value is inferred, not measured.
+value is inferred, not measured. (Measured since, 2026-10-10: 65 534 reads, 65 535 faults;
+`../../dayz-script-api-edges/results/findings.md`, series 5.)
 
 ## Series 3: raw responses (runs 4 and 5)
 

@@ -1,0 +1,60 @@
+14:48:44.381 runner: boot 1: pid 68524
+14:48:45.990 runner: boot 1: script log script_2026-10-10_14-48-45.log
+14:49:08.408 runner: probe VYSHKA_EDGE phase=- event=boot progress=0
+14:49:08.408 runner: probe VYSHKA_EDGE phase=A event=cargo-class class=AliceBag_Green atClass=8x8 inCargo=none(0)
+14:49:08.408 runner: probe VYSHKA_EDGE phase=A event=cargo-class class=HighCapacityVest_Black atClass=5x4 inCargo=none(0)
+14:49:08.408 runner: probe VYSHKA_EDGE phase=A event=cargo-class class=HuntingJacket_Brown atClass=6x4 inCargo=none(0)
+14:49:08.408 runner: probe VYSHKA_EDGE phase=A event=cargo-class class=HunterPants_Brown atClass=5x4 inCargo=none(0)
+14:49:08.408 runner: probe VYSHKA_EDGE phase=A event=cargo-class class=SeaChest atClass=none(0) inCargo=10x10
+14:49:08.409 runner: probe VYSHKA_EDGE phase=A event=cargo-walk clothing=786 atClass=345 inCargo=0
+14:49:10.420 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=0 label=status-200 path=status?code=200 option=0
+14:49:10.421 runner: probe VYSHKA_EDGE phase=A event=rest-success step=0 t=28 settled=false size=14 data={"status":200}
+14:49:12.736 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=1 label=status-204 path=status?code=204 option=0
+14:49:12.736 runner: probe VYSHKA_EDGE phase=A event=rest-error step=1 t=76 settled=false code=8
+14:49:14.950 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=2 label=status-302 path=status?code=302 option=0
+14:49:14.950 runner: probe VYSHKA_EDGE phase=A event=rest-error step=2 t=29 settled=false code=7
+14:49:17.164 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=3 label=status-403 path=status?code=403 option=0
+14:49:17.269 runner: probe VYSHKA_EDGE phase=A event=rest-error step=3 t=79 settled=false code=5
+14:49:19.484 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=4 label=status-404 path=status?code=404 option=0
+14:49:19.484 runner: probe VYSHKA_EDGE phase=A event=rest-error step=4 t=29 settled=false code=5
+14:49:21.698 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=5 label=status-429 path=status?code=429 option=0
+14:49:21.802 runner: probe VYSHKA_EDGE phase=A event=rest-error step=5 t=79 settled=false code=5
+14:49:23.917 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=6 label=status-502 path=status?code=502 option=0
+14:49:24.021 runner: probe VYSHKA_EDGE phase=A event=rest-error step=6 t=31 settled=false code=6
+14:49:26.237 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=7 label=status-503 path=status?code=503 option=0
+14:49:26.237 runner: probe VYSHKA_EDGE phase=A event=rest-error step=7 t=85 settled=false code=6
+14:49:28.452 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=8 label=read200/hold-150s path=hold?ms=150000 option=200
+14:51:28.457 runner: probe VYSHKA_EDGE phase=A event=rest-error step=8 t=120055 settled=false code=8
+14:51:30.671 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=9 label=read1/hold-6s path=hold?ms=6000 option=1
+14:51:33.791 runner: probe VYSHKA_EDGE phase=A event=rest-error step=9 t=3094 settled=false code=8
+14:51:36.004 runner: probe VYSHKA_EDGE phase=A event=rest-fire step=10 label=read10/hold-5s path=hold?ms=5000 option=10
+14:51:41.032 runner: probe VYSHKA_EDGE phase=A event=rest-success step=10 t=5044 settled=false size=15 data={"heldMs":5000}
+14:51:43.245 runner: probe VYSHKA_EDGE phase=A event=rest-finished steps=11
+14:51:43.245 runner: probe VYSHKA_EDGE phase=A event=unclosed-written bytes=4096
+14:51:43.245 runner: outside: unclosed.txt size=4096 right after the write
+14:51:46.246 runner: outside: unclosed.txt size=4096 3 s after the write, handle still open
+14:51:53.177 runner: probe VYSHKA_EDGE phase=A event=unclosed-closed bytes=4096
+14:51:53.177 runner: outside: unclosed.txt size=4096 after CloseFile
+14:51:58.202 runner: probe VYSHKA_EDGE phase=A event=kill-now bytes=4096
+14:51:58.202 runner: outside: killed.txt size=4096 before the kill, handle open
+14:52:00.839 runner: outside: killed.txt size=4096 after TerminateProcess
+14:52:00.845 runner: boot 2: pid 22616
+14:52:02.453 runner: boot 2: script log script_2026-10-10_14-52-02.log
+14:52:23.161 runner: probe VYSHKA_EDGE phase=- event=boot progress=1
+14:52:23.161 runner: probe VYSHKA_EDGE phase=B event=line-written len=65534
+14:52:23.161 runner: probe VYSHKA_EDGE phase=B event=line-read len=65534 fgets=65534 got=65534 intact=1
+14:52:23.265 runner: probe VYSHKA_EDGE phase=B event=line-written len=65535
+14:52:24.117 runner: boot 2: server exited on its own after 23s: exit status 0xc0000005
+14:52:24.123 runner: boot 3: pid 54872
+14:52:25.732 runner: boot 3: script log script_2026-10-10_14-52-25.log
+14:52:46.643 runner: probe VYSHKA_EDGE phase=- event=boot progress=4
+14:52:46.643 runner: probe VYSHKA_EDGE phase=B event=line-faulted-before len=65535
+14:52:46.747 runner: probe VYSHKA_EDGE phase=B event=line-written len=65536
+14:52:47.498 runner: boot 3: server exited on its own after 23s: exit status 0xc0000005
+14:52:47.504 runner: boot 4: pid 50212
+14:52:49.113 runner: boot 4: script log script_2026-10-10_14-52-48.log
+14:53:09.819 runner: probe VYSHKA_EDGE phase=- event=boot progress=5
+14:53:09.819 runner: probe VYSHKA_EDGE phase=B event=line-faulted-before len=65535
+14:53:09.819 runner: probe VYSHKA_EDGE phase=B event=line-faulted-before len=65536
+14:53:09.819 runner: probe VYSHKA_EDGE phase=- event=done progress=5
+14:53:12.260 runner: probe reported done after 4 boots

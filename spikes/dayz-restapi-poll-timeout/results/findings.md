@@ -87,7 +87,9 @@ Raw logs: `probe-script.log` (script side), `stub-run.log` (socket side).
 5. **A 3 s value is honored** (step 11 died at 2.993 s), matching the documented floor. Above
    the documented ceiling, `SetOption(1, 200)` did not break anything and a 25 s hold still
    succeeded; whether 200 was clamped to 120 or accepted was not measured, and nothing in the
-   protocol should depend on values above 120.
+   protocol should depend on values above 120. (Measured since, 2026-10-10: clamped; a
+   150 s hold under `SetOption(1, 200)` failed at 120 s, and `SetOption(1, 1)` behaves as 3;
+   `../../dayz-script-api-edges/results/findings.md`, series 1.)
 
 6. **Timeouts arrive as `OnError`, never `OnTimeout`.** Every failed step called
    `OnError(errorCode = 8)`; `OnTimeout()` was not called once. Code 8 is

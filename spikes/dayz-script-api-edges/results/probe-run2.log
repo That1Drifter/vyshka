@@ -1,0 +1,44 @@
+VYSHKA_EDGE	phase=-	event=boot	progress=0
+VYSHKA_EDGE	phase=A	event=cargo-class	class=AliceBag_Green	atClass=8x8	inCargo=none(0)
+VYSHKA_EDGE	phase=A	event=cargo-class	class=HighCapacityVest_Black	atClass=5x4	inCargo=none(0)
+VYSHKA_EDGE	phase=A	event=cargo-class	class=HuntingJacket_Brown	atClass=6x4	inCargo=none(0)
+VYSHKA_EDGE	phase=A	event=cargo-class	class=HunterPants_Brown	atClass=5x4	inCargo=none(0)
+VYSHKA_EDGE	phase=A	event=cargo-class	class=SeaChest	atClass=none(0)	inCargo=10x10
+VYSHKA_EDGE	phase=A	event=cargo-walk	clothing=786	atClass=345	inCargo=0
+VYSHKA_EDGE	phase=A	event=rest-fire	step=0	label=status-200	path=status?code=200	option=0
+VYSHKA_EDGE	phase=A	event=rest-success	step=0	t=28	settled=false	size=14	data={"status":200}
+VYSHKA_EDGE	phase=A	event=rest-fire	step=1	label=status-204	path=status?code=204	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=1	t=76	settled=false	code=8
+VYSHKA_EDGE	phase=A	event=rest-fire	step=2	label=status-302	path=status?code=302	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=2	t=29	settled=false	code=7
+VYSHKA_EDGE	phase=A	event=rest-fire	step=3	label=status-403	path=status?code=403	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=3	t=79	settled=false	code=5
+VYSHKA_EDGE	phase=A	event=rest-fire	step=4	label=status-404	path=status?code=404	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=4	t=29	settled=false	code=5
+VYSHKA_EDGE	phase=A	event=rest-fire	step=5	label=status-429	path=status?code=429	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=5	t=79	settled=false	code=5
+VYSHKA_EDGE	phase=A	event=rest-fire	step=6	label=status-502	path=status?code=502	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=6	t=31	settled=false	code=6
+VYSHKA_EDGE	phase=A	event=rest-fire	step=7	label=status-503	path=status?code=503	option=0
+VYSHKA_EDGE	phase=A	event=rest-error	step=7	t=85	settled=false	code=6
+VYSHKA_EDGE	phase=A	event=rest-fire	step=8	label=read200/hold-150s	path=hold?ms=150000	option=200
+VYSHKA_EDGE	phase=A	event=rest-error	step=8	t=120055	settled=false	code=8
+VYSHKA_EDGE	phase=A	event=rest-fire	step=9	label=read1/hold-6s	path=hold?ms=6000	option=1
+VYSHKA_EDGE	phase=A	event=rest-error	step=9	t=3094	settled=false	code=8
+VYSHKA_EDGE	phase=A	event=rest-fire	step=10	label=read10/hold-5s	path=hold?ms=5000	option=10
+VYSHKA_EDGE	phase=A	event=rest-success	step=10	t=5044	settled=false	size=15	data={"heldMs":5000}
+VYSHKA_EDGE	phase=A	event=rest-finished	steps=11
+VYSHKA_EDGE	phase=A	event=unclosed-written	bytes=4096
+VYSHKA_EDGE	phase=A	event=unclosed-closed	bytes=4096
+VYSHKA_EDGE	phase=A	event=kill-now	bytes=4096
+VYSHKA_EDGE	phase=-	event=boot	progress=1
+VYSHKA_EDGE	phase=B	event=line-written	len=65534
+VYSHKA_EDGE	phase=B	event=line-read	len=65534	fgets=65534	got=65534	intact=1
+VYSHKA_EDGE	phase=B	event=line-written	len=65535
+VYSHKA_EDGE	phase=-	event=boot	progress=4
+VYSHKA_EDGE	phase=B	event=line-faulted-before	len=65535
+VYSHKA_EDGE	phase=B	event=line-written	len=65536
+VYSHKA_EDGE	phase=-	event=boot	progress=5
+VYSHKA_EDGE	phase=B	event=line-faulted-before	len=65535
+VYSHKA_EDGE	phase=B	event=line-faulted-before	len=65536
+VYSHKA_EDGE	phase=-	event=done	progress=5
