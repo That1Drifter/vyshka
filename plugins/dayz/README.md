@@ -833,8 +833,9 @@ does not translate), and its `data` carries `type` and what the type is declared
 fit) for a firearm; `count` and `ammo` for a magazine or an ammunition pile; `energy` and
 `water` for a food (the `Raw` stage's when the food has stages); `slot` and
 `heatIsolation` for a garment (the catalog also asks for the cargo declared under `Cargo
-itemsCargoSize`, but the script config reader returns nothing for it on DayZ 1.29, so no
-stock garment carries a `cargo`; `spikes/dayz-inventory-tree` measured that); `zoomMin`
+itemsCargoSize`, which is the container path: clothing declares `itemsCargoSize` on the
+class itself, so no stock garment carries a `cargo` yet; `spikes/dayz-script-api-edges`
+measured both paths); `zoomMin`
 and `zoomMax` for an optic; `fuel` (litres) and `crew` (seats) for a vehicle.
 
 The spawn action's `className` names all eight in its params schema (the `context`

@@ -1,0 +1,4 @@
+# Raw server profile output (RPT, minidumps, caches, BattlEye) written by the game server
+# during a spike run. The distilled per-run logs next to this file are tracked and are
+# what the findings cite.
+profile/
