@@ -597,7 +597,7 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 - 2026-10-10: `spikes/dayz-script-api-edges` measures the read-timeout clamp (3..120 s),
   `204` and `302` reaching script as `OnError(8)` and `OnError(7)`, clothing's cargo path,
-  `FPrint` surviving a kill, and the 65 535-byte `FGets` fault.
+  `FPrint` surviving a kill, and the 65 535-byte `FGets` fault (#148).
 
 ### [0.9.0] - 2026-10-03
 
