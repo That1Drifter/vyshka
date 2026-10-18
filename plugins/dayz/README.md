@@ -749,7 +749,9 @@ counts only what it made) (wheels, doors, hood and trunk, battery, spark
 plug, radiator, headlights); `fluids` fills each named fluid to its fraction of the tank,
 and a fluid not named stays as the engine made it, which for a new car is empty. A car
 with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and
-`coolant`, which the engine overheats without).
+`coolant`, which the engine overheats without). On DayZ 1.30 the fill lands a frame after
+the action reads it back, so the result's `fluids` say 0 and the next `state.vehicles`
+snapshot has the levels asked for (measured with a motorbike preset, issue #149).
 
 
 ## World and weather
@@ -1174,6 +1176,13 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   member holding that number to the record's top-level object, then rename the file to any
   unused number from 1 to 10 000; a record's `ordinal`, where it has one, decides its place
   in the queue, so they are delivered in their original order.
+- **Refuel changes nothing on 1.30, as far as measured.** On a 1.30 server with no client
+  connected, the engine ignores a script's fluid writes to a vehicle that already exists:
+  filling and draining alike, on cars, boats, and motorbikes, even from inside the vehicle's
+  own simulation step. `vyshka.vehicle.refuel` completes with `after` equal to `before`,
+  which is the level the vehicle keeps. A fill made in the frame a vehicle is created does
+  stick, so a vehicle preset's `fluids` work. Whether a client near the vehicle changes
+  this is not measured yet (issue #149).
 
 ## Errors and recovery
 

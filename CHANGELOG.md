@@ -598,6 +598,9 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 - 2026-10-18: DayZ 1.30 motorbikes (`MotorbikeScript`) register like the other vehicles,
   with a `motorbike` kind, fuel in the snapshot, refuel, presets, and the catalog (issue #149).
 
+- 2026-10-18: the README notes that DayZ 1.30 ignores script fluid writes to an existing
+  vehicle on a server with no client, so refuel changes nothing there (issue #149).
+
 - 2026-10-18: `spikes/dayz-findfile` measures that 1.30's `FindFile` resolves `$profile:`
   to the server's working directory, so the outbox restore finds nothing (issue #149).
 
