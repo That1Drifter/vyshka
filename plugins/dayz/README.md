@@ -1077,7 +1077,10 @@ file kept, and a whole staging copy beside a file cut short, which wins and is w
 again), a credentials delete that takes a staging copy with it, and a replace whose file
 cannot be opened, which leaves the disk as it was; a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
-limit as one line); a document with a single 70 KB string value written in pieces and
+limit as one line); outbox records restored in ordinal order by a fresh outbox across the
+wrap of its ring of file names and past a slot still held, with the records 0.9.0 named by
+ordinal (the one past the ring only where `FindFile` can list the directory), and a full
+queue split across the wrap sorted inside 100 ms; a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than
 written; a genuine document shaped like the writer's long-string marker (and a one-line
 file as 0.8.0 wrote them, carrying the marks as literals), a value of
@@ -1159,6 +1162,18 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
   is, so two such ids alike in both would be taken for one; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at
   the upgrade as unreadable. The parser's depth bound is 32 on the wire because the
   script VM overflows its stack at about 64 levels of the parser's recursion.
+- **A directory under the profile cannot be listed on 1.30.** `FindFile` resolves
+  `$profile:` against the server's working directory, not the `-profiles` one, while
+  `FileExist` and `OpenFile` still reach the profile (`spikes/dayz-findfile`, issue #149).
+  So the outbox never lists its directory: its records take the names `1.json` to
+  `10000.json` in turn, each carrying its ordinal, and a boot asks for every one of them.
+  The records plugin 0.9.0 named by ordinal past 10 000 are found only by a listing, so on
+  1.30 with a separate profile they are left on disk unsent, and a clean shutdown does not
+  promise the last poll was acked. Before such a server's first boot on this plugin, look
+  in `<profile>/Vyshka/outbox/`. For each file numbered above 10 000, add an `"ordinal"`
+  member holding that number to the record's top-level object, then rename the file to any
+  unused number from 1 to 10 000; a record's `ordinal`, where it has one, decides its place
+  in the queue, so they are delivered in their original order.
 
 ## Errors and recovery
 

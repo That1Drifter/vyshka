@@ -607,6 +607,9 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Fixed
 
+- 2026-10-18: the outbox restores unacked envelopes on DayZ 1.30, whose `FindFile` cannot
+  list the profile: records cycle through `1.json` to `10000.json` and carry their ordinal (issue #149).
+
 - 2026-10-18: `vyshka-dayz` derives missions without the stock mission's `scripts/`
   folder, whose `loot_debug.c` stops a 1.30 server compiling its Mission module (issue #149).
 

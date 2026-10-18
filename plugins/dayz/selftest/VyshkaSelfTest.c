@@ -70,7 +70,7 @@ class VyshkaSelfTest
 	static ref VyshkaSelfTest s_Instance;
 
 	static const string TAG = "VYSHKA_SELFTEST";
-	static const int PLAN = 23;
+	static const int PLAN = 24;
 	static const int SETTLE_MS = 3000;
 	// The gap between checks: each runs in a frame of its own, so the
 	// engine's frame clock advances between them and the finished line
@@ -182,6 +182,8 @@ class VyshkaSelfTest
 			CheckExecutedCrash();
 		else if (step == 22)
 			CheckExecutedOrder();
+		else if (step == 23)
+			CheckOutboxRing();
 		if (m_Step < PLAN)
 		{
 			GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(Next, GAP_MS, false);
@@ -1175,6 +1177,139 @@ class VyshkaSelfTest
 		Report("files.outbox", ok, detail);
 		if (stored)
 			DeleteFile(stored.Path());
+	}
+
+	// ---- files.outboxRing: records on the ring of file names restored in
+	// ordinal order by a fresh outbox, across the wrap and a held slot, with
+	// the records named before the ring (issue #149) ----
+	void CheckOutboxRing()
+	{
+		int ring = VyshkaOutbox.RING;
+		// Written the way 0.9.0 wrote them: no ordinal, the file name is it.
+		// One inside the ring's names, which Load asks for by name, and one
+		// past them, which only a directory listing finds.
+		string inRing = VyshkaFiles.OUTBOX_DIR + "/7.json";
+		string pastRing = VyshkaFiles.OUTBOX_DIR + "/" + (3 * ring).ToString() + ".json";
+		// Held in locals: a tree passed straight from the call that made it
+		// is released before the writer reaches it.
+		VyshkaJsonValue legacyIn = LegacyRecord("selftest-legacy-in");
+		VyshkaJsonValue legacyPast = LegacyRecord("selftest-legacy-past");
+		bool legacyWritten = VyshkaFiles.WriteJson(inRing, legacyIn) && VyshkaFiles.WriteJson(pastRing, legacyPast);
+		// Whether FindFile can list the outbox here (on 1.30 it cannot when
+		// the profile is not the working directory).
+		string listed;
+		FileAttr attributes;
+		FindFileHandle handle = FindFile(VyshkaFiles.OUTBOX_DIR + "/*.json", listed, attributes, FindFileFlags.DIRECTORIES);
+		bool listing = false;
+		if (handle)
+		{
+			listing = true;
+			CloseFindFile(handle);
+		}
+
+		VyshkaOutbox outbox = new VyshkaOutbox();
+		outbox.Load();
+		// Past the legacy record's ordinal, two short of the wrap: the next
+		// three land in the ring's last two names and its first.
+		outbox.m_NextOrdinal = 4 * ring - 1;
+		VyshkaJsonValue empty = VyshkaJsonValue.NewObject();
+		VyshkaOutboxEntry last = outbox.Append("selftest.ring", empty);
+		VyshkaOutboxEntry end = outbox.Append("selftest.ring", empty);
+		VyshkaOutboxEntry wrapped = outbox.Append("selftest.ring", empty);
+		// An ordinal whose slot the legacy record 7 holds: the append skips
+		// to the next free name rather than overwrite it.
+		outbox.m_NextOrdinal = 4 * ring + 7;
+		VyshkaOutboxEntry skipped = outbox.Append("selftest.ring", empty);
+		bool appended = last && end && wrapped && skipped;
+		bool wrap = appended && last.m_File == ring - 1 && end.m_File == ring && wrapped.m_File == 1;
+		bool skip = appended && skipped.m_File == 8 && skipped.m_Ordinal == 4 * ring + 8;
+
+		VyshkaOutbox again = new VyshkaOutbox();
+		int t0 = TickCount(0);
+		again.Load();
+		int loadMs = Millis(TickCount(t0));
+		// The order the fresh outbox holds this check's records in.
+		array<string> expected = new array<string>;
+		expected.Insert("selftest-legacy-in");
+		if (listing)
+			expected.Insert("selftest-legacy-past");
+		if (appended)
+		{
+			expected.Insert(last.m_Id);
+			expected.Insert(end.m_Id);
+			expected.Insert(wrapped.m_Id);
+			expected.Insert(skipped.m_Id);
+		}
+		array<string> got = new array<string>;
+		bool pastFound = false;
+		for (int i = 0; i < again.Count(); i++)
+		{
+			VyshkaOutboxEntry entry = again.m_Entries.Get(i);
+			if (entry.m_Id == "selftest-legacy-past")
+				pastFound = true;
+			if (entry.m_Id.IndexOf("selftest-legacy") == 0 || entry.m_Type == "selftest.ring")
+				got.Insert(entry.m_Id);
+		}
+		bool ordered = got.Count() == expected.Count();
+		for (int j = 0; ordered && j < got.Count(); j++)
+			ordered = got.Get(j) == expected.Get(j);
+
+		// A full queue split across the wrap, as Load finds it by slot: the
+		// half past the wrap (ordinals RING + 1 up, in the low slots) ahead
+		// of the half before it. Sorted in memory, timed: the insertion sort
+		// this replaced took 666 ms on it, the merge sort 8 ms (1.30).
+		VyshkaOutbox split = new VyshkaOutbox();
+		int half = VyshkaOutbox.CAPACITY / 2;
+		for (int a = 0; a < half; a++)
+		{
+			VyshkaOutboxEntry high = new VyshkaOutboxEntry();
+			high.m_Ordinal = ring + 1 + a;
+			split.m_Entries.Insert(high);
+		}
+		for (int b = 0; b < half; b++)
+		{
+			VyshkaOutboxEntry low = new VyshkaOutboxEntry();
+			low.m_Ordinal = ring - half + 1 + b;
+			split.m_Entries.Insert(low);
+		}
+		int t1 = TickCount(0);
+		split.SortByOrdinal();
+		int sortMs = Millis(TickCount(t1));
+		bool sorted = split.m_Entries.Count() == 2 * half;
+		for (int c = 1; sorted && c < split.m_Entries.Count(); c++)
+			sorted = split.m_Entries.Get(c - 1).m_Ordinal + 1 == split.m_Entries.Get(c).m_Ordinal;
+
+		bool ok = legacyWritten && appended && wrap && skip && ordered && pastFound == listing && Within(loadMs) && sorted && sortMs <= 100;
+		string detail = "legacyWritten=" + legacyWritten;
+		detail += "\tlisting=" + listing;
+		detail += "\tpastFound=" + pastFound;
+		detail += "\twrap=" + wrap;
+		detail += "\tskip=" + skip;
+		detail += "\tordered=" + ordered;
+		detail += "\trestored=" + got.Count() + "/" + expected.Count();
+		detail += "\tloadMs=" + loadMs;
+		detail += "\tsorted=" + sorted;
+		detail += "\tsortMs=" + sortMs;
+		Report("files.outboxRing", ok, detail);
+		DeleteFile(inRing);
+		DeleteFile(pastRing);
+		if (appended)
+		{
+			DeleteFile(last.Path());
+			DeleteFile(end.Path());
+			DeleteFile(wrapped.Path());
+			DeleteFile(skipped.Path());
+		}
+	}
+
+	static VyshkaJsonValue LegacyRecord(string id)
+	{
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("id", VyshkaJsonValue.NewString(id));
+		record.Set("type", VyshkaJsonValue.NewString("selftest.legacy"));
+		record.Set("ts", VyshkaJsonValue.NewString("2026-10-18T10:00:00Z"));
+		record.Set("body", VyshkaJsonValue.NewObject());
+		return record;
 	}
 
 	// ---- files.longValue: a document whose one string value is past the
