@@ -498,8 +498,9 @@ func runHarness(args []string) error {
 // prepareMission derives a harness copy of the named stock mission, once.
 // The stock offline missions ship an init.c that calls LootDebug, a class a
 // plain dedicated server does not have, and a mission whose init script
-// fails to compile aborts the server. The copy drops that line and is
-// otherwise the stock mission; it is reused on later runs.
+// fails to compile aborts the server. The copy drops that line and the
+// mission's scripts/ folder (see deriveMission) and is otherwise the stock
+// mission; it is reused on later runs.
 func prepareMission(serverDir, base string) (string, error) {
 	return deriveMission(serverDir, base, "vyshkaHarness", true, dropLootDebug)
 }
@@ -520,6 +521,12 @@ func dropLootDebug(initC string) (string, error) {
 // server's mpmissions with its init.c passed through editInit. With reuse
 // set, a copy already there is used as it is; otherwise it is rebuilt, for
 // a mission whose init.c carries a script that may have changed.
+//
+// The stock mission's scripts/ folder is left out. It holds loot_debug.c,
+// the LootDebug class. 1.29 booted with it in place; 1.30 compiles it into
+// the Mission module, where its ChatLine calls fail and the module with
+// them, so the server never starts (issue #149). A reused copy that still has
+// the folder is rebuilt.
 func deriveMission(serverDir, base, prefix string, reuse bool, editInit func(string) (string, error)) (string, error) {
 	missions := filepath.Join(serverDir, "mpmissions")
 	source := filepath.Join(missions, base)
@@ -537,7 +544,9 @@ func deriveMission(serverDir, base, prefix string, reuse bool, editInit func(str
 	// init.c so a partial directory left by an older build (or an interrupted
 	// non-atomic copy) is rebuilt rather than started against.
 	if _, err := os.Stat(filepath.Join(target, "init.c")); err == nil && reuse {
-		return name, nil
+		if _, err := os.Stat(filepath.Join(target, "scripts")); os.IsNotExist(err) {
+			return name, nil
+		}
 	}
 	if err := os.RemoveAll(target); err != nil {
 		return "", err
@@ -557,6 +566,9 @@ func deriveMission(serverDir, base, prefix string, reuse bool, editInit func(str
 		}
 		dest := filepath.Join(staging, rel)
 		if d.IsDir() {
+			if rel == "scripts" {
+				return filepath.SkipDir
+			}
 			return os.MkdirAll(dest, 0o755)
 		}
 		data, err := os.ReadFile(path)

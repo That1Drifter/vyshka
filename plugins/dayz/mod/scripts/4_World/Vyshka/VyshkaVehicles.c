@@ -5,12 +5,13 @@
 // events a feed wants; and the chores every long-running server needs:
 // delete every destroyed vehicle, unstuck one, refuel one, and repair one.
 // The engine keeps no list of its vehicles that script can ask for, so
-// this file keeps one: every car, boat, and helicopter registers itself as
-// it is initialized and leaves as it is deleted, whichever way it arrived
-// (the hive loading it at boot, the central economy respawning it, or a
-// spawn action). The hooks sit on the three scripted vehicle bases
-// (CarScript, BoatScript, HelicopterScript) because their common parent,
-// Transport, is an engine class the script compiler refuses to mod.
+// this file keeps one: every car, boat, helicopter, and motorbike registers
+// itself as it is initialized and leaves as it is deleted, whichever way it
+// arrived (the hive loading it at boot, the central economy respawning it,
+// or a spawn action). The hooks sit on the four scripted vehicle bases
+// (CarScript, BoatScript, HelicopterScript, and MotorbikeScript, new in
+// DayZ 1.30) because their common parent, Transport, is an engine class the
+// script compiler refuses to mod.
 //
 // A vehicle is named by its network id, which the engine keeps for the
 // object's whole life on this server and which is what "stable for the
@@ -46,6 +47,7 @@ class VyshkaVehicles
 	static const string KIND_CAR = "car";
 	static const string KIND_BOAT = "boat";
 	static const string KIND_HELICOPTER = "helicopter";
+	static const string KIND_MOTORBIKE = "motorbike";
 	static const string KIND_VEHICLE = "vehicle";
 	static const string EXIT_LEFT = "left";
 	static const string EXIT_DISCONNECT = "disconnect";
@@ -223,8 +225,8 @@ class VyshkaVehicles
 	}
 
 	// Fluids reads the levels a vehicle holds, each a fraction of its tank
-	// rounded to two decimals: a car's four, a boat's fuel. A vehicle of
-	// another kind has none script can read, and gets null.
+	// rounded to two decimals: a car's four, a boat's or a motorbike's fuel.
+	// A vehicle of another kind has none script can read, and gets null.
 	static VyshkaJsonValue Fluids(Transport vehicle)
 	{
 		CarScript car = CarScript.Cast(vehicle);
@@ -244,7 +246,63 @@ class VyshkaVehicles
 			fuel.Set(FLUID_FUEL, Fraction(boat.GetFluidFraction(BoatFluid.FUEL)));
 			return fuel;
 		}
+		MotorbikeScript bike = MotorbikeScript.Cast(vehicle);
+		if (bike)
+		{
+			VyshkaJsonValue tank = VyshkaJsonValue.NewObject();
+			tank.Set(FLUID_FUEL, Fraction(bike.GetFluidFraction(MotorbikeFluid.FUEL)));
+			return tank;
+		}
 		return null;
+	}
+
+	// FillFluid empties the named tank and fills it to level, a fraction of
+	// its capacity, so the level is the one asked for whatever was in it.
+	// It says whether the vehicle has that tank: a car has all four, a boat
+	// and a motorbike only fuel.
+	static bool FillFluid(Transport vehicle, string name, float level)
+	{
+		CarScript car = CarScript.Cast(vehicle);
+		if (car)
+		{
+			CarFluid carFluid;
+			if (name == FLUID_FUEL)
+				carFluid = CarFluid.FUEL;
+			else if (name == FLUID_OIL)
+				carFluid = CarFluid.OIL;
+			else if (name == FLUID_BRAKE)
+				carFluid = CarFluid.BRAKE;
+			else if (name == FLUID_COOLANT)
+				carFluid = CarFluid.COOLANT;
+			else
+				return false;
+			car.LeakAll(carFluid);
+			float carAmount = car.GetFluidCapacity(carFluid) * level;
+			if (carAmount > 0)
+				car.Fill(carFluid, carAmount);
+			return true;
+		}
+		if (name != FLUID_FUEL)
+			return false;
+		BoatScript boat = BoatScript.Cast(vehicle);
+		if (boat)
+		{
+			boat.LeakAll(BoatFluid.FUEL);
+			float boatAmount = boat.GetFluidCapacity(BoatFluid.FUEL) * level;
+			if (boatAmount > 0)
+				boat.Fill(BoatFluid.FUEL, boatAmount);
+			return true;
+		}
+		MotorbikeScript bike = MotorbikeScript.Cast(vehicle);
+		if (bike)
+		{
+			bike.LeakAll(MotorbikeFluid.FUEL);
+			float bikeAmount = bike.GetFluidCapacity(MotorbikeFluid.FUEL) * level;
+			if (bikeAmount > 0)
+				bike.Fill(MotorbikeFluid.FUEL, bikeAmount);
+			return true;
+		}
+		return false;
 	}
 
 	static VyshkaJsonValue Fraction(float value)
@@ -333,6 +391,8 @@ class VyshkaVehicles
 			return KIND_BOAT;
 		if (HelicopterScript.Cast(vehicle))
 			return KIND_HELICOPTER;
+		if (MotorbikeScript.Cast(vehicle))
+			return KIND_MOTORBIKE;
 		return KIND_VEHICLE;
 	}
 
@@ -719,12 +779,12 @@ class VyshkaVehicles
 	}
 }
 
-// The three scripted vehicle bases register as they are initialized, leave
+// The four scripted vehicle bases register as they are initialized, leave
 // as they are deleted, and report their destruction and the hit behind it;
 // the store-load hooks say when a destruction belongs to an earlier run. Every vanilla vehicle
 // and every modded one that extends these is covered; a mod that extends
-// the engine's Car, Boat, or Helicopter directly is not, and is not
-// modded from script either.
+// the engine's Car, Boat, Helicopter, or Motorbike directly is not, and is
+// not modded from script either.
 modded class CarScript
 {
 	override void EEInit()
@@ -834,6 +894,60 @@ modded class BoatScript
 }
 
 modded class HelicopterScript
+{
+	override void EEInit()
+	{
+		super.EEInit();
+		if (GetGame().IsServer())
+			VyshkaVehicles.Register(this);
+	}
+
+	override void EEDelete(EntityAI parent)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.Unregister(this);
+		super.EEDelete(parent);
+	}
+
+	override void EEKilled(Object killer)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnDestroyed(this, killer);
+		super.EEKilled(killer);
+	}
+
+	override void EEHitBy(TotalDamageResult damageResult, int damageType, EntityAI source, int component, string dmgZone, string ammo, vector modelPos, float speedCoef)
+	{
+		super.EEHitBy(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef);
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnHit(this, damageType, source, ammo);
+	}
+
+	override bool OnStoreLoad(ParamsReadContext ctx, int version)
+	{
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoading(this);
+		return super.OnStoreLoad(ctx, version);
+	}
+
+	override void AfterStoreLoad()
+	{
+		super.AfterStoreLoad();
+		if (GetGame().IsServer())
+			VyshkaVehicles.OnLoaded(this);
+	}
+
+	// The global zone (an empty zone name) leaving ruined is a repair: the
+	// next destruction is a new one.
+	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
+	{
+		super.EEHealthLevelChanged(oldLevel, newLevel, zone);
+		if (GetGame().IsServer() && zone == "" && oldLevel == GameConstants.STATE_RUINED && newLevel != GameConstants.STATE_RUINED)
+			VyshkaVehicles.OnRepaired(this);
+	}
+}
+
+modded class MotorbikeScript
 {
 	override void EEInit()
 	{
@@ -1079,7 +1193,7 @@ class VyshkaDeleteDestroyedAction : VyshkaAction
 }
 
 // VyshkaRefuelAction sets the fluids of one vehicle to a level: a car's fuel,
-// oil, brake fluid, and coolant, a boat's fuel. Each tank named is emptied
+// oil, brake fluid, and coolant, a boat's or a motorbike's fuel. Each tank named is emptied
 // and filled to the fraction of its capacity asked for, so the level is the
 // one asked for whatever was in it; the default fills the fuel tank.
 class VyshkaRefuelAction : VyshkaAction
@@ -1159,38 +1273,20 @@ class VyshkaRefuelAction : VyshkaAction
 			wanted.Insert(VyshkaVehicles.FLUID_FUEL);
 		}
 
-		CarScript car = CarScript.Cast(vehicle);
-		BoatScript boat = BoatScript.Cast(vehicle);
-		if (!car && !boat)
-			return VyshkaActionOutcome.Failure("a " + VyshkaVehicles.Kind(vehicle) + " holds no fluids the plugin can fill (cars and boats do)");
-		if (boat)
+		if (!VyshkaVehicles.Fluids(vehicle))
+			return VyshkaActionOutcome.Failure("a " + VyshkaVehicles.Kind(vehicle) + " holds no fluids the plugin can fill (cars, boats, and motorbikes do)");
+		if (!CarScript.Cast(vehicle))
 		{
 			for (int b = 0; b < wanted.Count(); b++)
 			{
 				if (wanted.Get(b) != VyshkaVehicles.FLUID_FUEL)
-					return VyshkaActionOutcome.Failure("a boat has a fuel tank and nothing else; " + wanted.Get(b) + " cannot be filled");
+					return VyshkaActionOutcome.Failure("a " + VyshkaVehicles.Kind(vehicle) + " has a fuel tank and nothing else; " + wanted.Get(b) + " cannot be filled");
 			}
 		}
 
 		VyshkaJsonValue before = VyshkaVehicles.Fluids(vehicle);
 		for (int f = 0; f < wanted.Count(); f++)
-		{
-			if (car)
-			{
-				CarFluid carFluid = CarFluidOf(wanted.Get(f));
-				car.LeakAll(carFluid);
-				float carAmount = car.GetFluidCapacity(carFluid) * level;
-				if (carAmount > 0)
-					car.Fill(carFluid, carAmount);
-			}
-			else
-			{
-				boat.LeakAll(BoatFluid.FUEL);
-				float boatAmount = boat.GetFluidCapacity(BoatFluid.FUEL) * level;
-				if (boatAmount > 0)
-					boat.Fill(BoatFluid.FUEL, boatAmount);
-			}
-		}
+			VyshkaVehicles.FillFluid(vehicle, wanted.Get(f), level);
 		VyshkaLog.Info("refuelled " + vehicle.GetType() + " (" + referenceKey + "): " + wanted.Count().ToString() + " fluids to " + VyshkaVitals.Text(level));
 
 		VyshkaJsonValue filled = VyshkaJsonValue.NewArray();
@@ -1209,17 +1305,6 @@ class VyshkaRefuelAction : VyshkaAction
 	static bool IsFluid(string name)
 	{
 		return name == VyshkaVehicles.FLUID_FUEL || name == VyshkaVehicles.FLUID_OIL || name == VyshkaVehicles.FLUID_BRAKE || name == VyshkaVehicles.FLUID_COOLANT;
-	}
-
-	static CarFluid CarFluidOf(string name)
-	{
-		if (name == VyshkaVehicles.FLUID_OIL)
-			return CarFluid.OIL;
-		if (name == VyshkaVehicles.FLUID_BRAKE)
-			return CarFluid.BRAKE;
-		if (name == VyshkaVehicles.FLUID_COOLANT)
-			return CarFluid.COOLANT;
-		return CarFluid.FUEL;
 	}
 }
 

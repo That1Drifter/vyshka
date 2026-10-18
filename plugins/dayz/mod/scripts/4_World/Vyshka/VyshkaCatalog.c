@@ -281,7 +281,7 @@ class VyshkaCatalog
 				return TYPE_EDIBLE;
 			if (base == "clothing_base")
 				return TYPE_CLOTHING;
-			if (base == "carscript" || base == "boatscript")
+			if (base == "carscript" || base == "boatscript" || base == "motorbikescript")
 				return TYPE_VEHICLE;
 			if (base == "inventory_base" || base == "itembase")
 				item = true;

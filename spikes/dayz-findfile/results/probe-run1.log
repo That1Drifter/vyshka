@@ -1,0 +1,11 @@
+files	small=true	other=true	text=true
+list	slash-json-dirs	handle=false	pattern=$profile:VyshkaFind/*.json
+list	slash-json-all	handle=false	pattern=$profile:VyshkaFind/*.json
+list	slash-json-archives	handle=false	pattern=$profile:VyshkaFind/*.json
+list	slash-star-dirs	handle=false	pattern=$profile:VyshkaFind/*
+list	slash-star-all	handle=false	pattern=$profile:VyshkaFind/*
+list	backslash-json-dirs	handle=false	pattern=$profile:VyshkaFind\*.json
+list	exact-dirs	handle=false	pattern=$profile:VyshkaFind/1.json
+list	dir-itself-dirs	handle=false	pattern=$profile:VyshkaFind
+list	profile-star-dirs	handle=true	count=34	pattern=$profile:*	names=[addons|1] [appcache|1] [ban.txt|16] [battleye|1] [config|1] [dayz.gproj|16] [DayZServer_x64.exe|16] [dayzsetting.xml|16] [docs|1] [dta|1] [error_2026-10-18_08-33-55.log|16] [error_2026-10-18_08-40-18.log|16] [error_2026-10-18_08-43-31.log|16] [filesystem.log|16] [keys|1] [logs|1] [mpmissions|1] [nasdara|1] [sakhal|1] [serverDZ.cfg|16] [server_manager|1] [steamclient64.dll|16] [steam_api64.dll|16] [steam_appid.txt|16] [tier0_s64.dll|16] [vstdlib_s64.dll|16] [vyshka_bans_spike_serverDZ.cfg|16] [vyshka_discord_serverDZ.cfg|16] [vyshka_edge_spike_serverDZ.cfg|16] [vyshka_find_spike_serverDZ.cfg|16] [vyshka_inline_serverDZ.cfg|16] [vyshka_moderation_serverDZ.cfg|16] [vyshka_spike_serverDZ.cfg|16] [whitelist.txt|16]
+finished

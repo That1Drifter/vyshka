@@ -134,7 +134,7 @@ its revision is derived from its content, see "Writing a mod against the plugin"
 | `vyshka.time.freeze` | world | warning | `frozen` (default true; false lets the clock run again at the server config's rate) | `frozen`, `wasFrozen`, `time` (the game's clock, `YYYY-MM-DDTHH:MM`); a time set while the clock is stopped stays set. See "World and weather" below |
 | `vyshka.weather` | world | warning | every one optional: `preset` (`clear`, `cloudy`, or `storm`) or `name` (a key of `vyshka.weather`, annotated so a panel offers the stored names), then any knob, which wins over the preset's: `overcast`, `fog`, `rain`, `snowfall` (0 to 1), `windSpeed` and `windMaxSpeed` (metres a second, 0 to 100), `windDirection` (degrees of the engine's wind angle, -180 to 180), `dynamicFog` (`{ distanceDensity, heightDensity }` 0 to 1, `heightBias` in metres), `storm` (`{ density, threshold, timeoutSeconds }`), `rainThreshold` and `snowfallThreshold` (`{ min, max, stopSeconds }`), `transitionSeconds` (default 0), `holdSeconds` (default 1800), `mode` (`world`, `engine`, or `hold`; absent keeps the current one) | `applied` (the knobs set), `mode` (after), `transitionSeconds`, `holdSeconds`, `widened` (the phenomena whose limits were widened to let the value in), `notes` (what the engine will do to the values), `before` and `after` (the world's conditions, as `state.world` `data` carries them), `preset` or `weather` and `revision`. See "World and weather" below |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
-| `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat only fuel (naming another fails the action), and a helicopter none the plugin can fill |
+| `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat or a motorbike only fuel (naming another fails the action), and a helicopter none the plugin can fill |
 | `vyshka.vehicle.repair` | vehicle | none | `parts` (default true) | `vehicle`, `type`, `kind`, `position`, `before` and `after` (each `{ state, health }`), `parts` (how many were repaired or swapped), `replaced` (one `{ slot, from, to }` per ruined wheel swapped back to its intact class), `problems` (one `{ class, slot, reason }` per part that could not be), `replacedCount` and `problemCount` (always complete), `truncated` (true when a list was cut: the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap); the engine's own full-health call on every damage zone, which lifts a destruction, then with `parts` every attached part and the parts on those, three levels down, a swapped-in wheel's own parts included. Fluids are left to the refuel action, and a missing part stays missing |
 | `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that slot's subtree alone, with the whole result budget to itself) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
 | `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
@@ -554,12 +554,13 @@ absent when none is; the panel shows them as badges beside the name.
 
 A vehicle's `id` is the engine's network id for the object (its high and low halves joined
 with a dash), which the engine keeps for the object's whole life on this server; a restart
-is a new life and the ids start over. `kind` is `car`, `boat`, or `helicopter` by the
-scripted base the vehicle extends, and `vehicle` for one that extends none of them. The
-list is the plugin's own, kept by hooks on those three bases (`CarScript`, `BoatScript`,
-`HelicopterScript`; their common engine parent cannot be modded from script): every vanilla
-vehicle and every modded one built on them is in it, one that extends the engine's `Car`,
-`Boat`, or `Helicopter` directly is not.
+is a new life and the ids start over. `kind` is `car`, `boat`, `helicopter`, or
+`motorbike` (new in DayZ 1.30) by the scripted base the vehicle extends, and `vehicle` for
+one that extends none of them. The list is the plugin's own, kept by hooks on those four
+bases (`CarScript`, `BoatScript`, `HelicopterScript`, `MotorbikeScript`; their common engine
+parent cannot be modded from script): every vanilla vehicle and every modded one built on
+them is in it, one that extends the engine's `Car`, `Boat`, `Helicopter`, or `Motorbike`
+directly is not.
 
 `data.state` is the vehicle's damage state: `intact`, `destroyed` (its global health is
 zero), or `exploded` (destroyed, and the hit that did it was an explosion, or the killer
@@ -567,7 +568,7 @@ the engine named was an explosive). `exploded` is kept in memory, which loses no
 wreck does not outlive a restart (the engine deletes one the hive loads). `data.health` is
 the global health as a whole percent of the vehicle's maximum, which differs by class.
 `data.fluids` is each tank's level as a fraction rounded to two decimals: `fuel`, `oil`,
-`brake`, and `coolant` for a car, `fuel` alone for a boat, and absent for a helicopter,
+`brake`, and `coolant` for a car, `fuel` alone for a boat or a motorbike, and absent for a helicopter,
 whose tank the engine does not give script. A repair makes a wreck `intact` again, and its
 next destruction is reported as a new one. A snapshot that would pass the 262144 bytes a
 snapshot may carry (around a thousand vehicles: 52 took 11 464 bytes on a live run) is sent
@@ -739,7 +740,8 @@ A **vehicle preset** is a car, its parts, and its fluids:
   "fluids": { "fuel": 1, "coolant": 1, "oil": 1, "brake": 1 } }
 ```
 
-`class` must be a car (`CarScript`). `attachments` and `cargo` are loadout entries;
+`class` must be a car (`CarScript`) or a motorbike (`MotorbikeScript`); a motorbike's only
+fluid is `fuel`, and naming another is reported as a problem. `attachments` and `cargo` are loadout entries;
 `autoParts` then fills every slot still empty with the first compatible part the engine
 accepts, the way `vyshka.spawn` `auto` does (within what the preset's own entries left of
 the 400-item budget, a slot reached with none left staying empty; `autoParts` in the result
@@ -824,7 +826,7 @@ namespace `vyshka`: `dayz.items.firearms`, `dayz.items.optics`, `dayz.items.ammo
 enumerates the public classes (`scope = 2`) of `CfgVehicles`, `CfgWeapons`, and
 `CfgMagazines` whose inheritance path reaches that type's base (`Weapon_Base`,
 `ItemOptics`, `Ammunition_Base`, `Magazine_Base`, `Edible_Base`, `Clothing_Base`,
-`Inventory_Base` or `ItemBase`, `CarScript` or `BoatScript`), the first match on the path
+`Inventory_Base` or `ItemBase`, `CarScript`, `BoatScript`, or `MotorbikeScript`), the first match on the path
 deciding. An entry's `referenceKey` is the class name (what `vyshka.spawn` takes as
 `className`), its `label` the display name the client would show (the config's
 `displayName` through the server's string table; the class name when there is none or it

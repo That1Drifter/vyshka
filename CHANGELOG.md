@@ -595,9 +595,20 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-10-18: DayZ 1.30 motorbikes (`MotorbikeScript`) register like the other vehicles,
+  with a `motorbike` kind, fuel in the snapshot, refuel, presets, and the catalog (issue #149).
+
+- 2026-10-18: `spikes/dayz-findfile` measures that 1.30's `FindFile` resolves `$profile:`
+  to the server's working directory, so the outbox restore finds nothing (issue #149).
+
 - 2026-10-10: `spikes/dayz-script-api-edges` measures the read-timeout clamp (3..120 s),
   `204` and `302` reaching script as `OnError(8)` and `OnError(7)`, clothing's cargo path,
   `FPrint` surviving a kill, and the 65 535-byte `FGets` fault (#148).
+
+#### Fixed
+
+- 2026-10-18: `vyshka-dayz` derives missions without the stock mission's `scripts/`
+  folder, whose `loot_debug.c` stops a 1.30 server compiling its Mission module (issue #149).
 
 ### [0.9.0] - 2026-10-03
 
