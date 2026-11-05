@@ -112,3 +112,12 @@ their containers (131 items gone for 14 deletes, nothing left on the ground).
   `InventoryLocation` with `LocationCreateEntity` alike (run 3: `slot=Shoulder class=M4A1+5
   in Hands`). Filling the hands first (run 4) makes the shoulder creation land on the
   shoulder.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder (issue #149). One boot, `probe-run6-130-164289.log`.
+
+Unchanged from 1.29 to the byte: the same 17 slots, 35 items geared, 92 fillers, 131 items
+carried, a whole tree of 14 035 bytes at depth 4, and the same cuts at depths 3 to 1
+(13 894, 13 667, 1 504 bytes). Gearing and filling took 6 ms each, building the tree 1 ms,
+serializing it 11 ms.

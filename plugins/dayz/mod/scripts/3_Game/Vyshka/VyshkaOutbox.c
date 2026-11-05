@@ -19,10 +19,22 @@
 // and the batch in it is lost. What a power loss or an OS crash takes from
 // the page cache is not measured and cannot be shortened from script; the
 // loss window is documented rather than hidden.
+//
+// The records live in a ring of file names, 1.json to RING.json, and the
+// ordinal is kept inside the record, because a restart has to find them
+// without listing the directory: on DayZ 1.30.164078 FindFile resolves
+// $profile: to the server's working directory, not the -profiles one, so a
+// listing of the outbox finds nothing on a server that keeps its profile
+// elsewhere (spikes/dayz-findfile, issue #149; 1.30.164289 lists again).
+// Load asks for each name in the ring instead. Before the ring a record's
+// file was named by its ordinal, which grows without bound; Load still lists
+// the directory for those, which finds them wherever FindFile works (1.29,
+// 1.30.164289, or a profile that is the working directory).
 
 class VyshkaOutboxEntry
 {
-	int m_Ordinal;   // creation order, also the file name
+	int m_Ordinal;   // creation order
+	int m_File;      // the number the record's file is named by: a ring slot, or a pre-ring ordinal
 	string m_Id;
 	string m_Type;
 	string m_Ts;
@@ -33,7 +45,7 @@ class VyshkaOutboxEntry
 
 	string Path()
 	{
-		return VyshkaFiles.OUTBOX_DIR + "/" + m_Ordinal.ToString() + ".json";
+		return VyshkaFiles.OUTBOX_DIR + "/" + m_File.ToString() + ".json";
 	}
 
 	// Serialize frames the entry as a wire envelope (spec section 4).
@@ -49,6 +61,7 @@ class VyshkaOutboxEntry
 	VyshkaJsonValue RecordJson(VyshkaJsonValue body)
 	{
 		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("ordinal", VyshkaJsonValue.NewInt(m_Ordinal));
 		record.Set("id", VyshkaJsonValue.NewString(m_Id));
 		record.Set("type", VyshkaJsonValue.NewString(m_Type));
 		record.Set("ts", VyshkaJsonValue.NewString(m_Ts));
@@ -65,6 +78,13 @@ class VyshkaOutbox
 	// worse for the operator than an honest counter.
 	static const int CAPACITY = 5000;
 
+	// How many record file names the outbox cycles through. Twice the
+	// capacity, so an append finds the slot its ordinal maps to free unless
+	// an entry a whole ring older is still queued, and then skips ahead to
+	// the next free one (there always is one: the queue never holds more
+	// than CAPACITY entries).
+	static const int RING = 10000;
+
 	// How many envelopes one poll may carry (section 3.1.2 guarantees a hub
 	// accepts at least this many).
 	static const int BATCH_LIMIT = 200;
@@ -77,6 +97,7 @@ class VyshkaOutbox
 	static const int EVENTS_PER_POLL = 1000;
 
 	ref array<ref VyshkaOutboxEntry> m_Entries;
+	ref map<int, bool> m_Files;   // the file numbers the queued entries hold
 	int m_NextOrdinal;
 	int m_NextSeq;
 	int m_Dropped;
@@ -87,6 +108,7 @@ class VyshkaOutbox
 	void VyshkaOutbox()
 	{
 		m_Entries = new array<ref VyshkaOutboxEntry>;
+		m_Files = new map<int, bool>;
 		m_NextOrdinal = 1;
 		m_NextSeq = 0;
 		m_Dropped = 0;
@@ -179,6 +201,10 @@ class VyshkaOutbox
 		else
 			VyshkaLog.Error("outbox: could not set aside the refused envelope " + entry.m_Id + " under " + VyshkaFiles.REJECTED_DIR + "; its record stays at " + entry.Path() + " and the next boot will try to send it again");
 		m_Entries.RemoveOrdered(index);
+		// A record left in place keeps its name until the next boot reads it
+		// back, so no later append in this run can overwrite it.
+		if (setAside)
+			m_Files.Remove(entry.m_File);
 		m_Rejected++;
 
 		int seq = entry.m_Seq;
@@ -274,9 +300,19 @@ class VyshkaOutbox
 
 	// Load reads every record left on disk by a previous run, in ordinal
 	// order, and leaves them unnumbered: the next session start numbers them.
+	// It asks for every name in the ring, then lists the directory for the
+	// records named before the ring, which the listing finds only where
+	// FindFile works (see the head of this file).
 	void Load()
 	{
 		m_Entries.Clear();
+		m_Files.Clear();
+		for (int slot = 1; slot <= RING; slot++)
+		{
+			string slotName = slot.ToString() + ".json";
+			if (FileExist(VyshkaFiles.OUTBOX_DIR + "/" + slotName))
+				LoadRecord(slotName, slot);
+		}
 		string fileName;
 		FileAttr attributes;
 		FindFileHandle handle = FindFile(VyshkaFiles.OUTBOX_DIR + "/*.json", fileName, attributes, FindFileFlags.DIRECTORIES);
@@ -285,7 +321,12 @@ class VyshkaOutbox
 			bool found = true;
 			while (found)
 			{
-				LoadRecord(fileName);
+				// A name inside the ring was asked for above already. Where
+				// FindFile lists the working directory in place of the
+				// profile, a name it gives need not exist in the profile.
+				int number = FileNumber(fileName);
+				if (number > RING && FileExist(VyshkaFiles.OUTBOX_DIR + "/" + fileName))
+					LoadRecord(fileName, number);
 				found = FindNextFile(handle, fileName, attributes);
 			}
 			CloseFindFile(handle);
@@ -302,19 +343,31 @@ class VyshkaOutbox
 			VyshkaLog.Info("outbox: " + m_Entries.Count().ToString() + " unacked envelope(s) restored from disk");
 	}
 
-	protected void LoadRecord(string fileName)
+	// FileNumber is the number a record's file name carries ("12.json" is
+	// 12), or 0 for a name that is not a record's.
+	static int FileNumber(string fileName)
 	{
 		int dot = fileName.IndexOf(".");
-		if (dot <= 0)
-			return;
-		string ordinalText = fileName.Substring(0, dot);
-		for (int i = 0; i < ordinalText.Length(); i++)
+		if (dot <= 0 || fileName.Substring(dot, fileName.Length() - dot) != ".json")
+			return 0;
+		string digits = fileName.Substring(0, dot);
+		for (int i = 0; i < digits.Length(); i++)
 		{
-			if (!VyshkaJson.IsDigit(ordinalText.Get(i)))
-				return;
+			if (!VyshkaJson.IsDigit(digits.Get(i)))
+				return 0;
 		}
-		int ordinal = ordinalText.ToInt();
-		if (ordinal <= 0)
+		return digits.ToInt();
+	}
+
+	// SlotOf maps an ordinal onto the ring of file names, 1 to RING.
+	static int SlotOf(int ordinal)
+	{
+		return (ordinal - 1) % RING + 1;
+	}
+
+	protected void LoadRecord(string fileName, int number)
+	{
+		if (number <= 0)
 			return;
 
 		string path = VyshkaFiles.OUTBOX_DIR + "/" + fileName;
@@ -330,7 +383,10 @@ class VyshkaOutbox
 		}
 		VyshkaJsonValue body = root.Get("body");
 		VyshkaOutboxEntry entry = new VyshkaOutboxEntry();
-		entry.m_Ordinal = ordinal;
+		// A record written before the ring carries no ordinal: its file name
+		// is the ordinal.
+		entry.m_Ordinal = root.GetInt("ordinal", number);
+		entry.m_File = number;
 		entry.m_Id = root.GetString("id", "");
 		entry.m_Type = root.GetString("type", "");
 		entry.m_Ts = root.GetString("ts", "");
@@ -348,30 +404,61 @@ class VyshkaOutbox
 		}
 		else
 			entry.m_Body = "{}";
-		if (entry.m_Id == "" || entry.m_Type == "")
+		if (entry.m_Id == "" || entry.m_Type == "" || entry.m_Ordinal <= 0)
 		{
-			VyshkaLog.Warn("outbox: record " + fileName + " has no id or type and was discarded");
+			VyshkaLog.Warn("outbox: record " + fileName + " has no id, type, or ordinal and was discarded");
 			DeleteFile(path);
 			m_Dropped++;
 			return;
 		}
 		m_Entries.Insert(entry);
+		m_Files.Set(entry.m_File, true);
 	}
 
-	protected void SortByOrdinal()
+	// SortByOrdinal puts the entries in creation order. Load finds them by
+	// slot, so a queue that crossed the ring's wrap arrives as two sorted
+	// runs, the later one first; an insertion sort would take quadratic time
+	// on that (issue #149), so this is a bottom-up merge sort, stable and
+	// n log n whatever the order.
+	void SortByOrdinal()
 	{
-		// Insertion sort: the buffer is small and already nearly ordered.
-		for (int i = 1; i < m_Entries.Count(); i++)
+		int count = m_Entries.Count();
+		if (count < 2)
+			return;
+		array<ref VyshkaOutboxEntry> source = m_Entries;
+		array<ref VyshkaOutboxEntry> target = new array<ref VyshkaOutboxEntry>;
+		target.Resize(count);
+		for (int width = 1; width < count; width *= 2)
 		{
-			VyshkaOutboxEntry current = m_Entries.Get(i);
-			int j = i - 1;
-			while (j >= 0 && m_Entries.Get(j).m_Ordinal > current.m_Ordinal)
+			for (int start = 0; start < count; start += 2 * width)
 			{
-				m_Entries.Set(j + 1, m_Entries.Get(j));
-				j--;
+				int middle = start + width;
+				if (middle > count)
+					middle = count;
+				int end = start + 2 * width;
+				if (end > count)
+					end = count;
+				int left = start;
+				int right = middle;
+				for (int k = start; k < end; k++)
+				{
+					if (left < middle && (right >= end || source.Get(left).m_Ordinal <= source.Get(right).m_Ordinal))
+					{
+						target.Set(k, source.Get(left));
+						left++;
+					}
+					else
+					{
+						target.Set(k, source.Get(right));
+						right++;
+					}
+				}
 			}
-			m_Entries.Set(j + 1, current);
+			array<ref VyshkaOutboxEntry> swap = source;
+			source = target;
+			target = swap;
 		}
+		m_Entries = source;
 	}
 
 	// Append persists a new envelope and numbers it into the current session.
@@ -395,8 +482,14 @@ class VyshkaOutbox
 			return null;
 		}
 
+		// The slot an ordinal maps to is held only by an entry a whole ring
+		// older; skip past it rather than overwrite a queued record. This
+		// ends, since at most CAPACITY of the RING slots are held.
+		while (m_Files.Contains(SlotOf(m_NextOrdinal)))
+			m_NextOrdinal++;
 		VyshkaOutboxEntry entry = new VyshkaOutboxEntry();
 		entry.m_Ordinal = m_NextOrdinal;
+		entry.m_File = SlotOf(m_NextOrdinal);
 		m_NextOrdinal++;
 		entry.m_Id = VyshkaIds.Next();
 		entry.m_Type = envelopeType;
@@ -417,6 +510,7 @@ class VyshkaOutbox
 		if (!VyshkaFiles.WriteJson(entry.Path(), entry.RecordJson(body)))
 			VyshkaLog.Warn("outbox: could not persist envelope " + entry.m_Id + "; it will be lost if the server restarts before the hub acks it");
 		m_Entries.Insert(entry);
+		m_Files.Set(entry.m_File, true);
 		return entry;
 	}
 
@@ -438,6 +532,7 @@ class VyshkaOutbox
 				if (!DeleteFile(entry.Path()))
 					VyshkaLog.Warn("outbox: could not delete acked envelope " + entry.Path() + "; the hub will dedup it if a restart re-sends it");
 				m_Entries.RemoveOrdered(i);
+				m_Files.Remove(entry.m_File);
 			}
 			else
 			{

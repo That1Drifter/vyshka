@@ -1,0 +1,86 @@
+2026/11/04 22:39:25.693726 stub listening on 127.0.0.1:8098
+2026/11/04 22:40:02.567254 [req 001] >> POST /post proto=HTTP/1.1 from 127.0.0.1:63118
+2026/11/04 22:40:02.567254 [req 001]    header Accept: "*/*"
+2026/11/04 22:40:02.567254 [req 001]    header Content-Length: "11"
+2026/11/04 22:40:02.567254 [req 001]    header Content-Type: "application/json"
+2026/11/04 22:40:02.567254 [req 001]    body len=11 prefix="{\"probe\":0}"
+2026/11/04 22:40:02.567254 [req 001] == answered
+2026/11/04 22:40:05.816812 [req 002] >> POST /post proto=HTTP/1.1 from 127.0.0.1:63119
+2026/11/04 22:40:05.816812 [req 002]    header Accept: "*/*"
+2026/11/04 22:40:05.816812 [req 002]    header Authorization: "Bearer crlf-token"
+2026/11/04 22:40:05.816812 [req 002]    header Content-Length: "11"
+2026/11/04 22:40:05.816812 [req 002]    header Content-Type: "application/json"
+2026/11/04 22:40:05.817313 [req 002]    body len=11 prefix="{\"probe\":1}"
+2026/11/04 22:40:05.817313 [req 002] == answered
+2026/11/04 22:40:09.067059 [req 003] >> POST /post proto=HTTP/1.1 from 127.0.0.1:53967
+2026/11/04 22:40:09.067059 [req 003]    header Accept: "*/*"
+2026/11/04 22:40:09.067059 [req 003]    header Authorization: "Bearer lf-token"
+2026/11/04 22:40:09.067059 [req 003]    header Content-Length: "11"
+2026/11/04 22:40:09.067059 [req 003]    header Content-Type: "application/json"
+2026/11/04 22:40:09.067059 [req 003]    body len=11 prefix="{\"probe\":2}"
+2026/11/04 22:40:09.067059 [req 003] == answered
+2026/11/04 22:40:12.316144 [req 004] >> POST /post proto=HTTP/1.1 from 127.0.0.1:53968
+2026/11/04 22:40:12.316144 [req 004]    header Accept: "*/*"
+2026/11/04 22:40:12.316144 [req 004]    header Content-Length: "11"
+2026/11/04 22:40:12.316650 [req 004]    header Content-Type: "Authorization: Bearer whole-token"
+2026/11/04 22:40:12.316650 [req 004]    body len=11 prefix="{\"probe\":3}"
+2026/11/04 22:40:12.316650 [req 004] == answered
+2026/11/04 22:40:15.566295 [req 005] >> POST /post proto=HTTP/1.1 from 127.0.0.1:53969
+2026/11/04 22:40:15.566295 [req 005]    header Accept: "*/*"
+2026/11/04 22:40:15.566295 [req 005]    header Content-Length: "11"
+2026/11/04 22:40:15.566295 [req 005]    header Content-Type: "application/json"
+2026/11/04 22:40:15.566295 [req 005]    body len=11 prefix="{\"probe\":4}"
+2026/11/04 22:40:15.566295 [req 005] == answered
+2026/11/04 22:40:18.816134 [req 006] >> GET /status?code=401 proto=HTTP/1.1 from 127.0.0.1:53970
+2026/11/04 22:40:18.816134 [req 006]    header Accept: "*/*"
+2026/11/04 22:40:18.816134 [req 006]    body len=0 prefix=""
+2026/11/04 22:40:18.816134 [req 006] == answered
+2026/11/04 22:40:22.065826 [req 007] >> GET /status?code=400 proto=HTTP/1.1 from 127.0.0.1:54254
+2026/11/04 22:40:22.065826 [req 007]    header Accept: "*/*"
+2026/11/04 22:40:22.065826 [req 007]    body len=0 prefix=""
+2026/11/04 22:40:22.065826 [req 007] == answered
+2026/11/04 22:40:25.315313 [req 008] >> GET /status?code=409 proto=HTTP/1.1 from 127.0.0.1:54255
+2026/11/04 22:40:25.315313 [req 008]    header Accept: "*/*"
+2026/11/04 22:40:25.315313 [req 008]    body len=0 prefix=""
+2026/11/04 22:40:25.315313 [req 008] == answered
+2026/11/04 22:40:28.565281 [req 009] >> GET /status?code=500 proto=HTTP/1.1 from 127.0.0.1:52130
+2026/11/04 22:40:28.565281 [req 009]    header Accept: "*/*"
+2026/11/04 22:40:28.565281 [req 009]    body len=0 prefix=""
+2026/11/04 22:40:28.565281 [req 009] == answered
+2026/11/04 22:40:31.815176 [req 010] >> POST /status?code=401 proto=HTTP/1.1 from 127.0.0.1:58928
+2026/11/04 22:40:31.815176 [req 010]    header Accept: "*/*"
+2026/11/04 22:40:31.815176 [req 010]    header Content-Length: "11"
+2026/11/04 22:40:31.815176 [req 010]    header Content-Type: "application/json"
+2026/11/04 22:40:31.815176 [req 010]    body len=11 prefix="{\"probe\":9}"
+2026/11/04 22:40:31.815176 [req 010] == answered
+2026/11/04 22:40:35.064760 [req 011] >> POST /echo proto=HTTP/1.1 from 127.0.0.1:58930
+2026/11/04 22:40:35.064760 [req 011]    header Accept: "*/*"
+2026/11/04 22:40:35.064760 [req 011]    header Content-Length: "4010"
+2026/11/04 22:40:35.064760 [req 011]    header Content-Type: "application/json"
+2026/11/04 22:40:35.064760 [req 011]    body len=4010 prefix="{\"pad\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+2026/11/04 22:40:35.065259 [req 011] == answered
+2026/11/04 22:40:38.314580 [req 012] >> POST /post proto=HTTP/1.1 from 127.0.0.1:62498
+2026/11/04 22:40:38.314580 [req 012]    header Accept: "*/*"
+2026/11/04 22:40:38.314580 [req 012]    header Content-Length: "65546"
+2026/11/04 22:40:38.314580 [req 012]    header Content-Type: "application/json"
+2026/11/04 22:40:38.315082 [req 012]    body len=65546 prefix="{\"pad\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+2026/11/04 22:40:38.315082 [req 012] == answered
+2026/11/04 22:40:41.564402 [req 013] >> GET /big?n=262144 proto=HTTP/1.1 from 127.0.0.1:62500
+2026/11/04 22:40:41.564402 [req 013]    header Accept: "*/*"
+2026/11/04 22:40:41.564402 [req 013]    body len=0 prefix=""
+2026/11/04 22:40:41.564901 [req 013] == answered
+2026/11/04 22:40:44.814057 [req 014] >> GET /big?n=1048576 proto=HTTP/1.1 from 127.0.0.1:62502
+2026/11/04 22:40:44.814057 [req 014]    header Accept: "*/*"
+2026/11/04 22:40:44.814057 [req 014]    body len=0 prefix=""
+2026/11/04 22:40:44.817177 [req 014] == answered
+2026/11/04 22:40:48.064051 [req 015] >> GET /utf8 proto=HTTP/1.1 from 127.0.0.1:55975
+2026/11/04 22:40:48.064051 [req 015]    header Accept: "*/*"
+2026/11/04 22:40:48.064051 [req 015]    body len=0 prefix=""
+2026/11/04 22:40:48.064051 [req 015] == answered
+2026/11/04 22:40:56.563319 [req 016] >> POST /post proto=HTTP/1.1 from 127.0.0.1:58561
+2026/11/04 22:40:56.563319 [req 016]    header Accept: "*/*"
+2026/11/04 22:40:56.563319 [req 016]    header Content-Length: "12"
+2026/11/04 22:40:56.563319 [req 016]    header Content-Type: "application/json"
+2026/11/04 22:40:56.563319 [req 016]    body len=12 prefix="{\"probe\":16}"
+2026/11/04 22:40:56.563319 [req 016] == answered
+exit status 143

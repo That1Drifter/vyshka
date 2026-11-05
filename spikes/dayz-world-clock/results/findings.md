@@ -81,3 +81,14 @@ threshold set from script lasts under it only until its next change.
   which were widened, since under `world` the map closes Chernarus's snowfall limits again.
 - Rain asked for with the overcast below the rain threshold is noted in the result, because
   the engine will stop it.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder (issue #149). One boot, `probe-run2-130-164289.log`.
+
+Every row above holds on 1.30. Multiplier 0 held the clock at 22:03 from t=60 to t=175, `SetDate`
+12:00 landed under it, multiplier 30 ran 12:02 to 12:32 in one minute, and -1 went back to
+the config rate. Each frozen phase held what it set: overcast 0.1, snow 0.8 with its
+limits, overcast 0.2 reached over 60 s, wind 25 of 30 at 1 rad, and dynamic fog 0.8, 0.6,
+50. Lifting the freeze handed the weather back to the mission controller, as before. Only
+the random forecasts differ from the 1.29 run.

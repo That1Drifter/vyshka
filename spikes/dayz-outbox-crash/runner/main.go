@@ -752,7 +752,10 @@ func prepareMission(serverDir, base, loadScript string) error {
 	if _, err := os.Stat(filepath.Join(source, "init.c")); err != nil {
 		return fmt.Errorf("no mission at %s: %w", source, err)
 	}
-	if _, err := os.Stat(filepath.Join(target, "init.c")); err != nil {
+	_, initErr := os.Stat(filepath.Join(target, "init.c"))
+	_, scriptsErr := os.Stat(filepath.Join(target, "scripts"))
+	// A copy made before 1.30 still holds the stock scripts/ folder (issue #149).
+	if initErr != nil || scriptsErr == nil {
 		fmt.Printf("runner: deriving %s from %s\n", missionName, base)
 		if err := os.RemoveAll(target); err != nil {
 			return err
@@ -764,6 +767,11 @@ func prepareMission(serverDir, base, loadScript string) error {
 			rel, _ := filepath.Rel(source, path)
 			dest := filepath.Join(target, rel)
 			if d.IsDir() {
+				// The stock mission's scripts/ holds loot_debug.c, which 1.30
+				// compiles into the Mission module and fails on (issue #149).
+				if rel == "scripts" {
+					return filepath.SkipDir
+				}
 				return os.MkdirAll(dest, 0o755)
 			}
 			data, err := os.ReadFile(path)

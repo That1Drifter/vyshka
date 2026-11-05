@@ -16,6 +16,13 @@ other server mods build on ("Writing a mod against the plugin" below, with a sam
 Clean-room: written from the engine's public script headers and the measurements under
 `spikes/`, per `CONTRIBUTING.md`.
 
+**Game versions.** The plugin targets DayZ 1.30. It was last verified on 1.30.164289, the
+stable hotfix of 2026-11-03, on 2026-11-04: the self-test, the plugin conformance suite,
+every DayZ spike under `spikes/` but `dayz-admin-flags` (which needs a second client), a
+live client session, and a Linux server. Earlier 1.30 builds differ only where this README
+says so. A fact this README dates to 1.29 alone was measured there and not again on 1.30.
+1.29 is no longer tested, since a 1.29 server cannot take 1.30 clients.
+
 ## Layout
 
 | Path | What it is |
@@ -134,7 +141,7 @@ its revision is derived from its content, see "Writing a mod against the plugin"
 | `vyshka.time.freeze` | world | warning | `frozen` (default true; false lets the clock run again at the server config's rate) | `frozen`, `wasFrozen`, `time` (the game's clock, `YYYY-MM-DDTHH:MM`); a time set while the clock is stopped stays set. See "World and weather" below |
 | `vyshka.weather` | world | warning | every one optional: `preset` (`clear`, `cloudy`, or `storm`) or `name` (a key of `vyshka.weather`, annotated so a panel offers the stored names), then any knob, which wins over the preset's: `overcast`, `fog`, `rain`, `snowfall` (0 to 1), `windSpeed` and `windMaxSpeed` (metres a second, 0 to 100), `windDirection` (degrees of the engine's wind angle, -180 to 180), `dynamicFog` (`{ distanceDensity, heightDensity }` 0 to 1, `heightBias` in metres), `storm` (`{ density, threshold, timeoutSeconds }`), `rainThreshold` and `snowfallThreshold` (`{ min, max, stopSeconds }`), `transitionSeconds` (default 0), `holdSeconds` (default 1800), `mode` (`world`, `engine`, or `hold`; absent keeps the current one) | `applied` (the knobs set), `mode` (after), `transitionSeconds`, `holdSeconds`, `widened` (the phenomena whose limits were widened to let the value in), `notes` (what the engine will do to the values), `before` and `after` (the world's conditions, as `state.world` `data` carries them), `preset` or `weather` and `revision`. See "World and weather" below |
 | `vyshka.unstuck` | vehicle | warning | `lift` (metres, 0 to 10, default 1), `level` (default true) | `vehicle`, `type`, `kind`, `position`, `from`, `to`, `orientationBefore`, `orientationAfter`, `crew`; the vehicle is lifted, levelled, stopped, and its physics woken |
-| `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat only fuel (naming another fails the action), and a helicopter none the plugin can fill |
+| `vyshka.vehicle.refuel` | vehicle | warning | `fluids` (a list of `fuel`, `oil`, `brake`, `coolant`; default `["fuel"]`), `level` (a fraction of each tank, 0 to 1, default 1) | `vehicle`, `type`, `kind`, `position`, `fluids` (the ones set), `level`, `before` and `after` (the vehicle's fluids as the snapshot reports them), `state`; each tank named is emptied and filled to `level` of its capacity, so a lower level drains it. A car has all four, a boat or a motorbike only fuel (naming another fails the action), and a helicopter none the plugin can fill. On 1.30 the new level lands only while a player is within about 100 m of the vehicle, and `after` always equals `before` (see "What the engine imposes") |
 | `vyshka.vehicle.repair` | vehicle | none | `parts` (default true) | `vehicle`, `type`, `kind`, `position`, `before` and `after` (each `{ state, health }`), `parts` (how many were repaired or swapped), `replaced` (one `{ slot, from, to }` per ruined wheel swapped back to its intact class), `problems` (one `{ class, slot, reason }` per part that could not be), `replacedCount` and `problemCount` (always complete), `truncated` (true when a list was cut: the two lists share a 40 000-byte budget so the result stays inside the hub's 64 KiB cap); the engine's own full-health call on every damage zone, which lifts a destruction, then with `parts` every attached part and the parts on those, three levels down, a swapped-in wheel's own parts included. Fluids are left to the refuel action, and a missing part stays missing |
 | `vyshka.inventory.read` | player | none | `slot` (optional: one of the character's worn slots, `Back`, `Vest`, `Body`, `Legs`, ..., or `Hands`, any case; reads that slot's subtree alone, with the whole result budget to itself) | `name`, `player`, `alive`, `hands` (the held item's entry, or null), `worn` (one entry per worn item, in slot order), `items` (every item in the tree, described or not), `depth` (the levels of containers described), `truncated` (true when a container's contents were left out to fit the hub's 64 KiB result cap); an entry is `class`, `name` (the display name), `slot` (for a worn item or an attachment), `health` (percent), `state` (`pristine`, `worn`, `damaged`, `badlyDamaged`, `ruined`), and when they apply `quantity` and `quantityMax`, `ammo` and `ammoMax` (a magazine or an ammunition pile), `rounds` (a firearm's chamber and internal magazine), `liquid`, `stage` (a food's), `items` (how many it holds, in all), `attachments` and `cargo` (its contents, each an entry) |
 | `vyshka.inventory.strip` | player | warning | none | `name`, `dropped` (one `{ class, name, slot, items }` per item dropped, the held item and every worn one, `items` counting what was inside), `droppedCount`, `skipped` (the same with a `reason`, for a drop the engine refused), `items` (everything that left the player, contents included); each item goes to the ground beside the player through the engine's own drop, its contents with it, so nothing is lost |
@@ -180,18 +187,18 @@ no ban. Expired entries are dropped when the list is loaded, when the identity i
 looked up, and before a result counts `activeBans`. The list is independent of the engine's
 and BattlEye's own ban lists and an operator can edit it while the server is down, keeping
 it as the plugin writes it, one entry and one member per line: the engine's file reader
-takes the server down on a single line of 64 KiB or more, which a list of a few hundred
-entries reaches if a tool minifies it to one line (see "What the engine imposes"). A `null`
-or absent `expiresAt` is permanent, a timestamp is honored whatever it says (one in the past
-lifts the ban), one that does not parse is treated as permanent so a typo cannot lift a ban,
-and every text member is cut to the same bounds a dispatch gets. A file that does not parse
-is left alone, enforces nothing, and makes the ban and unban actions refuse until it is
-fixed or removed, which the log says at boot. The plugin rewrites the file through a
-staging copy (see "Files rewritten in place" below), so a `bans.next.json` beside it while
-the server is down is a write a crash interrupted: delete it before editing by hand, or
-the next boot puts it back over the edit. The plugin's clock is a 32-bit epoch: a
-duration that would end after 2038-01-19T03:14:07Z, or a timestamp written past it, is read
-as that instant rather than wrapped into the past.
+takes the server down on a single line of 64 KiB or more (1.29 and 1.30.164289 alike),
+which a list of a few hundred entries reaches if a tool minifies it to one line (see "What
+the engine imposes"). A `null` or absent `expiresAt` is permanent, a timestamp is honored
+whatever it says (one in the past lifts the ban), one that does not parse is treated as
+permanent so a typo cannot lift a ban, and every text member is cut to the same bounds a
+dispatch gets. A file that does not parse is left alone, enforces nothing, and makes the ban
+and unban actions refuse until it is fixed or removed, which the log says at boot. The
+plugin rewrites the file through a staging copy (see "Files rewritten in place" below), so a
+`bans.next.json` beside it while the server is down is a write a crash interrupted: delete
+it before editing by hand, or the next boot puts it back over the edit. The plugin's clock
+is a 32-bit epoch: a duration that would end after 2038-01-19T03:14:07Z, or a timestamp
+written past it, is read as that instant rather than wrapped into the past.
 
 **The installation ban list** (protocol section 13) is the hub's: one list for every server
 enrolled in it, managed through the Admin API (`POST /api/v1/bans`, and `.../lift`) or the
@@ -285,23 +292,24 @@ result is the class as the engine reports it.
   config lists, or its first round for one fed by hand, through the engine's own
   spawn-with-ammo call, which chambers a round. Never attached: firearms, grenades and
   explosives, a blocked class, and a part the engine creates ruined. Measured on every
-  public firearm of a stock 1.29 server (`spikes/dayz-spawn-attachments`): 104 of 115 load,
-  101 with a round chambered, at most 3 ms each, and the part index costs about 20 ms once
-  a session. Six classes never run the weapon state machine that call needs (the bows,
-  the LAW, the RPG-7, the M249, the dart gun, the shock pistol): the M249 and the shock
-  pistols get their magazine attached full with nothing chambered, the others stay
-  unloaded (`loaded: null`). Creating those six logs script errors in the server log
-  whatever the plugin does; the engine raises them, not the plugin. A car gets its wheels,
-  doors, hood, trunk, lights, radiator, spark plug, and battery (fuel and coolant are not
-  parts). The picks are the engine's acceptance within that fixed rule, so the result
-  lists every part attached and every slot left empty (a flashlight slot on a handguard
-  without a rail, a muzzle behind a bayonet). A stock car's report is about 1 KiB; one that
-  would pass the 60 000-byte result budget (a modded item with many slots, each part with
-  many of its own) lists the parts with their own parts counted as `parts`, and past that
-  keeps only the counts, with `truncated`, `attachmentCount`, and `emptyCount` saying so.
-  The display name is cut to 200 characters, and a result still over the budget (names a
-  modded class brings) is answered with `name`, `className`, `into`, `placed`, and
-  `truncated` alone, so the hub's 64 KiB cap never drops the result.
+  public firearm of a stock 1.30.164289 server (`spikes/dayz-spawn-attachments`): 125 of
+  136 load, 122 with a round chambered, at most 5 ms each, and the part index costs about
+  15 ms once a session (1.29: 104 of 115, the same eleven unloaded). Six classes never run
+  the weapon state machine that call needs (the bows, the LAW, the RPG-7, the M249, the dart
+  gun, the shock pistol): the M249 and the shock pistols get their magazine attached full
+  with nothing chambered, the others stay unloaded (`loaded: null`). Creating those six logs
+  script errors in the server log whatever the plugin does; the engine raises them, not the
+  plugin. A car gets its wheels, doors, hood, trunk, lights, radiator, spark plug, and
+  battery (fuel and coolant are not parts). The picks are the engine's acceptance within
+  that fixed rule, so the result lists every part attached and every slot left empty (a
+  flashlight slot on a handguard without a rail, a muzzle behind a bayonet). A stock car's
+  report is about 1 KiB; one that would pass the 60 000-byte result budget (a modded item
+  with many slots, each part with many of its own) lists the parts with their own parts
+  counted as `parts`, and past that keeps only the counts, with `truncated`,
+  `attachmentCount`, and `emptyCount` saying so. The display name is cut to 200 characters,
+  and a result still over the budget (names a modded class brings) is answered with `name`,
+  `className`, `into`, `placed`, and `truncated` alone, so the hub's 64 KiB cap never drops
+  the result.
 - **Blocklist.** `spawnBlocklist` in `config.json` (below) names classes the action must
   not create. The plugin publishes it in the action's params schema as `"not": {"enum":
   [...]}` (protocol section 6.1), so the hub refuses a listed name before it is ever
@@ -316,8 +324,9 @@ result is the class as the engine reports it.
 **Set time** writes the world clock through the engine's `SetDate`, keeping the year, month,
 and day and replacing the hour and minute; the clients follow the server's clock as they
 always do. The result carries the clock as read back after the write, so what the engine
-made of the request is what is reported: on DayZ 1.29 a request for 03:15 read back as
-03:14 and 14:30 as 14:30, so expect the minute to land within one of what was asked.
+made of the request is what is reported: on DayZ 1.29 and 1.30.164289 a request for 03:15
+read back as 03:14 and 14:30 as 14:30, so expect the minute to land within one of what was
+asked.
 
 **Unstuck** is what an admin does for a car wedged in a rock, rolled onto its roof, or sunk
 into the terrain: the vehicle is raised by `lift` metres above where it stands, or above
@@ -350,8 +359,8 @@ maximum, and the heat buffer runs from -30 to 30 while the others start at 0), s
 outside it fails the action with the range in the error rather than being clamped
 silently, and the result carries `min` and `max` beside `before` and `after`. The action is
 `warning` because 0 health or 0 blood is death and 0 shock is unconsciousness. On vanilla
-DayZ 1.29 the ranges read back as health 0 to 100, blood 0 to 5000, shock 0 to 100, energy
-0 to 5000, water 0 to 5000, stamina 0 to 100, heat buffer -30 to 30.
+DayZ 1.29 and 1.30.164289 the ranges read back as health 0 to 100, blood 0 to 5000, shock 0
+to 100, energy 0 to 5000, water 0 to 5000, stamina 0 to 100, heat buffer -30 to 30.
 
 **Stop bleeding** removes every bleeding source through the server-side bleeding manager,
 the same call the heal makes, and reports how many there were. The engine treats a source
@@ -554,12 +563,13 @@ absent when none is; the panel shows them as badges beside the name.
 
 A vehicle's `id` is the engine's network id for the object (its high and low halves joined
 with a dash), which the engine keeps for the object's whole life on this server; a restart
-is a new life and the ids start over. `kind` is `car`, `boat`, or `helicopter` by the
-scripted base the vehicle extends, and `vehicle` for one that extends none of them. The
-list is the plugin's own, kept by hooks on those three bases (`CarScript`, `BoatScript`,
-`HelicopterScript`; their common engine parent cannot be modded from script): every vanilla
-vehicle and every modded one built on them is in it, one that extends the engine's `Car`,
-`Boat`, or `Helicopter` directly is not.
+is a new life and the ids start over. `kind` is `car`, `boat`, `helicopter`, or
+`motorbike` (new in DayZ 1.30) by the scripted base the vehicle extends, and `vehicle` for
+one that extends none of them. The list is the plugin's own, kept by hooks on those four
+bases (`CarScript`, `BoatScript`, `HelicopterScript`, `MotorbikeScript`; their common engine
+parent cannot be modded from script): every vanilla vehicle and every modded one built on
+them is in it, one that extends the engine's `Car`, `Boat`, `Helicopter`, or `Motorbike`
+directly is not.
 
 `data.state` is the vehicle's damage state: `intact`, `destroyed` (its global health is
 zero), or `exploded` (destroyed, and the hit that did it was an explosion, or the killer
@@ -567,7 +577,7 @@ the engine named was an explosive). `exploded` is kept in memory, which loses no
 wreck does not outlive a restart (the engine deletes one the hive loads). `data.health` is
 the global health as a whole percent of the vehicle's maximum, which differs by class.
 `data.fluids` is each tank's level as a fraction rounded to two decimals: `fuel`, `oil`,
-`brake`, and `coolant` for a car, `fuel` alone for a boat, and absent for a helicopter,
+`brake`, and `coolant` for a car, `fuel` alone for a boat or a motorbike, and absent for a helicopter,
 whose tank the engine does not give script. A repair makes a wreck `intact` again, and its
 next destruction is reported as a new one. A snapshot that would pass the 262144 bytes a
 snapshot may carry (around a thousand vehicles: 52 took 11 464 bytes on a live run) is sent
@@ -739,7 +749,8 @@ A **vehicle preset** is a car, its parts, and its fluids:
   "fluids": { "fuel": 1, "coolant": 1, "oil": 1, "brake": 1 } }
 ```
 
-`class` must be a car (`CarScript`). `attachments` and `cargo` are loadout entries;
+`class` must be a car (`CarScript`) or a motorbike (`MotorbikeScript`); a motorbike's only
+fluid is `fuel`, and naming another is reported as a problem. `attachments` and `cargo` are loadout entries;
 `autoParts` then fills every slot still empty with the first compatible part the engine
 accepts, the way `vyshka.spawn` `auto` does (within what the preset's own entries left of
 the 400-item budget, a slot reached with none left staying empty; `autoParts` in the result
@@ -747,17 +758,19 @@ counts only what it made) (wheels, doors, hood and trunk, battery, spark
 plug, radiator, headlights); `fluids` fills each named fluid to its fraction of the tank,
 and a fluid not named stays as the engine made it, which for a new car is empty. A car
 with its parts but no fuel does not drive, so a preset meant to be driven names `fuel` (and
-`coolant`, which the engine overheats without).
+`coolant`, which the engine overheats without). On DayZ 1.30 the fill lands a frame after
+the action reads it back, so the result's `fluids` say 0 and the next `state.vehicles`
+snapshot has the levels asked for (measured with a motorbike preset, issue #149).
 
 
 ## World and weather
 
 `vyshka.time.freeze` stops the server's clock (`frozen: true`, the default) and lets it run
 again at the server config's rate (`frozen: false`). A time set with `vyshka.settime` while
-it is stopped stays set. Measured on DayZ 1.29 in `spikes/dayz-world-clock`: the engine's
-time multiplier at 0 held the clock for two minutes, and at 30 ran thirty game minutes in
-one real minute. The spike ran with no client, so whether a connected client's sky stops
-with the server's clock is the live run's to show.
+it is stopped stays set. Measured on DayZ 1.29, and again on 1.30.164289, in
+`spikes/dayz-world-clock`: the engine's time multiplier at 0 held the clock for two minutes,
+and at 30 ran thirty game minutes in one real minute. The spike ran with no client, so
+whether a connected client's sky stops with the server's clock is the live run's to show.
 
 `vyshka.weather` sets any of the engine's weather knobs in one dispatch, each optional:
 
@@ -824,7 +837,7 @@ namespace `vyshka`: `dayz.items.firearms`, `dayz.items.optics`, `dayz.items.ammo
 enumerates the public classes (`scope = 2`) of `CfgVehicles`, `CfgWeapons`, and
 `CfgMagazines` whose inheritance path reaches that type's base (`Weapon_Base`,
 `ItemOptics`, `Ammunition_Base`, `Magazine_Base`, `Edible_Base`, `Clothing_Base`,
-`Inventory_Base` or `ItemBase`, `CarScript` or `BoatScript`), the first match on the path
+`Inventory_Base` or `ItemBase`, `CarScript`, `BoatScript`, or `MotorbikeScript`), the first match on the path
 deciding. An entry's `referenceKey` is the class name (what `vyshka.spawn` takes as
 `className`), its `label` the display name the client would show (the config's
 `displayName` through the server's string table; the class name when there is none or it
@@ -841,8 +854,8 @@ and `zoomMax` for an optic; `fuel` (litres) and `crew` (seats) for a vehicle.
 The spawn action's `className` names all eight in its params schema (the `context`
 annotation, section 6.1), which is how the panel's spawn form suggests them; a mod's own
 action can name any of them the same way. The catalog is built once per session, on the
-first enumeration, from the config the server booted with: about 2050 classes on a stock
-1.29 server, sorted in 30 ms, the largest type (clothing, 786 entries) 107 KiB
+first enumeration, from the config the server booted with: about 2280 classes on a stock
+1.30.164289 server (2050 on 1.29), the largest type (clothing, 899 entries) 120 KiB
 (`spikes/dayz-item-catalog`). A modded server that grows a type past what one reply may
 carry (5000 entries, 256 KiB) gets that context answered with no entries and a reason, never
 a cut list.
@@ -1075,7 +1088,10 @@ file kept, and a whole staging copy beside a file cut short, which wins and is w
 again), a credentials delete that takes a staging copy with it, and a replace whose file
 cannot be opened, which leaves the disk as it was; a ban list of 400 entries, a manifest record of 250 KB, and an outbox record of
 84 KB written and read back whole through the plugin's classes (each past the reader's old
-limit as one line); a document with a single 70 KB string value written in pieces and
+limit as one line); outbox records restored in ordinal order by a fresh outbox across the
+wrap of its ring of file names and past a slot still held, with the records 0.9.0 named by
+ordinal (the one past the ring only where `FindFile` can list the directory), and a full
+queue split across the wrap sorted inside 100 ms; a document with a single 70 KB string value written in pieces and
 read back whole; one with a 70 KB key, and one nested 81 deep, refused rather than
 written; a genuine document shaped like the writer's long-string marker (and a one-line
 file as 0.8.0 wrote them, carrying the marks as literals), a value of
@@ -1139,24 +1155,56 @@ Measured under `spikes/` rather than assumed; the details are in each spike's fi
 - **Strings cost their length, files are read by the line.** `string.Get(i)` and
   `Substring` pay about 0.2 µs per KiB of the string they read from on every call,
   whatever the index; `+=` pays for the string's current length; `Substring` returns at
-  most 8 191 characters, silently; and the engine's line reader faults the process, with
-  nothing script can catch, on a line of 65 536 bytes or more (`spikes/dayz-bans-pull-size`,
-  issue #108). So the plugin's parser reads its input through windows cut once and never
-  copies a value with one `Substring`, its serializer collects pieces and joins once (the
-  5 000-entry pull shape of #80, 1.1 MB, parses in 441 ms and serializes in 582 ms where
-  the first parser took 353 s and 45 s), and every JSON file it writes goes out one array
-  element and one object member per line, a long string value in pieces on lines of
-  their own, refused with an error rather than written when a key would still make a
-  line over 60 000 bytes or the document nests deeper than 40 levels (the script VM overflows its stack at about 64 levels of the parser's recursion). `selftest` (above)
-  proves each of those on a local server. Reading a large body is still not free (about
-  0.4 µs a byte on this engine), which is why the pull of #80 is paged. Three bounds
-  follow from the file layer and are logged when met (the fingerprint apart), never silent: a document nested
-  deeper than 40 levels (a result a mod built more than 38 deep) is sent but not
-  persisted, so a restart before the hub's ack loses it; an `actionId` over 8 192 bytes
-  is remembered by a 32-bit fingerprint of its bytes and its length rather than as it
-  is, so two such ids alike in both would be taken for one; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at
-  the upgrade as unreadable. The parser's depth bound is 32 on the wire because the
-  script VM overflows its stack at about 64 levels of the parser's recursion.
+  most 8 191 characters, silently; and the engine's line reader writes past its buffer on
+  a line of about 64 KiB or more, which killed the process, with nothing script can catch,
+  on 1.29 and on 1.30.164289 (`spikes/dayz-bans-pull-size`, issue #108; one 1.30.164289
+  read of such a line survived with the line lost, `spikes/dayz-script-api-edges`). So the
+  plugin's parser reads its input through windows cut once and never copies a value with one
+  `Substring`, its serializer collects pieces and joins once (the 5 000-entry pull shape of
+  #80, 1.1 MB, parses in 441 ms and serializes in 582 ms where the first parser took 353 s
+  and 45 s), and every JSON file it writes goes out one array element and one object member
+  per line, a long string value in pieces on lines of their own, refused with an error
+  rather than written when a key would still make a line over 60 000 bytes or the document
+  nests deeper than 40 levels (the script VM overflows its stack at about 64 levels of the
+  parser's recursion). `selftest` (above) proves each of those on a local server. Reading a
+  large body is still not free (about 0.4 µs a byte on this engine), which is why the pull
+  of #80 is paged. Three bounds follow from the file layer and are logged when met (the
+  fingerprint apart), never silent: a document nested deeper than 40 levels (a result a mod
+  built more than 38 deep) is sent but not persisted, so a restart before the hub's ack
+  loses it; an `actionId` over 8 192 bytes is remembered by a 32-bit fingerprint of its
+  bytes and its length rather than as it is, so two such ids alike in both would be taken
+  for one; and an outbox record plugin 0.8.0 left nested deeper than 40 is discarded at the
+  upgrade as unreadable. The parser's depth bound is 32 on the wire because the script VM
+  overflows its stack at about 64 levels of the parser's recursion.
+- **A directory under the profile cannot be listed on 1.30.164078.** On that build
+  `FindFile` resolves `$profile:` against the server's working directory, not the
+  `-profiles` one, while `FileExist` and `OpenFile` still reach the profile
+  (`spikes/dayz-findfile`, issue #149). 1.30.164289 lists the profile again on Windows, and
+  lists it on Linux (164078 was not measured there, nor was 1.30.164200). So the outbox never relies on a listing: its
+  records take the names `1.json` to `10000.json` in turn, each carrying its ordinal, and a
+  boot asks for every one of them. The records plugin 0.9.0 named by ordinal past 10 000
+  are found only by a listing. On 1.30.164289 the listing finds and sends them (measured on
+  the Linux test server, five of them). On 1.30.164078 with a separate profile they are
+  left on disk unsent, and a clean shutdown does not promise the last poll was acked.
+  Before such a server's first boot on this plugin on that build, look in
+  `<profile>/Vyshka/outbox/`. For each file numbered above 10 000, add an `"ordinal"`
+  member holding that number to the record's top-level object, then rename the file to any
+  unused number from 1 to 10 000; a record's `ordinal`, where it has one, decides its place
+  in the queue, so they are delivered in their original order.
+- **On 1.30 a vehicle's fluids only move while a player is near it.** A script's fluid
+  write to a vehicle that already exists (filling and draining alike, on cars, boats, and
+  motorbikes) lands only while a connected client is within about 100 m of the vehicle
+  (between 95 and 100 m measured, ignoring height). Otherwise the engine holds it, and the
+  newest held level appears when a client comes in range; a restart before then loses it.
+  So `vyshka.vehicle.refuel` always completes with `after` equal to `before`, because it
+  reads back in the same frame. Near a player the new level is in the next
+  `state.vehicles` snapshot; far from every player it shows up once someone arrives. A
+  motorbike loaded from storage also reads 0 until a client comes in range, though its
+  saved level is there. A fill made in the frame a vehicle is created sticks wherever the
+  players are, so a vehicle preset's `fluids` work. Measured on 1.30.164078 (issue #149)
+  and checked again on 1.30.164289: a motorbike refuelled beside the player read the new
+  level in the next snapshot, and one refuelled from 1.5 km away kept its level until the
+  player came back.
 
 ## Errors and recovery
 

@@ -249,3 +249,23 @@ for the 32 MiB body of series 3, so a document of that size is still not one to 
 frame. The negative control was run once with the ban list written as plugin 0.8.0 wrote
 it, as one line: the read faulted the server inside `FGets`, and the self-test tool
 reported the exit as the failure.
+
+## Re-run on DayZ 1.30.164289 (2026-11-04)
+
+The whole series on the Windows dedicated server 1.30.164289 (the stable hotfix of
+2026-11-03, scripts revision 127855), the probe and plugin classes from branch
+`dayz-1.30-motorbikes`, two boots: `runner-run11-130-164289.log`,
+`table-run11-130-164289.md`. The probe now runs the post-#108 classes, so its parse and
+serialize columns compare with the self-test's `json.speed`, not with series 1.
+
+- **Ban lists:** 5 000 entries (1 206 414 bytes) parsed in 499 ms and serialized in 637 ms;
+  50 000 entries (12 MiB) in 13.2 s and 7.1 s. Lookups stayed flat at 0.3 to 0.5 ms per
+  1 000, and writes took 0.4 to 12.6 ms.
+- **The reader's line limit is unchanged.** Lines of 16 KiB to 65 520 bytes read back
+  intact in 7 to 9 ms. A 65 536-byte line killed the process inside the plugin's `FGets`
+  loop (`VyshkaFiles.ReadAll`) with the 1.29 fault, `Access violation. Illegal write`. The
+  runner skipped that step on the next boot, as designed. The script API edges re-run on
+  the same build survived a single `FGets` of the same length with an empty string, so the
+  overrun does not always kill the process. It is never safe.
+- **Raw bodies:** 2 MiB to 32 MiB all arrived whole, 32 MiB in 3 977 ms (1.29: 3 996 ms).
+- Indexing and allocation steps ran without a fault.

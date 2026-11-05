@@ -193,3 +193,23 @@ kept as written, with a warning in the log.
 - The review of the slice (before run 8): the delete-at-minimum refusal did not account for
   the setter's 0.001 snap, the sort key padded slot counts to two digits only (four now),
   and a very large report had no budget.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder (issue #149). One boot, `probe-run9-130-164289.log`.
+
+| | 1.29 | 1.30.164289 |
+|---|---:|---:|
+| Public firearms | 115 | 136 |
+| Loaded | 104 | 125 |
+| With a round chambered | 101 | 122 |
+| Parts attached | 340 | 413 |
+| Slots left empty | 33 | 41 |
+| Slowest create and equip | 3 ms | 5 ms |
+| Part index | 11 ms | 14 ms |
+
+The same eleven are not loaded (the three bows, the five under-barrel launchers, `LAW`,
+`RPG7`, `DartGun`), and the same three are loaded with nothing chambered (`M249`, both
+shock pistols). Every firearm 1.30 added loads with a round chambered. The bows still log
+the engine's `SaveCurrentFSMState` error, as on 1.29. The budget cases and the blocklist
+walk read as before.

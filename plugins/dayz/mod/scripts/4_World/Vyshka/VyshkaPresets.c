@@ -717,8 +717,8 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 		string refusal = builder.Refusal(record, 1, className);
 		if (refusal != "")
 			return VyshkaActionOutcome.Failure("the vehicle preset " + m_Name + " names " + className + ": " + refusal);
-		if (!GetGame().IsKindOf(className, "CarScript"))
-			return VyshkaActionOutcome.Failure("the vehicle preset " + m_Name + " names " + className + ", which is not a car");
+		if (!GetGame().IsKindOf(className, "CarScript") && !GetGame().IsKindOf(className, "MotorbikeScript"))
+			return VyshkaActionOutcome.Failure("the vehicle preset " + m_Name + " names " + className + ", which is not a car or a motorbike");
 		VyshkaJsonValue fluids = record.Get("fluids");
 		if (fluids && !fluids.IsNull() && !fluids.IsObject())
 			return VyshkaActionOutcome.Failure("the vehicle preset " + m_Name + ": fluids must be an object of fractions, such as {\"fuel\": 1}");
@@ -746,12 +746,12 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 			position = near.GetPosition() + direction * VyshkaPresets.VEHICLE_DISTANCE;
 			position[1] = GetGame().SurfaceY(position[0], position[2]);
 			if (!VyshkaWorld.CheckPosition(position, error))
-				return VyshkaActionOutcome.Failure("there is no room for a car in front of the player: " + error);
+				return VyshkaActionOutcome.Failure("there is no room for a vehicle in front of the player: " + error);
 		}
 
 		Object created = GetGame().CreateObjectEx(className, position, ECE_PLACE_ON_SURFACE);
-		CarScript car = CarScript.Cast(created);
-		if (!car)
+		Transport car = Transport.Cast(created);
+		if (!CarScript.Cast(car) && !MotorbikeScript.Cast(car))
 		{
 			if (created)
 				GetGame().ObjectDelete(created);
@@ -798,36 +798,23 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 			result.Set("position", where);
 		if (near)
 			result.Set("nearPlayer", VyshkaPlayers.Identity(near.GetIdentity().GetPlainId()));
-		VyshkaJsonValue levels = VyshkaJsonValue.NewObject();
-		levels.Set("fuel", VyshkaVitals.Number(Math.Round(car.GetFluidFraction(CarFluid.FUEL) * 100) / 100));
-		levels.Set("oil", VyshkaVitals.Number(Math.Round(car.GetFluidFraction(CarFluid.OIL) * 100) / 100));
-		levels.Set("brake", VyshkaVitals.Number(Math.Round(car.GetFluidFraction(CarFluid.BRAKE) * 100) / 100));
-		levels.Set("coolant", VyshkaVitals.Number(Math.Round(car.GetFluidFraction(CarFluid.COOLANT) * 100) / 100));
-		result.Set("fluids", levels);
-		result.Set("wheels", VyshkaJsonValue.NewInt(car.WheelCountPresent()));
+		result.Set("fluids", VyshkaVehicles.Fluids(car));
+		result.Set("wheels", VyshkaJsonValue.NewInt(WheelsPresent(car)));
 		builder.Report(result);
 		VyshkaLog.Info("vehicle preset " + m_Name + " spawned " + car.GetType() + " at " + car.GetPosition().ToString() + ": " + builder.m_Created.ToString() + " items, " + builder.m_ProblemCount.ToString() + " problems");
 		return VyshkaActionOutcome.Success(result);
 	}
 
-	// Fluids fills each named fluid to its fraction of the car's capacity,
-	// emptying it first so the level is the one asked for.
-	void Fluids(CarScript car, VyshkaJsonValue fluids, VyshkaPresetBuilder builder)
+	// Fluids fills each named fluid to its fraction of the vehicle's
+	// capacity, emptying it first so the level is the one asked for. A car
+	// has fuel, oil, brake, and coolant; a motorbike has fuel only.
+	void Fluids(Transport car, VyshkaJsonValue fluids, VyshkaPresetBuilder builder)
 	{
 		for (int i = 0; i < fluids.Count(); i++)
 		{
 			string name = fluids.KeyAt(i);
 			VyshkaJsonValue value = fluids.ValueAt(i);
-			CarFluid fluid;
-			if (name == "fuel")
-				fluid = CarFluid.FUEL;
-			else if (name == "oil")
-				fluid = CarFluid.OIL;
-			else if (name == "brake")
-				fluid = CarFluid.BRAKE;
-			else if (name == "coolant")
-				fluid = CarFluid.COOLANT;
-			else
+			if (!VyshkaRefuelAction.IsFluid(name))
 			{
 				builder.Problem(car.GetType(), "no fluid named " + name + " (fuel, oil, brake, coolant)");
 				continue;
@@ -837,11 +824,21 @@ class VyshkaVehicleSpawn : VyshkaPresetApply
 				builder.Problem(car.GetType(), name + " must be a fraction of the tank within 0 and 1");
 				continue;
 			}
-			car.LeakAll(fluid);
-			float amount = car.GetFluidCapacity(fluid) * value.m_Number;
-			if (amount > 0)
-				car.Fill(fluid, amount);
+			if (!VyshkaVehicles.FillFluid(car, name, value.m_Number))
+				builder.Problem(car.GetType(), "a " + VyshkaVehicles.Kind(car) + " has no " + name + " tank");
 		}
+	}
+
+	// WheelsPresent counts the wheels attached to a car or a motorbike.
+	static int WheelsPresent(Transport vehicle)
+	{
+		CarScript car = CarScript.Cast(vehicle);
+		if (car)
+			return car.WheelCountPresent();
+		MotorbikeScript bike = MotorbikeScript.Cast(vehicle);
+		if (bike)
+			return bike.WheelCountPresent();
+		return 0;
 	}
 }
 

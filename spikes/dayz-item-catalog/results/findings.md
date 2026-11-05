@@ -65,3 +65,25 @@ by the frame clock.
 5. **`Crew` children count seats.** `ConfigGetChildrenCount(<vehicle> Crew)` reads 4 for
    the rubber boat and the Gunter 2, the seats the engine exposes as `CrewSize()` on a live
    vehicle, without an instance.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder (issue #149). One boot, `probe-run3-130-164289.log`.
+
+1.30 adds items and firearms; nothing else about the catalog moved. Public classes sorted
+into a type: 2 284 (1.29: 2 050), from 2 612 public `CfgVehicles` classes, 136
+`CfgWeapons`, and 126 `CfgMagazines`.
+
+| Type | 1.29 | 1.30.164289 | Bytes on 1.30 |
+|---|---:|---:|---:|
+| firearm | 115 | 136 | 16 771 |
+| optic | 32 | 32 | 3 920 |
+| ammo | 39 | 39 | 5 156 |
+| magazine | 82 | 87 | 11 905 |
+| edible | 127 | 151 | 17 358 |
+| clothing | 786 | 899 | 122 379 |
+| vehicle | 20 | 21 | 2 171 |
+| other | 849 | 919 | 92 294 |
+
+The largest type is still clothing, at 120 KiB, well under the 256 KiB a reply may carry.
+The whole probe took 549 ms (1.29: 539 ms); serializing clothing took 99 ms.
