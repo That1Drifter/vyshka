@@ -1,0 +1,629 @@
+clock	t=0	date=2026-9-20 22:2	time=3.30299
+weather	t=0	oc=0.426092/0.426092/2.00101	rain=0/0/30	fog=0/0/296.999	snow=0/0/30	snowLimits=0/0
+wind	t=0	speed=10	max=50	dir=1.5708/1.5708	dyn=true:0.021635/0.942609/50	mission=false	frozen=false
+clock	t=5	date=2026-9-20 22:2	time=8.30278
+weather	t=5	oc=0.426718/0.590451/1607.07	rain=0/0/60	fog=0/0/291.964	snow=0/0/30	snowLimits=0/0
+wind	t=5	speed=10.0172	max=20	dir=1.26503/-2.5198	dyn=true:0.0215903/0.942611/50	mission=false	frozen=false
+clock	t=10	date=2026-9-20 22:2	time=13.3047
+weather	t=10	oc=0.42776/0.590451/1602.18	rain=0/0/60	fog=0/0/286.93	snow=0/0/30	snowLimits=0/0
+wind	t=10	speed=10.0458	max=20	dir=0.755553/-2.5198	dyn=true:0.021516/0.942615/50	mission=false	frozen=false
+clock	t=15	date=2026-9-20 22:2	time=18.3045
+weather	t=15	oc=0.428802/0.590451/1597.29	rain=0/0/60	fog=0/0/281.896	snow=0/0/30	snowLimits=0/0
+wind	t=15	speed=10.0744	max=20	dir=0.246156/-2.5198	dyn=true:0.0214416/0.942619/50	mission=false	frozen=false
+clock	t=20	date=2026-9-20 22:2	time=23.3019
+weather	t=20	oc=0.429845/0.590451/1592.41	rain=0/0/60	fog=0/0/276.862	snow=0/0/30	snowLimits=0/0
+wind	t=20	speed=10.1031	max=20	dir=-0.263247/-2.5198	dyn=true:0.0213673/0.942622/50	mission=false	frozen=false
+clock	t=25	date=2026-9-20 22:2	time=28.2993
+weather	t=25	oc=0.430887/0.590451/1587.52	rain=0/0/60	fog=0/0/271.828	snow=0/0/30	snowLimits=0/0
+wind	t=25	speed=10.1317	max=20	dir=-0.772639/-2.5198	dyn=true:0.0212929/0.942627/50	mission=false	frozen=false
+clock	t=30	date=2026-9-20 22:2	time=33.2966
+weather	t=30	oc=0.43193/0.590451/1582.63	rain=0/0/60	fog=0/0/266.793	snow=0/0/30	snowLimits=0/0
+wind	t=30	speed=10.1603	max=20	dir=-1.28212/-2.5198	dyn=true:0.0212186/0.94263/50	mission=false	frozen=false
+clock	t=35	date=2026-9-20 22:2	time=38.294
+weather	t=35	oc=0.432972/0.590451/1577.74	rain=0/0/60	fog=0/0/261.76	snow=0/0/30	snowLimits=0/0
+wind	t=35	speed=10.1889	max=20	dir=-1.79174/-2.5198	dyn=true:0.0211443/0.942635/50	mission=false	frozen=false
+clock	t=40	date=2026-9-20 22:2	time=43.2913
+weather	t=40	oc=0.434014/0.590451/1572.86	rain=0/0/60	fog=0/0/256.726	snow=0/0/30	snowLimits=0/0
+wind	t=40	speed=10.2176	max=20	dir=-2.30101/-2.5198	dyn=true:0.0210699/0.94264/50	mission=false	frozen=false
+clock	t=45	date=2026-9-20 22:2	time=48.2877
+weather	t=45	oc=0.435056/0.590451/1567.97	rain=0/0/60	fog=0/0/251.692	snow=0/0/30	snowLimits=0/0
+wind	t=45	speed=10.2462	max=20	dir=-2.5198/-2.5198	dyn=true:0.0209956/0.942643/50	mission=false	frozen=false
+clock	t=50	date=2026-9-20 22:2	time=53.287
+weather	t=50	oc=0.436099/0.590451/1563.08	rain=0/0/60	fog=0/0/246.656	snow=0/0/30	snowLimits=0/0
+wind	t=50	speed=10.2748	max=20	dir=-2.5198/-2.5198	dyn=true:0.0209212/0.942646/50	mission=false	frozen=false
+clock	t=55	date=2026-9-20 22:2	time=58.2843
+weather	t=55	oc=0.437142/0.590451/1558.2	rain=0/0/60	fog=0/0/241.622	snow=0/0/30	snowLimits=0/0
+wind	t=55	speed=10.3035	max=20	dir=-2.5198/-2.5198	dyn=true:0.0208468/0.94265/50	mission=false	frozen=false
+act	t=60	SetTimeMultiplier(0)
+clock	t=60	date=2026-9-20 22:3	time=63.2817
+weather	t=60	oc=0.438184/0.590451/1553.31	rain=0/0/60	fog=0/0/236.587	snow=0/0/30	snowLimits=0/0
+wind	t=60	speed=10.3321	max=20	dir=-2.5198/-2.5198	dyn=true:0.0207724/0.942653/50	mission=false	frozen=false
+clock	t=65	date=2026-9-20 22:3	time=68.2789
+weather	t=65	oc=0.439227/0.590451/1548.42	rain=0/0/60	fog=0/0/231.553	snow=0/0/30	snowLimits=0/0
+wind	t=65	speed=10.3607	max=20	dir=-2.5198/-2.5198	dyn=true:0.020698/0.942656/50	mission=false	frozen=false
+clock	t=70	date=2026-9-20 22:3	time=73.2762
+weather	t=70	oc=0.44027/0.590451/1543.54	rain=0/0/60	fog=0/0/226.518	snow=0/0/30	snowLimits=0/0
+wind	t=70	speed=10.3893	max=20	dir=-2.5198/-2.5198	dyn=true:0.0206236/0.942659/50	mission=false	frozen=false
+clock	t=75	date=2026-9-20 22:3	time=78.2736
+weather	t=75	oc=0.441312/0.590451/1538.65	rain=0/0/60	fog=0/0/221.484	snow=0/0/30	snowLimits=0/0
+wind	t=75	speed=10.418	max=20	dir=-2.5198/-2.5198	dyn=true:0.0205493/0.942662/50	mission=false	frozen=false
+clock	t=80	date=2026-9-20 22:3	time=83.2708
+weather	t=80	oc=0.442355/0.590451/1533.77	rain=0/0/60	fog=0/0/216.449	snow=0/0/30	snowLimits=0/0
+wind	t=80	speed=10.4466	max=20	dir=-2.5198/-2.5198	dyn=true:0.0204748/0.942664/50	mission=false	frozen=false
+clock	t=85	date=2026-9-20 22:3	time=88.2681
+weather	t=85	oc=0.443398/0.590451/1528.88	rain=0/0/60	fog=0/0/211.414	snow=0/0/30	snowLimits=0/0
+wind	t=85	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0204004/0.942666/50	mission=false	frozen=false
+clock	t=90	date=2026-9-20 22:3	time=93.2654
+weather	t=90	oc=0.444441/0.590451/1524	rain=0/0/60	fog=0/0/206.38	snow=0/0/30	snowLimits=0/0
+wind	t=90	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.020326/0.942669/50	mission=false	frozen=false
+clock	t=95	date=2026-9-20 22:3	time=98.2627
+weather	t=95	oc=0.445483/0.590451/1519.11	rain=0/0/60	fog=0/0/201.345	snow=0/0/30	snowLimits=0/0
+wind	t=95	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0202516/0.942671/50	mission=false	frozen=false
+clock	t=100	date=2026-9-20 22:3	time=103.26
+weather	t=100	oc=0.446526/0.590451/1514.22	rain=0/0/60	fog=0/0/196.311	snow=0/0/30	snowLimits=0/0
+wind	t=100	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0201772/0.942674/50	mission=false	frozen=false
+clock	t=105	date=2026-9-20 22:3	time=108.257
+weather	t=105	oc=0.447568/0.590451/1509.34	rain=0/0/60	fog=0/0/191.276	snow=0/0/30	snowLimits=0/0
+wind	t=105	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0201028/0.942677/50	mission=false	frozen=false
+clock	t=110	date=2026-9-20 22:3	time=113.255
+weather	t=110	oc=0.448611/0.590451/1504.45	rain=0/0/60	fog=0/0/186.242	snow=0/0/30	snowLimits=0/0
+wind	t=110	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0200284/0.942679/50	mission=false	frozen=false
+clock	t=115	date=2026-9-20 22:3	time=118.252
+weather	t=115	oc=0.449654/0.590451/1499.57	rain=0/0/60	fog=0/0/181.207	snow=0/0/30	snowLimits=0/0
+wind	t=115	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0199539/0.94268/50	mission=false	frozen=false
+clock	t=120	date=2026-9-20 22:3	time=123.249
+weather	t=120	oc=0.450697/0.590451/1494.68	rain=0/0/60	fog=0/0/176.171	snow=0/0/30	snowLimits=0/0
+wind	t=120	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0198794/0.94268/50	mission=false	frozen=false
+clock	t=125	date=2026-9-20 22:3	time=128.248
+weather	t=125	oc=0.45174/0.590451/1489.8	rain=0/0/60	fog=0/0/171.136	snow=0/0/30	snowLimits=0/0
+wind	t=125	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.019805/0.942681/50	mission=false	frozen=false
+clock	t=130	date=2026-9-20 22:3	time=133.283
+weather	t=130	oc=0.452783/0.590451/1484.92	rain=0/0/60	fog=0/0/166.101	snow=0/0/30	snowLimits=0/0
+wind	t=130	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0197305/0.942681/50	mission=false	frozen=false
+clock	t=135	date=2026-9-20 22:3	time=138.319
+weather	t=135	oc=0.453826/0.590451/1480.04	rain=0/0/60	fog=0/0/161.065	snow=0/0/30	snowLimits=0/0
+wind	t=135	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.019656/0.942682/50	mission=false	frozen=false
+clock	t=140	date=2026-9-20 22:3	time=143.354
+weather	t=140	oc=0.454869/0.590451/1475.15	rain=0/0/60	fog=0/0/156.03	snow=0/0/30	snowLimits=0/0
+wind	t=140	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0195815/0.942682/50	mission=false	frozen=false
+clock	t=145	date=2026-9-20 22:3	time=148.389
+weather	t=145	oc=0.455912/0.590451/1470.27	rain=0/0/60	fog=0/0/150.995	snow=0/0/30	snowLimits=0/0
+wind	t=145	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.019507/0.942682/50	mission=false	frozen=false
+clock	t=150	date=2026-9-20 22:3	time=153.425
+weather	t=150	oc=0.456955/0.590451/1465.39	rain=0/0/60	fog=0/0/145.96	snow=0/0/30	snowLimits=0/0
+wind	t=150	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0194325/0.942683/50	mission=false	frozen=false
+clock	t=155	date=2026-9-20 22:3	time=158.46
+weather	t=155	oc=0.457998/0.590451/1460.5	rain=0/0/60	fog=0/0/140.924	snow=0/0/30	snowLimits=0/0
+wind	t=155	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.019358/0.942683/50	mission=false	frozen=false
+clock	t=160	date=2026-9-20 22:3	time=163.495
+weather	t=160	oc=0.459041/0.590451/1455.62	rain=0/0/60	fog=0/0/135.889	snow=0/0/30	snowLimits=0/0
+wind	t=160	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0192835/0.942684/50	mission=false	frozen=false
+clock	t=165	date=2026-9-20 22:3	time=168.531
+weather	t=165	oc=0.460084/0.590451/1450.74	rain=0/0/60	fog=0/0/130.854	snow=0/0/30	snowLimits=0/0
+wind	t=165	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.019209/0.942684/50	mission=false	frozen=false
+clock	t=170	date=2026-9-20 22:3	time=173.566
+weather	t=170	oc=0.461128/0.590451/1445.85	rain=0/0/60	fog=0/0/125.835	snow=0/0/30	snowLimits=0/0
+wind	t=170	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0191345/0.942684/50	mission=false	frozen=false
+clock	t=175	date=2026-9-20 22:3	time=178.601
+weather	t=175	oc=0.462171/0.590451/1440.97	rain=0/0/60	fog=0/0/120.838	snow=0/0/30	snowLimits=0/0
+wind	t=175	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.01906/0.942685/50	mission=false	frozen=false
+act	t=180	SetDate 12:00 with the multiplier at 0
+clock	t=180	date=2026-9-20 12:0	time=183.636
+weather	t=180	oc=0.463214/0.590451/1436.09	rain=0/0/60	fog=0/0/115.84	snow=0/0/30	snowLimits=0/0
+wind	t=180	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0189855/0.942685/50	mission=false	frozen=false
+clock	t=185	date=2026-9-20 12:0	time=188.672
+weather	t=185	oc=0.464257/0.590451/1431.21	rain=0/0/60	fog=0/0/110.843	snow=0/0/30	snowLimits=0/0
+wind	t=185	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.018911/0.942686/50	mission=false	frozen=false
+clock	t=190	date=2026-9-20 12:0	time=193.707
+weather	t=190	oc=0.4653/0.590451/1426.32	rain=0/0/60	fog=0/0/105.846	snow=0/0/30	snowLimits=0/0
+wind	t=190	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0188365/0.942686/50	mission=false	frozen=false
+clock	t=195	date=2026-9-20 12:0	time=198.742
+weather	t=195	oc=0.466343/0.590451/1421.44	rain=0/0/60	fog=0/0/100.849	snow=0/0/30	snowLimits=0/0
+wind	t=195	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0187621/0.942686/50	mission=false	frozen=false
+clock	t=200	date=2026-9-20 12:0	time=203.778
+weather	t=200	oc=0.467386/0.590451/1416.56	rain=0/0/60	fog=0/0/95.8514	snow=0/0/30	snowLimits=0/0
+wind	t=200	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0186876/0.942687/50	mission=false	frozen=false
+clock	t=205	date=2026-9-20 12:0	time=208.813
+weather	t=205	oc=0.468429/0.590451/1411.67	rain=0/0/60	fog=0/0/90.8542	snow=0/0/30	snowLimits=0/0
+wind	t=205	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0186131/0.942687/50	mission=false	frozen=false
+clock	t=210	date=2026-9-20 12:0	time=213.848
+weather	t=210	oc=0.469472/0.590451/1406.79	rain=0/0/60	fog=0/0/85.8569	snow=0/0/30	snowLimits=0/0
+wind	t=210	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0185386/0.942687/50	mission=false	frozen=false
+clock	t=215	date=2026-9-20 12:0	time=218.883
+weather	t=215	oc=0.470515/0.590451/1401.91	rain=0/0/60	fog=0/0/80.8597	snow=0/0/30	snowLimits=0/0
+wind	t=215	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0184641/0.942688/50	mission=false	frozen=false
+clock	t=220	date=2026-9-20 12:0	time=223.919
+weather	t=220	oc=0.471558/0.590451/1397.02	rain=0/0/60	fog=0/0/75.8624	snow=0/0/30	snowLimits=0/0
+wind	t=220	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0183896/0.942688/50	mission=false	frozen=false
+clock	t=225	date=2026-9-20 12:0	time=228.954
+weather	t=225	oc=0.472601/0.590451/1392.14	rain=0/0/60	fog=0/0/70.8652	snow=0/0/30	snowLimits=0/0
+wind	t=225	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0183151/0.942689/50	mission=false	frozen=false
+clock	t=230	date=2026-9-20 12:0	time=233.989
+weather	t=230	oc=0.473644/0.590451/1387.26	rain=0/0/60	fog=0/0/65.8679	snow=0/0/30	snowLimits=0/0
+wind	t=230	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0182406/0.942689/50	mission=false	frozen=false
+clock	t=235	date=2026-9-20 12:0	time=239.025
+weather	t=235	oc=0.474687/0.590451/1382.38	rain=0/0/60	fog=0/0/60.8707	snow=0/0/30	snowLimits=0/0
+wind	t=235	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0181661/0.942689/50	mission=false	frozen=false
+act	t=240	SetTimeMultiplier(-1)
+clock	t=240	date=2026-9-20 12:0	time=244.06
+weather	t=240	oc=0.47573/0.590451/1377.49	rain=0/0/60	fog=0/0/55.8734	snow=0/0/30	snowLimits=0/0
+wind	t=240	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0180916/0.94269/50	mission=false	frozen=false
+clock	t=245	date=2026-9-20 12:0	time=249.095
+weather	t=245	oc=0.476774/0.590451/1372.61	rain=0/0/60	fog=0/0/50.8762	snow=0/0/30	snowLimits=0/0
+wind	t=245	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0180171/0.94269/50	mission=false	frozen=false
+clock	t=250	date=2026-9-20 12:0	time=254.131
+weather	t=250	oc=0.477817/0.590451/1367.73	rain=0/0/60	fog=0/0/45.8789	snow=0/0/30	snowLimits=0/0
+wind	t=250	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0179426/0.94269/50	mission=false	frozen=false
+clock	t=255	date=2026-9-20 12:0	time=259.166
+weather	t=255	oc=0.47886/0.590451/1362.84	rain=0/0/60	fog=0/0/40.8816	snow=0/0/30	snowLimits=0/0
+wind	t=255	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0178681/0.942691/50	mission=false	frozen=false
+clock	t=260	date=2026-9-20 12:0	time=264.201
+weather	t=260	oc=0.479903/0.590451/1357.96	rain=0/0/60	fog=0/0/35.8844	snow=0/0/30	snowLimits=0/0
+wind	t=260	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0177936/0.942691/50	mission=false	frozen=false
+clock	t=265	date=2026-9-20 12:0	time=269.237
+weather	t=265	oc=0.480946/0.590451/1353.08	rain=0/0/60	fog=0/0/30.8871	snow=0/0/30	snowLimits=0/0
+wind	t=265	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0177191/0.942692/50	mission=false	frozen=false
+clock	t=270	date=2026-9-20 12:0	time=274.272
+weather	t=270	oc=0.481989/0.590451/1348.19	rain=0/0/60	fog=0/0/25.8899	snow=0/0/30	snowLimits=0/0
+wind	t=270	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0176447/0.942692/50	mission=false	frozen=false
+clock	t=275	date=2026-9-20 12:0	time=279.307
+weather	t=275	oc=0.483032/0.590451/1343.31	rain=0/0/60	fog=0/0/20.8926	snow=0/0/30	snowLimits=0/0
+wind	t=275	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0175702/0.942692/50	mission=false	frozen=false
+clock	t=280	date=2026-9-20 12:0	time=284.343
+weather	t=280	oc=0.484075/0.590451/1338.43	rain=0/0/60	fog=0/0/15.8952	snow=0/0/30	snowLimits=0/0
+wind	t=280	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0174957/0.942692/50	mission=false	frozen=false
+clock	t=285	date=2026-9-20 12:0	time=289.378
+weather	t=285	oc=0.485118/0.590451/1333.55	rain=0/0/60	fog=0/0/10.8932	snow=0/0/30	snowLimits=0/0
+wind	t=285	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0174212/0.942693/50	mission=false	frozen=false
+clock	t=290	date=2026-9-20 12:0	time=294.414
+weather	t=290	oc=0.486161/0.590451/1328.66	rain=0/0/60	fog=0/0/5.89221	snow=0/0/30	snowLimits=0/0
+wind	t=290	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0173467/0.942693/50	mission=false	frozen=false
+clock	t=295	date=2026-9-20 12:1	time=299.449
+weather	t=295	oc=0.487204/0.590451/1323.78	rain=0/0/60	fog=0/0/0.892446	snow=0/0/30	snowLimits=0/0
+wind	t=295	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0172722/0.942693/50	mission=false	frozen=false
+clock	t=300	date=2026-9-20 12:1	time=304.484
+weather	t=300	oc=0.488247/0.590451/1318.9	rain=0/0/60	fog=0.000333487/0.146159/1795.99	snow=0/0/30	snowLimits=0/0
+wind	t=300	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0171977/0.942694/50	mission=false	frozen=false
+clock	t=305	date=2026-9-20 12:1	time=309.52
+weather	t=305	oc=0.48929/0.590451/1314.01	rain=0/0/60	fog=0.000739485/0.146159/1791.11	snow=0/0/30	snowLimits=0/0
+wind	t=305	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0171232/0.942694/50	mission=false	frozen=false
+clock	t=310	date=2026-9-20 12:1	time=314.555
+weather	t=310	oc=0.490333/0.590451/1309.13	rain=0/0/60	fog=0.00114536/0.146159/1786.22	snow=0/0/30	snowLimits=0/0
+wind	t=310	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0170487/0.942695/50	mission=false	frozen=false
+clock	t=315	date=2026-9-20 12:1	time=319.59
+weather	t=315	oc=0.491377/0.590451/1304.25	rain=0/0/60	fog=0.00155107/0.146159/1781.34	snow=0/0/30	snowLimits=0/0
+wind	t=315	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0169742/0.942696/50	mission=false	frozen=false
+clock	t=320	date=2026-9-20 12:1	time=324.626
+weather	t=320	oc=0.49242/0.590451/1299.36	rain=0/0/60	fog=0.00195679/0.146159/1776.46	snow=0/0/30	snowLimits=0/0
+wind	t=320	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0168997/0.942696/50	mission=false	frozen=false
+clock	t=325	date=2026-9-20 12:1	time=329.661
+weather	t=325	oc=0.493463/0.590451/1294.48	rain=0/0/60	fog=0.00236307/0.146159/1771.57	snow=0/0/30	snowLimits=0/0
+wind	t=325	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0168252/0.942696/50	mission=false	frozen=false
+clock	t=330	date=2026-9-20 12:1	time=334.696
+weather	t=330	oc=0.494506/0.590451/1289.6	rain=0/0/60	fog=0.00276936/0.146159/1766.69	snow=0/0/30	snowLimits=0/0
+wind	t=330	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0167507/0.942696/50	mission=false	frozen=false
+clock	t=335	date=2026-9-20 12:1	time=339.731
+weather	t=335	oc=0.495549/0.590451/1284.72	rain=0/0/60	fog=0.00317565/0.146159/1761.81	snow=0/0/30	snowLimits=0/0
+wind	t=335	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0166762/0.942697/50	mission=false	frozen=false
+clock	t=340	date=2026-9-20 12:1	time=344.767
+weather	t=340	oc=0.496592/0.590451/1279.83	rain=0/0/60	fog=0.00358194/0.146159/1756.92	snow=0/0/30	snowLimits=0/0
+wind	t=340	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0166017/0.942697/50	mission=false	frozen=false
+clock	t=345	date=2026-9-20 12:1	time=349.802
+weather	t=345	oc=0.497635/0.590451/1274.95	rain=0/0/60	fog=0.00398799/0.146159/1752.04	snow=0/0/30	snowLimits=0/0
+wind	t=345	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0165272/0.942698/50	mission=false	frozen=false
+clock	t=350	date=2026-9-20 12:1	time=354.838
+weather	t=350	oc=0.498678/0.590451/1270.07	rain=0/0/60	fog=0.00439312/0.146159/1747.16	snow=0/0/30	snowLimits=0/0
+wind	t=350	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0164528/0.942698/50	mission=false	frozen=false
+clock	t=355	date=2026-9-20 12:2	time=359.873
+weather	t=355	oc=0.499721/0.590451/1265.18	rain=0/0/60	fog=0.00479825/0.146159/1742.28	snow=0/0/30	snowLimits=0/0
+wind	t=355	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0163783/0.942698/50	mission=false	frozen=false
+act	t=360	SetTimeMultiplier(30)
+clock	t=360	date=2026-9-20 12:2	time=364.908
+weather	t=360	oc=0.500656/0.590451/1260.3	rain=0/0/60	fog=0.00520338/0.146159/1737.39	snow=0/0/30	snowLimits=0/0
+wind	t=360	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0163038/0.942699/50	mission=false	frozen=false
+clock	t=365	date=2026-9-20 12:4	time=369.944
+weather	t=365	oc=0.50155/0.590451/1255.42	rain=0/0/60	fog=0.0056085/0.146159/1732.51	snow=0/0/30	snowLimits=0/0
+wind	t=365	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0162293/0.942699/50	mission=false	frozen=false
+clock	t=370	date=2026-9-20 12:7	time=374.979
+weather	t=370	oc=0.502444/0.590451/1250.53	rain=0/0/60	fog=0.00601363/0.146159/1727.63	snow=0/0/30	snowLimits=0/0
+wind	t=370	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0161548/0.942699/50	mission=false	frozen=false
+clock	t=375	date=2026-9-20 12:9	time=380.014
+weather	t=375	oc=0.503339/0.590451/1245.65	rain=0/0/60	fog=0.00641876/0.146159/1722.74	snow=0/0/30	snowLimits=0/0
+wind	t=375	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0160803/0.9427/50	mission=false	frozen=false
+clock	t=380	date=2026-9-20 12:12	time=385.05
+weather	t=380	oc=0.504233/0.590451/1240.77	rain=0/0/60	fog=0.00682389/0.146159/1717.86	snow=0/0/30	snowLimits=0/0
+wind	t=380	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0160058/0.9427/50	mission=false	frozen=false
+clock	t=385	date=2026-9-20 12:14	time=390.085
+weather	t=385	oc=0.505128/0.590451/1235.89	rain=0/0/60	fog=0.00722902/0.146159/1712.98	snow=0/0/30	snowLimits=0/0
+wind	t=385	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0159313/0.942701/50	mission=false	frozen=false
+clock	t=390	date=2026-9-20 12:17	time=395.12
+weather	t=390	oc=0.506022/0.590451/1231	rain=0/0/60	fog=0.00763414/0.146159/1708.09	snow=0/0/30	snowLimits=0/0
+wind	t=390	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0158568/0.942701/50	mission=false	frozen=false
+clock	t=395	date=2026-9-20 12:19	time=400.156
+weather	t=395	oc=0.506917/0.590451/1226.12	rain=0/0/60	fog=0.00803927/0.146159/1703.21	snow=0/0/30	snowLimits=0/0
+wind	t=395	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0157823/0.942702/50	mission=false	frozen=false
+clock	t=400	date=2026-9-20 12:22	time=405.191
+weather	t=400	oc=0.507811/0.590451/1221.24	rain=0/0/60	fog=0.0084444/0.146159/1698.33	snow=0/0/30	snowLimits=0/0
+wind	t=400	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0157078/0.942702/50	mission=false	frozen=false
+clock	t=405	date=2026-9-20 12:24	time=410.226
+weather	t=405	oc=0.508706/0.590451/1216.35	rain=0/0/60	fog=0.00884953/0.146159/1693.44	snow=0/0/30	snowLimits=0/0
+wind	t=405	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0156333/0.942702/50	mission=false	frozen=false
+clock	t=410	date=2026-9-20 12:27	time=415.262
+weather	t=410	oc=0.5096/0.590451/1211.47	rain=0/0/60	fog=0.00925465/0.146159/1688.56	snow=0/0/30	snowLimits=0/0
+wind	t=410	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.015563/0.942703/50	mission=false	frozen=false
+clock	t=415	date=2026-9-20 12:29	time=420.297
+weather	t=415	oc=0.510495/0.590451/1206.59	rain=0/0/60	fog=0.00965978/0.146159/1683.68	snow=0/0/30	snowLimits=0/0
+wind	t=415	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0154931/0.942703/50	mission=false	frozen=false
+act	t=420	SetTimeMultiplier(-1)
+clock	t=420	date=2026-9-20 12:32	time=425.332
+weather	t=420	oc=0.511389/0.590451/1201.7	rain=0/0/60	fog=0.0100649/0.146159/1678.8	snow=0/0/30	snowLimits=0/0
+wind	t=420	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0154233/0.942703/50	mission=false	frozen=false
+clock	t=425	date=2026-9-20 12:32	time=430.368
+weather	t=425	oc=0.512284/0.590451/1196.82	rain=0/0/60	fog=0.01047/0.146159/1673.91	snow=0/0/30	snowLimits=0/0
+wind	t=425	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0153534/0.942704/50	mission=false	frozen=false
+clock	t=430	date=2026-9-20 12:32	time=435.403
+weather	t=430	oc=0.513178/0.590451/1191.94	rain=0/0/60	fog=0.0108752/0.146159/1669.03	snow=0/0/30	snowLimits=0/0
+wind	t=430	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0152836/0.942704/50	mission=false	frozen=false
+clock	t=435	date=2026-9-20 12:32	time=440.438
+weather	t=435	oc=0.514072/0.590451/1187.05	rain=0/0/60	fog=0.0112803/0.146159/1664.15	snow=0/0/30	snowLimits=0/0
+wind	t=435	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0152137/0.942704/50	mission=false	frozen=false
+clock	t=440	date=2026-9-20 12:32	time=445.474
+weather	t=440	oc=0.514967/0.590451/1182.17	rain=0/0/60	fog=0.0116854/0.146159/1659.26	snow=0/0/30	snowLimits=0/0
+wind	t=440	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0151439/0.942705/50	mission=false	frozen=false
+clock	t=445	date=2026-9-20 12:32	time=450.509
+weather	t=445	oc=0.515861/0.590451/1177.29	rain=0/0/60	fog=0.0120905/0.146159/1654.38	snow=0/0/30	snowLimits=0/0
+wind	t=445	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.015074/0.942705/50	mission=false	frozen=false
+act	t=450	world mode: overcast 1, rain 1, fog 0.5, each for 30 s
+clock	t=450	date=2026-9-20 12:32	time=455.545
+weather	t=450	oc=1/1/30	rain=1/1/30	fog=0.5/0.5/30	snow=0/0/30	snowLimits=0/0
+wind	t=450	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0150042/0.942706/50	mission=false	frozen=false
+clock	t=455	date=2026-9-20 12:32	time=460.58
+weather	t=455	oc=1/1/25.0027	rain=1/1/25.0027	fog=0.5/0.5/25.0027	snow=0/0/25.0027	snowLimits=0/0
+wind	t=455	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0149343/0.942706/50	mission=false	frozen=false
+clock	t=460	date=2026-9-20 12:32	time=465.615
+weather	t=460	oc=1/1/20.0055	rain=1/1/20.0055	fog=0.5/0.5/20.0055	snow=0/0/20.0055	snowLimits=0/0
+wind	t=460	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0148645/0.942706/50	mission=false	frozen=false
+clock	t=465	date=2026-9-20 12:32	time=470.651
+weather	t=465	oc=1/1/15.0073	rain=1/1/15.0073	fog=0.5/0.5/15.0073	snow=0/0/15.0073	snowLimits=0/0
+wind	t=465	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0147946/0.942707/50	mission=false	frozen=false
+clock	t=470	date=2026-9-20 12:32	time=475.686
+weather	t=470	oc=1/1/10.0052	rain=1/1/10.0052	fog=0.5/0.5/10.0052	snow=0/0/10.0052	snowLimits=0/0
+wind	t=470	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0147248/0.942707/50	mission=false	frozen=false
+clock	t=475	date=2026-9-20 12:33	time=480.721
+weather	t=475	oc=1/1/5.00465	rain=1/1/5.00465	fog=0.5/0.5/5.00465	snow=0/0/5.00465	snowLimits=0/0
+wind	t=475	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0146549/0.942707/50	mission=false	frozen=false
+clock	t=480	date=2026-9-20 12:33	time=485.757
+weather	t=480	oc=1/1/0.00483139	rain=1/1/0.00483139	fog=0.5/0.5/0.00483139	snow=0/0/0.00483139	snowLimits=0/0
+wind	t=480	speed=10.4683	max=20	dir=-2.5198/-2.5198	dyn=true:0.0145851/0.942708/50	mission=false	frozen=false
+clock	t=485	date=2026-9-20 12:33	time=490.792
+weather	t=485	oc=0.994939/0.205744/1692.12	rain=0.99732/0.935899/112.008	fog=0.498958/0.11189/1795.12	snow=0/0/1308.07	snowLimits=0/0
+wind	t=485	speed=10.1443	max=20	dir=-2.23631/-0.251778	dyn=true:0.0145757/0.942707/50	mission=false	frozen=false
+clock	t=490	date=2026-9-20 12:33	time=495.827
+weather	t=490	oc=0.989873/0.205744/1687.24	rain=0.994638/0.935899/107.01	fog=0.497915/0.11189/1790.24	snow=0/0/1303.19	snowLimits=0/0
+wind	t=490	speed=9.82008	max=20	dir=-1.95269/-0.251778	dyn=true:0.0145664/0.942707/50	mission=false	frozen=false
+clock	t=495	date=2026-9-20 12:33	time=500.863
+weather	t=495	oc=0.984807/0.205744/1682.36	rain=0.991956/0.935899/102.013	fog=0.496872/0.11189/1785.36	snow=0/0/1298.31	snowLimits=0/0
+wind	t=495	speed=9.49583	max=20	dir=-1.66957/-0.251778	dyn=true:0.0145571/0.942706/50	mission=false	frozen=false
+clock	t=500	date=2026-9-20 12:33	time=505.898
+weather	t=500	oc=0.979741/0.205744/1677.47	rain=0.989273/0.935899/97.016	fog=0.495828/0.11189/1780.47	snow=0/0/1293.42	snowLimits=0/0
+wind	t=500	speed=9.17157	max=20	dir=-1.38645/-0.251778	dyn=true:0.0145478/0.942706/50	mission=false	frozen=false
+clock	t=505	date=2026-9-20 12:33	time=510.932
+weather	t=505	oc=0.974678/0.205744/1672.59	rain=0.986589/0.935899/92.0187	fog=0.494784/0.11189/1775.59	snow=0/0/1288.54	snowLimits=0/0
+wind	t=505	speed=8.84726	max=20	dir=-1.10333/-0.251778	dyn=true:0.0145386/0.942702/50	mission=false	frozen=false
+clock	t=510	date=2026-9-20 12:33	time=515.848
+weather	t=510	oc=0.969612/0.205744/1667.7	rain=0.983907/0.935899/87.0214	fog=0.493741/0.11189/1770.7	snow=0/0/1283.66	snowLimits=0/0
+wind	t=510	speed=8.52301	max=20	dir=-0.820203/-0.251778	dyn=true:0.0145293/0.942702/50	mission=false	frozen=false
+clock	t=515	date=2026-9-20 12:33	time=520.731
+weather	t=515	oc=0.964546/0.205744/1662.82	rain=0.981225/0.935899/82.0242	fog=0.492698/0.11189/1765.82	snow=0/0/1278.77	snowLimits=0/0
+wind	t=515	speed=8.19875	max=20	dir=-0.537081/-0.251778	dyn=true:0.0145199/0.942701/50	mission=false	frozen=false
+clock	t=520	date=2026-9-20 12:33	time=525.614
+weather	t=520	oc=0.95948/0.205744/1657.94	rain=0.978542/0.935899/77.0269	fog=0.491655/0.11189/1760.94	snow=0/0/1273.89	snowLimits=0/0
+wind	t=520	speed=7.87357	max=20	dir=-0.253959/-0.251778	dyn=true:0.0145106/0.942701/50	mission=false	frozen=false
+clock	t=525	date=2026-9-20 12:33	time=530.498
+weather	t=525	oc=0.954414/0.205744/1653.05	rain=0.97586/0.935899/72.0297	fog=0.490612/0.11189/1756.05	snow=0/0/1269.01	snowLimits=0/0
+wind	t=525	speed=7.54694	max=20	dir=-0.251778/-0.251778	dyn=true:0.0145013/0.9427/50	mission=false	frozen=false
+clock	t=530	date=2026-9-20 12:33	time=535.381
+weather	t=530	oc=0.949348/0.205744/1648.17	rain=0.973178/0.935899/67.0324	fog=0.489569/0.11189/1751.17	snow=0/0/1264.12	snowLimits=0/0
+wind	t=530	speed=7.22031	max=20	dir=-0.251778/-0.251778	dyn=true:0.014492/0.9427/50	mission=false	frozen=false
+clock	t=535	date=2026-9-20 12:34	time=540.264
+weather	t=535	oc=0.944282/0.205744/1643.29	rain=0.970495/0.935899/62.0352	fog=0.488525/0.11189/1746.29	snow=0/0/1259.24	snowLimits=0/0
+wind	t=535	speed=6.89368	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144827/0.942699/50	mission=false	frozen=false
+act	t=540	frozen: overcast 0.1, rain 1, fog 0, overcast due in 10 s
+clock	t=540	date=2026-9-20 12:34	time=545.148
+weather	t=540	oc=0.1/0.1/10	rain=1/1/0	fog=0/0/0	snow=0/0/1254.36	snowLimits=0/0
+wind	t=540	speed=6.56705	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144734/0.942699/50	mission=false	frozen=true
+clock	t=545	date=2026-9-20 12:34	time=550.031
+weather	t=545	oc=0.1/0.1/4.99942	rain=0.92006/0/60	fog=0/0/-4.99982	snow=0/0/30	snowLimits=0/0
+wind	t=545	speed=6.24041	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144641/0.942699/50	mission=false	frozen=true
+clock	t=550	date=2026-9-20 12:34	time=554.914
+weather	t=550	oc=0.1/0.1/-0.000405598	rain=0.846495/0/60	fog=0/0/-10.0004	snow=0/0/30	snowLimits=0/0
+wind	t=550	speed=5.91378	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144548/0.942698/50	mission=false	frozen=true
+clock	t=555	date=2026-9-20 12:34	time=559.797
+weather	t=555	oc=0.1/0.1/-5.00023	rain=0.778813/0/60	fog=0/0/-15.0024	snow=0/0/30	snowLimits=0/0
+wind	t=555	speed=5.58715	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144455/0.942698/50	mission=false	frozen=true
+clock	t=560	date=2026-9-20 12:34	time=564.681
+weather	t=560	oc=0.1/0.1/-10.0008	rain=0.716542/0/60	fog=0/0/-20.0006	snow=0/0/30	snowLimits=0/0
+wind	t=560	speed=5.26051	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144362/0.942697/50	mission=false	frozen=true
+clock	t=565	date=2026-9-20 12:34	time=569.563
+weather	t=565	oc=0.1/0.1/-15.0028	rain=0.65925/0/60	fog=0/0/-24.9979	snow=0/0/30	snowLimits=0/0
+wind	t=565	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144269/0.942697/50	mission=false	frozen=true
+clock	t=570	date=2026-9-20 12:34	time=574.447
+weather	t=570	oc=0.1/0.1/-20.001	rain=0.606539/0/60	fog=0/0/-29.9952	snow=0/0/30	snowLimits=0/0
+wind	t=570	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144176/0.942697/50	mission=false	frozen=true
+clock	t=575	date=2026-9-20 12:34	time=579.33
+weather	t=575	oc=0.1/0.1/-24.9983	rain=0.558044/0/60	fog=0/0/-34.9924	snow=0/0/30	snowLimits=0/0
+wind	t=575	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0144083/0.942697/50	mission=false	frozen=true
+clock	t=580	date=2026-9-20 12:34	time=584.213
+weather	t=580	oc=0.1/0.1/-29.9956	rain=0.513423/0/60	fog=0/0/-39.9897	snow=0/0/30	snowLimits=0/0
+wind	t=580	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.014399/0.942696/50	mission=false	frozen=true
+clock	t=585	date=2026-9-20 12:34	time=589.096
+weather	t=585	oc=0.1/0.1/-34.9928	rain=0.472374/0/60	fog=0/0/-44.9869	snow=0/0/30	snowLimits=0/0
+wind	t=585	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143896/0.942696/50	mission=false	frozen=true
+clock	t=590	date=2026-9-20 12:34	time=593.979
+weather	t=590	oc=0.1/0.1/-39.9901	rain=0.434605/0/60	fog=0/0/-49.9842	snow=0/0/30	snowLimits=0/0
+wind	t=590	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143803/0.942696/50	mission=false	frozen=true
+clock	t=595	date=2026-9-20 12:35	time=598.862
+weather	t=595	oc=0.1/0.1/-44.9873	rain=0.399855/0/60	fog=0/0/-54.9814	snow=0/0/30	snowLimits=0/0
+wind	t=595	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.014371/0.942695/50	mission=false	frozen=true
+clock	t=600	date=2026-9-20 12:35	time=603.746
+weather	t=600	oc=0.1/0.1/-49.9846	rain=0.367884/0/60	fog=0/0/-59.9787	snow=0/0/30	snowLimits=0/0
+wind	t=600	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143617/0.942694/50	mission=false	frozen=true
+clock	t=605	date=2026-9-20 12:35	time=608.629
+weather	t=605	oc=0.1/0.1/-54.9818	rain=0.33847/0/60	fog=0/0/-64.976	snow=0/0/30	snowLimits=0/0
+wind	t=605	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143524/0.942694/50	mission=false	frozen=true
+clock	t=610	date=2026-9-20 12:35	time=613.512
+weather	t=610	oc=0.1/0.1/-59.9791	rain=0.311407/0/60	fog=0/0/-69.9732	snow=0/0/30	snowLimits=0/0
+wind	t=610	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143431/0.942694/50	mission=false	frozen=true
+clock	t=615	date=2026-9-20 12:35	time=618.396
+weather	t=615	oc=0.1/0.1/-64.9764	rain=0.286508/0/60	fog=0/0/-74.9705	snow=0/0/30	snowLimits=0/0
+wind	t=615	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143338/0.942693/50	mission=false	frozen=true
+clock	t=620	date=2026-9-20 12:35	time=623.279
+weather	t=620	oc=0.1/0.1/-69.9736	rain=0.2636/0/60	fog=0/0/-79.9677	snow=0/0/30	snowLimits=0/0
+wind	t=620	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143245/0.942693/50	mission=false	frozen=true
+clock	t=625	date=2026-9-20 12:35	time=628.162
+weather	t=625	oc=0.1/0.1/-74.9709	rain=0.242524/0/60	fog=0/0/-84.965	snow=0/0/30	snowLimits=0/0
+wind	t=625	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143152/0.942692/50	mission=false	frozen=true
+clock	t=630	date=2026-9-20 12:35	time=633.045
+weather	t=630	oc=0.1/0.1/-79.9681	rain=0.223133/0/60	fog=0/0/-89.9622	snow=0/0/30	snowLimits=0/0
+wind	t=630	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0143059/0.942692/50	mission=false	frozen=true
+clock	t=635	date=2026-9-20 12:35	time=637.929
+weather	t=635	oc=0.1/0.1/-84.9654	rain=0.205292/0/60	fog=0/0/-94.9595	snow=0/0/30	snowLimits=0/0
+wind	t=635	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142966/0.942692/50	mission=false	frozen=true
+clock	t=640	date=2026-9-20 12:35	time=642.812
+weather	t=640	oc=0.1/0.1/-89.9626	rain=0.188878/0/60	fog=0/0/-99.9567	snow=0/0/30	snowLimits=0/0
+wind	t=640	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142873/0.942691/50	mission=false	frozen=true
+clock	t=645	date=2026-9-20 12:35	time=647.703
+weather	t=645	oc=0.1/0.1/-94.96	rain=0.173775/0/60	fog=0/0/-104.954	snow=0/0/30	snowLimits=0/0
+wind	t=645	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142781/0.942682/50	mission=false	frozen=true
+clock	t=650	date=2026-9-20 12:35	time=652.586
+weather	t=650	oc=0.1/0.1/-99.9573	rain=0.159881/0/60	fog=0/0/-109.951	snow=0/0/30	snowLimits=0/0
+wind	t=650	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142688/0.942681/50	mission=false	frozen=true
+clock	t=655	date=2026-9-20 12:36	time=657.469
+weather	t=655	oc=0.1/0.1/-104.955	rain=0.147097/0/60	fog=0/0/-114.949	snow=0/0/30	snowLimits=0/0
+wind	t=655	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142595/0.942681/50	mission=false	frozen=true
+act	t=660	frozen: snow limits 0..1, thresholds 0..1, overcast 0.9, snow 0.8, rain 0
+clock	t=660	date=2026-9-20 12:36	time=662.353
+weather	t=660	oc=0.9/0.9/0	rain=0/0/0	fog=0/0/-119.946	snow=0.8/0.8/0	snowLimits=0/1
+wind	t=660	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142502/0.94268/50	mission=false	frozen=true
+clock	t=665	date=2026-9-20 12:36	time=667.237
+weather	t=665	oc=0.9/0.9/-4.99982	rain=0/0/-4.99982	fog=0/0/-124.943	snow=0.8/0.8/-4.99982	snowLimits=0/1
+wind	t=665	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142409/0.942679/50	mission=false	frozen=true
+clock	t=670	date=2026-9-20 12:36	time=672.12
+weather	t=670	oc=0.9/0.9/-10.0004	rain=0/0/-10.0004	fog=0/0/-129.955	snow=0.8/0.8/-10.0004	snowLimits=0/1
+wind	t=670	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142316/0.942679/50	mission=false	frozen=true
+clock	t=675	date=2026-9-20 12:36	time=677.003
+weather	t=675	oc=0.9/0.9/-15.0024	rain=0/0/-15.0024	fog=0/0/-134.99	snow=0.8/0.8/-15.0024	snowLimits=0/1
+wind	t=675	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142223/0.942679/50	mission=false	frozen=true
+clock	t=680	date=2026-9-20 12:36	time=681.887
+weather	t=680	oc=0.9/0.9/-20.0006	rain=0/0/-20.0006	fog=0/0/-140.026	snow=0.8/0.8/-20.0006	snowLimits=0/1
+wind	t=680	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.014213/0.942678/50	mission=false	frozen=true
+clock	t=685	date=2026-9-20 12:36	time=686.77
+weather	t=685	oc=0.9/0.9/-24.9979	rain=0/0/-24.9979	fog=0/0/-145.061	snow=0.8/0.8/-24.9979	snowLimits=0/1
+wind	t=685	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0142037/0.942677/50	mission=false	frozen=true
+clock	t=690	date=2026-9-20 12:36	time=691.654
+weather	t=690	oc=0.9/0.9/-29.9952	rain=0/0/-29.9952	fog=0/0/-150.096	snow=0.8/0.8/-29.9952	snowLimits=0/1
+wind	t=690	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141944/0.942676/50	mission=false	frozen=true
+clock	t=695	date=2026-9-20 12:36	time=696.537
+weather	t=695	oc=0.9/0.9/-34.9924	rain=0/0/-34.9924	fog=0/0/-155.131	snow=0.8/0.8/-34.9924	snowLimits=0/1
+wind	t=695	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141851/0.942676/50	mission=false	frozen=true
+clock	t=700	date=2026-9-20 12:36	time=701.42
+weather	t=700	oc=0.9/0.9/-39.9897	rain=0/0/-39.9897	fog=0/0/-160.167	snow=0.8/0.8/-39.9897	snowLimits=0/1
+wind	t=700	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141758/0.942676/50	mission=false	frozen=true
+clock	t=705	date=2026-9-20 12:36	time=706.304
+weather	t=705	oc=0.9/0.9/-44.9869	rain=0/0/-44.9869	fog=0/0/-165.202	snow=0.8/0.8/-44.9869	snowLimits=0/1
+wind	t=705	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141665/0.942675/50	mission=false	frozen=true
+clock	t=710	date=2026-9-20 12:36	time=711.187
+weather	t=710	oc=0.9/0.9/-49.9842	rain=0/0/-49.9842	fog=0/0/-170.237	snow=0.8/0.8/-49.9842	snowLimits=0/1
+wind	t=710	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141572/0.942675/50	mission=false	frozen=true
+clock	t=715	date=2026-9-20 12:37	time=716.07
+weather	t=715	oc=0.9/0.9/-54.9815	rain=0/0/-54.9815	fog=0/0/-175.272	snow=0.8/0.8/-54.9815	snowLimits=0/1
+wind	t=715	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141478/0.942674/50	mission=false	frozen=true
+act	t=720	frozen: overcast 0.2 over 60 s
+clock	t=720	date=2026-9-20 12:37	time=720.953
+weather	t=720	oc=0.9/0.2/60	rain=0/0/-59.9787	fog=0/0/-180.308	snow=0.8/0.8/-59.9787	snowLimits=0/1
+wind	t=720	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141385/0.942674/50	mission=false	frozen=true
+clock	t=725	date=2026-9-20 12:37	time=725.837
+weather	t=725	oc=0.841588/0.2/55.0027	rain=0/0/-64.976	fog=0/0/-185.343	snow=0.8/0.8/-64.976	snowLimits=0/1
+wind	t=725	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141292/0.942673/50	mission=false	frozen=true
+clock	t=730	date=2026-9-20 12:37	time=730.72
+weather	t=730	oc=0.783176/0.2/50.0055	rain=0/0/-69.9732	fog=0/0/-190.378	snow=0.8/0.8/-69.9732	snowLimits=0/1
+wind	t=730	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141199/0.942672/50	mission=false	frozen=true
+clock	t=735	date=2026-9-20 12:37	time=735.604
+weather	t=735	oc=0.724764/0.2/45.0082	rain=0/0/-74.9705	fog=0/0/-195.414	snow=0.8/0.8/-74.9705	snowLimits=0/1
+wind	t=735	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141106/0.942672/50	mission=false	frozen=true
+clock	t=740	date=2026-9-20 12:37	time=740.487
+weather	t=740	oc=0.666352/0.2/40.011	rain=0/0/-79.9677	fog=0/0/-200.449	snow=0.8/0.8/-79.9677	snowLimits=0/1
+wind	t=740	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0141013/0.942671/50	mission=false	frozen=true
+clock	t=745	date=2026-9-20 12:37	time=745.37
+weather	t=745	oc=0.60794/0.2/35.0137	rain=0/0/-84.965	fog=0/0/-205.484	snow=0.8/0.8/-84.965	snowLimits=0/1
+wind	t=745	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.014092/0.942671/50	mission=false	frozen=true
+clock	t=750	date=2026-9-20 12:37	time=750.255
+weather	t=750	oc=0.549529/0.2/30.0164	rain=0/0/60	fog=0/0/-210.519	snow=0.8/0.8/-89.9622	snowLimits=0/1
+wind	t=750	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140827/0.942669/50	mission=false	frozen=true
+clock	t=755	date=2026-9-20 12:37	time=755.138
+weather	t=755	oc=0.491139/0.2/25.0192	rain=0/0/60	fog=0/0/-215.554	snow=0.8/0.8/-94.9595	snowLimits=0/1
+wind	t=755	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140734/0.942669/50	mission=false	frozen=true
+clock	t=760	date=2026-9-20 12:37	time=760.021
+weather	t=760	oc=0.432876/0.2/20.0219	rain=0/0/60	fog=0/0/-220.59	snow=0.8/0.8/-99.9568	snowLimits=0/1
+wind	t=760	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140641/0.942668/50	mission=false	frozen=true
+clock	t=765	date=2026-9-20 12:37	time=764.904
+weather	t=765	oc=0.374612/0.2/15.0237	rain=0/0/60	fog=0/0/-225.625	snow=0.8/0.8/-104.954	snowLimits=0/1
+wind	t=765	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140548/0.942668/50	mission=false	frozen=true
+clock	t=770	date=2026-9-20 12:37	time=769.788
+weather	t=770	oc=0.316348/0.2/10.0217	rain=0/0/60	fog=0/0/-230.66	snow=0.8/0.8/-109.951	snowLimits=0/1
+wind	t=770	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140455/0.942667/50	mission=false	frozen=true
+clock	t=775	date=2026-9-20 12:38	time=774.671
+weather	t=775	oc=0.258084/0.2/5.02111	rain=0/0/60	fog=0/0/-235.695	snow=0.8/0.8/-114.949	snowLimits=0/1
+wind	t=775	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140362/0.942667/50	mission=false	frozen=true
+clock	t=780	date=2026-9-20 12:38	time=779.555
+weather	t=780	oc=0.2/0.2/0.0212899	rain=0/0/60	fog=0/0/-240.731	snow=0.8/0.8/-119.946	snowLimits=0/1
+wind	t=780	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140269/0.942666/50	mission=false	frozen=true
+clock	t=785	date=2026-9-20 12:38	time=784.438
+weather	t=785	oc=0.2/0.2/-4.97853	rain=0/0/60	fog=0/0/-245.766	snow=0.8/0.8/-124.943	snowLimits=0/1
+wind	t=785	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140176/0.942666/50	mission=false	frozen=true
+clock	t=790	date=2026-9-20 12:38	time=789.322
+weather	t=790	oc=0.2/0.2/-9.97911	rain=0/0/60	fog=0/0/-250.801	snow=0.8/0.8/-129.955	snowLimits=0/1
+wind	t=790	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.0140083/0.942665/50	mission=false	frozen=true
+clock	t=795	date=2026-9-20 12:38	time=794.205
+weather	t=795	oc=0.2/0.2/-14.9811	rain=0/0/60	fog=0/0/-255.836	snow=0.8/0.8/-134.99	snowLimits=0/1
+wind	t=795	speed=5.24369	max=20	dir=-0.251778/-0.251778	dyn=true:0.013999/0.942664/50	mission=false	frozen=true
+act	t=800	frozen: wind max 30, speed 25, direction 1 rad
+clock	t=800	date=2026-9-20 12:38	time=799.088
+weather	t=800	oc=0.2/0.2/-19.9794	rain=0/0/60	fog=0/0/-260.872	snow=0.8/0.8/-140.026	snowLimits=0/1
+wind	t=800	speed=25	max=30	dir=1/1	dyn=true:0.0139897/0.942664/50	mission=false	frozen=true
+clock	t=805	date=2026-9-20 12:38	time=803.972
+weather	t=805	oc=0.2/0.2/-24.9766	rain=0/0/60	fog=0/0/-265.907	snow=0.8/0.8/-145.061	snowLimits=0/1
+wind	t=805	speed=25	max=30	dir=1/1	dyn=true:0.0139804/0.942663/50	mission=false	frozen=true
+clock	t=810	date=2026-9-20 12:38	time=808.855
+weather	t=810	oc=0.2/0.2/-29.9739	rain=0/0/60	fog=0/0/-270.943	snow=0.8/0.8/-150.096	snowLimits=0/1
+wind	t=810	speed=25	max=30	dir=1/1	dyn=true:0.0139711/0.942663/50	mission=false	frozen=true
+clock	t=815	date=2026-9-20 12:38	time=813.738
+weather	t=815	oc=0.2/0.2/-34.9712	rain=0/0/60	fog=0/0/-275.978	snow=0.8/0.8/-155.131	snowLimits=0/1
+wind	t=815	speed=25	max=30	dir=1/1	dyn=true:0.0139618/0.942663/50	mission=false	frozen=true
+clock	t=820	date=2026-9-20 12:38	time=818.621
+weather	t=820	oc=0.2/0.2/-39.9684	rain=0/0/60	fog=0/0/-281.013	snow=0.8/0.8/-160.167	snowLimits=0/1
+wind	t=820	speed=25	max=30	dir=1/1	dyn=true:0.0139525/0.942662/50	mission=false	frozen=true
+clock	t=825	date=2026-9-20 12:38	time=823.505
+weather	t=825	oc=0.2/0.2/-44.9657	rain=0/0/60	fog=0/0/-286.049	snow=0.8/0.8/-165.202	snowLimits=0/1
+wind	t=825	speed=25	max=30	dir=1/1	dyn=true:0.0139432/0.942662/50	mission=false	frozen=true
+act	t=830	frozen: dynamic fog distance 0.8, height 0.6, bias 50
+clock	t=830	date=2026-9-20 12:38	time=828.388
+weather	t=830	oc=0.2/0.2/-49.9629	rain=0/0/60	fog=0/0/-291.084	snow=0.8/0.8/-170.237	snowLimits=0/1
+wind	t=830	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+clock	t=835	date=2026-9-20 12:39	time=833.271
+weather	t=835	oc=0.2/0.2/-54.9602	rain=0/0/60	fog=0/0/-296.119	snow=0.8/0.8/-175.273	snowLimits=0/1
+wind	t=835	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+clock	t=840	date=2026-9-20 12:39	time=838.154
+weather	t=840	oc=0.2/0.2/-59.9574	rain=0/0/60	fog=0/0/-301.155	snow=0.8/0.8/-180.308	snowLimits=0/1
+wind	t=840	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+clock	t=845	date=2026-9-20 12:39	time=843.038
+weather	t=845	oc=0.2/0.2/-64.9547	rain=0/0/60	fog=0/0/-306.19	snow=0.8/0.8/-185.343	snowLimits=0/1
+wind	t=845	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+clock	t=850	date=2026-9-20 12:39	time=847.921
+weather	t=850	oc=0.2/0.2/-69.952	rain=0/0/60	fog=0/0/-311.225	snow=0.8/0.8/-190.378	snowLimits=0/1
+wind	t=850	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+clock	t=855	date=2026-9-20 12:39	time=852.804
+weather	t=855	oc=0.2/0.2/-74.9492	rain=0/0/60	fog=0/0/-316.261	snow=0.8/0.8/-195.414	snowLimits=0/1
+wind	t=855	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=false	frozen=true
+act	t=860	mission weather: freeze lifted, overcast and snow due in 5 s
+clock	t=860	date=2026-9-20 12:39	time=857.688
+weather	t=860	oc=0.2/0.2/5	rain=0/0/60	fog=0/0/-321.296	snow=0.8/0.8/5	snowLimits=0/1
+wind	t=860	speed=25	max=30	dir=1/1	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=865	date=2026-9-20 12:39	time=862.571
+weather	t=865	oc=0.2/0.2/0.000178125	rain=0/0/60	fog=0/0/2963.66	snow=0.8/0.8/0.000178125	snowLimits=0/1
+wind	t=865	speed=25.0095	max=30	dir=1.00238/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=870	date=2026-9-20 12:39	time=867.454
+weather	t=870	oc=0.202384/0.554534/729.485	rain=0/0/60	fog=0/0/2958.78	snow=0.8/0.8/530.983	snowLimits=0/1
+wind	t=870	speed=25.0191	max=30	dir=1.00477/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=875	date=2026-9-20 12:39	time=872.338
+weather	t=875	oc=0.204768/0.554534/724.601	rain=0/0/60	fog=0/0/2953.89	snow=0.8/0.8/526.1	snowLimits=0/1
+wind	t=875	speed=25.0286	max=30	dir=1.00715/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=880	date=2026-9-20 12:39	time=877.22
+weather	t=880	oc=0.207152/0.554534/719.718	rain=0/0/60	fog=0/0/2949.01	snow=0.8/0.8/521.217	snowLimits=0/1
+wind	t=880	speed=25.0381	max=30	dir=1.00953/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=885	date=2026-9-20 12:39	time=882.104
+weather	t=885	oc=0.209537/0.554534/714.835	rain=0/0/60	fog=0/0/2944.13	snow=0.8/0.8/516.334	snowLimits=0/1
+wind	t=885	speed=25.0477	max=30	dir=1.01192/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=890	date=2026-9-20 12:39	time=886.987
+weather	t=890	oc=0.211921/0.554534/709.952	rain=0/0/60	fog=0/0/2939.25	snow=0.8/0.8/511.433	snowLimits=0/1
+wind	t=890	speed=25.0572	max=30	dir=1.0143/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=895	date=2026-9-20 12:40	time=891.87
+weather	t=895	oc=0.214305/0.554534/705.069	rain=0/0/60	fog=0/0/2934.36	snow=0.8/0.8/506.398	snowLimits=0/1
+wind	t=895	speed=25.0668	max=30	dir=1.01668/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=900	date=2026-9-20 12:40	time=896.753
+weather	t=900	oc=0.21669/0.554534/700.185	rain=0/0/60	fog=0/0/2929.48	snow=0.8/0.8/501.362	snowLimits=0/1
+wind	t=900	speed=25.0763	max=30	dir=1.01907/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=905	date=2026-9-20 12:40	time=901.636
+weather	t=905	oc=0.219074/0.554534/695.302	rain=0/0/60	fog=0/0/2924.6	snow=0.8/0.8/496.327	snowLimits=0/1
+wind	t=905	speed=25.0858	max=30	dir=1.02145/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=910	date=2026-9-20 12:40	time=906.52
+weather	t=910	oc=0.221458/0.554534/690.419	rain=0/0/60	fog=0/0/2919.71	snow=0.8/0.8/491.292	snowLimits=0/1
+wind	t=910	speed=25.0954	max=30	dir=1.02383/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=915	date=2026-9-20 12:40	time=911.403
+weather	t=915	oc=0.223842/0.554534/685.536	rain=0/0/60	fog=0/0/2914.83	snow=0.8/0.8/486.256	snowLimits=0/1
+wind	t=915	speed=25.1049	max=30	dir=1.02622/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=920	date=2026-9-20 12:40	time=916.287
+weather	t=920	oc=0.226227/0.554534/680.652	rain=0/0/60	fog=0/0/2909.95	snow=0.8/0.8/481.221	snowLimits=0/1
+wind	t=920	speed=25.1144	max=30	dir=1.0286/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=925	date=2026-9-20 12:40	time=921.17
+weather	t=925	oc=0.228611/0.554534/675.769	rain=0/0/60	fog=0/0/2905.07	snow=0.8/0.8/476.186	snowLimits=0/1
+wind	t=925	speed=25.124	max=30	dir=1.03098/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=930	date=2026-9-20 12:40	time=926.053
+weather	t=930	oc=0.230995/0.554534/670.886	rain=0/0/60	fog=0/0/2900.18	snow=0.8/0.8/471.15	snowLimits=0/1
+wind	t=930	speed=25.1335	max=30	dir=1.03337/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=935	date=2026-9-20 12:40	time=930.936
+weather	t=935	oc=0.23338/0.554534/666.003	rain=0/0/60	fog=0/0/2895.3	snow=0.8/0.8/466.115	snowLimits=0/1
+wind	t=935	speed=25.143	max=30	dir=1.03575/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=940	date=2026-9-20 12:40	time=935.819
+weather	t=940	oc=0.235764/0.554534/661.119	rain=0/0/60	fog=0/0/2890.42	snow=0.8/0.8/461.079	snowLimits=0/1
+wind	t=940	speed=25.1526	max=30	dir=1.03813/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=945	date=2026-9-20 12:40	time=940.703
+weather	t=945	oc=0.238148/0.554534/656.236	rain=0/0/60	fog=0/0/2885.53	snow=0.8/0.8/456.044	snowLimits=0/1
+wind	t=945	speed=25.1621	max=30	dir=1.04052/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=950	date=2026-9-20 12:40	time=945.586
+weather	t=950	oc=0.240532/0.554534/651.353	rain=0/0/60	fog=0/0/2880.65	snow=0.8/0.8/451.009	snowLimits=0/1
+wind	t=950	speed=25.1717	max=30	dir=1.0429/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+clock	t=955	date=2026-9-20 12:41	time=950.469
+weather	t=955	oc=0.242917/0.554534/646.47	rain=0/0/60	fog=0/0/2875.77	snow=0.8/0.8/445.973	snowLimits=0/1
+wind	t=955	speed=25.1812	max=30	dir=1.04528/2.25244	dyn=true:0.8/0.6/50	mission=true	frozen=false
+act	t=960	world mode again: overcast and snow due in 5 s
+clock	t=960	date=2026-9-20 12:41	time=955.352
+weather	t=960	oc=0.245301/0.554534/5	rain=0/0/60	fog=0/0/2870.89	snow=0.8/0.8/5	snowLimits=0/1
+wind	t=960	speed=25.1907	max=30	dir=1.04767/2.25244	dyn=true:0.8/0.6/50	mission=false	frozen=false
+clock	t=965	date=2026-9-20 12:41	time=960.236
+weather	t=965	oc=0.554527/0.554534/0.000180271	rain=0/0/60	fog=0/0/2866	snow=0.8/0.8/0.000180271	snowLimits=0/1
+wind	t=965	speed=25.2003	max=30	dir=1.05005/2.25244	dyn=true:0.8/0.6/50	mission=false	frozen=false
+clock	t=970	date=2026-9-20 12:41	time=965.119
+weather	t=970	oc=0.550958/0.00949431/1392.12	rain=0/0/60	fog=0/0/2861.12	snow=0/0/3070.72	snowLimits=0/0
+wind	t=970	speed=19.0751	max=20	dir=0.795894/-0.962453	dyn=true:0.794934/0.601788/50	mission=false	frozen=false
+clock	t=975	date=2026-9-20 12:41	time=970.002
+weather	t=975	oc=0.547382/0.00949431/1387.24	rain=0/0/60	fog=0/0/2856.24	snow=0/0/3065.83	snowLimits=0/0
+wind	t=975	speed=18.15	max=20	dir=0.541681/-0.962453	dyn=true:0.789867/0.603577/50	mission=false	frozen=false
+clock	t=980	date=2026-9-20 12:41	time=974.885
+weather	t=980	oc=0.543806/0.00949431/1382.35	rain=0/0/60	fog=0/0/2851.35	snow=0/0/3060.95	snowLimits=0/0
+wind	t=980	speed=17.225	max=20	dir=0.287591/-0.962453	dyn=true:0.784801/0.605366/50	mission=false	frozen=false
+clock	t=985	date=2026-9-20 12:41	time=979.769
+weather	t=985	oc=0.540231/0.00949431/1377.47	rain=0/0/60	fog=0/0/2846.47	snow=0/0/3056.07	snowLimits=0/0
+wind	t=985	speed=16.2999	max=20	dir=0.0334767/-0.962453	dyn=true:0.779734/0.607154/50	mission=false	frozen=false
+clock	t=990	date=2026-9-20 12:41	time=984.652
+weather	t=990	oc=0.536655/0.00949431/1372.59	rain=0/0/60	fog=0/0/2841.59	snow=0/0/3051.18	snowLimits=0/0
+wind	t=990	speed=15.3716	max=20	dir=-0.220639/-0.962453	dyn=true:0.774668/0.608943/50	mission=false	frozen=false
+clock	t=995	date=2026-9-20 12:41	time=989.535
+weather	t=995	oc=0.533079/0.00949431/1367.7	rain=0/0/60	fog=0/0/2836.71	snow=0/0/3046.3	snowLimits=0/0
+wind	t=995	speed=14.4418	max=20	dir=-0.474713/-0.962453	dyn=true:0.769602/0.610731/50	mission=false	frozen=false
+clock	t=1000	date=2026-9-20 12:41	time=994.418
+weather	t=1000	oc=0.529503/0.00949431/1362.82	rain=0/0/60	fog=0/0/2831.82	snow=0/0/3041.42	snowLimits=0/0
+wind	t=1000	speed=13.5119	max=20	dir=-0.728912/-0.962453	dyn=true:0.764535/0.61252/50	mission=false	frozen=false
+clock	t=1005	date=2026-9-20 12:41	time=999.302
+weather	t=1005	oc=0.525927/0.00949431/1357.94	rain=0/0/60	fog=0/0/2826.94	snow=0/0/3036.54	snowLimits=0/0
+wind	t=1005	speed=12.5821	max=20	dir=-0.962453/-0.962453	dyn=true:0.759469/0.614308/50	mission=false	frozen=false
+clock	t=1010	date=2026-9-20 12:41	time=1004.19
+weather	t=1010	oc=0.522353/0.00949431/1353.05	rain=0/0/60	fog=0/0/2822.06	snow=0/0/3031.65	snowLimits=0/0
+wind	t=1010	speed=11.6523	max=20	dir=-0.962453/-0.962453	dyn=true:0.754403/0.616098/50	mission=false	frozen=false
+clock	t=1015	date=2026-9-20 12:42	time=1009.07
+weather	t=1015	oc=0.518777/0.00949431/1348.17	rain=0/0/60	fog=0/0/2817.18	snow=0/0/3026.77	snowLimits=0/0
+wind	t=1015	speed=10.7224	max=20	dir=-0.962453/-0.962453	dyn=true:0.749337/0.617887/50	mission=false	frozen=false
+clock	t=1020	date=2026-9-20 12:42	time=1013.95
+weather	t=1020	oc=0.515201/0.00949431/1343.29	rain=0/0/60	fog=0/0/2812.29	snow=0/0/3021.89	snowLimits=0/0
+wind	t=1020	speed=10.4819	max=20	dir=-0.962453/-0.962453	dyn=true:0.74427/0.619675/50	mission=false	frozen=false
+finished

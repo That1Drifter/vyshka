@@ -1,0 +1,80 @@
+runner: stub on 127.0.0.1:8096
+runner: deriving vyshkaBansSpike.chernarusplus from dayzOffline.chernarusplus
+runner: boot 1, pid 12116
+runner: 04:20:25  step -1 context
+runner: 04:20:39  step 0 measured-more
+runner: 04:20:43  step 1 measured-more
+runner: 04:20:45  step 2 measured-more
+runner: 04:20:49  step 3 measured-more
+runner: 04:20:53  step 4 calib
+runner: 04:20:57  step 5 success
+runner: 04:20:59  step 5 measured-more
+runner: 04:21:03  step 6 success
+runner: 04:21:09  step 6 measured-more
+runner: 04:21:11  step 7 submitted
+runner: 04:21:13  step 7 success
+runner: 04:21:33  step 7 measured-more
+runner: 04:21:37  step 8 line-read
+runner: 04:21:39  step 9 line-read
+runner: 04:21:43  step 10 line-read
+runner: 04:21:45  step 11 fire
+runner: 04:21:47  step 11 line-read
+runner: 04:21:49  step 12 line-written
+runner: boot 1: the server process exited before the probe finished
+runner: boot 1 server-exited
+runner: boot 1 died in step 12 (line-65536)
+runner: boot 2, pid 29792
+runner: 04:22:12  step -1 context
+runner: 04:22:26  step 16 fire
+runner: 04:22:42  step 16 index-measured
+runner: 04:22:46  step 17 success
+runner: 04:22:48  step 18 success
+runner: 04:22:52  step 19 success
+runner: 04:22:56  step 20 success
+runner: 04:23:00  step 21 calib
+runner: 04:23:06  step 22 success
+runner: 04:23:08  step 22 calib
+runner: 04:23:10  step 23 success
+runner: 04:23:12  step 23 measured-more
+runner: 04:23:14  step 24 alloc-entries
+runner: 04:23:16  step 24 calib
+runner: 04:23:18  step 25 fire
+runner: 04:23:20  step 25 member-append
+runner: boot 2 finished
+
+ticks per ms (median slope, fallback 10000): 10000.5
+
+## Ban lists
+
+| step | outcome | fetch ms | body bytes | entries | parse ms | build ms | 1000 lookups ms | serialize ms | write ms |
+|---|---|---|---|---|---|---|---|---|---|
+| bans-100 | success | 8 | 23964 | 100 | 9.7 | 0.6 | 0.3 | 18.4 | 0.4 |
+| bans-500 | success | 64 | 120164 | 500 | 57.3 | 3.1 | 0.3 | 91.4 | 0.5 |
+| bans-1000 | success | 72 | 240414 | 1000 | 116.1 | 9.1 | 0.5 | 188.3 | 0.5 |
+| bans-2000 | success | 102 | 481914 | 2000 | 240.1 | 12.0 | 0.3 | 246.5 | 0.8 |
+| bans-5000 | success | 58 | 1206414 | 5000 | 499.0 | 32.3 | 0.3 | 637.0 | 1.5 |
+| bans-10000 | success | 103 | 2413914 | 10000 | 1437.3 | 71.9 | 0.5 | 1349.5 | 2.8 |
+| bans-20000 | success | 204 | 4838914 | 20000 | 3115.9 | 132.5 | 0.3 | 2818.5 | 5.2 |
+| bans-50000 | success | 613 | 12113914 | 50000 | 13189.3 | 326.4 | 0.3 | 7102.2 | 12.6 |
+| bans-100-pad1m | success | 51 | 1072549 | 100 | 364.4 | 0.6 | 0.3 | 737.7 | 2.6 |
+| bans-100-pad256k | success | 100 | 286117 | 100 | 89.2 | 0.6 | 0.3 | 251.5 | 0.7 |
+
+## Reader line limit
+
+| step | line bytes | written | write ms | read back | intact | read ms |
+|---|---|---|---|---|---|---|
+| line-16k | 16384 | true | 0.3 | true (16384 bytes) | 1 | 7.5 |
+| line-32k | 32768 | true | 0.3 | true (32768 bytes) | 1 | 8.0 |
+| line-48k | 49152 | true | 0.3 | true (49152 bytes) | 1 | 8.6 |
+| line-65520 | 65520 | true | 0.3 | true (65520 bytes) | 1 | 7.4 |
+| line-65536 | 65536 | true | 0.3 | **server-exited** |  |  |
+
+## Raw responses
+
+| step | outcome | fetch ms | body bytes | string length |
+|---|---|---|---|---|
+| raw-2m | success | 102 | 2097152 | 2097152 |
+| raw-4m | success | 155 | 4194304 | 4194304 |
+| raw-8m | success | 308 | 8388608 | 8388608 |
+| raw-16m | success | 1119 | 16777216 | 16777216 |
+| raw-32m | success | 3977 | 33554432 | 33554432 |

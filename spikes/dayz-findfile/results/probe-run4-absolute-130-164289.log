@@ -1,0 +1,19 @@
+files	small=true	other=true	text=true
+list	slash-json-dirs	handle=true	count=2	pattern=$profile:VyshkaFind/*.json	names=[1.json|16] [22.json|16]
+list	slash-json-all	handle=true	count=2	pattern=$profile:VyshkaFind/*.json	names=[1.json|16] [22.json|16]
+list	slash-json-archives	handle=true	count=2	pattern=$profile:VyshkaFind/*.json	names=[1.json|16] [22.json|16]
+list	slash-star-dirs	handle=true	count=3	pattern=$profile:VyshkaFind/*	names=[1.json|16] [22.json|16] [note.txt|16]
+list	slash-star-all	handle=true	count=3	pattern=$profile:VyshkaFind/*	names=[1.json|16] [22.json|16] [note.txt|16]
+list	backslash-json-dirs	handle=true	count=2	pattern=$profile:VyshkaFind\*.json	names=[1.json|16] [22.json|16]
+list	exact-dirs	handle=true	count=1	pattern=$profile:VyshkaFind/1.json	names=[1.json|16]
+list	dir-itself-dirs	handle=true	count=1	pattern=$profile:VyshkaFind	names=[VyshkaFind|1]
+list	profile-star-dirs	handle=true	count=21	pattern=$profile:*	names=[BattlEye|1] [DataCache|1] [DayZServer_x64_2026-10-18_08-43-31.ADM|16] [DayZServer_x64_2026-10-18_08-43-31.RPT|16] [DayZServer_x64_2026-10-18_08-44-44.ADM|16] [DayZServer_x64_2026-10-18_08-44-44.RPT|16] [DayZServer_x64_2026-10-18_08-45-12.RPT|16] [DayZServer_x64_2026-10-18_08-45-17.ADM|16] [DayZServer_x64_2026-11-04_21-46-10.RPT|16] [DayZServer_x64_2026-11-04_21-46-11.ADM|16] [error_2026-10-18_08-43-31.log|16] [error_2026-10-18_08-44-44.log|16] [error_2026-10-18_08-45-12.log|16] [error_2026-11-04_21-46-10.log|16] [filesystem.log|16] [script_2026-10-18_08-43-31.log|16] [script_2026-10-18_08-44-44.log|16] [script_2026-10-18_08-45-12.log|16] [script_2026-11-04_21-46-10.log|16] [Users|1] [VyshkaFind|1]
+list	profile-slash-star-dirs	handle=true	count=21	pattern=$profile:/*	names=[BattlEye|1] [DataCache|1] [DayZServer_x64_2026-10-18_08-43-31.ADM|16] [DayZServer_x64_2026-10-18_08-43-31.RPT|16] [DayZServer_x64_2026-10-18_08-44-44.ADM|16] [DayZServer_x64_2026-10-18_08-44-44.RPT|16] [DayZServer_x64_2026-10-18_08-45-12.RPT|16] [DayZServer_x64_2026-10-18_08-45-17.ADM|16] [DayZServer_x64_2026-11-04_21-46-10.RPT|16] [DayZServer_x64_2026-11-04_21-46-11.ADM|16] [error_2026-10-18_08-43-31.log|16] [error_2026-10-18_08-44-44.log|16] [error_2026-10-18_08-45-12.log|16] [error_2026-11-04_21-46-10.log|16] [filesystem.log|16] [script_2026-10-18_08-43-31.log|16] [script_2026-10-18_08-44-44.log|16] [script_2026-10-18_08-45-12.log|16] [script_2026-11-04_21-46-10.log|16] [Users|1] [VyshkaFind|1]
+list	saves-star-dirs	handle=true	count=1	pattern=$saves:*	names=[DayZ.cfg|16]
+commandline	given=true	profiles=C:\WorkDrive\Vyshka\spikes\dayz-findfile\results\profile
+list	cmdline-json-dirs	handle=false	pattern=C:\WorkDrive\Vyshka\spikes\dayz-findfile\results\profile/VyshkaFind/*.json
+list	cmdline-json-all	handle=false	pattern=C:\WorkDrive\Vyshka\spikes\dayz-findfile\results\profile/VyshkaFind/*.json
+list	cmdline-star-dirs	handle=false	pattern=C:\WorkDrive\Vyshka\spikes\dayz-findfile\results\profile/*
+plainOpen	opened=0	exists=false
+list	cwd-mpmissions-dirs	handle=true	count=10	pattern=mpmissions/*	names=[dayzOffline.chernarusplus|1] [dayzOffline.enoch|1] [dayzOffline.nasdara|1] [dayzOffline.sakhal|1] [vyshkaBikeLive.chernarusplus|1] [vyshkaFindSpike.chernarusplus|1] [vyshkaHarness.chernarusplus|1] [vyshkaSelfTest.chernarusplus|1] [vyshkaSpike.chernarusplus|1] [vyshkaTelemetryDemo.chernarusplus|1]
+finished

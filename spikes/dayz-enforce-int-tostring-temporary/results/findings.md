@@ -96,3 +96,11 @@ plugin.
 
 Behavior can change between game patches. Re-run the spike when the plugin is validated
 against a new major DayZ version.
+
+## Re-run on DayZ 1.30.164289 (2026-11-04)
+
+The same matrix on the Windows dedicated server 1.30.164289 (the stable hotfix of
+2026-11-03, scripts revision 127855), one boot (`probe-script-130-164289.log`). Every case
+read as on 1.29, so the bug is still there: the direct chain on the live clock gave
+`111105` for 20261105, and the local copy gave the right value. The plugin's workaround
+(`VyshkaClock` copies the year's string into a local first) is still needed.

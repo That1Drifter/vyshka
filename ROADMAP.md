@@ -10,7 +10,8 @@ in both places.
 How to read it. The states are defined in `CONTEXT.md`; in brief:
 
 - **Shipped** means merged on `main`, graded by the conformance suites or the browser test,
-  and where it involves a game, demonstrated against a live DayZ 1.29 server.
+  and where it involves a game, demonstrated against a live DayZ server (1.30 since
+  2026-11-04).
 - **Committed** means an issue is open for it. It will be built; only the order can move.
 - **Parked** means wanted, not scheduled, and carrying a named trigger written next to it.
   When the trigger fires the item becomes committed.

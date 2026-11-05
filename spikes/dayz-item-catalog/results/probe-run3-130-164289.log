@@ -1,0 +1,29 @@
+plan=9
+tree=CfgVehicles	children=6790	public=2612	sorted=2022	ms=13
+tree=CfgWeapons	children=216	public=136	sorted=136	ms=0
+tree=CfgMagazines	children=131	public=126	sorted=126	ms=0
+type=firearm	count=136	bytes=16771	buildMs=2	serializeMs=15	untranslated=15	dropped=0
+sample=firearm	{"referenceKey":"PVCBow","label":"PVCBow","data":{"type":"firearm","weight":550,"ammo":"Ammo_ArrowComposite","magazines":0}}
+sample=firearm	{"referenceKey":"Scout","label":"Pioneer","data":{"type":"firearm","weight":3000,"ammo":"Ammo_556x45","magazines":1}}
+type=optic	count=32	bytes=3920	buildMs=0	serializeMs=3	untranslated=2	dropped=0
+sample=optic	{"referenceKey":"M4_CarryHandleOptic","label":"M4-A1 Carry Handle Sights","data":{"type":"optic","weight":350,"zoomMin":0.52,"zoomMax":0.52}}
+sample=optic	{"referenceKey":"MK4Optic_Tan","label":"Marksman Scope","data":{"type":"optic","weight":600,"zoomMin":0.00,"zoomMax":0.00}}
+type=ammo	count=39	bytes=5156	buildMs=0	serializeMs=4	untranslated=4	dropped=0
+sample=ammo	{"referenceKey":"Ammo_45ACP","label":".45 ACP Rounds","data":{"type":"ammo","weight":12,"count":25,"ammo":"Bullet_45ACP"}}
+sample=ammo	{"referenceKey":"Ammo_545x39","label":"5.45x39mm Rounds","data":{"type":"ammo","weight":4,"count":20,"ammo":"Bullet_545x39"}}
+type=magazine	count=87	bytes=11905	buildMs=1	serializeMs=11	untranslated=12	dropped=0
+sample=magazine	{"referenceKey":"Mag_FNX45_15Rnd","label":"15rd FX-45 Mag","data":{"type":"magazine","weight":113,"count":15,"ammo":"Bullet_45ACP"}}
+sample=magazine	{"referenceKey":"Mag_CMAG_30Rnd_Green","label":"30rd Mag-C Mag","data":{"type":"magazine","weight":90,"count":30,"ammo":"Bullet_556x45"}}
+type=edible	count=151	bytes=17358	buildMs=2	serializeMs=15	untranslated=6	dropped=0
+sample=edible	{"referenceKey":"Canteen","label":"Canteen","data":{"type":"edible","weight":250,"energy":0.00,"water":0.00}}
+sample=edible	{"referenceKey":"BoarSteakMeat","label":"Boar Steak","data":{"type":"edible","energy":0.00,"water":0.00}}
+type=clothing	count=899	bytes=122379	buildMs=12	serializeMs=99	untranslated=0	dropped=0
+sample=clothing	{"referenceKey":"WorkingGloves_Black","label":"Working Gloves","data":{"type":"clothing","weight":130,"slot":"Gloves","heatIsolation":0.50}}
+sample=clothing	{"referenceKey":"Armband_Livonia","label":"Armband","data":{"type":"clothing","weight":80,"slot":"Armband","heatIsolation":0.00}}
+type=vehicle	count=21	bytes=2171	buildMs=0	serializeMs=1	untranslated=0	dropped=0
+sample=vehicle	{"referenceKey":"Boat_01_Orange","label":"Rubber Boat","data":{"type":"vehicle","fuel":25.00,"crew":4}}
+sample=vehicle	{"referenceKey":"Hatchback_02","label":"Gunter 2","data":{"type":"vehicle","fuel":55.00,"crew":4}}
+type=other	count=919	bytes=92294	buildMs=8	serializeMs=76	untranslated=40	dropped=0
+sample=other	{"referenceKey":"TestObject","label":"TestObject","data":{"type":"other","weight":1000}}
+sample=other	{"referenceKey":"CivSedanDoors_BackRight_BlackRust","label":"Olga 24 Rear Right Door","data":{"type":"other","weight":20000}}
+finished	wallMs=549

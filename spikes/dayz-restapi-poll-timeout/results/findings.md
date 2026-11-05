@@ -137,3 +137,14 @@ recording for the plugin work:
   comfortably inside the accepted range.
 - Deployments behind a reverse proxy need the proxy's read timeout above the negotiated
   `pollTimeout` too. That is a deployment note, not a protocol rule.
+
+## Re-run on DayZ 1.30.164289 (2026-11-04)
+
+The same matrix on the Windows dedicated server 1.30.164289 (the stable hotfix of
+2026-11-03, scripts revision 127855), one boot, a mission derived from the 1.30 stock one
+without its `scripts/` folder (`probe-script-130-164289.log`). Every step ended as on 1.29,
+within 75 ms of the 1.29 time. With no timeout option a 5 s or 9 s hold succeeds, and a
+12 s or 25 s hold, headers held 25 s, and a drip fail with `OnError(8)` at 10 s. A
+connection timeout of 30 s changes nothing (10 s again). A read timeout of 30 s lets a
+25 s hold succeed and fails a 35 s one at 30 s, 120 s lets a 60 s hold succeed, 200 lets a
+25 s hold succeed, and 3 fails a 5 s hold at 3 s.

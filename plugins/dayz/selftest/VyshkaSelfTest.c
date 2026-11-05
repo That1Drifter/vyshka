@@ -1195,8 +1195,8 @@ class VyshkaSelfTest
 		VyshkaJsonValue legacyIn = LegacyRecord("selftest-legacy-in");
 		VyshkaJsonValue legacyPast = LegacyRecord("selftest-legacy-past");
 		bool legacyWritten = VyshkaFiles.WriteJson(inRing, legacyIn) && VyshkaFiles.WriteJson(pastRing, legacyPast);
-		// Whether FindFile can list the outbox here (on 1.30 it cannot when
-		// the profile is not the working directory).
+		// Whether FindFile can list the outbox here (on 1.30.164078 it cannot
+		// when the profile is not the working directory; 1.30.164289 can).
 		string listed;
 		FileAttr attributes;
 		FindFileHandle handle = FindFile(VyshkaFiles.OUTBOX_DIR + "/*.json", listed, attributes, FindFileFlags.DIRECTORIES);

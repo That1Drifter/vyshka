@@ -107,3 +107,16 @@ the same request. Raw logs: `probe-script.log` (script side), `stub.log` (socket
   mission script with "Broken expression (missing ';'?)" at the declaring line.
 - `int.AsciiToString()` builds a one-byte string from a byte value, which is how the probe
   produced CR and LF without relying on `\r` escape support in string literals.
+
+## Re-run on DayZ 1.30.164289 (2026-11-04)
+
+The same matrix on the Windows dedicated server 1.30.164289 (the stable hotfix of
+2026-11-03, scripts revision 127855), one boot (`probe-script-130-164289.log`; the stub log
+is `stub-130-164289.log`). Every step ended as on 1.29: the same callbacks, codes, and
+sizes. The 64 KiB POST and the 1 MiB response arrived whole, and UTF-8 came through byte
+for byte.
+
+One header changed. The 1.30 client no longer adds `Expect: 100-continue` to a large
+body. The 4 010-byte and 65 546-byte POSTs went out with `Content-Length` and the body at
+once. Finding 3 above therefore holds for 1.29 only. A proxy in front of the hub sees
+plain requests from a 1.30 server either way, which it handles more easily.

@@ -141,3 +141,22 @@ one `FGets`. A length whose `attempt` marker has no `ok` marker on the next boot
   differently.
 - Power loss or OS crash for the file series.
 - `GET_now`/`POST_now`/`FILE_now` and `OnFileCreated`; this spike used `GET` only.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder and rebuilding a mission copy that still has one (issue #149). Two boots, `runner-run3-130-164289.log`.
+
+Series 1 to 4 read as on 1.29: the read timeout clamps (200 behaves as 120, 1 as 3, 10 as
+10), 204 is `OnError(8)`, 302 `OnError(7)` without following it, 403, 404 and 429 are
+`OnError(5)`, 502 and 503 `OnError(6)`, and `FPrint` bytes are on disk before
+`CloseFile` and survive a kill.
+
+**Series 5: this run survived, but the reader is still unsafe.** On 1.30.164289, one
+`FGets` on a line of 65 535 bytes returned 65 535 with 9 characters in the string, and one
+on 65 536 returned 65 536 with an empty string. The process lived, so the run took two boots
+instead of four, and 65 534 still read intact. The `spikes/dayz-bans-pull-size` re-run on
+the same build, the same day, reading a 65 536-byte line through the plugin's `FGets` loop,
+died with the 1.29 fault: `Access violation. Illegal write` in `VyshkaFiles.ReadAll`. So the
+engine still writes past its buffer on a line of 64 KiB or more, and whether the process
+dies depends on what the overrun hits. The plugin keeps every line it writes under 60 000
+bytes, so the bound it was built on still holds.

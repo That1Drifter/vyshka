@@ -243,6 +243,11 @@ func deriveMission(serverDir, base, probe string) (string, error) {
 		}
 		dest := filepath.Join(staging, rel)
 		if d.IsDir() {
+			// The stock mission's scripts/ holds loot_debug.c, which 1.30
+			// compiles into the Mission module and fails on (issue #149).
+			if rel == "scripts" {
+				return filepath.SkipDir
+			}
 			return os.MkdirAll(dest, 0o755)
 		}
 		data, err := os.ReadFile(path)

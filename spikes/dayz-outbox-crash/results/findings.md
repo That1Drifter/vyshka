@@ -214,3 +214,14 @@ second (50 s). The outcome is the same.
 
 Behavior can change between game patches. Re-run the spike (see `../README.md`) when the
 plugin is validated against a new major DayZ version.
+
+## Re-run on DayZ 1.30.164289
+
+Measured 2026-11-04 on the Windows dedicated server 1.30.164289 (the stable hotfix of 2026-11-03, scripts revision 127855), the runner unchanged apart from leaving out the stock mission's `scripts/` folder and rebuilding a mission copy that still has one (issue #149). Eight trials and nine boots, `-per-tick 5 -tick-ms 100 -poll-timeout 5` (the a-50eps
+load), plugin from branch `dayz-1.30-motorbikes` (the ring-named outbox), results in
+`d-130/`.
+
+The same answer as on 1.29: no gaps, no duplicates, no torn file, and every record on disk
+was delivered by the next boot, drained and acked 2 to 6 s after it connected. The loss
+per kill was the unflushed buffer only: 15 to 110 events, 0.3 to 2.2 s of load (1.29: 0.1
+to 2.1 s), inside the 2 s flush interval plus the 200 ms tick.
