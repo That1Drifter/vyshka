@@ -229,6 +229,10 @@ test("the hub's answers satisfy the OpenAPI document, every operation", { skip: 
     const audit = await unwrap(client.GET("/api/v1/audit", { params: { query: { serverId, limit: 5 } } }));
     assert.ok(audit.records.length > 0);
 
+    // A snapshot of the hub's database (the live hub runs on SQLite).
+    const backup = await unwrap(client.POST("/api/v1/admin/backup"));
+    assert.ok(backup.kept.includes(backup.backup.name), "the new snapshot is among those kept");
+
     // The ban list.
     const banned = { platform: "conformance", id: `ts-live-${run}` };
     const ban = await unwrap(

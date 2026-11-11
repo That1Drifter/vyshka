@@ -1,6 +1,6 @@
 # Roadmap
 
-**As of:** 2026-10-03
+**As of:** 2026-11-11
 
 Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
@@ -93,6 +93,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-10-03: end-to-end-first testing (#143); `scripts/e2e.sh`, the branch hub, and
   one-line changelog entries (#144).
 - 2026-10-03: hub 0.3.0 and DayZ plugin 0.9.0 released (#144).
+- 2026-11-11: backup endpoint, restore runbook, `storage` and `vacuum` commands (#83).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -102,10 +103,6 @@ working against the branch hub on the staging box (`deploy/README.md`, "A branch
 beside a live one"), never the live staging hub: backup first because staging holds live data, then TLS,
 rate limits, metrics, the capacity measurement, and the config file last.
 
-- **Backup endpoint with retention tooling** (#83): `POST /api/v1/admin/backup` taking a
-  consistent SQLite snapshot, a documented Postgres story, a command that reports table
-  sizes and what the sweeps will remove, and an explicit `vacuum` for SQLite. Its restore
-  runbook is the small-team answer to a hub outage.
 - **`--auto-tls`** (#85): embedded ACME. Under the design persona the game servers live on
   other boxes than the hub, so every plugin connects over TLS and this is the default
   deployment story, not a single-box convenience.

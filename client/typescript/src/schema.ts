@@ -367,6 +367,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snapshot the hub's SQLite database.
+         * @description Requires `admin`. Writes a consistent copy of the database, as of one
+         *     committed instant, while the hub keeps serving, and answers once the
+         *     file is complete and synced. The hub chooses the file's name
+         *     (`vyshka-<UTC time to the millisecond>.db`, or one millisecond after
+         *     the newest snapshot already in the directory when the clock is behind
+         *     it, so name order is creation order) and directory (its configured
+         *     backup directory, by default `backups` beside the database file).
+         *     Nothing in the request is used: like every authenticated mutation, a
+         *     body if sent is read (within the hub's 1 MiB limit) only to digest it
+         *     into the audit record (spec section 10.5). A file still being written
+         *     carries a `.partial` suffix and is never counted as a backup.
+         *
+         *     After each snapshot the directory is rotated down to the hub's
+         *     configured bound (default 7), deleting the oldest by name; only files
+         *     named like a snapshot are counted or deleted, and the snapshot just
+         *     taken is never among those deleted. One snapshot runs at a time.
+         *
+         *     The copy is a SQLite database a hub can boot on directly; the restore
+         *     procedure is in `deploy/README.md`. A hub on Postgres answers
+         *     `409 conflict`: back it up with `pg_dump`. So does a hub whose SQLite
+         *     database is in memory, which has no file to copy.
+         */
+        post: operations["takeBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -1167,6 +1207,27 @@ export interface components {
             /** @description Opaque position to resume from. Absent on the last page. */
             nextCursor?: string;
         };
+        BackupResult: {
+            backup: {
+                /** @description The file's name in the backup directory. */
+                name: string;
+                /** @description The file's absolute path on the hub's host. */
+                path: string;
+                sizeBytes: number;
+                /**
+                 * Format: date-time
+                 * @description When the snapshot started. The time in the name is the same,
+                 *     unless the clock was behind the newest snapshot already in the
+                 *     directory, when the name is one millisecond after that one.
+                 */
+                takenAt: string;
+                durationMs: number;
+            };
+            /** @description Every snapshot in the directory after rotation, newest first by name; this one is always included and always first. */
+            kept: string[];
+            /** @description The snapshots rotation deleted to stay within the bound. */
+            pruned: string[];
+        };
         /**
          * @description A notification type pattern in the spec section 10.1 grammar: `*`, a
          *     `{prefix}.*` namespace pattern where the separating dot belongs to the
@@ -1427,6 +1488,7 @@ export type Scope = components['schemas']['Scope'];
 export type AdminTokenRecord = components['schemas']['AdminTokenRecord'];
 export type AuditRecord = components['schemas']['AuditRecord'];
 export type AuditPage = components['schemas']['AuditPage'];
+export type BackupResult = components['schemas']['BackupResult'];
 export type EventPattern = components['schemas']['EventPattern'];
 export type WebhookRecord = components['schemas']['WebhookRecord'];
 export type RedactPath = components['schemas']['RedactPath'];
@@ -2185,6 +2247,53 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             /** @description No such token. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    takeBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The snapshot, complete and synced. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupResult"];
+                };
+            };
+            /**
+             * @description A body was sent and did not arrive whole (the connection failed or
+             *     delivered it too slowly). The answer comes from reading the body
+             *     for the audit record; the operation itself uses no body.
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /**
+             * @description The hub runs on Postgres (`details.backend` names it), its SQLite
+             *     database is in memory, or a snapshot is already being taken.
+             */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

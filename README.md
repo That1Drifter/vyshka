@@ -68,7 +68,8 @@ curl http://127.0.0.1:8080/healthz
 SQLite file; see below), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
 `-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
 `VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
-`panel/README.md`). With no admin token configured the hub mints one at boot and logs it,
+`panel/README.md`), plus `-backup-dir` and `-backup-keep` (env `VYSHKA_BACKUP_DIR`,
+`VYSHKA_BACKUP_KEEP`) for the backup endpoint. With no admin token configured the hub mints one at boot and logs it,
 which keeps first run to a single command; set the flag to keep it stable across restarts.
 That generated credential is first-run behavior only: once the hub holds a scoped token of
 its own it stops minting one, because a fresh superuser token on every boot would mean
@@ -133,6 +134,10 @@ parameters removed; the raw URL is never logged. The behavior is the same on bot
 engines; CI runs the Go suite against each on every pull request and the hub conformance suite against each on every push to `main`. One hub per
 database on either engine: the retention sweeps and the webhook dispatcher assume they are
 the only pass of their kind.
+
+Backups: on SQLite, `POST /api/v1/admin/backup` snapshots the running hub into a bounded
+directory; on Postgres, use `pg_dump`. The restore runbook and the `vyshka-hub storage` and
+`vyshka-hub vacuum` commands are in [`deploy/README.md`](deploy/README.md#backup-and-restore).
 
 To run it as a container behind a reverse proxy, see [`deploy/`](deploy/README.md): a
 `Dockerfile` (static binary, distroless, non-root), a compose file, and an nginx block with
