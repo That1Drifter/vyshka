@@ -241,7 +241,10 @@ host or Docker engine was at hand), so read each output before going on.
    anything else: `DELETE /api/v1/servers/{id}/credentials` for each server to revoke
    again, `DELETE /api/v1/tokens/{id}` for each admin token, and
    `POST /api/v1/servers/{id}/enrollment-token` for each server whose secret changed or
-   whose old enrollment token is live again. Issuing a new token deletes the server's unused
+   whose old enrollment token is live again. For a server whose secret changed, revoke its
+   credentials first and issue the token second: a new token alone leaves the snapshot's
+   secret accepted until the plugin enrolls, and enrolling clears the revocation (traced in
+   the store, not run in the drill). Issuing a new token deletes the server's unused
    ones, so the resurrected token dies with it. Hand the new token to that server's plugin
    to enroll again. In the drill, the revoked server's secret went from `200` back to
    `401 credentials_revoked` and the revoked admin token from `200` to `401`.
@@ -326,7 +329,10 @@ stored server secret opened a new session at once, which polled normally.
 pass would do if it ran now. It opens the database read-only and never creates or
 migrates one, so it is safe against a database a running hub has open (measured under
 write load: no request refused) and changes no byte of a snapshot it is pointed at
-(measured: the same checksum before and after). On SQLite it also reports the file size, the free pages a vacuum would return,
+(measured: the same checksum before and after). One case touches the directory, not the
+database: a hub's own database after a clean stop is in WAL mode with no `-wal` beside it,
+and SQLite creates the `-wal` and `-shm` files to read it (SQLite's rule for a read-only
+open, not measured here), so that open needs a writable directory. On SQLite it also reports the file size, the free pages a vacuum would return,
 and the WAL's size:
 
 ```
