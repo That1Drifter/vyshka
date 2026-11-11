@@ -31,9 +31,13 @@ services:
       # (deploy/README.md). Empty, or absent and created by compose, means
       # no maps: the map view lists players without imagery.
       - ./maps:/maps:ro
+      # A TOML config file (hub.toml.example; README.md here, "The config
+      # file"): copy the example to hub.toml, mount it, and name it below.
+      # - ./hub.toml:/etc/vyshka/hub.toml:ro
     environment:
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
       VYSHKA_MAPS_DIR: /maps
+      # VYSHKA_CONFIG: /etc/vyshka/hub.toml
       # VYSHKA_METRICS_ADDR: 0.0.0.0:9190
       # The default is the SQLite file in ./data. To keep the system of
       # record in a Postgres you already run, set the URL here instead (the

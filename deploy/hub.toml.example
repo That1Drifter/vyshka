@@ -1,0 +1,83 @@
+# The hub's config file, TOML. Name it with -config or VYSHKA_CONFIG; the hub
+# never looks for one on its own. Install it as /etc/vyshka/hub.toml under
+# systemd (deploy/README.md, "The config file").
+#
+# A key is a `vyshka-hub serve` flag's name, without the dash, at the top level.
+# Where a setting comes from, highest first: the command line, an environment
+# variable, this file, the built-in default. So a unit or a container can
+# override one value of a file that several hubs share. Every line is optional;
+# the values below are the defaults unless a comment says otherwise.
+#
+# An unknown key, a key of the wrong type, or a key set twice stops the hub
+# from starting, with a message naming the file and the key (never the value).
+#
+# `vyshka-hub config -config /etc/vyshka/hub.toml` prints what the hub would use
+# and where each value came from, with secrets redacted, and exits.
+
+# Where the hub listens. Keep it on loopback behind a TLS-terminating proxy, or
+# use auto-tls below and give it 443. Environment variable: VYSHKA_ADDR.
+#addr = "127.0.0.1:8080"
+
+# The system of record. Empty means a SQLite file named vyshka.db in the working
+# directory; a sqlite://path or a plain path names another file; a postgres://
+# URL means Postgres. The URL carries a password, so prefer a file: reference
+# (below). Environment variable: DATABASE_URL.
+#db = "file:/etc/vyshka/database-url"
+
+# The bootstrap Admin API token. A file: reference reads the token from a file
+# (surrounding whitespace is trimmed; an empty file is refused), so the token
+# stays out of this file and the process list. A relative path here is relative
+# to the directory of this config file; from a flag or the environment it is
+# relative to the working directory. Without one the hub mints a token at
+# first boot and logs it. Environment variable: VYSHKA_ADMIN_TOKEN.
+#admin-token = "file:/etc/vyshka/admin-token"
+
+# debug, info, warn, or error. Environment variable: VYSHKA_LOG_LEVEL.
+#log-level = "info"
+
+# false serves no panel, only the Admin API. Environment variable: VYSHKA_PANEL.
+#panel = true
+
+# Map tilesets for the panel's live map, one directory per world. Empty serves
+# none. Environment variable: VYSHKA_MAPS_DIR.
+#maps-dir = "/var/lib/vyshka/maps"
+
+# Where POST /api/v1/admin/backup writes snapshots, and how many it keeps. Empty
+# means a backups directory beside the SQLite file. Environment variables:
+# VYSHKA_BACKUP_DIR and VYSHKA_BACKUP_KEEP.
+#backup-dir = "/var/lib/vyshka/backups"
+#backup-keep = 7
+
+# Prometheus metrics on a listener of their own, unauthenticated: loopback or a
+# private network only. Empty disables them. Environment variable:
+# VYSHKA_METRICS_ADDR.
+#metrics-addr = "127.0.0.1:9190"
+
+# Serve TLS without a proxy: the hub gets its own certificate over ACME
+# (deploy/README.md, "Without a proxy"). Turning it on accepts the CA's
+# subscriber agreement. With it on and no addr, the hub listens on :443.
+# Environment variables: VYSHKA_AUTO_TLS and the VYSHKA_AUTO_TLS_ family.
+#auto-tls = false
+
+# DNS names to get certificates for, required with auto-tls: an array of
+# strings, or one string with the names separated by commas.
+#auto-tls-hosts = ["hub.example.org"]
+
+# Where the ACME account key and certificates live. Empty means acme-cache
+# beside the SQLite file; required with Postgres.
+#auto-tls-cache = "/var/lib/vyshka/acme-cache"
+
+# A contact address for the CA.
+#auto-tls-email = "ops@example.org"
+
+# The ACME directory URL. Empty means Let's Encrypt production; point it at
+# Let's Encrypt staging to rehearse.
+#auto-tls-directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+# A PEM file of extra roots to trust for the directory's own TLS, for a private
+# or test CA.
+#auto-tls-ca-roots = "/etc/vyshka/ca-roots.pem"
+
+# The plain listener for ACME HTTP-01 and the redirect to https. Empty means
+# :80; "off" drops it.
+#auto-tls-http-addr = ":80"

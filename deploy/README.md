@@ -15,6 +15,7 @@ instead of using the SQLite file; the accepted URL forms are in the repository R
 | `nginx-vyshka.conf.example` | A server block with the two settings a hub needs from its proxy: a read timeout above the 60 s poll hold, and a body cap at or above the hub's 1 MiB |
 | `vyshka-hub.service` | A systemd unit for the static binary: a dedicated user, the state under `/var/lib/vyshka`, the admin token as a systemd credential, confinement a static Go binary tolerates |
 | `hub.env.example` | The unit's environment file, `/etc/vyshka/hub.env`: listen address, database URL, maps directory, log level, auto-TLS |
+| `hub.toml.example` | The same settings as a TOML config file, every one commented, with `file:` references for secrets ("The config file" below) |
 | `docker-compose.auto-tls.yml` | An override for `docker-compose.yml` that publishes 443 and 80 and turns on `-auto-tls`, for a host with no proxy |
 | `branch-hub.compose.yml` | A disposable second hub beside a live one, running whatever branch `scripts/deploy-branch-hub.sh` last deployed |
 
@@ -65,8 +66,8 @@ are a reason to put a TLS-terminating proxy near the game server, not to open th
 For a host without Docker. The Linux release archive
 (`vyshka-hub_<version>_linux_<arch>.tar.gz` from the GitHub release, checked against
 `SHA256SUMS`) carries the two binaries (`vyshka-hub`, and the `vyshka` command-line client
-of `cmd/vyshka/README.md`), `vyshka-hub.service`, and `hub.env.example`; the same two files
-live here for a build from source.
+of `cmd/vyshka/README.md`), `vyshka-hub.service`, `hub.env.example`, and `hub.toml.example`; the same
+files live here for a build from source.
 
 ```
 tar -xzf vyshka-hub_<version>_linux_amd64.tar.gz && cd vyshka-hub_<version>_linux_amd64
@@ -94,6 +95,127 @@ Upgrading is the new binary over `/usr/local/bin/vyshka-hub` and `sudo systemctl
 vyshka-hub`; migrations run on boot. The unit's stop timeout is above the hub's 15 s drain,
 and the same nginx server block terminates TLS in front of it. Logs go to the journal
 (`journalctl -u vyshka-hub`), one JSON line per request.
+
+## The config file
+
+Flags and environment variables are enough for one hub. A TOML file is for the operator who
+runs more than one hub, or wants the settings and the secrets in files rather than in a
+unit. `hub.toml.example` lists every setting with its comment; a key is a `serve` flag's
+name without the dash, at the top level:
+
+```toml
+addr = "127.0.0.1:8080"
+log-level = "info"
+backup-keep = 14
+admin-token = "file:admin_token"
+auto-tls-hosts = ["hub.example.org", "hub2.example.org"]   # or one comma-separated string
+```
+
+**Naming it.** `-config /path/hub.toml` or `VYSHKA_CONFIG=/path/hub.toml`. The hub reads no
+file it was not told about: there is no search path and no default location, so a file that
+merely sits in the working directory changes nothing.
+
+**Precedence, highest first:** a command-line flag, an environment variable, the config file,
+the built-in default. A hub with no file behaves exactly as it always did, and a unit or
+container can override one value of a file several hubs share. An empty environment variable
+counts as unset; an explicitly empty flag (`-db=`) is an answer and wins.
+
+**Mistakes stop the hub.** An unknown key (a typo), a key of the wrong type, a key set twice,
+or a file that is not TOML makes `serve` refuse to start, with a message that names the file
+and the key and never a value (a syntax error names only its line, because the parser would
+otherwise quote the text it choked on, which for an unquoted secret is the secret). Types
+follow the flag: strings, integers, booleans, and durations as strings (`"30s"`); a list
+setting (`auto-tls-hosts`) takes an array of strings or one comma-separated string. A key is
+checked even when a flag or an environment variable overrides it. Because every setting is
+generic over the flag set, a flag added in a later release is accepted in the file with no
+other change.
+
+**Secrets.** `db` (a Postgres URL carries a password) and `admin-token` take the same
+`file:/path` form from every source: a flag, an environment variable, or the file. The file
+named is read at start; surrounding whitespace and the trailing newline an editor leaves are
+trimmed, and an empty file or an unreadable one stops the hub with a message naming the
+setting, where it came from, and the secret file's path. From the config file, a relative
+path is relative to the config file's own directory, so a config and its secrets move
+together and the working directory does not matter; from a flag or an environment variable it
+is relative to the working directory, as before. (A SQLite URI that begins `file:` is no
+longer reachable through `-db` directly; write it as `-db sqlite://file:...`.) Prefer
+references to inline values: if the file holds an inline secret and group or others can read
+it, the hub logs one warning naming the file and the key, never the value (not checked on
+Windows). No secret is printed in usage text, in an error, in a log line, or in the output of
+the next command.
+
+**What the hub will use.** `vyshka-hub config` takes the arguments `serve` takes, loads flags,
+environment, and file exactly as `serve` would, runs the same checks (the auto-TLS
+combinations, the maps directory, the secret files), and prints each setting with its source,
+secrets redacted, then exits; it opens no database and no listener:
+
+```
+$ VYSHKA_LOG_LEVEL=warn vyshka-hub config -config /etc/vyshka/hub.toml -addr 127.0.0.1:9000
+config file: /etc/vyshka/hub.toml (from flag)
+precedence: flag, then environment variable, then config file, then default
+
+SETTING             VALUE                             SOURCE
+addr                127.0.0.1:9000                    flag
+admin-token         file:/etc/vyshka/admin-token      file
+backup-keep         3                                 file
+db                  <redacted>                        file
+log-level           warn                              env VYSHKA_LOG_LEVEL
+...
+```
+
+It sees the environment of the shell that runs it, not the unit's. The `storage` and `vacuum`
+commands take `-config` too, for `db` only (the other keys are checked, not used), so one
+file points the hub and its maintenance at the same database.
+
+### Under systemd
+
+`/etc/vyshka` is root's, and the service user never reads it (the admin token reaches the hub
+as a systemd credential), so the file travels the same way. Both credentials land in one
+private directory, which makes the relative `file:` form line up:
+
+```
+sudo install -m 0600 hub.toml.example /etc/vyshka/hub.toml
+sudo systemctl edit vyshka-hub
+```
+
+```
+[Service]
+LoadCredential=hub.toml:/etc/vyshka/hub.toml
+Environment=VYSHKA_CONFIG=%d/hub.toml
+```
+
+and in `hub.toml`, `admin-token = "file:admin_token"` reads the unit's existing
+`admin_token` credential from beside it. (The unit already sets `VYSHKA_ADMIN_TOKEN` to the
+same file, which outranks the key; the key is for a shared file.) The unit has the same lines
+commented, ready to enable.
+
+Which to use: `hub.env` is flat `NAME=value` lines and the right place for a value that
+differs on this host only; the file is the better home for a set of settings, because it
+documents them, checks them at start, and shows where each came from. Keep secrets out of
+both by reference: the credential for the admin token as above, and a second credential
+(`LoadCredential=database-url:/etc/vyshka/database-url`, `db = "file:database-url"`) for a
+Postgres URL. A value in `hub.env` overrides the same key in `hub.toml`.
+
+One catch for installs of the shipped unit: it sets `VYSHKA_ADDR` and `DATABASE_URL` as
+`Environment=` defaults, and an environment variable outranks the file. To set `addr` or `db`
+in `hub.toml`, delete those two lines from the unit (`vyshka-hub config` shows `env
+VYSHKA_ADDR` as the source while they are there). Both name what the hub would choose
+anyway: the loopback address, and `vyshka.db` in the unit's working directory.
+
+### With compose
+
+Mount the file read-only and name it; the base file sets `VYSHKA_ADMIN_TOKEN` and
+`VYSHKA_MAPS_DIR` in `environment:`, which outrank the same keys in the file:
+
+```
+cp hub.toml.example hub.toml     # uncomment what you need; deploy/hub.toml is ignored by git and docker
+# in docker-compose.yml: volumes: - ./hub.toml:/etc/vyshka/hub.toml:ro
+#                        environment: VYSHKA_CONFIG: /etc/vyshka/hub.toml
+docker compose run --rm --no-deps hub config    # what the container will use
+```
+
+The container's secret mounts are absolute paths (`admin-token = "file:/run/secrets/admin_token"`),
+since the file's directory is `/etc/vyshka`.
 
 ## Backup and restore
 

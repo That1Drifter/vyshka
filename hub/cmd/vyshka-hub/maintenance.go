@@ -54,23 +54,47 @@ func openForMaintenance(ctx context.Context, dsn string, readOnly bool) (*store.
 
 func maintenanceFlags(name string) (*flag.FlagSet, *string) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	configFlag(flags)
 	// Not defaulted from the environment for the same reason serve's is not:
 	// a Postgres DSN carries a password, and flag defaults are printed.
-	dsn := flags.String("db", "", "database DSN, empty means local SQLite (env DATABASE_URL)")
+	dsn := flags.String("db", "", "database DSN, or file:/path/to/secret; empty means local SQLite (env DATABASE_URL)")
 	return flags, dsn
 }
 
+// maintenanceDSN settles -db for a maintenance command: the flag, then
+// DATABASE_URL, then the db key of the config file named by -config (the
+// same file serve reads, whose other keys these commands ignore but still
+// hold to serve's names and types), with file: indirection from each.
+func maintenanceDSN(flags *flag.FlagSet) (string, error) {
+	resolved, err := resolveSettings(flags, func() (*flag.FlagSet, error) {
+		serveFlags := flag.NewFlagSet("serve", flag.ContinueOnError)
+		_, err := declareServeFlags(serveFlags)
+		return serveFlags, err
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, w := range resolved.warnings {
+		fmt.Fprintf(os.Stderr, "warning: config file %s holds an inline %s and is readable by group or others (mode %04o)\n",
+			w.file, w.key, w.mode)
+	}
+	return resolved.secret("db", flags.Lookup("db").Value.String())
+}
+
 func runStorage(args []string) error {
-	flags, dsn := maintenanceFlags("storage")
+	flags, _ := maintenanceFlags("storage")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	envFallback(flags, "db", "DATABASE_URL", dsn)
+	database, err := maintenanceDSN(flags)
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	st, err := openForMaintenance(ctx, *dsn, true)
+	st, err := openForMaintenance(ctx, database, true)
 	if err != nil {
 		return err
 	}
@@ -115,15 +139,18 @@ func runStorage(args []string) error {
 }
 
 func runVacuum(args []string) error {
-	flags, dsn := maintenanceFlags("vacuum")
+	flags, _ := maintenanceFlags("vacuum")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	envFallback(flags, "db", "DATABASE_URL", dsn)
+	database, err := maintenanceDSN(flags)
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	st, err := openForMaintenance(ctx, *dsn, false)
+	st, err := openForMaintenance(ctx, database, false)
 	if err != nil {
 		return err
 	}

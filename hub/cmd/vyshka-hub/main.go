@@ -2,13 +2,14 @@
 //
 // Usage:
 //
-//	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
+//	vyshka-hub serve [-config FILE] [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
 //	                 [-backup-dir DIR] [-backup-keep N]
 //	                 [-metrics-addr host:port]
 //	                 [-auto-tls -auto-tls-hosts NAMES [-auto-tls-cache DIR] [-auto-tls-email ADDR]
 //	                  [-auto-tls-directory URL] [-auto-tls-ca-roots FILE] [-auto-tls-http-addr host:port|off]]
-//	vyshka-hub storage [-db DSN] [-json]
-//	vyshka-hub vacuum [-db DSN]
+//	vyshka-hub config [the arguments serve would take]
+//	vyshka-hub storage [-config FILE] [-db DSN] [-json]
+//	vyshka-hub vacuum [-config FILE] [-db DSN]
 //	vyshka-hub version
 package main
 
@@ -44,6 +45,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "serve":
 		return runServe(args[1:])
+	case "config":
+		return runConfig(args[1:])
 	case "storage":
 		return runStorage(args[1:])
 	case "vacuum":
@@ -65,23 +68,43 @@ func usage() {
 
 Commands:
   serve      run the hub
+  config     print the settings serve would use and where each came from, then exit
   storage    report table sizes and what the retention sweeps would remove now
   vacuum     compact a SQLite database (stop the hub first)
   version    print the build version
 
-Run "vyshka-hub serve -h" for serve flags.
+Run "vyshka-hub serve -h" for serve flags. A setting comes from, highest first: a flag,
+an environment variable, the file named by -config (or VYSHKA_CONFIG), a built-in default.
 `)
 }
 
-func runServe(args []string) error {
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+func runServe(args []string) error { return serve("serve", args, false) }
+
+// runConfig resolves the settings exactly as serve does, validates them, and
+// prints them with where each came from; it opens no database and no listener.
+func runConfig(args []string) error { return serve("config", args, true) }
+
+// serveValues are the serve flags the rest of serve reads after parsing.
+type serveValues struct {
+	addr, dsn, adminToken, logLevel, mapsDir, backupDir, metricsAddr *string
+	servePanel                                                       *bool
+	backupKeep                                                       *int
+	tls                                                              *autoTLSFlags
+}
+
+// declareServeFlags defines every serve flag. It is separate from serve so
+// the maintenance commands can learn which keys a config file may hold. A flag
+// added here is settable from the config file with no further code, provided
+// its usage text names the environment variable envName gives it.
+func declareServeFlags(flags *flag.FlagSet) (*serveValues, error) {
+	configFlag(flags)
 	addr := flags.String("addr", envOr("VYSHKA_ADDR", "127.0.0.1:8080"), "listen address (env VYSHKA_ADDR)")
 	// The two secret-bearing flags do not carry their environment value as
 	// the flag default: the flag package prints defaults in its usage text,
 	// so `serve -h` or a mistyped flag would print a Postgres password or
 	// the admin token to the terminal. The environment is read after parsing
 	// instead (see below).
-	dsn := flags.String("db", "", "database DSN, empty means local SQLite (env DATABASE_URL)")
+	dsn := flags.String("db", "", "database DSN, or file:/path/to/secret; empty means local SQLite (env DATABASE_URL)")
 	adminToken := flags.String("admin-token", "",
 		"bootstrap Admin API token, or file:/path/to/secret; empty generates one per boot (env VYSHKA_ADMIN_TOKEN)")
 	logLevel := flags.String("log-level", envOr("VYSHKA_LOG_LEVEL", "info"), "debug, info, warn, or error (env VYSHKA_LOG_LEVEL)")
@@ -93,7 +116,7 @@ func runServe(args []string) error {
 		"directory for POST /api/v1/admin/backup snapshots (env VYSHKA_BACKUP_DIR); empty means a backups directory beside the SQLite file")
 	keepDefault, err := envInt("VYSHKA_BACKUP_KEEP", hub.DefaultBackupKeep)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	backupKeep := flags.Int("backup-keep", keepDefault,
 		"snapshots the backup endpoint keeps before deleting the oldest (env VYSHKA_BACKUP_KEEP)")
@@ -104,7 +127,7 @@ func runServe(args []string) error {
 	if raw := os.Getenv("VYSHKA_AUTO_TLS"); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
 		if err != nil {
-			return fmt.Errorf("VYSHKA_AUTO_TLS=%q is not true or false", raw)
+			return nil, fmt.Errorf("VYSHKA_AUTO_TLS=%q is not true or false", raw)
 		}
 		autoTLSDefault = parsed
 	}
@@ -123,21 +146,44 @@ func runServe(args []string) error {
 		"PEM file of extra roots to trust for the ACME directory's own TLS, for a private or test CA (env VYSHKA_AUTO_TLS_CA_ROOTS)")
 	flags.StringVar(&tlsFlags.httpAddr, "auto-tls-http-addr", os.Getenv("VYSHKA_AUTO_TLS_HTTP_ADDR"),
 		"plain listener for ACME HTTP-01 and the redirect to https, nothing else; empty means :80, off disables it (env VYSHKA_AUTO_TLS_HTTP_ADDR)")
+	return &serveValues{
+		addr: addr, dsn: dsn, adminToken: adminToken, logLevel: logLevel, mapsDir: mapsDir,
+		backupDir: backupDir, metricsAddr: metricsAddr, servePanel: servePanel, backupKeep: backupKeep,
+		tls: &tlsFlags,
+	}, nil
+}
+
+func serve(name string, args []string, describe bool) error {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	values, err := declareServeFlags(flags)
+	if err != nil {
+		return err
+	}
+	addr, dsn, adminToken, logLevel, mapsDir := values.addr, values.dsn, values.adminToken, values.logLevel, values.mapsDir
+	backupDir, metricsAddr, servePanel, backupKeep, tlsFlags := values.backupDir, values.metricsAddr, values.servePanel, values.backupKeep, values.tls
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	envFallback(flags, "db", "DATABASE_URL", dsn)
-	envFallback(flags, "admin-token", "VYSHKA_ADMIN_TOKEN", adminToken)
+	resolved, err := resolveSettings(flags, func() (*flag.FlagSet, error) { return flags, nil })
+	if err != nil {
+		return err
+	}
+	// Both secret-bearing settings take the file: form from every source.
+	// The database is resolved before the auto-TLS plan, which looks for the
+	// SQLite file beside which the certificate cache goes. The resolved
+	// values live in these locals and never in the flag set, which is what
+	// the config command prints from.
+	resolvedDSN, err := resolved.secret("db", *dsn)
+	if err != nil {
+		return err
+	}
 	if *backupKeep < 1 {
 		return fmt.Errorf("backup keep: %d is below 1", *backupKeep)
 	}
-	addrGiven := os.Getenv("VYSHKA_ADDR") != ""
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "addr" {
-			addrGiven = true
-		}
-	})
-	tlsPlan, listenAddr, err := planAutoTLS(tlsFlags, *addr, addrGiven, *dsn)
+	// An address from any source but the default (flag, environment, config
+	// file) keeps auto-TLS from moving the listener to :443.
+	addrGiven := resolved.sources["addr"] != "default"
+	tlsPlan, listenAddr, err := planAutoTLS(*tlsFlags, *addr, addrGiven, resolvedDSN)
 	if err != nil {
 		return err
 	}
@@ -155,12 +201,15 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-
-	resolvedAdminToken, err := resolveSecret(*adminToken)
+	resolvedAdminToken, err := resolved.secret("admin-token", *adminToken)
 	if err != nil {
-		return fmt.Errorf("admin token: %w", err)
+		return err
 	}
+	if describe {
+		return resolved.print(os.Stdout, os.Stderr, flags, listenAddr)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	resolved.log(logger)
 
 	// Ctrl-C and SIGTERM both mean "drain and stop".
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -178,7 +227,7 @@ func runServe(args []string) error {
 	config := hub.Config{
 		Addr:        listenAddr,
 		TLSConfig:   tlsConfig,
-		DatabaseURL: *dsn,
+		DatabaseURL: resolvedDSN,
 		AdminToken:  resolvedAdminToken,
 		Logger:      logger,
 		BackupDir:   *backupDir,
@@ -206,22 +255,6 @@ func runServe(args []string) error {
 	}
 
 	return server.Serve(ctx)
-}
-
-// envFallback gives a flag its environment value when the flag was not on
-// the command line at all. A flag given explicitly, even as empty (`-db=`),
-// wins over the environment, which is what the env-backed defaults used to
-// do before secret-bearing flags stopped carrying printable defaults.
-func envFallback(flags *flag.FlagSet, name, env string, value *string) {
-	given := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			given = true
-		}
-	})
-	if !given {
-		*value = os.Getenv(env)
-	}
 }
 
 func parseLevel(name string) (slog.Level, error) {

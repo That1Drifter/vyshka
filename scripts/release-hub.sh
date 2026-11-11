@@ -54,7 +54,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
     -o "$stage/$cli" ./cmd/vyshka)
   cp "$root/LICENSE" "$root/README.md" "$stage/"
   if [ "$os" = linux ]; then
-    cp "$root/deploy/vyshka-hub.service" "$root/deploy/hub.env.example" "$stage/"
+    cp "$root/deploy/vyshka-hub.service" "$root/deploy/hub.env.example" "$root/deploy/hub.toml.example" "$stage/"
   fi
   suffix="tar.gz"
   if [ "$os" = windows ]; then

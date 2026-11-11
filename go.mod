@@ -3,6 +3,7 @@ module github.com/That1Drifter/vyshka
 go 1.26.4
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
 	github.com/jackc/pgx/v5 v5.11.0
