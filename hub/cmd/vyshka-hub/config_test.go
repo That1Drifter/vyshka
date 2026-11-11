@@ -248,7 +248,7 @@ func TestPrecedenceLadder(t *testing.T) {
 	}
 }
 
-// The file is named by -config or VYSHKA_CONFIG and nowhere else: a file
+// The file is named by -config or VYSHKA_HUB_CONFIG and nowhere else: a file
 // that merely sits in the working directory is never read.
 func TestNoImplicitConfigFile(t *testing.T) {
 	clearEnv(t)
@@ -265,18 +265,18 @@ func TestNoImplicitConfigFile(t *testing.T) {
 		t.Errorf("an unnamed file was read: config %q, addr %q", resolved.configPath, value(set, "addr"))
 	}
 
-	t.Setenv("VYSHKA_CONFIG", filepath.Join(dir, "hub.toml"))
+	t.Setenv("VYSHKA_HUB_CONFIG", filepath.Join(dir, "hub.toml"))
 	set, resolved, err = resolveServe(t)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value(set, "addr") != "10.9.9.9:9" || resolved.configFrom != "env VYSHKA_CONFIG" {
-		t.Errorf("VYSHKA_CONFIG was not honored: addr %q, named by %q", value(set, "addr"), resolved.configFrom)
+	if value(set, "addr") != "10.9.9.9:9" || resolved.configFrom != "env VYSHKA_HUB_CONFIG" {
+		t.Errorf("VYSHKA_HUB_CONFIG was not honored: addr %q, named by %q", value(set, "addr"), resolved.configFrom)
 	}
 	// An explicit -config= switches the file off, as an explicit empty flag
 	// wins over the environment everywhere else.
 	if _, resolved, err = resolveServe(t, "-config="); err != nil || resolved.configPath != "" {
-		t.Errorf("-config= did not win over VYSHKA_CONFIG: %q, %v", resolved.configPath, err)
+		t.Errorf("-config= did not win over VYSHKA_HUB_CONFIG: %q, %v", resolved.configPath, err)
 	}
 }
 
@@ -475,33 +475,356 @@ func TestSecretFileIndirection(t *testing.T) {
 }
 
 func TestLooseModes(t *testing.T) {
-	for mode, loose := range map[os.FileMode]bool{0o600: false, 0o400: false, 0o640: true, 0o604: true, 0o644: true, 0o660: true, 0o700: false} {
+	// Only the world bit counts: a file shared with the service's own group,
+	// or a systemd credential (group bits are an ACL mask), is a normal layout.
+	for mode, loose := range map[os.FileMode]bool{0o600: false, 0o400: false, 0o640: false, 0o660: false, 0o700: false, 0o604: true, 0o644: true, 0o666: true} {
 		if looseMode(mode) != loose {
 			t.Errorf("looseMode(%04o) = %v", mode, !loose)
 		}
 	}
 }
 
-func TestInlineSecretInALooseFileWarns(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has no group or other permission bits")
+// Only a credential counts as an inline secret: a plain SQLite path is not one.
+func TestInlineSecretText(t *testing.T) {
+	for _, c := range []struct {
+		name, text string
+		want       bool
+	}{
+		{"admin-token", "vya_inline", true},
+		{"admin-token", "file:/run/secrets/admin_token", false},
+		{"admin-token", "", false},
+		{"db", "", false},
+		{"db", "/var/lib/vyshka/vyshka.db", false},
+		{"db", "vyshka.db", false},
+		{"db", "sqlite://vyshka.db", false},
+		{"db", "file:/run/secrets/database_url", false},
+		{"db", "postgres://vyshka:pw@db/app", true},
+		{"db", "postgres://vyshka@db/app?password=pw", true},
+		{"db", "postgres://vyshka@db/app?sslpassword=pw", true},
+		{"db", "postgres://vyshka@db/app?sslmode=require", false},
+		{"db", "host=db user=vyshka password=pw", true},
+		{"db", "postgres://%zz", true},
+	} {
+		if got := inlineSecretText(c.name, c.text); got != c.want {
+			t.Errorf("inlineSecretText(%s, %q) = %v, want %v", c.name, c.text, got, c.want)
+		}
 	}
+}
+
+// One warning, listing every inline secret, when others can read the file.
+// Windows has no permission bits; the test turns the check on there, where
+// every file reads as 0666, so the positive path is exercised everywhere.
+func TestInlineSecretsInAWorldReadableFileWarnOnce(t *testing.T) {
 	clearEnv(t)
+	defer func(old bool) { hasPermissionBits = old }(hasPermissionBits)
+	hasPermissionBits = true
 	dir := t.TempDir()
-	loose := writeFile(t, dir, "loose.toml", "admin-token = \"vya_inline\"\ndb = \"file:dsn.txt\"\n", 0o644)
-	tight := writeFile(t, dir, "tight.toml", "admin-token = \"vya_inline\"\n", 0o600)
-	if err := os.Chmod(loose, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, resolved, err := resolveServe(t, "-config", loose)
+	two := writeFile(t, dir, "two.toml", "admin-token = \"vya_inline\"\ndb = \"postgres://u:pw@db/app\"\n", 0o644)
+	none := writeFile(t, dir, "none.toml", "admin-token = \"file:/run/secrets/admin_token\"\ndb = \"/var/lib/vyshka/vyshka.db\"\nlog-level = \"info\"\n", 0o644)
+	_, resolved, err := resolveServe(t, "-config", two)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolved.warnings) != 1 || resolved.warnings[0].key != "admin-token" || resolved.warnings[0].file != loose {
-		t.Errorf("warnings = %+v, want one for admin-token in %s (db is a file: reference)", resolved.warnings, loose)
+	if w := resolved.warning; w == nil || w.file != two || strings.Join(w.keys, ",") != "admin-token,db" {
+		t.Fatalf("warning = %+v, want one for admin-token,db in %s", resolved.warning, two)
 	}
-	if _, resolved, _ = resolveServe(t, "-config", tight); len(resolved.warnings) != 0 {
-		t.Errorf("a 0600 file warned: %+v", resolved.warnings)
+	if text := resolved.warning.text(); strings.Contains(text, "vya_inline") || strings.Contains(text, "pw@") {
+		t.Errorf("the warning carries a value: %s", text)
+	}
+	if _, resolved, err = resolveServe(t, "-config", none); err != nil || resolved.warning != nil {
+		t.Errorf("a file of references and a plain SQLite path warned: %+v, %v", resolved.warning, err)
+	}
+	if runtime.GOOS != "windows" {
+		tight := writeFile(t, dir, "tight.toml", "admin-token = \"vya_inline\"\n", 0o600)
+		group := writeFile(t, dir, "group.toml", "admin-token = \"vya_inline\"\n", 0o640)
+		for _, path := range []string{tight, group} {
+			if err := os.Chmod(path, map[string]os.FileMode{tight: 0o600, group: 0o640}[path]); err != nil {
+				t.Fatal(err)
+			}
+			if _, resolved, _ = resolveServe(t, "-config", path); resolved.warning != nil {
+				t.Errorf("%s warned: %+v", filepath.Base(path), resolved.warning)
+			}
+		}
+	}
+}
+
+// The hub's environment variables must not collide with the ones the vyshka
+// command-line client reads: both ship in one archive and share VYSHKA_.
+func TestNoServeFlagUsesAVariableTheClientReads(t *testing.T) {
+	clientVars := map[string]bool{}
+	files, err := filepath.Glob(filepath.Join("..", "..", "..", "cmd", "vyshka", "internal", "cli", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no client sources found: %v", err)
+	}
+	read := regexp.MustCompile(`Getenv\("(VYSHKA_[A-Z0-9_]+)"\)`)
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range read.FindAllStringSubmatch(string(source), -1) {
+			clientVars[match[1]] = true
+		}
+	}
+	for _, known := range []string{"VYSHKA_CONFIG", "VYSHKA_URL", "VYSHKA_TOKEN", "VYSHKA_PROFILE"} {
+		if !clientVars[known] {
+			t.Fatalf("the scan of the client's sources did not find %s, so it cannot be trusted (found %v)", known, clientVars)
+		}
+	}
+	flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+	if _, err := declareServeFlags(flags); err != nil {
+		t.Fatal(err)
+	}
+	flags.VisitAll(func(f *flag.Flag) {
+		if clientVars[envName(f.Name)] {
+			t.Errorf("flag -%s reads %s, which the vyshka client reads for something else", f.Name, envName(f.Name))
+		}
+	})
+}
+
+// With VYSHKA_CONFIG set for the client's JSON profile and no hub file, the
+// hub neither reads it nor refuses.
+func TestClientConfigVariableIsNotTheHubs(t *testing.T) {
+	clearEnv(t)
+	profile := writeFile(t, t.TempDir(), "vyshka.json", `{"default":"home","profiles":{"home":{"url":"http://127.0.0.1:8080","token":"vya_x"}}}`, 0o600)
+	t.Setenv("VYSHKA_CONFIG", profile)
+	t.Setenv("VYSHKA_URL", "http://127.0.0.1:1")
+	_, resolved, err := resolveServe(t)
+	if err != nil || resolved.configPath != "" {
+		t.Errorf("the client's variables changed the hub: config %q, %v", resolved.configPath, err)
+	}
+	flags, _ := maintenanceFlags("storage")
+	_ = flags.Parse(nil)
+	if _, err := maintenanceDSN(flags); err != nil {
+		t.Errorf("storage read the client's variable: %v", err)
+	}
+}
+
+// A db: reference whose file is not a small one-line text secret is refused,
+// naming the key and the path and nothing from the file. Every case holds a
+// marker that must not come back. Each is the failure path of the old
+// behavior, where a SQLite URI file:PATH made the database file itself the DSN.
+func TestSecretFileRefusalsNeverEchoTheFile(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	const marker = "MARKER_FILE_CONTENT"
+	sqliteLike := "SQLite format 3\x00" + strings.Repeat("x", 100) + "://" + marker
+	cases := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{"a database file", sqliteLike, "NUL byte"},
+		{"larger than a few kilobytes", strings.Repeat(marker+" ", 1000), "larger than 4096 bytes"},
+		{"just over the limit", strings.Repeat("a", maxSecretFileBytes+1), "larger than 4096 bytes"},
+		{"invalid UTF-8", marker + "\xff\xfe", "not valid UTF-8"},
+		{"two lines", "postgres://u:" + marker + "@db/app\nsecond line\n", "more than one line"},
+		{"two lines with a CR", marker + "\r" + marker, "more than one line"},
+		{"empty", " \n", "is empty"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			secretFile := writeFile(t, dir, "secret.bin", c.contents, 0o600)
+			for _, name := range []string{"db", "admin-token"} {
+				flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+				flags.SetOutput(io.Discard)
+				if _, err := declareServeFlags(flags); err != nil {
+					t.Fatal(err)
+				}
+				if err := flags.Parse([]string{"-" + name, "file:" + secretFile}); err != nil {
+					t.Fatal(err)
+				}
+				resolved, err := resolveSettings(flags, func() (*flag.FlagSet, error) { return flags, nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = resolved.secret(name, flags.Lookup(name).Value.String())
+				if err == nil {
+					t.Fatalf("%s: accepted a secret file that is %s", name, c.name)
+				}
+				msg := err.Error()
+				for _, want := range []string{name, secretFile, c.want} {
+					if !strings.Contains(msg, want) {
+						t.Errorf("%s: error does not contain %q: %s", name, want, msg)
+					}
+				}
+				if strings.Contains(msg, marker) || strings.Contains(msg, "SQLite format") || len(msg) > 600 {
+					t.Errorf("%s: error carries file content or is unbounded (%d bytes): %.300s", name, len(msg), msg)
+				}
+				if name == "db" && !strings.Contains(msg, "sqlite://file:") {
+					t.Errorf("db: error does not say a SQLite URI is now written sqlite://file:...: %s", msg)
+				}
+				if name != "db" && strings.Contains(msg, "sqlite://file:") {
+					t.Errorf("%s: the SQLite hint belongs to db only: %s", name, msg)
+				}
+			}
+		})
+	}
+
+	t.Run("a db reference with a query", func(t *testing.T) {
+		flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		if _, err := declareServeFlags(flags); err != nil {
+			t.Fatal(err)
+		}
+		_ = flags.Parse([]string{"-db", "file:vyshka.db?mode=ro"})
+		resolved, _ := resolveSettings(flags, func() (*flag.FlagSet, error) { return flags, nil })
+		_, err := resolved.secret("db", flags.Lookup("db").Value.String())
+		if err == nil || !strings.Contains(err.Error(), "sqlite://file:") || !strings.Contains(err.Error(), "?") {
+			t.Errorf("want the SQLite URI hint, got %v", err)
+		}
+	})
+	t.Run("a db file that holds no URL", func(t *testing.T) {
+		secretFile := writeFile(t, dir, "password-only.txt", marker+"\n", 0o600)
+		flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		if _, err := declareServeFlags(flags); err != nil {
+			t.Fatal(err)
+		}
+		_ = flags.Parse([]string{"-db", "file:" + secretFile})
+		resolved, _ := resolveSettings(flags, func() (*flag.FlagSet, error) { return flags, nil })
+		_, err := resolved.secret("db", flags.Lookup("db").Value.String())
+		if err == nil || strings.Contains(err.Error(), marker) || !strings.Contains(err.Error(), "does not hold a postgres://") {
+			t.Errorf("want a refusal without the content, got %v", err)
+		}
+	})
+	t.Run("accepted: a one-line URL with surrounding whitespace", func(t *testing.T) {
+		secretFile := writeFile(t, dir, "url.txt", "\n  postgres://u:pw@db/app \r\n\n", 0o600)
+		flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		if _, err := declareServeFlags(flags); err != nil {
+			t.Fatal(err)
+		}
+		_ = flags.Parse([]string{"-db", "file:" + secretFile})
+		resolved, _ := resolveSettings(flags, func() (*flag.FlagSet, error) { return flags, nil })
+		if got, err := resolved.secret("db", flags.Lookup("db").Value.String()); err != nil || got != "postgres://u:pw@db/app" {
+			t.Errorf("got %q, %v", got, err)
+		}
+	})
+}
+
+// The exact old failure path: a database file named through DATABASE_URL=file:
+// must stop serve and config before anything is opened, with no database
+// content in the message. The file here is a real SQLite database holding a
+// URL, as a hub with a webhook has.
+func TestFileReferenceToADatabaseIsRefusedByServeAndConfig(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	body := "SQLite format 3\x00" + strings.Repeat("\x01", 4200) + "https://hooks.example/MARKER_WEBHOOK_URL"
+	database := writeFile(t, dir, "hub.db", body, 0o600)
+	t.Setenv("DATABASE_URL", "file:"+database)
+	for name, run := range map[string]func() error{
+		"serve":  func() error { return runServe([]string{"-addr", "127.0.0.1:0"}) },
+		"config": func() error { return runConfig(nil) },
+	} {
+		_, _, err := capture(t, run)
+		if err == nil {
+			t.Errorf("%s accepted DATABASE_URL=file:<a database>", name)
+			continue
+		}
+		if len(err.Error()) > 600 || strings.Contains(err.Error(), "SQLite format") || strings.Contains(err.Error(), "MARKER_WEBHOOK_URL") {
+			t.Errorf("%s: the error carries database content or is unbounded: %.300s", name, err)
+		}
+		if !strings.Contains(err.Error(), "sqlite://file:") || !strings.Contains(err.Error(), database) {
+			t.Errorf("%s: want a message naming the path and the sqlite://file: form: %v", name, err)
+		}
+	}
+}
+
+// resolveDSN used to print everything before the first :// whatever it was.
+// A DSN that is not a URL with a scheme must not be echoed by store.Open.
+func TestUnsupportedDatabaseSchemeIsBoundedAndSanitized(t *testing.T) {
+	clearEnv(t)
+	for _, c := range []struct {
+		dsn      string
+		wantText string
+	}{
+		{"mysql://u:pw@db/app", `unsupported database scheme "mysql"`},
+		{"SQLite format 3\x00 SECRET_PASSWORD ://x", "not a URL scheme"},
+		{strings.Repeat("a", 5000) + "://x", "not a URL scheme"},
+		{"has space://x", "not a URL scheme"},
+	} {
+		_, _, err := capture(t, func() error { return runServe([]string{"-db", c.dsn, "-addr", "127.0.0.1:0"}) })
+		if err == nil || !strings.Contains(err.Error(), c.wantText) {
+			t.Errorf("dsn %.20q: want %q, got %v", c.dsn, c.wantText, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "SECRET_PASSWORD") || len(err.Error()) > 200 {
+			t.Errorf("dsn %.20q: the error echoes the DSN: %.200s", c.dsn, err)
+		}
+	}
+}
+
+func TestDisplayDB(t *testing.T) {
+	for dsn, want := range map[string]string{
+		"/var/lib/vyshka/vyshka.db": "/var/lib/vyshka/vyshka.db",
+		"vyshka.db":                 "vyshka.db",
+		"sqlite://vyshka.db":        "sqlite://vyshka.db",
+		"postgres://vyshka:PW_SECRET@db.example:5432/vyshka": "postgres://<redacted>@db.example:5432/vyshka",
+		"postgres://db.example/vyshka":                       "postgres://db.example/vyshka",
+		"postgres://vyshka@db/app?password=PW_SECRET":        "postgres://<redacted>@db/app?<redacted>",
+		"host=db user=u password=PW_SECRET":                  "<redacted>",
+		"postgres://%zz":                                     "<redacted>",
+		"file:/run/secrets/database_url":                     "file:/run/secrets/database_url",
+		"":                                                   "(unset)",
+	} {
+		flags := flag.NewFlagSet("probe", flag.ContinueOnError)
+		flags.String("db", "", "")
+		_ = flags.Set("db", dsn)
+		if got := displayValue(flags.Lookup("db")); got != want || strings.Contains(got, "PW_SECRET") {
+			t.Errorf("displayValue(db=%q) = %q, want %q", dsn, got, want)
+		}
+	}
+}
+
+// Syntax-error hints appear only where the cause is detected from the bytes,
+// and never carry any of them.
+func TestSyntaxErrorHints(t *testing.T) {
+	clearEnv(t)
+	utf16 := "\xff\xfea\x00d\x00d\x00r\x00 \x00=\x00"
+	for name, c := range map[string]struct{ contents, want, not string }{
+		"UTF-16":          {utf16, "not UTF-8", "single quotes"},
+		"a NUL byte":      {"addr = \"x\"\x00\n", "not UTF-8", "single quotes"},
+		"a Windows path":  {"db = \"C:\\vyshka\\hub.db\"\n", "single quotes", "UTF-8"},
+		"a bare word":     {"addr = MARKER_VALUE\n", "line 1 is not valid TOML", "single quotes"},
+		"an unquoted one": {"admin-token = vya_MARKER_VALUE\n", "line 1 is not valid TOML", "double quotes"},
+	} {
+		path := writeFile(t, t.TempDir(), "hub.toml", c.contents, 0o600)
+		_, _, err := resolveServe(t, "-config", path)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		msg := strings.ReplaceAll(err.Error(), path, "")
+		if !strings.Contains(msg, c.want) || strings.Contains(msg, c.not) || strings.Contains(msg, "MARKER_VALUE") || strings.Contains(msg, "vyshka") {
+			t.Errorf("%s: %s", name, err)
+		}
+	}
+}
+
+// An empty variable counts as unset, which is how a container image's own
+// VYSHKA_ADDR and DATABASE_URL are released to the config file.
+func TestEmptyEnvironmentReleasesTheFile(t *testing.T) {
+	clearEnv(t)
+	path := writeFile(t, t.TempDir(), "hub.toml", "addr = \"10.0.0.1:1\"\ndb = \"postgres://u@db/app\"\n", 0o600)
+	t.Setenv("VYSHKA_ADDR", "0.0.0.0:8080")
+	t.Setenv("DATABASE_URL", "/data/vyshka.db")
+	set, resolved, err := resolveServe(t, "-config", path)
+	if err != nil || value(set, "addr") != "0.0.0.0:8080" || value(set, "db") != "/data/vyshka.db" {
+		t.Fatalf("the image's variables should outrank the file: %v, %q, %q", err, value(set, "addr"), value(set, "db"))
+	}
+	if resolved.sources["db"] != "env DATABASE_URL" {
+		t.Errorf("db source = %q", resolved.sources["db"])
+	}
+	t.Setenv("VYSHKA_ADDR", "")
+	t.Setenv("DATABASE_URL", "")
+	set, resolved, err = resolveServe(t, "-config", path)
+	if err != nil || value(set, "addr") != "10.0.0.1:1" || value(set, "db") != "postgres://u@db/app" ||
+		resolved.sources["addr"] != "file" || resolved.sources["db"] != "file" {
+		t.Errorf("empty variables did not release the file: %v, %q, %q, %v", err, value(set, "addr"), value(set, "db"), resolved.sources)
 	}
 }
 
@@ -568,7 +891,7 @@ func TestConfigCommandRedactsEverySecret(t *testing.T) {
 		}
 	}
 	for row, want := range map[string]string{
-		"db":          "<redacted> file",
+		"db":          "postgres://<redacted>@db.example:5432/vyshka file",
 		"admin-token": "<redacted> env VYSHKA_ADMIN_TOKEN",
 		"addr":        "127.0.0.1:9000 flag",
 		"log-level":   "warn env VYSHKA_LOG_LEVEL",
@@ -633,7 +956,7 @@ func TestUsageTextCarriesNoSecretsFromTheFile(t *testing.T) {
 	clearEnv(t)
 	path := writeFile(t, t.TempDir(), "hub.toml",
 		"db = \"postgres://u:FILE_SECRET_PW@db/app\"\nadmin-token = \"vya_FILE_SECRET_TOKEN\"\n", 0o600)
-	t.Setenv("VYSHKA_CONFIG", path)
+	t.Setenv("VYSHKA_HUB_CONFIG", path)
 	_, usage, err := capture(t, func() error { return runServe([]string{"-h"}) })
 	if err != flag.ErrHelp {
 		t.Fatalf("serve -h returned %v", err)

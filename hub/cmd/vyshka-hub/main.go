@@ -18,12 +18,14 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/That1Drifter/vyshka/hub"
 	"github.com/That1Drifter/vyshka/panel"
@@ -74,7 +76,7 @@ Commands:
   version    print the build version
 
 Run "vyshka-hub serve -h" for serve flags. A setting comes from, highest first: a flag,
-an environment variable, the file named by -config (or VYSHKA_CONFIG), a built-in default.
+an environment variable, the file named by -config (or VYSHKA_HUB_CONFIG), a built-in default.
 `)
 }
 
@@ -272,21 +274,46 @@ func parseLevel(name string) (slog.Level, error) {
 	}
 }
 
+// maxSecretFileBytes bounds a secret file: a token or a database URL is a
+// short line, so a larger file is not one.
+const maxSecretFileBytes = 4096
+
 // resolveSecret supports the `file:` indirection every secret-bearing flag
 // takes, so an operator can keep credentials out of the process list and out of
-// their shell history.
+// their shell history. The file must be plainly a secret: one line of UTF-8
+// text, at most maxSecretFileBytes, without a NUL byte (surrounding whitespace
+// and the newline an editor leaves are trimmed). Anything else is refused with
+// a message that names the path and says what is wrong, and carries nothing
+// from the file: a mistaken reference to a database file or a log must not end
+// up in an error message or be used as the secret.
 func resolveSecret(value string) (string, error) {
 	path, isFile := strings.CutPrefix(value, "file:")
 	if !isFile {
 		return value, nil
 	}
-	contents, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, maxSecretFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	switch {
+	case len(contents) > maxSecretFileBytes:
+		return "", fmt.Errorf("%s is larger than %d bytes, which is too large to be a secret", path, maxSecretFileBytes)
+	case strings.IndexByte(string(contents), 0) >= 0:
+		return "", fmt.Errorf("%s contains a NUL byte, so it is not a text secret", path)
+	case !utf8.Valid(contents):
+		return "", fmt.Errorf("%s is not valid UTF-8, so it is not a text secret", path)
+	}
 	secret := strings.TrimSpace(string(contents))
-	if secret == "" {
+	switch {
+	case secret == "":
 		return "", fmt.Errorf("%s is empty", path)
+	case strings.ContainsAny(secret, "\r\n"):
+		return "", fmt.Errorf("%s holds more than one line; a secret file holds the secret and nothing else", path)
 	}
 	return secret, nil
 }

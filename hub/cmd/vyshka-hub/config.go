@@ -1,6 +1,6 @@
 package main
 
-// The config file (-config, VYSHKA_CONFIG): one TOML file as a third way to
+// The config file (-config, VYSHKA_HUB_CONFIG): one TOML file as a third way to
 // set what the serve flags set, below the command line and the environment.
 //
 // Precedence, highest first: command-line flag, environment variable, config
@@ -26,6 +26,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,10 +57,16 @@ var listFlags = map[string]bool{
 
 // envName is the environment variable that backs a flag: VYSHKA_ and the flag
 // name upper-cased with hyphens as underscores, except the database URL, which
-// keeps the name every Postgres tool uses.
+// keeps the name every Postgres tool uses, and the config file, whose natural
+// name VYSHKA_CONFIG belongs to the vyshka command-line client (a JSON profile
+// file). The two programs share no variable; a test holds every hub flag's
+// name apart from the ones the client reads.
 func envName(flagName string) string {
-	if flagName == "db" {
+	switch flagName {
+	case "db":
 		return "DATABASE_URL"
+	case "config":
+		return "VYSHKA_HUB_CONFIG"
 	}
 	return "VYSHKA_" + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
 }
@@ -93,7 +100,7 @@ func loadConfigFile(path string) (*configFile, error) {
 			if key, ok := duplicateKey(parseErr.Message); ok {
 				return nil, fmt.Errorf("config file %s: line %d: key %q is set twice", path, parseErr.Position.Line, key)
 			}
-			return nil, fmt.Errorf("config file %s: line %d is not valid TOML (strings need double quotes)", path, parseErr.Position.Line)
+			return nil, fmt.Errorf("config file %s: line %d is not valid TOML%s", path, parseErr.Position.Line, syntaxHint(data, parseErr.Position.Line))
 		}
 		return nil, fmt.Errorf("config file %s is not valid TOML", path)
 	}
@@ -102,6 +109,25 @@ func loadConfigFile(path string) (*configFile, error) {
 		abs = path
 	}
 	return &configFile{path: path, dir: filepath.Dir(abs), values: values}, nil
+}
+
+// syntaxHint names a likely cause of a syntax error only where it can tell
+// from the bytes without echoing any of them: a file that is not UTF-8
+// (a NUL byte, or a UTF-16 byte-order mark, as PowerShell 5.1 redirection
+// writes), or a backslash inside a double-quoted string on the failing line,
+// which TOML reads as an escape (a Windows path wants single quotes).
+func syntaxHint(data []byte, line int) string {
+	if strings.IndexByte(string(data), 0) >= 0 || strings.HasPrefix(string(data), "\xff\xfe") || strings.HasPrefix(string(data), "\xfe\xff") {
+		return " (the file is not UTF-8: save it as UTF-8)"
+	}
+	lines := strings.Split(string(data), "\n")
+	if line >= 1 && line <= len(lines) {
+		text := lines[line-1]
+		if quote := strings.IndexByte(text, '"'); quote >= 0 && strings.IndexByte(text[quote:], '\\') >= 0 {
+			return " (a backslash inside a double-quoted string starts an escape: write a Windows path in single quotes, or double each backslash)"
+		}
+	}
+	return ""
 }
 
 // duplicateKey pulls the key out of the parser's duplicate-key message
@@ -209,11 +235,11 @@ func withArticle(noun string) string {
 	return "a " + noun
 }
 
-// inlineSecret is a secret written into the config file itself, reported so a
-// loose file mode can be flagged without ever carrying the value.
-type inlineSecret struct {
-	key  string
+// inlineSecrets is the one warning about a config file that holds secrets
+// written into it and can be read by others: the keys, never the values.
+type inlineSecrets struct {
 	file string
+	keys []string
 	mode fs.FileMode
 }
 
@@ -221,17 +247,54 @@ type inlineSecret struct {
 // what to warn about once a logger exists.
 type settings struct {
 	// configPath and configFrom say which file was loaded (empty for none)
-	// and how it was named ("flag" or "env VYSHKA_CONFIG").
+	// and how it was named ("flag" or "env VYSHKA_HUB_CONFIG").
 	configPath string
 	configFrom string
 	// sources maps a flag name to "flag", "env NAME", "file", or "default".
 	sources map[string]string
-	// warnings are inline secrets in a file readable by group or others.
-	warnings []inlineSecret
+	// warning is set when inline secrets sit in a file readable by others.
+	warning *inlineSecrets
 }
 
-// looseMode reports whether a file mode lets group or others read the file.
-func looseMode(mode fs.FileMode) bool { return mode.Perm()&0o077 != 0 }
+// looseMode reports whether a file mode lets others (the world bit) read the
+// file. Group access is a normal layout: a file shared with the service's own
+// group, or a systemd credential, whose group bits are an ACL mask.
+func looseMode(mode fs.FileMode) bool { return mode.Perm()&0o004 != 0 }
+
+// dbCarriesPassword reports whether a database setting holds a credential:
+// a URL with a password (or any password-like query parameter, or a URL that
+// does not parse, treated as carrying one), or a libpq keyword string. A plain
+// SQLite path is not a secret.
+func dbCarriesPassword(text string) bool {
+	if !strings.Contains(text, "://") {
+		return strings.Contains(strings.ToLower(text), "password")
+	}
+	parsed, err := url.Parse(text)
+	if err != nil {
+		return true
+	}
+	if _, set := parsed.User.Password(); set {
+		return true
+	}
+	for key := range parsed.Query() {
+		if strings.Contains(strings.ToLower(key), "pass") {
+			return true
+		}
+	}
+	return false
+}
+
+// inlineSecretText reports whether a value written into the config file is a
+// secret held inline, as opposed to a file: reference or a non-secret.
+func inlineSecretText(name, text string) bool {
+	if text == "" || strings.HasPrefix(text, "file:") {
+		return false
+	}
+	if name == "db" {
+		return dbCarriesPassword(text)
+	}
+	return true
+}
 
 // resolveSettings settles every flag in flags after Parse: the command line
 // wins, then a non-empty environment variable, then the config file, then the
@@ -256,6 +319,7 @@ func resolveSettings(flags *flag.FlagSet, known func() (*flag.FlagSet, error)) (
 
 	var file *configFile
 	texts := map[string]string{}
+	var inline []string
 	if result.configPath != "" {
 		var err error
 		if file, err = loadConfigFile(result.configPath); err != nil {
@@ -282,12 +346,13 @@ func resolveSettings(flags *flag.FlagSet, known func() (*flag.FlagSet, error)) (
 			}
 			if secretFlags[name] {
 				text = file.anchorSecretPath(text)
-				if _, indirect := strings.CutPrefix(text, "file:"); !indirect && text != "" {
-					result.warn(file, name)
+				if inlineSecretText(name, text) {
+					inline = append(inline, name)
 				}
 			}
 			texts[name] = text
 		}
+		result.warn(file, inline)
 	}
 
 	var failure error
@@ -335,17 +400,28 @@ func (c *configFile) anchorSecretPath(text string) string {
 	return "file:" + filepath.Join(c.dir, path)
 }
 
-// warn records an inline secret in the file when the file's mode is loose.
-// The mode is read once per file; Windows has no group or other bits to read.
-func (r *settings) warn(file *configFile, key string) {
-	if runtime.GOOS == "windows" {
+// hasPermissionBits is false where a file mode says nothing about who can read
+// the file (Windows); tests turn it on to exercise the warning there.
+var hasPermissionBits = runtime.GOOS != "windows"
+
+// warn records the one warning for inline secrets (keys) in a file others can
+// read. Windows has no permission bits to read.
+func (r *settings) warn(file *configFile, keys []string) {
+	if len(keys) == 0 || !hasPermissionBits {
 		return
 	}
 	info, err := os.Stat(file.path)
 	if err != nil || !looseMode(info.Mode()) {
 		return
 	}
-	r.warnings = append(r.warnings, inlineSecret{key: key, file: file.path, mode: info.Mode().Perm()})
+	sort.Strings(keys)
+	r.warning = &inlineSecrets{file: file.path, keys: keys, mode: info.Mode().Perm()}
+}
+
+// warningText is the warning in words; it names the file and the keys.
+func (w *inlineSecrets) text() string {
+	return fmt.Sprintf("config file %s holds inline secrets (%s) and is readable by others (mode %04o); "+
+		"use file: references, or remove the world read bit (chmod o-r)", w.file, strings.Join(w.keys, ", "), w.mode)
 }
 
 // checkKeys refuses a file whose keys are not all flags of known, naming the
@@ -374,8 +450,12 @@ func checkKeys(file *configFile, known *flag.FlagSet) error {
 // assertion can fail. Nothing else sets it.
 var redactSecrets = true
 
-// displayValue is what the hub may show for a setting: a secret appears only
-// as the path of the file it will be read from, or as redacted.
+// displayValue is what the hub may show for a setting. A secret appears only
+// as the path of the file it will be read from, or redacted. The database is
+// a secret only when it carries a credential: a plain SQLite path is shown,
+// and a URL is shown as scheme, host, and database name with the user, the
+// password, and the query (which libpq lets carry a password) redacted, so an
+// operator can see which database won.
 func displayValue(f *flag.Flag) string {
 	value := f.Value.String()
 	if !secretFlags[f.Name] {
@@ -388,9 +468,40 @@ func displayValue(f *flag.Flag) string {
 		return value
 	case strings.HasPrefix(value, "file:"):
 		return value
+	case f.Name == "db":
+		return displayDB(value)
 	default:
 		return "<redacted>"
 	}
+}
+
+// displayDB is the redacted form of a database setting that is not a file:
+// reference. Only a value that is plainly a path (no URL, no whitespace, no
+// key=value pairs) is shown whole; anything else that does not parse as a URL
+// is withheld.
+func displayDB(value string) string {
+	if !strings.Contains(value, "://") {
+		if strings.ContainsAny(value, " \t=") {
+			return "<redacted>"
+		}
+		return value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "<redacted>"
+	}
+	if parsed.Scheme == "sqlite" {
+		return value
+	}
+	shown := parsed.Scheme + "://"
+	if parsed.User != nil {
+		shown += "<redacted>@"
+	}
+	shown += parsed.Host + parsed.Path
+	if parsed.RawQuery != "" {
+		shown += "?<redacted>"
+	}
+	return shown
 }
 
 // describe says where a setting came from, for an error message.
@@ -407,15 +518,43 @@ func (r *settings) describe(name string) string {
 	}
 }
 
+// dbMoved is appended to a refusal of a db: reference: before the config file
+// existed, a value starting file: was a SQLite URI.
+const dbMoved = "; db: file:PATH now names a file that holds the database URL, " +
+	"and a SQLite URI is written sqlite://file:... (see deploy/README.md, \"The config file\")"
+
 // secret resolves the file: indirection of a secret-bearing setting, from
 // whichever source supplied it. A failure names the setting and its source
-// and the secret file's path, never a value.
+// and the secret file's path, never a value. For db the file must hold a
+// postgres://, postgresql://, or sqlite:// URL: anything else is withheld, so
+// a file that was never meant as a secret (an old SQLite URI named a database
+// file) cannot become the database setting or be echoed by a later error.
 func (r *settings) secret(name, value string) (string, error) {
+	path, isRef := strings.CutPrefix(value, "file:")
+	if name == "db" && isRef && strings.Contains(path, "?") {
+		return "", fmt.Errorf("db (from %s): file:%s names a path with ?, which is a SQLite URI query%s",
+			r.describe(name), path, dbMoved)
+	}
 	resolved, err := resolveSecret(value)
+	if err == nil && name == "db" && isRef && !hasDBScheme(resolved) {
+		err = fmt.Errorf("%s does not hold a postgres://, postgresql://, or sqlite:// URL", path)
+	}
 	if err != nil {
+		if name == "db" && isRef {
+			err = fmt.Errorf("%w%s", err, dbMoved)
+		}
 		return "", fmt.Errorf("%s (from %s): %w", name, r.describe(name), err)
 	}
 	return resolved, nil
+}
+
+func hasDBScheme(dsn string) bool {
+	for _, scheme := range []string{"postgres://", "postgresql://", "sqlite://"} {
+		if strings.HasPrefix(dsn, scheme) {
+			return true
+		}
+	}
+	return false
 }
 
 // log reports the config file in use and any warning about it, once a logger
@@ -424,10 +563,10 @@ func (r *settings) log(logger *slog.Logger) {
 	if r.configPath != "" {
 		logger.Info("config file", "path", r.configPath, "via", r.configFrom)
 	}
-	for _, w := range r.warnings {
-		logger.Warn("config file holds an inline secret and is readable by group or others; "+
-			"use a file: reference or chmod 600",
-			"file", w.file, "key", w.key, "mode", fmt.Sprintf("%04o", w.mode))
+	if w := r.warning; w != nil {
+		logger.Warn("config file holds inline secrets and is readable by others; "+
+			"use file: references, or remove the world read bit",
+			"file", w.file, "keys", strings.Join(w.keys, ","), "mode", fmt.Sprintf("%04o", w.mode))
 	}
 }
 
@@ -436,12 +575,11 @@ func (r *settings) log(logger *slog.Logger) {
 // hold a secret only as typed (inline, or as a file: reference), never as
 // read from a file.
 func (r *settings) print(out, errOut io.Writer, flags *flag.FlagSet, listenAddr string) error {
-	for _, w := range r.warnings {
-		fmt.Fprintf(errOut, "warning: config file %s holds an inline %s and is readable by group or others (mode %04o); "+
-			"use a file: reference or chmod 600\n", w.file, w.key, w.mode)
+	if r.warning != nil {
+		fmt.Fprintln(errOut, "warning: "+r.warning.text())
 	}
 	if r.configPath == "" {
-		fmt.Fprintln(out, "config file: none (name one with -config or VYSHKA_CONFIG)")
+		fmt.Fprintln(out, "config file: none (name one with -config or VYSHKA_HUB_CONFIG)")
 	} else {
 		fmt.Fprintf(out, "config file: %s (from %s)\n", r.configPath, r.configFrom)
 	}

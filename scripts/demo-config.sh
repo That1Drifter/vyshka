@@ -9,7 +9,8 @@
 # output; an unknown key, a wrong type, a duplicate key, a syntax error, a
 # missing secret file, and an empty one each refusing to start with a message
 # that names the key and no value; the file never read unless named; the
-# storage command taking db from the same file; and `vyshka-hub config`
+# storage command taking db from the same file; the old SQLite URI spelling, DATABASE_URL=file:<database>,
+# refused without echoing the database; and `vyshka-hub config`
 # printing what a hub would use, with where each value came from and every
 # secret redacted, with a control that shows the redaction check can fail.
 #
@@ -67,7 +68,7 @@ cat > "$cfg" <<EOF
 addr = "127.0.0.1:$port_file"
 db = "$(native "$run_dir/a.db")"
 admin-token = "file:secrets/admin-token"
-log-level = "debug"
+log-level = "error"
 metrics-addr = "127.0.0.1:$port_metrics"
 backup-keep = 3
 EOF
@@ -101,13 +102,14 @@ expect "the metrics listener from the file ($port_metrics)" "$(curl -s -o /dev/n
 expect "Admin API with the token read through file: " "$(status "$port_file" "$token_file")" 200
 expect "Admin API with no token" "$(status "$port_file")" 401
 expect "Admin API with a wrong token" "$(status "$port_file" "$token_env")" 401
-expect "log-level debug from the file: INFO lines in the log" "$([ "$(info_lines "$run_dir/hub-file.log")" -gt 0 ] && echo yes || echo no)" yes
-grep '"config file"' "$run_dir/hub-file.log" | sed 's/^/  log: /'
+# The default level (info) logs a line per request and one at boot; error logs neither.
+expect "log-level error from the file: INFO lines in the log" "$(info_lines "$run_dir/hub-file.log")" 0
 stop
-echo "  the same database file the file named: $(ls "$run_dir"/a.db* | head -n 1 | sed "s|$run_dir/||")"
+expect "the database the file named (a.db) was created" "$([ -e "$run_dir/a.db" ] && echo yes || echo no)" yes
+expect "the default database (vyshka.db) was not" "$([ -e "$away/vyshka.db" ] && echo yes || echo no)" no
 
 step "2. The environment overrides the file: VYSHKA_ADDR, VYSHKA_LOG_LEVEL, VYSHKA_ADMIN_TOKEN"
-VYSHKA_ADDR="127.0.0.1:$port_env" VYSHKA_LOG_LEVEL=error VYSHKA_ADMIN_TOKEN="$token_env" \
+VYSHKA_ADDR="127.0.0.1:$port_env" VYSHKA_LOG_LEVEL=info VYSHKA_ADMIN_TOKEN="$token_env" \
   "$bin" serve -config "$(native "$cfg")" > "$run_dir/hub-env.log" 2>&1 &
 hub_pid=$!
 wait_healthy "$port_env" "$run_dir/hub-env.log"
@@ -115,12 +117,28 @@ expect "listens on the environment's port ($port_env)" "$(curl -s -o /dev/null -
 expect "nothing on the file's port ($port_file)" "$(status "$port_file" "$token_file")" 000
 expect "the file's token is refused" "$(status "$port_env" "$token_file")" 401
 expect "the environment's token works" "$(status "$port_env" "$token_env")" 200
-expect "log-level error from the environment: INFO lines in the log" "$(info_lines "$run_dir/hub-env.log")" 0
+expect "log-level info from the environment: INFO lines in the log" "$([ "$(info_lines "$run_dir/hub-env.log")" -gt 0 ] && echo yes || echo no)" yes
+grep '"config file"' "$run_dir/hub-env.log" | sed 's/^/  log: /'
+stop
+
+step "2b. An empty variable counts as unset: how a container image's own VYSHKA_ADDR and DATABASE_URL are released to the file"
+VYSHKA_ADDR="" DATABASE_URL="" VYSHKA_ADMIN_TOKEN="" "$bin" serve -config "$(native "$cfg")" > "$run_dir/hub-empty.log" 2>&1 &
+hub_pid=$!
+wait_healthy "$port_file" "$run_dir/hub-empty.log"
+expect "listens on the file's port ($port_file) with the variables set empty" "$(curl -s -o /dev/null -w '%{http_code}' "$(url "$port_file")/healthz")" 200
+expect "the file's token works (an empty token variable is unset too)" "$(status "$port_file" "$token_file")" 200
+stop
+# The same variables set non-empty, as the image sets them, outrank the file.
+VYSHKA_ADDR="127.0.0.1:$port_env" DATABASE_URL="$(native "$run_dir/image.db")" "$bin" serve -config "$(native "$cfg")" > "$run_dir/hub-image.log" 2>&1 &
+hub_pid=$!
+wait_healthy "$port_env" "$run_dir/hub-image.log"
+expect "with them set, the variables win: the environment's port answers" "$(curl -s -o /dev/null -w '%{http_code}' "$(url "$port_env")/healthz")" 200
+expect "and the environment's database was created, not the file's" "$([ -e "$run_dir/image.db" ] && echo yes || echo no)" yes
 stop
 
 step "3. A flag overrides the environment and the file"
-VYSHKA_ADDR="127.0.0.1:$port_env" VYSHKA_ADMIN_TOKEN="$token_env" \
-  "$bin" serve -config "$(native "$cfg")" -addr "127.0.0.1:$port_flag" -admin-token "$token_flag" -log-level info \
+VYSHKA_ADDR="127.0.0.1:$port_env" VYSHKA_ADMIN_TOKEN="$token_env" VYSHKA_LOG_LEVEL=info \
+  "$bin" serve -config "$(native "$cfg")" -addr "127.0.0.1:$port_flag" -admin-token "$token_flag" -log-level error \
   > "$run_dir/hub-flag.log" 2>&1 &
 hub_pid=$!
 wait_healthy "$port_flag" "$run_dir/hub-flag.log"
@@ -130,7 +148,7 @@ expect "nothing on the file's port ($port_file)" "$(status "$port_file" "$token_
 expect "the environment's token is refused" "$(status "$port_flag" "$token_env")" 401
 expect "the file's token is refused" "$(status "$port_flag" "$token_file")" 401
 expect "the flag's token works" "$(status "$port_flag" "$token_flag")" 200
-expect "log-level info from the flag: INFO lines in the log" "$([ "$(info_lines "$run_dir/hub-flag.log")" -gt 0 ] && echo yes || echo no)" yes
+expect "log-level error from the flag over the environment's info: INFO lines" "$(info_lines "$run_dir/hub-flag.log")" 0
 stop
 
 step "4. No secret reached any hub's output"
@@ -143,15 +161,24 @@ grep -q "$token_file" "$etc/secrets/admin-token" || fail "the control grep canno
 echo "  (control: the same grep finds the file token in its secret file)"
 
 step "5. A bad file stops serve before it listens, naming the key and the file, never a value"
-refuse() { # refuse LABEL CONTENTS [SECRET-FILE-CONTENTS]
-  local file="$etc/bad-$RANDOM.toml" out rc=0
+# refuse LABEL CONTENTS: serve must exit by itself. It runs in the background with its PID
+# recorded, so a file that was wrongly accepted fails the demo after 10 s (the trap kills the
+# hub) instead of hanging it.
+refuse() {
+  local file="$etc/bad-$RANDOM.toml" out i rc=0
   printf '%b' "$2" > "$file"
-  out="$("$bin" serve -config "$(native "$file")" -addr "127.0.0.1:$port_flag" 2>&1)" || rc=$?
-  printf '  %-26s exit %s: %s\n' "$1" "$rc" "$(printf '%s' "$out" | tail -n 1 | sed "s|$(native "$etc")/||; s|$etc/||")"
+  "$bin" serve -config "$(native "$file")" -addr "127.0.0.1:$port_flag" > "$run_dir/refusal.txt" 2>&1 &
+  hub_pid=$!
+  for i in $(seq 1 100); do kill -0 "$hub_pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$hub_pid" 2>/dev/null && fail "$1: serve accepted the file and kept running"
+  wait "$hub_pid" || rc=$?
+  hub_pid=""
+  out="$(cat "$run_dir/refusal.txt")"
+  printf '  %-26s exit %s: %s\n' "$1" "$rc" "$(printf '%s' "$out" | tail -n 1 | cut -c1-150 | sed "s|$(native "$etc")/||; s|$etc/||")"
   [ "$rc" != 0 ] || fail "$1: serve accepted the file"
   case "$out" in *DEMO_VALUE*) fail "$1: the message carries a value" ;; esac
   case "$out" in *"$(basename "$file")"*) ;; *) fail "$1: the message does not name the file" ;; esac
-  printf '%s' "$out" > "$run_dir/last-refusal.txt"
+  cp "$run_dir/refusal.txt" "$run_dir/last-refusal.txt"
 }
 refuse "unknown key" 'adress = "DEMO_VALUE"\n'
 grep -q 'unknown key "adress"' "$run_dir/last-refusal.txt" || fail "the unknown key is not named"
@@ -160,18 +187,46 @@ grep -q 'key "backup-keep" is a string, want an integer' "$run_dir/last-refusal.
 refuse "duplicate key" 'addr = "DEMO_VALUE"\naddr = "DEMO_VALUE"\n'
 grep -q 'key "addr" is set twice' "$run_dir/last-refusal.txt" || fail "the duplicate is not named"
 refuse "unquoted secret" 'admin-token = DEMO_VALUE\n'
+grep -q 'line 1 is not valid TOML$' "$run_dir/last-refusal.txt" || fail "the syntax error is not reported by line alone"
 refuse "unreadable secret file" 'admin-token = "file:secrets/missing"\n'
 grep -q 'admin-token (from config file' "$run_dir/last-refusal.txt" || fail "the setting is not named"
 printf ' \n' > "$etc/secrets/empty"
 refuse "empty secret file" 'admin-token = "file:secrets/empty"\n'
 grep -Eq 'secrets.empty is empty' "$run_dir/last-refusal.txt" || fail "the empty file is not named"
+printf 'line one\nline two DEMO_VALUE\n' > "$etc/secrets/two-lines"
+refuse "two-line secret file" 'admin-token = "file:secrets/two-lines"\n'
+grep -q 'more than one line' "$run_dir/last-refusal.txt" || fail "the extra line is not reported"
 echo "  (every message above names the file; none carries the DEMO_VALUE each file held)"
 
-step "6. A file next to the hub is never read unless named"
+step "5b. The old SQLite URI spelling, DATABASE_URL=file:<database>, is refused and never echoes the database"
+# The database the first hub made holds audit rows with URLs in them, as any hub with a webhook does.
+db_file="$(native "$run_dir/a.db")"
+for command in serve config; do
+  rc=0
+  DATABASE_URL="file:$db_file" "$bin" "$command" -addr "127.0.0.1:$port_flag" > "$run_dir/old-uri.txt" 2>&1 &
+  hub_pid=$!
+  for i in $(seq 1 100); do kill -0 "$hub_pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$hub_pid" 2>/dev/null && fail "$command started on a database file named as a secret"
+  wait "$hub_pid" || rc=$?
+  hub_pid=""
+  printf '  %-6s exit %s, %s bytes of output: %s\n' "$command" "$rc" "$(wc -c < "$run_dir/old-uri.txt" | tr -d ' ')" \
+    "$(cut -c1-150 "$run_dir/old-uri.txt" | sed "s|$run_dir/||")..."
+  [ "$rc" != 0 ] || fail "$command accepted the database as a secret"
+  [ "$(wc -c < "$run_dir/old-uri.txt")" -lt 700 ] || fail "$command printed a lot"
+  grep -q "SQLite format" "$run_dir/old-uri.txt" && fail "$command echoed the database's contents"
+  grep -q 'sqlite://file:' "$run_dir/old-uri.txt" || fail "$command does not say how a SQLite URI is written now"
+done
+rc=0; DATABASE_URL="sqlite://file:$db_file" "$bin" config > "$run_dir/old-uri.txt" 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail "the sqlite://file: spelling was refused"
+echo "  and the spelling that works: DATABASE_URL=sqlite://file:... passes config ($(grep '^db ' "$run_dir/old-uri.txt" | sed "s|$run_dir/||"))"
+
+step "6. A file next to the hub is never read unless named, and the vyshka client's VYSHKA_CONFIG is not the hub's"
 printf 'addr = "127.0.0.1:1"\n' > "$away/hub.toml"; cp "$away/hub.toml" "$away/vyshka.toml"
-"$bin" config | sed -n '1p;/^addr /p'
-"$bin" config | grep -q '^addr .*127.0.0.1:8080 .*default' || fail "an unnamed file was read"
-rm -f "$away/hub.toml" "$away/vyshka.toml"
+printf '{"default":"home","profiles":{"home":{"url":"http://127.0.0.1:8080","token":"vya_client"}}}' > "$away/client.json"
+VYSHKA_CONFIG="$(native "$away/client.json")" "$bin" config > "$run_dir/implicit.txt" 2>&1 || fail "the client's VYSHKA_CONFIG broke the hub"
+sed -n '1p;/^addr /p' "$run_dir/implicit.txt"
+grep -q '^addr .*127.0.0.1:8080 .*default' "$run_dir/implicit.txt" || fail "an unnamed file was read"
+rm -f "$away/hub.toml" "$away/vyshka.toml" "$away/client.json"
 
 step "7. vyshka-hub config: what the hub will use, and from where (flags, environment, file, default)"
 secret_db="DEMO_DB_PASSWORD_$(random)"; secret_inline="vya_DEMO_INLINE_$(random)"
@@ -186,8 +241,8 @@ auto-tls = true
 auto-tls-cache = "/var/lib/vyshka/acme-cache"
 EOF
 chmod 600 "$etc/show.toml"
-show() { VYSHKA_LOG_LEVEL=warn VYSHKA_ADMIN_TOKEN="$token_env" "$bin" config -config "$(native "$etc/show.toml")" -addr 127.0.0.1:9000 -panel=false "$@" 2>&1; }
-show > "$run_dir/show.txt"
+VYSHKA_LOG_LEVEL=warn VYSHKA_ADMIN_TOKEN="$token_env" "$bin" config -config "$(native "$etc/show.toml")" -addr 127.0.0.1:9000 -panel=false \
+  > "$run_dir/show.txt" 2>&1 || fail "config failed"
 sed 's/^/  /' "$run_dir/show.txt"
 for secret in "$secret_db" "$secret_inline" "$token_env"; do
   if grep -q "$secret" "$run_dir/show.txt"; then fail "the config output carries a secret"; fi
@@ -195,12 +250,15 @@ done
 grep -q "$secret_db" "$etc/show.toml" || fail "the control grep cannot see the password"
 grep -q "$secret_inline" "$etc/show.toml" || fail "the control grep cannot see the inline token"
 echo "  none of the three secrets is in that output (control: the same grep finds the password and the inline token in show.toml)"
-grep -qE '^db +<redacted> +file$' "$run_dir/show.txt" || fail "db is not shown as redacted from the file"
+grep -qE '^db +postgres://<redacted>@db.example:5432/vyshka +file$' "$run_dir/show.txt" || fail "db is not shown with its credentials redacted and its host kept"
 grep -qE '^admin-token +<redacted> +env VYSHKA_ADMIN_TOKEN$' "$run_dir/show.txt" || fail "the token is not redacted from the environment"
 grep -qE '^log-level +warn +env VYSHKA_LOG_LEVEL$' "$run_dir/show.txt" || fail "env does not beat the file for log-level"
 grep -qE '^backup-keep +3 +file$' "$run_dir/show.txt" || fail "backup-keep is not from the file"
 grep -qE '^addr +127.0.0.1:9000 +flag$' "$run_dir/show.txt" || fail "addr is not from the flag"
 grep -qE '^panel +false +flag$' "$run_dir/show.txt" || fail "panel is not from the flag"
+DATABASE_URL="$(native "$run_dir/a.db")" "$bin" config > "$run_dir/plain-db.txt" 2>&1 || fail "config failed on a plain database path"
+grep -qE "^db +$(native "$run_dir/a.db") +env DATABASE_URL\$" "$run_dir/plain-db.txt" || fail "a plain SQLite path is not shown"
+echo "  a plain SQLite path is not a secret: $(grep '^db ' "$run_dir/plain-db.txt" | sed "s|$run_dir/||")"
 
 step "8. The same command runs serve's checks: an unreadable secret, an incoherent auto-TLS combination"
 rc=0; out="$("$bin" config -config "$(native "$etc/show.toml")" -admin-token file:/nonexistent/token 2>&1)" || rc=$?
@@ -211,22 +269,28 @@ rc=0; out="$("$bin" config -config "$(native "$etc/tls.toml")" 2>&1)" || rc=$?
 printf '  exit %s: %s\n' "$rc" "$(printf '%s' "$out" | tail -n 1 | cut -c1-110)"
 [ "$rc" != 0 ] || fail "an incoherent auto-TLS combination passed the check"
 
-step "9. A secret written into a file that group or others can read earns one warning (not on Windows)"
+step "9. Inline secrets in a file that others can read earn one warning naming the keys (not on Windows)"
+warnings() { "$bin" config -config "$1" 2>&1 >/dev/null | grep -c '^warning:' || true; }
 if [ "$(go env GOOS)" = windows ]; then
-  echo "  skipped: Windows has no group or other permission bits"
+  echo "  skipped: Windows has no permission bits (the warning logic is unit-tested there with the check forced on)"
 else
   chmod 644 "$etc/show.toml"
-  warn="$("$bin" config -config "$etc/show.toml" 2>&1 >/dev/null | grep -c '^warning:' || true)"
-  expect "warnings for a 0644 file holding two inline secrets" "$warn" 2
+  expect "warnings for a 0644 file holding two inline secrets" "$(warnings "$etc/show.toml")" 1
   "$bin" config -config "$etc/show.toml" 2>&1 >/dev/null | sed 's/^/  /'
-  everything="$("$bin" config -config "$etc/show.toml" 2>&1)"
-  case "$everything" in *"$secret_db"*|*"$secret_inline"*) fail "a warning carries a secret" ;; esac
+  "$bin" config -config "$etc/show.toml" > "$run_dir/loose.txt" 2>&1 || fail "config failed"
+  if grep -q -e "$secret_db" -e "$secret_inline" "$run_dir/loose.txt"; then fail "a warning carries a secret"; fi
+  chmod 640 "$etc/show.toml"
+  expect "warnings for a 0640 file (shared with a service group)" "$(warnings "$etc/show.toml")" 0
   chmod 600 "$etc/show.toml"
-  expect "warnings once the file is 0600" "$("$bin" config -config "$etc/show.toml" 2>&1 >/dev/null | grep -c '^warning:' || true)" 0
+  expect "warnings for a 0600 file" "$(warnings "$etc/show.toml")" 0
+  printf 'db = "%s"\nadmin-token = "file:/run/secrets/admin_token"\n' "$run_dir/a.db" > "$etc/plain.toml"; chmod 644 "$etc/plain.toml"
+  expect "warnings for a 0644 file with a plain SQLite path and a file: reference" "$(warnings "$etc/plain.toml")" 0
 fi
 
 step "10. The storage command takes db from the same file (db only; the other keys are checked, not used)"
-"$bin" storage -config "$(native "$cfg")" | head -n 2 | sed 's/^/  /'
+"$bin" storage -config "$(native "$cfg")" > "$run_dir/storage.txt" 2>&1 || fail "storage failed"
+head -n 2 "$run_dir/storage.txt" | sed "s|$(native "$run_dir")/||; s/^/  /"
+grep -q '^sqlite database .*a.db' "$run_dir/storage.txt" || fail "storage did not report the file's database"
 printf 'dbb = "x.db"\n' > "$etc/typo.toml"
 rc=0; out="$("$bin" storage -config "$(native "$etc/typo.toml")" 2>&1)" || rc=$?
 printf '  a typo in the shared file: exit %s: %s\n' "$rc" "$(printf '%s' "$out" | tail -n 1 | sed "s|$(native "$etc")/||")"

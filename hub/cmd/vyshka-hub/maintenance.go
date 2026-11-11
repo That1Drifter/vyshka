@@ -74,9 +74,8 @@ func maintenanceDSN(flags *flag.FlagSet) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, w := range resolved.warnings {
-		fmt.Fprintf(os.Stderr, "warning: config file %s holds an inline %s and is readable by group or others (mode %04o)\n",
-			w.file, w.key, w.mode)
+	if resolved.warning != nil {
+		fmt.Fprintln(os.Stderr, "warning: "+resolved.warning.text())
 	}
 	return resolved.secret("db", flags.Lookup("db").Value.String())
 }

@@ -32,12 +32,17 @@ services:
       # no maps: the map view lists players without imagery.
       - ./maps:/maps:ro
       # A TOML config file (hub.toml.example; README.md here, "The config
-      # file"): copy the example to hub.toml, mount it, and name it below.
+      # file"): copy the example to hub.toml, make it readable by uid 65532,
+      # mount it, and name it below.
       # - ./hub.toml:/etc/vyshka/hub.toml:ro
     environment:
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
       VYSHKA_MAPS_DIR: /maps
-      # VYSHKA_CONFIG: /etc/vyshka/hub.toml
+      # VYSHKA_HUB_CONFIG: /etc/vyshka/hub.toml
+      # The image sets VYSHKA_ADDR and DATABASE_URL, and an environment variable
+      # outranks the file. To let the file's addr or db apply, release them:
+      # VYSHKA_ADDR: ""
+      # DATABASE_URL: ""
       # VYSHKA_METRICS_ADDR: 0.0.0.0:9190
       # The default is the SQLite file in ./data. To keep the system of
       # record in a Postgres you already run, set the URL here instead (the

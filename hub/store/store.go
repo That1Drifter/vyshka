@@ -129,7 +129,13 @@ func resolveDSN(dsn string) (driver dialect, target string, err error) {
 	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
 		return dialectPostgres, dsn, nil
 	case strings.Contains(dsn, "://"):
+		// Only a plausible scheme is echoed: the text before the first ://
+		// of a DSN that came from a file: reference, or that carries a
+		// password, can be anything, up to the whole of a mistaken file.
 		scheme, _, _ := strings.Cut(dsn, "://")
+		if len(scheme) > 32 || strings.Trim(scheme, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-") != "" {
+			return "", "", errors.New("unsupported database scheme (the text before :// is not a URL scheme)")
+		}
 		return "", "", fmt.Errorf("unsupported database scheme %q", scheme)
 	default:
 		return dialectSQLite, dsn, nil

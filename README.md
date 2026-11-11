@@ -65,7 +65,7 @@ curl http://127.0.0.1:8080/healthz
 ```
 
 `serve` takes `-addr` (env `VYSHKA_ADDR`), `-db` (env `DATABASE_URL`, empty means a local
-SQLite file; see below, and it takes `file:/path/to/secret` too), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
+SQLite file; see below; it also takes `file:/path/to/secret`, which since the config file no longer means a SQLite URI: write that `sqlite://file:...`), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts `file:/path/to/secret`),
 `-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
 `VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
 `panel/README.md`), plus `-backup-dir` and `-backup-keep` (env `VYSHKA_BACKUP_DIR`,
@@ -80,7 +80,7 @@ its own it stops minting one, because a fresh superuser token on every boot woul
 revocation never survived a restart. Logs are structured JSON on stdout.
 
 Every `serve` setting can also come from one TOML file, named with `-config` or
-`VYSHKA_CONFIG` (the hub reads no file it was not told about); a key is the flag's name
+`VYSHKA_HUB_CONFIG` (the hub reads no file it was not told about; `VYSHKA_CONFIG` is the `vyshka` client's); a key is the flag's name
 without the dash, and `deploy/hub.toml.example` lists them all. **Precedence, highest first:
 a command-line flag, an environment variable, the config file, the built-in default.** A hub
 with no file behaves exactly as before, and a unit or container overrides one value of a
