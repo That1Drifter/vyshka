@@ -48,6 +48,8 @@ could not run at all, so it drops straight into CI.
 | `-check-timeout` | `90s` | Budget for one check, which may hold several long-polls |
 | `-wait` | `0` | Poll `/healthz` for up to this long before starting, for CI |
 | `-webhook-listen` | `127.0.0.1:0` | Where the webhook checks bind their local receiver; the hub under test must be able to reach it |
+| `-ca-file` | none | PEM file of roots to trust for an `https://` hub on top of the system's, for a hub whose certificate comes from a private or test CA |
+| `-connect-to` | none | `host:port` to dial for the hub instead of the URL's host; TLS still verifies the URL's name, for a hub name with no DNS record on this machine |
 | `-webhook-advertise` | bound address | Base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels) |
 | `-state-history-depth` | `500` | Snapshot history depth the hub under test is configured with; the replay-after-prune check pushes one snapshot more than this to force a history trim. Against a hub configured deeper the trim never happens and the check degrades to plain cross-session dedup; a depth in the tens of thousands also needs a larger `-check-timeout` to fit the pushes |
 | `-json` | off | Machine-readable results instead of the text report |

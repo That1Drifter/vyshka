@@ -5,6 +5,8 @@
 //	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
 //	                 [-backup-dir DIR] [-backup-keep N]
 //	                 [-metrics-addr host:port]
+//	                 [-auto-tls -auto-tls-hosts NAMES [-auto-tls-cache DIR] [-auto-tls-email ADDR]
+//	                  [-auto-tls-directory URL] [-auto-tls-ca-roots FILE] [-auto-tls-http-addr host:port|off]]
 //	vyshka-hub storage [-db DSN] [-json]
 //	vyshka-hub vacuum [-db DSN]
 //	vyshka-hub version
@@ -12,6 +14,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -97,6 +100,29 @@ func runServe(args []string) error {
 	metricsAddr := flags.String("metrics-addr", os.Getenv("VYSHKA_METRICS_ADDR"),
 		"listen address of the Prometheus endpoint, GET /metrics on a listener of its own, unauthenticated: "+
 			"keep it on loopback or a private network (env VYSHKA_METRICS_ADDR); empty disables it")
+	autoTLSDefault := false
+	if raw := os.Getenv("VYSHKA_AUTO_TLS"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("VYSHKA_AUTO_TLS=%q is not true or false", raw)
+		}
+		autoTLSDefault = parsed
+	}
+	var tlsFlags autoTLSFlags
+	flags.BoolVar(&tlsFlags.enabled, "auto-tls", autoTLSDefault,
+		"obtain and renew a certificate over ACME and serve TLS on -addr (default :443 when on) (env VYSHKA_AUTO_TLS)")
+	flags.StringVar(&tlsFlags.hosts, "auto-tls-hosts", os.Getenv("VYSHKA_AUTO_TLS_HOSTS"),
+		"comma-separated DNS names to get certificates for, required with -auto-tls; no other name gets one (env VYSHKA_AUTO_TLS_HOSTS)")
+	flags.StringVar(&tlsFlags.cacheDir, "auto-tls-cache", os.Getenv("VYSHKA_AUTO_TLS_CACHE"),
+		"directory for the ACME account key and certificates, created 0700; empty means "+autoTLSCacheName+" beside the SQLite file (env VYSHKA_AUTO_TLS_CACHE)")
+	flags.StringVar(&tlsFlags.email, "auto-tls-email", os.Getenv("VYSHKA_AUTO_TLS_EMAIL"),
+		"contact address given to the CA, optional (env VYSHKA_AUTO_TLS_EMAIL)")
+	flags.StringVar(&tlsFlags.directory, "auto-tls-directory", os.Getenv("VYSHKA_AUTO_TLS_DIRECTORY"),
+		"ACME directory URL; empty means Let's Encrypt production (env VYSHKA_AUTO_TLS_DIRECTORY)")
+	flags.StringVar(&tlsFlags.caRoots, "auto-tls-ca-roots", os.Getenv("VYSHKA_AUTO_TLS_CA_ROOTS"),
+		"PEM file of extra roots to trust for the ACME directory's own TLS, for a private or test CA (env VYSHKA_AUTO_TLS_CA_ROOTS)")
+	flags.StringVar(&tlsFlags.httpAddr, "auto-tls-http-addr", os.Getenv("VYSHKA_AUTO_TLS_HTTP_ADDR"),
+		"plain listener for ACME HTTP-01 and the redirect to https, nothing else; empty means :80, off disables it (env VYSHKA_AUTO_TLS_HTTP_ADDR)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -104,6 +130,16 @@ func runServe(args []string) error {
 	envFallback(flags, "admin-token", "VYSHKA_ADMIN_TOKEN", adminToken)
 	if *backupKeep < 1 {
 		return fmt.Errorf("backup keep: %d is below 1", *backupKeep)
+	}
+	addrGiven := os.Getenv("VYSHKA_ADDR") != ""
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "addr" {
+			addrGiven = true
+		}
+	})
+	tlsPlan, listenAddr, err := planAutoTLS(tlsFlags, *addr, addrGiven, *dsn)
+	if err != nil {
+		return err
 	}
 	if *mapsDir != "" {
 		info, err := os.Stat(*mapsDir)
@@ -130,8 +166,18 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var tlsRuntime *autoTLS
+	var tlsConfig *tls.Config
+	if tlsPlan != nil {
+		tlsRuntime, tlsConfig, err = prepareAutoTLS(tlsPlan, logger)
+		if err != nil {
+			return err
+		}
+	}
+
 	config := hub.Config{
-		Addr:        *addr,
+		Addr:        listenAddr,
+		TLSConfig:   tlsConfig,
 		DatabaseURL: *dsn,
 		AdminToken:  resolvedAdminToken,
 		Logger:      logger,
@@ -150,6 +196,14 @@ func runServe(args []string) error {
 		return err
 	}
 	defer server.Close()
+
+	if tlsRuntime != nil {
+		closePlain, err := tlsRuntime.start(ctx)
+		if err != nil {
+			return err
+		}
+		defer closePlain()
+	}
 
 	return server.Serve(ctx)
 }

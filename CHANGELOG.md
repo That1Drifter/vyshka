@@ -23,6 +23,8 @@ before that date stay as they were written.
   directory; `vyshka-hub storage` and `vacuum`, and a restore runbook in `deploy/README.md` (#83).
 - 2026-11-11: Prometheus metrics at `GET /metrics` on a listener of its own (`-metrics-addr`,
   off by default; issue #82); every metric is documented in `deploy/README.md`.
+- 2026-11-11: `-auto-tls` gets a certificate over ACME and serves TLS without a proxy, with
+  `scripts/demo-auto-tls.sh` against Pebble and a no-proxy layout in `deploy/README.md` (issue #85).
 
 ### [0.3.0] - 2026-10-03
 

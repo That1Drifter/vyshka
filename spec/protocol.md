@@ -369,8 +369,8 @@ WebSocket support.
 
 All transport MUST be TLS in production deployments. The reference hub does not terminate
 public traffic itself by default (reverse-proxy snippets are documented) and offers
-`--auto-tls` (embedded ACME) for single-box setups; these are implementation details, not
-protocol requirements.
+`-auto-tls` (embedded ACME) to terminate TLS itself without a proxy; these are
+implementation details, not protocol requirements.
 
 ## 4. Message envelope
 

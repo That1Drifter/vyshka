@@ -54,6 +54,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# No capabilities. -auto-tls on 443 and 80 needs CAP_NET_BIND_SERVICE, which
+# a drop-in grants (deploy/README.md, "Without a proxy").
 CapabilityBoundingSet=
 UMask=0077
 

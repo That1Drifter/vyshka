@@ -1,0 +1,29 @@
+# The compose layout without a proxy: the hub gets its own certificate over
+# ACME (-auto-tls) and serves 443 itself, with 80 for HTTP-01 and the
+# redirect to https. Layer it over docker-compose.yml from this directory,
+# after pointing the DNS name at this host and setting it below:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.auto-tls.yml up -d --build
+#
+# The account key and certificates are kept in ./data/acme-cache beside the
+# database, so a rebuilt container reuses them instead of ordering again.
+services:
+  hub:
+    ports: !override
+      - "443:443"
+      - "80:80"
+    # The image runs as a non-root user. Docker already lets an unprivileged
+    # process in a container bind ports below 1024 (this sysctl is 0 by
+    # default since Engine 20.10); it is set here so the file says so.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    environment:
+      VYSHKA_ADDR: ":443"
+      VYSHKA_AUTO_TLS: "true"
+      VYSHKA_AUTO_TLS_HOSTS: hub.example.org
+      # Optional: the CA mails expiry warnings here.
+      # VYSHKA_AUTO_TLS_EMAIL: ops@example.org
+      # Try the setup against Let's Encrypt staging first; its certificates
+      # are not trusted, but its rate limits are generous. Remove the line,
+      # and ./data/acme-cache, to switch to production.
+      # VYSHKA_AUTO_TLS_DIRECTORY: https://acme-staging-v02.api.letsencrypt.org/directory

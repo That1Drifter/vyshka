@@ -6,6 +6,7 @@
 // Usage:
 //
 //	go run ./conformance/hub -url http://127.0.0.1:8080 -admin-token TOKEN [-wait 30s] [-json]
+//	go run ./conformance/hub -url https://hub.example:8443 -ca-file root.pem -connect-to 127.0.0.1:8443 ...
 //
 // Exit code is 0 when every check passes, 1 when any check fails, and 2 when
 // the suite could not be run at all.
@@ -13,10 +14,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -36,6 +41,10 @@ func main() {
 	stateHistoryDepth := flag.Int("state-history-depth", 500,
 		"snapshot history depth the hub under test is configured with (reference: 500); the state replay-after-prune check pushes one snapshot more than this to force a history trim")
 	asJSON := flag.Bool("json", false, "emit machine-readable results")
+	caFile := flag.String("ca-file", "",
+		"PEM file of roots to trust for an https hub, on top of the system's (a hub with a private or test CA)")
+	connectTo := flag.String("connect-to", "",
+		"host:port to dial for the hub instead of the URL's host; TLS still verifies the URL's name (a name with no DNS record here)")
 	flag.Parse()
 
 	// Refusing to start beats skipping checks. A suite that runs green while
@@ -47,14 +56,21 @@ func main() {
 	}
 
 	baseURL := strings.TrimRight(*url, "/")
+	roots, transport, err := hubTransport(baseURL, *caFile, *connectTo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "conformance:", err)
+		os.Exit(2)
+	}
 	env := Env{
 		BaseURL: baseURL,
-		Client:  &http.Client{Timeout: *timeout},
+		Client:  &http.Client{Timeout: *timeout, Transport: transport},
 		// A poll is meant to be held. Its client waits out the longest timeout
 		// the protocol lets a hub negotiate, plus the margin a plugin must also
 		// leave (spec section 3.1.1), so a held request is never mistaken for a
 		// hung one.
-		PollClient:        &http.Client{Timeout: maxPollTimeout + 5*time.Second},
+		PollClient:        &http.Client{Timeout: maxPollTimeout + 5*time.Second, Transport: transport},
+		RootCAs:           roots,
+		ConnectTo:         *connectTo,
 		AdminToken:        *adminToken,
 		WebhookListen:     *webhookListen,
 		WebhookAdvertise:  *webhookAdvertise,
@@ -106,6 +122,55 @@ func main() {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// hubTransport builds the HTTP transport for -ca-file and -connect-to. With
+// neither it returns nil, which leaves net/http's default transport, so a
+// plain run is exactly what it was before the flags existed. -connect-to
+// redirects only dials to the hub's own host:port; the webhook checks' local
+// receiver and anything else is dialed as addressed.
+func hubTransport(baseURL, caFile, connectTo string) (*x509.CertPool, http.RoundTripper, error) {
+	if caFile == "" && connectTo == "" {
+		return nil, nil, nil
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var roots *x509.CertPool
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("-ca-file: %w", err)
+		}
+		roots, err = x509.SystemCertPool()
+		if err != nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, nil, fmt.Errorf("-ca-file: %s holds no PEM certificate", caFile)
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	}
+	if connectTo != "" {
+		target, err := neturl.Parse(baseURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("-url: %w", err)
+		}
+		hubAddr := target.Host
+		if target.Port() == "" {
+			if target.Scheme == "https" {
+				hubAddr += ":443"
+			} else {
+				hubAddr += ":80"
+			}
+		}
+		var dialer net.Dialer
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == hubAddr {
+				addr = connectTo
+			}
+			return dialer.DialContext(ctx, network, addr)
+		}
+	}
+	return roots, transport, nil
 }
 
 // Result is one graded check.
