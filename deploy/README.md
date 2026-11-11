@@ -93,6 +93,191 @@ vyshka-hub`; migrations run on boot. The unit's stop timeout is above the hub's 
 and the same nginx server block terminates TLS in front of it. Logs go to the journal
 (`journalctl -u vyshka-hub`), one JSON line per request.
 
+## Backup and restore
+
+### Taking a backup (SQLite)
+
+`POST /api/v1/admin/backup` with an `admin` token writes a snapshot of the running hub's
+database and answers once the file is complete and synced:
+
+```
+curl -s -X POST -H "Authorization: Bearer $(sudo cat /etc/vyshka/admin-token)" \
+  http://127.0.0.1:8080/api/v1/admin/backup
+{
+  "backup": {
+    "name": "vyshka-20261111T163538.508Z.db",
+    "path": "/var/lib/vyshka/backups/vyshka-20261111T163538.508Z.db",
+    "sizeBytes": 364544, "takenAt": "2026-11-11T16:35:38.508Z", "durationMs": 69
+  },
+  "kept": ["vyshka-20261111T163538.508Z.db"],
+  "pruned": []
+}
+```
+
+- **What it is.** The database as of one committed instant, taken with SQLite's
+  `VACUUM INTO` on a read connection of its own, so the hub keeps serving while it runs
+  (measured: a 60 MiB database copied in 100 ms with admin writes landing throughout, none
+  refused). The copy is compacted and is a plain SQLite file a hub boots on directly. One
+  thing in it differs from the live database on purpose: every plugin session open at that
+  instant is closed, so after a restore each plugin opens a new session (see below).
+- **Where it lands.** `-backup-dir` (env `VYSHKA_BACKUP_DIR`), by default a `backups`
+  directory beside the database file: `/var/lib/vyshka/backups` under the systemd unit,
+  `deploy/data/backups` under compose. Under the unit, a directory outside
+  `/var/lib/vyshka` also needs a `ReadWritePaths=` line, because the unit mounts the rest
+  of the file system read-only. The hub names the file (`vyshka-<UTC time>.db`); the
+  request takes no body, so no caller can choose a path. A snapshot being written is named
+  `*.db.partial` and is never counted as a backup; one left by a crash is removed at the
+  next backup.
+- **How many are kept.** `-backup-keep` (env `VYSHKA_BACKUP_KEEP`, default 7). After each
+  snapshot the oldest beyond the bound are deleted, and only files named like a snapshot
+  are counted or touched. The directory therefore never holds more than that many
+  databases plus the one being written, whoever holds the token; one snapshot runs at a
+  time, and a second request meanwhile answers `409 conflict`.
+- **Off the box.** The directory sits on the same disk as the database, which protects
+  against a bad change or a corrupted file, not against losing the disk. Copy finished
+  snapshots elsewhere (`rsync` or `rclone` the `*.db` files, never the `.partial` ones).
+- **Scheduling.** Anything that can run `curl` on a timer will do: a cron line, or a
+  systemd timer beside the unit. Use a token minted for the purpose (`POST /api/v1/tokens`
+  with the `admin` scope, the only one this route accepts) so it can be revoked on its own.
+
+Do not copy `vyshka.db` by hand while the hub runs. In WAL mode the recent writes live in
+`vyshka.db-wal` until a checkpoint folds them in; measured after a hub was killed, the main
+file was 4 KiB and everything was in a 1 MiB WAL.
+
+### Taking a backup (Postgres)
+
+The endpoint answers `409 conflict` with `details.backend` set to `postgres`: the hub has
+no file to copy, and Postgres ships the right tool. Run `pg_dump` against the database in
+`DATABASE_URL`:
+
+```
+pg_dump --format=custom --file=vyshka-$(date -u +%Y%m%dT%H%M%SZ).dump "$DATABASE_URL"
+```
+
+`pg_dump` reads one consistent snapshot while the hub serves. To restore, stop the hub,
+restore into an empty database (`pg_restore --no-owner --dbname=<empty database URL>
+<file>`), and before booting the hub close the sessions the dump carried, which the
+SQLite snapshot does for itself (the reason is under "What a restore means"):
+
+```
+psql "<restored database URL>" -c "UPDATE sessions
+  SET ended_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+      end_reason = 'restored-from-backup'
+  WHERE ended_at IS NULL"
+```
+
+Then point `DATABASE_URL` at it and boot. The Postgres path was not exercised when this
+was written (no Postgres was reachable); restarting every game server's plugin after the
+restore, so each opens a new session, reaches the same state without the statement.
+Everything else under "What a restore means" applies to Postgres too.
+
+### Restoring (SQLite)
+
+This is the procedure as performed on 2026-11-11 against a hub holding a server with a
+session, events, a key, a ban, and a webhook, with a second key and ban written after the
+snapshot. The paths are the systemd layout; under compose they are `deploy/data/...` and
+the stop is `docker compose stop hub`.
+
+1. Stop the hub: `sudo systemctl stop vyshka-hub`.
+2. Move the current database aside, **with its `-wal` and `-shm` files**, rather than
+   deleting it; it is the only record of what happened after the snapshot:
+   ```
+   cd /var/lib/vyshka
+   sudo -u vyshka mkdir before-restore
+   sudo -u vyshka mv vyshka.db vyshka.db-wal vyshka.db-shm before-restore/ 2>/dev/null
+   ```
+   The `-wal` file must not stay beside the restored database. SQLite replays a WAL it
+   finds next to a database without checking that the two belong together: measured,
+   a snapshot restored next to the old WAL booted as the newer database, with the key and
+   ban written after the snapshot back in place, which is not the restore that was asked
+   for and, with different page layouts, can be a corrupt one.
+3. Put the snapshot in place, owned by the service user:
+   ```
+   sudo install -o vyshka -g vyshka -m 0600 backups/vyshka-<time>.db vyshka.db
+   ```
+4. Boot and check: `sudo systemctl start vyshka-hub`, then `curl -s
+   http://127.0.0.1:8080/healthz` (`"database":{"driver":"sqlite","ok":true,...}`) and
+   `sudo -u vyshka vyshka-hub storage -db /var/lib/vyshka/vyshka.db` for the row counts.
+   Migrations run on boot as usual, so a snapshot taken by an older hub restores into a
+   newer one.
+
+What the drill observed after step 4: the server, both events, the key written before the
+snapshot, the ban, and the webhook were back; the key written after it answered 404; the
+plugin's old session token answered `401 session_invalid`, and its stored server secret
+opened a new session at once, which polled normally.
+
+### What a restore means
+
+- **Everything after the snapshot is gone**: events, actions, key writes, bans, notes,
+  webhook changes, and servers enrolled since. A server enrolled after the snapshot is
+  unknown to the restored hub; issue it a new enrollment token.
+- **Tokens.** An Admin API token minted after the snapshot no longer exists, and **a token
+  revoked after the snapshot is valid again**. Before trusting the restored hub, list what
+  was revoked since and revoke it again; the database moved aside in step 2 holds the
+  record: `sqlite3 before-restore/vyshka.db "SELECT id, name, revoked_at FROM admin_tokens
+  WHERE revoked_at > '<takenAt>'"` (run it with the `-wal` file beside it, in that
+  directory, so the newest writes are read).
+- **Plugin sessions.** Every session open at the snapshot is closed in it, so each plugin's
+  next poll answers `session_invalid` and the plugin opens a new session with its stored
+  secret (spec/protocol.md section 5.3). That is the only safe outcome: the session's
+  sequence state moved on after the snapshot, and a plugin carrying on in it would hold
+  an ack the restored hub is behind, leaving a gap neither side can close. Measured with
+  the closing disabled: the plugin's next two envelopes were answered `ack: 1` forever and
+  never stored. In a new session both sides renumber whatever is unacked (section 9.1), so
+  events a plugin had not yet had acknowledged are delivered again.
+- **The ban list** goes back with the data, and its revision with it. Plugins walk the list
+  whenever the revision they learn differs from the one they enforce, not only when it is
+  higher (section 13.4), so they converge on the restored list; a list cursor from after
+  the snapshot answers `409 conflict` and the walk starts over (section 13.3). The hub
+  mints revisions from its clock (section 13.1), so its next change lands above every
+  revision handed out before the restore (the demo checks this) **provided the clock was
+  not set back**: restore onto a host with a correct clock.
+- **Webhooks.** Deliveries pending at the snapshot are attempted again, under the same
+  `deliveryId`, so a receiver that deduplicates on it (section 11.3) sees repeats, not new
+  notifications.
+
+### Retention and size
+
+`vyshka-hub storage` reports each table's rows and bytes on disk and what each background
+pass would do if it ran now. It only reads and never creates or migrates a database, so it
+is safe against a database a running hub has open (measured under write load: no request
+refused). On SQLite it also reports the file size, the free pages a vacuum would return,
+and the WAL's size:
+
+```
+$ sudo -u vyshka vyshka-hub storage -db /var/lib/vyshka/vyshka.db
+sqlite database /var/lib/vyshka/vyshka.db, at 2026-11-11T16:28:06Z
+file 59.1 MiB, of which free 29.3 MiB (a vacuum returns it), WAL 2.0 MiB
+
+                    TABLE  ROWS      SIZE
+                  ...
+What the background passes would do if they ran now (each pass works in bounded batches):
+PASS                        TABLE                 EFFECT  ROWS
+action expiry               actions               update  0
+event retention             events                delete  0
+...
+```
+
+`-json` prints the same as JSON. Webhook delivery retention is counted at the hub's default
+of seven days.
+
+`vyshka-hub vacuum -db <file>` rebuilds a SQLite database to hand freed pages back to the
+file system (Postgres reclaims space on its own with autovacuum). It needs the database to
+itself: run against a live hub, a plain vacuum made one of the hub's writes fail with
+`SQLITE_BUSY`, so the command takes SQLite's exclusive lock first and refuses while any
+other process has the file open:
+
+```
+$ vyshka-hub vacuum -db /var/lib/vyshka/vyshka.db        # hub running
+vyshka-hub: vacuum: another process has this database open; stop the hub first (database is locked (5) (SQLITE_BUSY))
+$ sudo systemctl stop vyshka-hub
+$ sudo -u vyshka vyshka-hub vacuum -db /var/lib/vyshka/vyshka.db
+vacuumed /var/lib/vyshka/vyshka.db in 308ms: 59.1 MiB -> 29.8 MiB
+$ sudo systemctl start vyshka-hub
+```
+
+A snapshot is already compacted, so taking a backup also shows what a vacuum would gain.
+
 ## A branch hub beside a live one
 
 To try unreleased work over a real network without touching a hub that serves live game

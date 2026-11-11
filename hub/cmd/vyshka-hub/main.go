@@ -3,6 +3,9 @@
 // Usage:
 //
 //	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
+//	                 [-backup-dir DIR] [-backup-keep N]
+//	vyshka-hub storage [-db DSN] [-json]
+//	vyshka-hub vacuum [-db DSN]
 //	vyshka-hub version
 package main
 
@@ -13,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -36,6 +40,10 @@ func run(args []string) error {
 	switch args[0] {
 	case "serve":
 		return runServe(args[1:])
+	case "storage":
+		return runStorage(args[1:])
+	case "vacuum":
+		return runVacuum(args[1:])
 	case "version":
 		fmt.Println(hub.Version)
 		return nil
@@ -53,6 +61,8 @@ func usage() {
 
 Commands:
   serve      run the hub
+  storage    report table sizes and what the retention sweeps would remove now
+  vacuum     compact a SQLite database (stop the hub first)
   version    print the build version
 
 Run "vyshka-hub serve -h" for serve flags.
@@ -75,11 +85,22 @@ func runServe(args []string) error {
 		"serve the embedded web panel at /panel/ (env VYSHKA_PANEL, \"false\" disables it)")
 	mapsDir := flags.String("maps-dir", os.Getenv("VYSHKA_MAPS_DIR"),
 		"directory of map tilesets for the panel's live map, one subdirectory per world (env VYSHKA_MAPS_DIR); empty serves none")
+	backupDir := flags.String("backup-dir", os.Getenv("VYSHKA_BACKUP_DIR"),
+		"directory for POST /api/v1/admin/backup snapshots (env VYSHKA_BACKUP_DIR); empty means a backups directory beside the SQLite file")
+	keepDefault, err := envInt("VYSHKA_BACKUP_KEEP", hub.DefaultBackupKeep)
+	if err != nil {
+		return err
+	}
+	backupKeep := flags.Int("backup-keep", keepDefault,
+		"snapshots the backup endpoint keeps before deleting the oldest (env VYSHKA_BACKUP_KEEP)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	envFallback(flags, "db", "DATABASE_URL", dsn)
 	envFallback(flags, "admin-token", "VYSHKA_ADMIN_TOKEN", adminToken)
+	if *backupKeep < 1 {
+		return fmt.Errorf("backup keep: %d is below 1", *backupKeep)
+	}
 	if *mapsDir != "" {
 		info, err := os.Stat(*mapsDir)
 		if err != nil {
@@ -110,6 +131,8 @@ func runServe(args []string) error {
 		DatabaseURL: *dsn,
 		AdminToken:  resolvedAdminToken,
 		Logger:      logger,
+		BackupDir:   *backupDir,
+		BackupKeep:  *backupKeep,
 	}
 	if *servePanel {
 		config.Panel = panel.NewHandler(panel.Config{MapsDir: *mapsDir})
@@ -174,6 +197,20 @@ func resolveSecret(value string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return secret, nil
+}
+
+// envInt is envOr for an integer flag's default. A value that does not parse
+// is an error rather than a silent fallback.
+func envInt(key string, fallback int) (int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not an integer", key, value)
+	}
+	return parsed, nil
 }
 
 func envOr(key, fallback string) string {

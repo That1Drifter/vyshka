@@ -5,4 +5,4 @@
 export const PROTOCOL_DRAFT = "0.33";
 
 /** The info.version of spec/openapi-admin.yaml this package was generated from. */
-export const OPENAPI_VERSION = "0.13.0";
+export const OPENAPI_VERSION = "0.14.0";

@@ -151,6 +151,10 @@ func operationCases() []operationCase {
 		{"revokeToken", "RevokeToken", "", func(ctx context.Context, c *Client) error {
 			return c.RevokeToken(ctx, "t1")
 		}},
+		{"takeBackup", "TakeBackup", "", func(ctx context.Context, c *Client) error {
+			_, err := c.TakeBackup(ctx)
+			return err
+		}},
 		{"listAudit", "ListAudit", "", func(ctx context.Context, c *Client) error {
 			_, err := c.ListAudit(ctx, AuditQuery{TokenID: "t1", ServerID: "s1", Since: &since, Until: &until, Limit: 10, Cursor: "c"})
 			return err

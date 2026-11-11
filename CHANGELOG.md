@@ -19,6 +19,9 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+- 2026-11-11: `POST /api/v1/admin/backup` snapshots a running SQLite hub into a bounded
+  directory; `vyshka-hub storage` and `vacuum`, and a restore runbook in `deploy/README.md` (#83).
+
 ### [0.3.0] - 2026-10-03
 
 Everything after 0.2.0: the `vyshka` command-line client (#138), the Go and TypeScript

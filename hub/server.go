@@ -140,6 +140,13 @@ type Config struct {
 	// BanSweepInterval is how often expired bans are taken off the
 	// installation ban list (spec section 13.1 allows 60 s; reference 5 s).
 	BanSweepInterval time.Duration
+	// BackupDir is where POST /api/v1/admin/backup writes SQLite snapshots.
+	// Empty means a `backups` directory beside the database file.
+	BackupDir string
+	// BackupKeep bounds how many snapshots the backup endpoint keeps; older
+	// ones are deleted after each new one. Zero or less means
+	// DefaultBackupKeep.
+	BackupKeep int
 	// Panel is the optional web UI, served under /panel/ with the prefix
 	// stripped, and reached by a redirect from /. Nil serves no panel and
 	// leaves / a 404 like any other unrouted path. The hub takes it as a
@@ -274,7 +281,7 @@ func (c *Config) withDefaults() {
 		c.WebhookDeliveryTimeout = 10 * time.Second
 	}
 	if c.WebhookDeliveryRetention <= 0 {
-		c.WebhookDeliveryRetention = 7 * 24 * time.Hour
+		c.WebhookDeliveryRetention = DefaultWebhookDeliveryRetention
 	}
 	// The reference window of spec section 8.4: snapshots are kept a day.
 	if c.StateSnapshotRetention <= 0 {
@@ -297,6 +304,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.BanSweepInterval > maxBanSweepInterval {
 		c.BanSweepInterval = maxBanSweepInterval
+	}
+	if c.BackupKeep <= 0 {
+		c.BackupKeep = DefaultBackupKeep
 	}
 }
 
@@ -328,6 +338,8 @@ type Server struct {
 	// own loop and shutdown, and Close stops it before the store closes.
 	webhooks  *webhook.Dispatcher
 	closeOnce sync.Once
+	// backupRunning admits one snapshot at a time (backup.go).
+	backupRunning sync.Mutex
 	// backfilled counts the events the identity backfill has indexed, for the
 	// one log line that says it finished. Only the maintenance loop touches it.
 	backfilled int
@@ -655,6 +667,10 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/audit", s.admin(resourceAdmin, "", s.handleListAudit))
 	mux.HandleFunc("/api/v1/audit", methodNotAllowed("GET"))
+
+	// A snapshot of the database (an operation of this hub, not protocol).
+	mux.HandleFunc("POST /api/v1/admin/backup", s.admin(resourceAdmin, "", s.handleBackup))
+	mux.HandleFunc("/api/v1/admin/backup", methodNotAllowed("POST"))
 
 	// Player profiles (spec section 8.6): one identity across every server.
 	// The event and action reads are the server feed's grants, narrowed inside

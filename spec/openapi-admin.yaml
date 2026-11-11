@@ -1,13 +1,14 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.13.0
+  version: 0.14.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
     `spec/protocol.md`; this document is its machine-readable companion and
     covers only the endpoints implemented so far (spec sections 5.1, 5.5,
-    6.2, 6.5, 7, 8.3, 8.5, 8.6, 10, 11, 12, and 13).
+    6.2, 6.5, 7, 8.3, 8.5, 8.6, 10, 11, 12, and 13), plus one operation of
+    the reference hub that is not protocol: `takeBackup`.
 
     Authentication is a bearer token carrying explicit scopes (spec section
     10). The scope each endpoint requires is stated in its description; where
@@ -42,6 +43,10 @@ tags:
     description: Minting, listing, and revoking scoped Admin API credentials.
   - name: audit
     description: Reading the record of every authenticated mutation.
+  - name: operations
+    description: |
+      Running the reference hub. Not part of the protocol: another hub need
+      not serve these, and the conformance suite does not check them.
   - name: players
     description: |
       One identity across every server (spec section 8.6): the events that
@@ -738,6 +743,44 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
           description: No such token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/backup:
+    post:
+      tags: [operations]
+      operationId: takeBackup
+      summary: Snapshot the hub's SQLite database.
+      description: |
+        Requires `admin`. Writes a consistent copy of the database, as of one
+        committed instant, while the hub keeps serving, and answers once the
+        file is complete and synced. The hub chooses the file's name
+        (`vyshka-<UTC time to the millisecond>.db`) and directory (its
+        configured backup directory, by default `backups` beside the database
+        file); the request has no body, and one sent is not read. A file still
+        being written carries a `.partial` suffix and is never counted as a
+        backup.
+
+        After each snapshot the directory is rotated down to the hub's
+        configured bound (default 7), deleting the oldest; only files named
+        like a snapshot are counted or deleted. One snapshot runs at a time.
+
+        The copy is a SQLite database a hub can boot on directly; the restore
+        procedure is in `deploy/README.md`. A hub on Postgres answers
+        `409 conflict`: back it up with `pg_dump`.
+      responses:
+        "201":
+          description: The snapshot, complete and synced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: |
+            The hub runs on Postgres (`details.backend` names it), or a snapshot
+            is already being taken.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2137,6 +2180,39 @@ components:
         nextCursor:
           type: string
           description: Opaque position to resume from. Absent on the last page.
+
+    BackupResult:
+      type: object
+      required: [backup, kept, pruned]
+      properties:
+        backup:
+          type: object
+          required: [name, path, sizeBytes, takenAt, durationMs]
+          properties:
+            name:
+              type: string
+              description: The file's name in the backup directory.
+            path:
+              type: string
+              description: The file's absolute path on the hub's host.
+            sizeBytes:
+              type: integer
+              minimum: 0
+            takenAt:
+              type: string
+              format: date-time
+              description: When the snapshot started; also the time in its name.
+            durationMs:
+              type: integer
+              minimum: 0
+        kept:
+          type: array
+          items: { type: string }
+          description: Every snapshot in the directory after rotation, newest first, this one included.
+        pruned:
+          type: array
+          items: { type: string }
+          description: The snapshots rotation deleted to stay within the bound.
 
     EventPattern:
       type: string
