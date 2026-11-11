@@ -164,8 +164,9 @@ Admin API or by a ban's expiry (section 13.1); this is a SHOULD because the same
 also queued when a manifest newly declares the `bans` capability (section 13.3), and a hub
 may not know which caused a pending notice, after a restart above all. A notice refreshed
 by both causes before its first send counts as the list change's; the reference hub
-carries the cause in memory, so it charges such a poll only when it has restarted since
-the change. A hub MAY charge the poll on arrival and give the charge back once it knows
+carries the cause in memory, so it charges such a poll when it has restarted since the
+change, or when the poll sends the notice in the instant between the change being stored
+and its cause being noted. A hub MAY charge the poll on arrival and give the charge back once it knows
 the answer. Everything else is charged: an answer carrying only retransmissions, which a
 plugin that never acks would otherwise receive on every poll for free, and one carrying
 only what a plugin's own traffic can make the hub queue for it (`manifest.reject`,

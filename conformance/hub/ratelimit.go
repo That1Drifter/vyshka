@@ -223,7 +223,12 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 		// The session request and this poll are the server's first two
 		// requests. A burst that small breaks a SHOULD (a behaving plugin's
 		// session start needs more), not a MUST, so it is not a failure.
-		return notExercised{"the hub refused this server's first poll, its second request after the session request, so its burst is below what the check needs before it can begin (section 2.2.1 asks a hub to admit a behaving plugin's session start, a SHOULD); nothing was graded"}
+		// The refusal itself is still held to its shape: this bearer is
+		// sent raw, so nothing else has graded it.
+		if err := gradeRateRefusal("the first poll, refused before any burst", readRefusal(resp, body)); err != nil {
+			return err
+		}
+		return notExercised{"the hub refused this server's first poll, its second request after the session request, so its burst is below what the check needs before it can begin (section 2.2.1 asks a hub to admit a behaving plugin's session start, a SHOULD); only that refusal's shape was graded"}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("the first poll, before any burst: want status 200, got %d, body %q", resp.StatusCode, truncate(body))
@@ -368,7 +373,7 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 			return err
 		}
 		if controlResp.StatusCode == http.StatusTooManyRequests {
-			return notExercised{fmt.Sprintf("after %d wrong-secret session requests, a genuine session request was refused 429 for the server they named and also for one they never named (body %q), so the refusals are not keyed on the claimed id but on something the requests shared, such as their source address; whether a claimed id could lock a server out was not graded", min(2*sent, rateBurstRequests), truncate(controlBody))}
+			return notExercised{fmt.Sprintf("after %d wrong-secret session requests, a genuine session request was refused 429 for the server they named and also for one they never named (body %q), so a refusal keyed on the claimed id could not be told apart from one keyed on something the requests shared, such as their source address; whether a claimed id could lock a server out was not graded", min(2*sent, rateBurstRequests), truncate(controlBody))}
 		}
 		return fmt.Errorf("after %d session requests naming server %s with a wrong secret, its real session request was refused 429 (body %q) while a server they never named was admitted; a limit is never keyed on an identity a request merely claims (section 2.2.1)", min(2*sent, rateBurstRequests), claimed.ServerID, truncate(body))
 	}

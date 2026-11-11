@@ -462,8 +462,11 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 				if one.FirstSend {
 					s.metrics.envelopeDelivery.ObserveDuration(time.Since(one.CreatedAt))
 					// The ban mark is consumed on every first send of a notice,
-					// whether or not this poll is already refunded, so it can
-					// never outlive the notice it was set for.
+					// whether or not this poll is already refunded, so it does
+					// not outlive the notice it was set for. One window is
+					// left: the mark is set just after the list change
+					// commits, so a poll that sends the notice in between is
+					// charged and the mark waits for that server's next one.
 					banMarked := one.Type == envelopeTypeBansChanged && s.limits.takeBanNotice(session.ServerID)
 					refund = refund || adminCaused(one.Type) || banMarked
 				}

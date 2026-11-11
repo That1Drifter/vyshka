@@ -1259,7 +1259,8 @@ session and its outbox, and loses nothing, but it treats the code as one it does
   does not read the wait the hub names in `details.retryAfterSeconds`; at the reference
   hub's defaults that wait is 1 s, which the first backoff meets. On a hub configured below
   1 request a second the named wait is 2 s or more, so the first retry, at 1 s, comes early
-  (and is refused again), while the doubled retries after it comply.
+  (and is refused again), and retries keep coming early until the doubled backoff has
+  caught up with the wait the hub names (at once for a wait of 3 s or less).
 - A refused session request (`VyshkaPlugin.c`, `OnSessionRefused`) is logged as a plugin or
   hub defect and retried after 60 s. The previous session stays live meanwhile.
 - A refused key/value call (`VyshkaStore.c`, `OnRefused`, then `Fail`) fails to the calling
