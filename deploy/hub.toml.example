@@ -84,7 +84,7 @@
 
 # A PEM file of extra roots to trust for the directory's own TLS, for a private
 # or test CA.
-#auto-tls-ca-roots = "/etc/vyshka/ca-roots.pem"
+#auto-tls-ca-roots = "/var/lib/vyshka/ca-roots.pem"
 
 # The plain listener for ACME HTTP-01 and the redirect to https. Empty means
 # :80; "off" drops it.

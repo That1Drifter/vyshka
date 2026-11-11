@@ -266,14 +266,26 @@ func looseMode(mode fs.FileMode) bool { return mode.Perm()&0o004 != 0 }
 // does not parse, treated as carrying one), or a libpq keyword string. A plain
 // SQLite path is not a secret.
 func dbCarriesPassword(text string) bool {
-	if !strings.Contains(text, "://") {
-		return strings.Contains(strings.ToLower(text), "password")
+	scheme, rest, isURL := strings.Cut(text, "://")
+	if !isURL {
+		// A path holds no credential. Anything with an @ or a key=value pair
+		// is a DSN written without its scheme, or a libpq keyword string.
+		return strings.ContainsAny(text, "@=") || strings.Contains(strings.ToLower(text), "password")
+	}
+	if scheme == "sqlite" {
+		return false
+	}
+	// An @ counts wherever a URL parser would put it: a password with an
+	// unescaped / moves the userinfo into what Go calls the host and path.
+	// The one shape with an @ and no password is a single @ whose left side
+	// is a bare user name.
+	if userinfo, _, found := strings.Cut(rest, "@"); found {
+		if strings.Count(rest, "@") != 1 || strings.ContainsAny(userinfo, ":/?#") {
+			return true
+		}
 	}
 	parsed, err := url.Parse(text)
 	if err != nil {
-		return true
-	}
-	if _, set := parsed.User.Password(); set {
 		return true
 	}
 	for key := range parsed.Query() {
@@ -479,29 +491,63 @@ func displayValue(f *flag.Flag) string {
 // reference. Only a value that is plainly a path (no URL, no whitespace, no
 // key=value pairs) is shown whole; anything else that does not parse as a URL
 // is withheld.
+//
+// A URL is cut by its own text, not by a URL parser: parsers disagree about
+// where the userinfo ends when a password holds an unescaped /, ?, #, or @
+// (Go takes the authority up to the first /, the Postgres driver the userinfo
+// up to the first @), and a redaction built on one of them prints what the
+// other calls the password. So everything up to the last @ is withheld, the
+// query is withheld, and a value whose last @ comes after a ? or # (a
+// password holding one, or an @ inside the query: the two cannot be told
+// apart) is withheld whole.
 func displayDB(value string) string {
-	if !strings.Contains(value, "://") {
-		if strings.ContainsAny(value, " \t=") {
+	scheme, rest, isURL := strings.Cut(value, "://")
+	if !isURL {
+		if strings.ContainsAny(value, " \t=@") {
 			return "<redacted>"
 		}
 		return value
 	}
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return "<redacted>"
-	}
-	if parsed.Scheme == "sqlite" {
+	if scheme == "sqlite" {
 		return value
 	}
-	shown := parsed.Scheme + "://"
-	if parsed.User != nil {
-		shown += "<redacted>@"
+	if !plainScheme(scheme) {
+		return "<redacted>"
 	}
-	shown += parsed.Host + parsed.Path
-	if parsed.RawQuery != "" {
+	if _, err := url.Parse(value); err != nil {
+		return "<redacted>"
+	}
+	shown := scheme + "://"
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		if strings.ContainsAny(rest[:at], "?#") {
+			return shown + "<redacted>"
+		}
+		shown += "<redacted>@"
+		rest = rest[at+1:]
+	}
+	location, _, hasQuery := strings.Cut(rest, "?")
+	location, _, _ = strings.Cut(location, "#")
+	shown += location
+	if hasQuery {
 		shown += "?<redacted>"
 	}
 	return shown
+}
+
+// plainScheme reports whether text is shaped like a URL scheme, so that the
+// part of a setting before :// is safe to print.
+func plainScheme(text string) bool {
+	if text == "" || len(text) > 32 {
+		return false
+	}
+	for _, c := range text {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '+', c == '.', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // describe says where a setting came from, for an error message.
@@ -531,6 +577,12 @@ const dbMoved = "; db: file:PATH now names a file that holds the database URL, "
 // file) cannot become the database setting or be echoed by a later error.
 func (r *settings) secret(name, value string) (string, error) {
 	path, isRef := strings.CutPrefix(value, "file:")
+	if name == "db" && !isRef && keywordDSN(value) {
+		// The hub would take it for a SQLite file name, create that file, and
+		// log the name, password and all, as the database it opened.
+		return "", fmt.Errorf("db (from %s): a key=value connection string is not supported; write a postgres:// URL",
+			r.describe(name))
+	}
 	if name == "db" && isRef && strings.Contains(path, "?") {
 		return "", fmt.Errorf("db (from %s): file:%s names a path with ?, which is a SQLite URI query%s",
 			r.describe(name), path, dbMoved)
@@ -546,6 +598,22 @@ func (r *settings) secret(name, value string) (string, error) {
 		return "", fmt.Errorf("%s (from %s): %w", name, r.describe(name), err)
 	}
 	return resolved, nil
+}
+
+// keywordDSN reports whether a database setting is a libpq keyword string
+// (host=... user=... password=...) rather than a URL or a path.
+func keywordDSN(text string) bool {
+	if strings.Contains(text, "://") {
+		return false
+	}
+	for _, field := range strings.Fields(strings.ToLower(text)) {
+		for _, key := range []string{"host=", "hostaddr=", "port=", "user=", "password=", "dbname=", "sslmode="} {
+			if strings.HasPrefix(field, key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasDBScheme(dsn string) bool {

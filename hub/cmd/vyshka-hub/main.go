@@ -308,7 +308,8 @@ func resolveSecret(value string) (string, error) {
 	case !utf8.Valid(contents):
 		return "", fmt.Errorf("%s is not valid UTF-8, so it is not a text secret", path)
 	}
-	secret := strings.TrimSpace(string(contents))
+	// A byte-order mark is an editor's doing, not part of the secret.
+	secret := strings.TrimSpace(strings.TrimPrefix(string(contents), string(rune(0xFEFF))))
 	switch {
 	case secret == "":
 		return "", fmt.Errorf("%s is empty", path)

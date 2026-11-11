@@ -768,8 +768,22 @@ func TestDisplayDB(t *testing.T) {
 		"postgres://vyshka@db/app?password=PW_SECRET":        "postgres://<redacted>@db/app?<redacted>",
 		"host=db user=u password=PW_SECRET":                  "<redacted>",
 		"postgres://%zz":                                     "<redacted>",
-		"file:/run/secrets/database_url":                     "file:/run/secrets/database_url",
-		"":                                                   "(unset)",
+		// A password with an unescaped / is the host and path to Go's parser.
+		"postgres://vyshka:/PW_SECRET@db.example:5432/vyshka": "postgres://<redacted>@db.example:5432/vyshka",
+		"postgres://vyshka:123/PW_SECRET@db.example/vyshka":   "postgres://<redacted>@db.example/vyshka",
+		"postgres://u:Tr0ub@PW_SECRET/3x@db.example/vyshka":   "postgres://<redacted>@db.example/vyshka",
+		"postgres://u:p@PW_SECRET@db.example/vyshka":          "postgres://<redacted>@db.example/vyshka",
+		"postgres://u:1/a?PW_SECRET@db.example/vyshka":        "postgres://<redacted>",
+		"postgres://u:1/a#PW_SECRET@db.example/vyshka":        "postgres://<redacted>",
+		"postgres://db.example/vyshka?options=a@PW_SECRET":    "postgres://<redacted>",
+		"postgres://db.example/vyshka?sslpassword=PW_SECRET":  "postgres://db.example/vyshka?<redacted>",
+		"postgres://db.example/vyshka#PW_SECRET":              "postgres://db.example/vyshka",
+		// A URL written without its scheme, or with a mistyped one.
+		"vyshka:PW_SECRET@db.example:5432/vyshka": "<redacted>",
+		"postgres:/vyshka:PW_SECRET@db/vyshka":    "<redacted>",
+		"post gres://vyshka:PW_SECRET@db/vyshka":  "<redacted>",
+		"file:/run/secrets/database_url":          "file:/run/secrets/database_url",
+		"":                                        "(unset)",
 	} {
 		flags := flag.NewFlagSet("probe", flag.ContinueOnError)
 		flags.String("db", "", "")
@@ -777,6 +791,63 @@ func TestDisplayDB(t *testing.T) {
 		if got := displayValue(flags.Lookup("db")); got != want || strings.Contains(got, "PW_SECRET") {
 			t.Errorf("displayValue(db=%q) = %q, want %q", dsn, got, want)
 		}
+	}
+}
+
+// A libpq keyword string is refused: the hub would take it for a SQLite file
+// name, create that file, and log the name, password and all. The refusal
+// carries none of it, from the flag, the environment, or the file.
+func TestKeywordDSNIsRefused(t *testing.T) {
+	const dsn = "host=db.example user=u password=PW_SECRET dbname=app"
+	for source, arrange := range map[string]func(t *testing.T) []string{
+		"flag": func(t *testing.T) []string { return []string{"-db", dsn} },
+		"env":  func(t *testing.T) []string { t.Setenv("DATABASE_URL", dsn); return nil },
+		"file": func(t *testing.T) []string {
+			return []string{"-config", writeFile(t, t.TempDir(), "hub.toml", "db = \""+dsn+"\"\n", 0o600)}
+		},
+	} {
+		t.Run(source, func(t *testing.T) {
+			clearEnv(t)
+			flags, resolved, err := resolveServe(t, arrange(t)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolved.secret("db", flags.Lookup("db").Value.String())
+			if err == nil {
+				t.Fatal("a key=value connection string was accepted as the database setting")
+			}
+			if msg := err.Error(); strings.Contains(msg, "PW_SECRET") || strings.Contains(msg, "db.example") {
+				t.Errorf("the refusal carries part of the value: %s", msg)
+			}
+		})
+	}
+	// A path with an = in it is still a path.
+	clearEnv(t)
+	flags, resolved, err := resolveServe(t, "-db", "/var/lib/vyshka/a=b.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolved.secret("db", flags.Lookup("db").Value.String()); err != nil || got != "/var/lib/vyshka/a=b.db" {
+		t.Errorf("a path holding = was not taken as a path: %q, %v", got, err)
+	}
+}
+
+// A secret file saved with a UTF-8 byte-order mark holds the same secret.
+func TestSecretFileWithAByteOrderMark(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	bom := string(rune(0xFEFF))
+	token := writeFile(t, dir, "token.txt", bom+"vya_marked\r\n", 0o600)
+	dsn := writeFile(t, dir, "dsn.txt", bom+"postgres://u:pw@db/app\n", 0o600)
+	flags, resolved, err := resolveServe(t, "-admin-token", "file:"+token, "-db", "file:"+dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolved.secret("admin-token", flags.Lookup("admin-token").Value.String()); err != nil || got != "vya_marked" {
+		t.Errorf("admin token from a file with a byte-order mark: %q, %v", got, err)
+	}
+	if got, err := resolved.secret("db", flags.Lookup("db").Value.String()); err != nil || got != "postgres://u:pw@db/app" {
+		t.Errorf("database URL from a file with a byte-order mark: %q, %v", got, err)
 	}
 }
 

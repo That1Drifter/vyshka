@@ -283,8 +283,9 @@ else
   expect "warnings for a 0640 file (shared with a service group)" "$(warnings "$etc/show.toml")" 0
   chmod 600 "$etc/show.toml"
   expect "warnings for a 0600 file" "$(warnings "$etc/show.toml")" 0
-  printf 'db = "%s"\nadmin-token = "file:/run/secrets/admin_token"\n' "$run_dir/a.db" > "$etc/plain.toml"; chmod 644 "$etc/plain.toml"
-  expect "warnings for a 0644 file with a plain SQLite path and a file: reference" "$(warnings "$etc/plain.toml")" 0
+  printf 'db = "%s"\n' "$run_dir/a.db" > "$etc/plain.toml"; chmod 644 "$etc/plain.toml"
+  "$bin" config -config "$etc/plain.toml" > /dev/null 2>&1 || fail "config refused a file holding only a plain SQLite path"
+  expect "warnings for a 0644 file with a plain SQLite path" "$(warnings "$etc/plain.toml")" 0
 fi
 
 step "10. The storage command takes db from the same file (db only; the other keys are checked, not used)"
