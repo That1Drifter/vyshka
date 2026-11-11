@@ -171,9 +171,13 @@ psql "<restored database URL>" -c "UPDATE sessions
   WHERE ended_at IS NULL"
 ```
 
-Then point `DATABASE_URL` at it and boot. The Postgres path was not exercised when this
-was written (no Postgres was reachable); restarting every game server's plugin after the
-restore, so each opens a new session, reaches the same state without the statement.
+Then point `DATABASE_URL` at it and boot. Performed on 2026-11-11 against Postgres 16: a
+dump taken while the hub served restored into an empty database, the statement closed the
+one live session, and the hub booted on the restored database answered the old session
+token `401 session_invalid`, had the key written before the dump and not the one written
+after it, and gave the plugin a new session for its stored secret. Restarting every game
+server's plugin after the restore, so each opens a new session, reaches the same state
+without the statement.
 Everything else under "What a restore means" applies to Postgres too; step 4's checks of
 the SQLite restore are plain SQL over the same columns, run against the restored database
 and the one it replaced.
