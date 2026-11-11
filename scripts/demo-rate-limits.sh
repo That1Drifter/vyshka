@@ -378,14 +378,16 @@ sleep 1
 # The flood holds A's bucket empty, but a probe can still win a token the
 # moment one refills (more likely on a slow runner); an admitted probe is an
 # ordinary delivery, so the next probe carries the next seq, until one is
-# refused. Every probe must end up stored exactly once.
+# refused. Every probe must end up stored exactly once. Each says more:true
+# so an admitted one is answered at once instead of held for the 5 s
+# pollTimeout, and the next attempt still lands inside the flood.
 PROBE_SEQ=0
 probe_status=""
 plugin_seen_429=0
 for _ in $(seq 1 10); do
   PROBE_SEQ=$((PROBE_SEQ + 1))
   PROBE=$(jq -nc --argjson seq "$PROBE_SEQ" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{envelopes:[{v:1,id:("demo-rl-a-" + ($seq|tostring)),type:"event.batch",seq:$seq,ts:$now,
+    '{more:true,envelopes:[{v:1,id:("demo-rl-a-" + ($seq|tostring)),type:"event.batch",seq:$seq,ts:$now,
       body:{events:[{t:"demo.rate-limits.note",ts:$now,data:{seq:$seq}}]}}]}')
   probe_status=$(curl --silent -D "$WORK_DIR/probe.headers" -o "$WORK_DIR/probe.json" --write-out '%{http_code}' -X POST \
     -H "Authorization: Bearer $A_TOKEN" -H 'Content-Type: application/json' -d "$PROBE" "$HUB_URL/plugin/v1/poll" || true)

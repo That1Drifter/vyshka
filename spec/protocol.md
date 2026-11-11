@@ -156,30 +156,37 @@ envelope queued for a server ends that server's held poll, and the plugin polls 
 once (section 3.1), so an admin client working at its own permitted pace would drive a
 behaving plugin into the plugin limit, whose refusals would then delay what the admin
 asked for. A hub that limits the Plugin API therefore MUST NOT charge a poll whose answer
-carries, for the first time on any session, an envelope that an Admin API request or the
-hub itself caused: an action dispatch (section 7), a context question (section 6.2), an
-envelope queued through section 5.5, or a `bans.changed` queued because the installation
-ban list changed, through the Admin API or by a ban's expiry (section 13.1). It MAY charge
-the poll on arrival and give the charge back once it knows the answer. Everything else is
-charged: an answer carrying only retransmissions, which a plugin that never acks would
-otherwise receive on every poll for free, and one carrying only what a plugin's own traffic
-can make the hub queue for it (`manifest.reject`, `event.reject`, `state.reject`, and the
-`bans.changed` queued because a manifest newly declares the `bans` capability, section
-13.3), since exempting those would let a leaked server credential earn its own exemptions.
+carries, for the first time on any session, an envelope only an Admin API request can
+queue: an action dispatch (section 7), a context question (section 6.2), or an envelope
+queued through section 5.5. It SHOULD NOT charge one whose answer carries, for the first
+time, a `bans.changed` queued because the installation ban list changed, through the
+Admin API or by a ban's expiry (section 13.1); this is a SHOULD because the same notice is
+also queued when a manifest newly declares the `bans` capability (section 13.3), and a hub
+may not know which caused a pending notice, after a restart above all. A notice refreshed
+by both causes before its first send counts as the list change's; the reference hub
+carries the cause in memory, so it charges such a poll only when it has restarted since
+the change. A hub MAY charge the poll on arrival and give the charge back once it knows
+the answer. Everything else is charged: an answer carrying only retransmissions, which a
+plugin that never acks would otherwise receive on every poll for free, and one carrying
+only what a plugin's own traffic can make the hub queue for it (`manifest.reject`,
+`event.reject`, `state.reject`, and a `bans.changed` that only a manifest caused), since
+exempting those would let a leaked server credential earn its own exemptions.
 
 What a plugin may rely on, then: a plugin that keeps one poll in flight and polls again
-after each answer is never charged for the polls that deliver what admins and the hub
-queue for it. The requests it makes of its own accord are charged, including the walk of
-the ban list a `bans.changed` asks for (section 13.4), one request per page. A sustained
-run of ban-list changes can therefore spend a plugin's allowance through its walks, though
-not through its polls.
+after each answer is never charged for the polls that deliver what admins queue for it,
+and on a hub that follows the SHOULD above, for the polls that deliver ban-list notices
+either. The requests it makes of its own accord are charged, including the walk of the
+ban list a `bans.changed` asks for (section 13.4), one request per page. A sustained run of
+ban-list changes can therefore spend a plugin's allowance through its walks, though not
+through its polls.
 
 > **Note (informative): a bulk ban import.** Each change to the installation list sends
 > every server declaring `bans` one notice and costs it one walk. At the reference hub's
-> defaults (plugin 5 requests/s with a burst of 60, admin 10/s with a burst of 60), an
-> import of up to about 200 bans as fast as one admin token is allowed was measured to
-> cost two such plugins no refusals; at 300 a few, and at 500 a few dozen, each delaying
-> that plugin's next request by about a second and losing nothing. An operator importing
+> defaults (plugin 5 requests/s with a burst of 60, admin 10/s with a burst of 60), with
+> one admin token importing as fast as it is allowed, up to 200 changes were measured to
+> cost two such plugins no refusals, and some from about 300 (3 to 6 each at 300, 25 to 33
+> at 500), mostly pages of the walk, each delaying that plugin's next request by about a
+> second and losing nothing. An operator importing
 > thousands sees the plugins' rate-limited counters move while the import runs.
 
 A hub SHOULD set its limits so that a plugin behaving as this document asks is never
@@ -2214,10 +2221,13 @@ rate-limited mutations into runs, on these terms, which keep the count exact:
   run open. That mutation is recorded at once. While the credential's mutations go on
   being refused, the first one 60 s or more after the run's previous record is recorded
   too, so a run is never absent from the log for longer than that. The run **ends** when
-  60 s pass with no rate-limited mutation by the credential, and the hub then writes a
-  **closing record** for it within a few seconds if any of its refusals have no record of
-  their own. The hub writes the same closing record, at once, for every run it holds when
-  it shuts down cleanly. A hub that stops abruptly loses the count since each run's last
+  60 s pass with no rate-limited mutation by the credential. If any of its refusals then
+  have no record of their own, the hub writes a **closing record** for it at its next
+  maintenance pass after those 60 s (the reference hub's runs every half second, but other
+  maintenance sharing the pass can delay it), and the same closing record, at once, for
+  every run it holds when it shuts down cleanly. A closing record carries
+  `detail.runClosed: true`, and its `at` is when the run was closed, not when the refusal it
+  names was answered. A hub that stops abruptly loses the count since each run's last
   record.
 - Each record is written for one rate-limited mutation and carries that mutation's
   `method`, `path`, `serverId` (when the path names one), and `sourceIp`; a closing record

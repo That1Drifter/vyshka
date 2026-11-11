@@ -724,7 +724,9 @@ What counts, and what does not:
   25 s hold spends one token per 25 s.
 - A poll the hub answers with work an admin or the hub itself queued (an action dispatch,
   a context question, a raw envelope, a `bans.changed` after a ban edit or a ban's expiry),
-  sent for the first time, is not charged: the plugin is answering the hub. Without that,
+  sent for the first time, is not charged: the plugin is answering the hub. (A
+  `bans.changed`'s cause is kept in memory, so the one poll that carries a notice queued
+  before a restart is charged.) Without that,
   an admin token dispatching at its own 10 a second to one server would throttle that
   server's plugin about 12 s in, and the refusals would delay the very actions being
   dispatched. Retransmissions, rejection notices, and the `bans.changed` a plugin's own
@@ -734,9 +736,9 @@ What counts, and what does not:
 - The walk of the ban list a `bans.changed` asks for is the plugin's own requests, one per
   100 entries, and is charged. So a bulk ban import costs every server declaring `bans`
   one walk per change it sees. Measured at the defaults, with two such plugins walking
-  after every notice and one `bans:manage` token importing as fast as it is allowed: 101
-  or 200 bans cost the plugins no refusals; 300 cost each a few, and 500 a few dozen, each
-  a one-second delay to that plugin's next request, nothing lost. An operator importing
+  after every notice and one `bans:manage` token importing as fast as it is allowed: up to
+  200 changes cost the plugins no refusals, and some from about 300 (3 to 6 each at 300,
+  25 to 33 at 500), each a one-second delay to that plugin's next request, nothing lost. An operator importing
   thousands of bans sees `vyshka_rate_limited_total{api="plugin"}` move while the import
   runs; raising `-plugin-rate-burst` for the import is the remedy.
 - A request counts against the server or token it authenticated as, and nothing else does.

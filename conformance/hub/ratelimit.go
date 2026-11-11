@@ -202,6 +202,12 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 	if err != nil {
 		return err
 	}
+	// The control for the claimed-id check: a server the wrong-secret burst
+	// never names.
+	unnamed, _, err := env.newEnrolled(ctx, "conformance: rate limit (plugin, control)")
+	if err != nil {
+		return err
+	}
 	// This check grades the 429s of its own servers itself.
 	ctx = withRawRateLimits(ctx, session.SessionToken, other.SessionToken)
 	serverID := created.Server.ID
@@ -209,8 +215,21 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 		return err
 	}
 	var first pollResponse
-	if err := env.expectPoll(ctx, session.SessionToken, map[string]any{}, http.StatusOK, &first); err != nil {
+	resp, body, err := env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll", session.SessionToken, map[string]any{})
+	if err != nil {
 		return fmt.Errorf("the first poll, before any burst: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// The session request and this poll are the server's first two
+		// requests. A burst that small breaks a SHOULD (a behaving plugin's
+		// session start needs more), not a MUST, so it is not a failure.
+		return notExercised{"the hub refused this server's first poll, its second request after the session request, so its burst is below what the check needs before it can begin (section 2.2.1 asks a hub to admit a behaving plugin's session start, a SHOULD); nothing was graded"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("the first poll, before any burst: want status 200, got %d, body %q", resp.StatusCode, truncate(body))
+	}
+	if err := json.Unmarshal(body, &first); err != nil {
+		return fmt.Errorf("the first poll, before any burst: decode %q: %w", truncate(body), err)
 	}
 	if len(first.Envelopes) != 1 || first.Envelopes[0].Seq != 1 {
 		return fmt.Errorf("the first poll delivered %d envelope(s), want the one queued at seq 1", len(first.Envelopes))
@@ -237,7 +256,7 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 		"ts": time.Now().UTC().Format(time.RFC3339), "body": map[string]any{},
 	}
 	refusedPoll := map[string]any{"ack": 1, "envelopes": []any{probe}}
-	resp, body, err := env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll", session.SessionToken, refusedPoll)
+	resp, body, err = env.doWith(env.PollClient, ctx, http.MethodPost, "/plugin/v1/poll", session.SessionToken, refusedPoll)
 	if err != nil {
 		return fmt.Errorf("the poll sent while throttled: %w", err)
 	}
@@ -340,7 +359,18 @@ func checkPluginRateLimit(ctx context.Context, env Env) error {
 		return err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return fmt.Errorf("after %d session requests naming server %s with a wrong secret, its real session request was refused 429 (body %q); a limit is never keyed on an identity a request merely claims (section 2.2.1)", min(2*sent, rateBurstRequests), claimed.ServerID, truncate(body))
+		// Keyed on the claimed id, or on something else the burst shared,
+		// such as the source address (a proxy's limit_req, a per-address
+		// throttle on failed logins)? A server the burst never named tells.
+		control := map[string]any{"serverId": unnamed.ServerID, "serverSecret": unnamed.ServerSecret, "pollTimeoutSeconds": 5}
+		controlResp, controlBody, err := env.send(env.Client, ctx, http.MethodPost, "/plugin/v1/session", "", mustJSON(control), true)
+		if err != nil {
+			return err
+		}
+		if controlResp.StatusCode == http.StatusTooManyRequests {
+			return notExercised{fmt.Sprintf("after %d wrong-secret session requests, a genuine session request was refused 429 for the server they named and also for one they never named (body %q), so the refusals are not keyed on the claimed id but on something the requests shared, such as their source address; whether a claimed id could lock a server out was not graded", min(2*sent, rateBurstRequests), truncate(controlBody))}
+		}
+		return fmt.Errorf("after %d session requests naming server %s with a wrong secret, its real session request was refused 429 (body %q) while a server they never named was admitted; a limit is never keyed on an identity a request merely claims (section 2.2.1)", min(2*sent, rateBurstRequests), claimed.ServerID, truncate(body))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("the real session request after the wrong-secret burst answered %d (body %q), want 200", resp.StatusCode, truncate(body))

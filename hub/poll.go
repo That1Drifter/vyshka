@@ -461,8 +461,11 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 				envelopes[i] = newOutboundEnvelope(one)
 				if one.FirstSend {
 					s.metrics.envelopeDelivery.ObserveDuration(time.Since(one.CreatedAt))
-					refund = refund || adminCaused(one.Type) ||
-						(one.Type == envelopeTypeBansChanged && s.limits.takeBanNotice(session.ServerID))
+					// The ban mark is consumed on every first send of a notice,
+					// whether or not this poll is already refunded, so it can
+					// never outlive the notice it was set for.
+					banMarked := one.Type == envelopeTypeBansChanged && s.limits.takeBanNotice(session.ServerID)
+					refund = refund || adminCaused(one.Type) || banMarked
 				}
 			}
 			// A poll that carries work an admin queued, on its first send, is
