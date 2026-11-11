@@ -22,6 +22,8 @@ before that date stay as they were written.
 - 2026-11-11: one TOML config file (`-config`, `VYSHKA_HUB_CONFIG`) under flags and the environment,
   with `file:` secrets for `db` and `admin-token`, and `vyshka-hub config` to print the
   settings in effect and their sources (issue #84; `deploy/hub.toml.example`, `scripts/demo-config.sh`).
+- 2026-11-11: rate limits per server and per admin token (issue #86, protocol draft 0.34):
+  `429 rate_limited` with `Retry-After`, nothing applied; `-plugin-rate-limit` and friends.
 - 2026-11-11: `POST /api/v1/admin/backup` snapshots a running SQLite hub into a bounded
   directory; `vyshka-hub storage` and `vacuum`, and a restore runbook in `deploy/README.md` (#83).
 - 2026-11-11: Prometheus metrics at `GET /metrics` on a listener of its own (`-metrics-addr`,
@@ -1045,7 +1047,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.33 (2026-09-23). The document's header carries the draft number and date; each
+Draft 0.34 (2026-11-11). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

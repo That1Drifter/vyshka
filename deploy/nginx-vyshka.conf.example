@@ -13,6 +13,10 @@
 #   serves other sites from the same nginx, that is where a budget belongs.
 # - A plugin holds one poll connection and a panel a handful, so the per-IP
 #   budget below is generous for legitimate use.
+# - The hub rate-limits each server and admin token itself (deploy/README.md,
+#   "Rate limits"); what nginx adds is a bound on clients that never
+#   authenticate. A limit_req here, if you add one, belongs well above the
+#   hub's figures and with limit_req_status 429.
 #
 # The hub records the peer address of the connection as the audit source and
 # in its request log, and ignores forwarded headers entirely (section 10.5),

@@ -59,7 +59,7 @@ Reforger plugin was tabled (see Horizon 4). The player identity shape froze the 
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.33 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.34 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ### Landed slices
 
@@ -97,6 +97,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-11-11: `/metrics` for Prometheus, on a listener of its own (#82).
 - 2026-11-11: `-auto-tls`, embedded ACME, so the hub serves TLS without a proxy (#85).
 - 2026-11-11: TOML config file under flags and the environment, with `file:` secrets (#84).
+- 2026-11-11: rate limits per server and per admin token (#86, draft 0.34).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -106,9 +107,6 @@ working against the branch hub on the staging box (`deploy/README.md`, "A branch
 beside a live one"), never the live staging hub: backup first because staging holds live data, then TLS,
 rate limits, metrics, the capacity measurement, and the config file last.
 
-- **Rate limits per credential** (#86): per-server and per-token bounds on the Plugin and
-  Admin APIs. Hardening, not scaling: the Plugin API is internet-facing, so a leaked server
-  credential must be bounded in what it can do to the hub.
 - **Measured capacity** (#87, spike): replaces the "20 servers at 100 players" estimate,
   which has no provenance, with a number under `spikes/`. That number is also the trigger
   for the parked multi-instance hub and what the rate-limit defaults are set against.

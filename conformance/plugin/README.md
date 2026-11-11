@@ -42,8 +42,9 @@ PASS  bans.sync                  A plugin declaring bans walks the list whole an
 PASS  errors.batchRefused        A refused batch is corrected, not answered with a session loop
 PASS  errors.garbledSuccess      A malformed 200 changes no session or delivery state, and its ack is not applied
 PASS  errors.credentialsRefused  Revoked credentials are retried slowly, never by re-enrolling
+PASS  errors.rateLimited         A rate-limited poll is waited out, and what it carried is delivered on the same session
 
-19 checks, 0 failed
+20 checks, 0 failed
 ```
 
 A stage can also report `PART`: it passed everything it could assert but says, in a note
@@ -54,7 +55,9 @@ one poll at a time), when the candidate published no telemetry inside the teleme
 window (publishing any is a SHOULD, so a plugin without it is compliant, and there was
 nothing to grade), when its manifest declares no custom context, which leaves the
 enumeration stage nothing to ask about, when it does not declare the `bans` capability,
-which leaves the ban list stage nothing to grade, and when it drained the backlog stage's
+which leaves the ban list stage nothing to grade, when its rate-limited poll did not ask for
+inline errors (the mock cannot tell then whether it could read the 429, so waiting out
+`Retry-After` and keeping the session go ungraded), and when it drained the backlog stage's
 burst without a poll saying `more` (setting it is a SHOULD) or had more than one poll open
 at once, which stands the check of what follows a `more` down. A `PART` is not a full pass.
 

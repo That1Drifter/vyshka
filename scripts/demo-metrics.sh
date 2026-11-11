@@ -232,20 +232,40 @@ check "$depth (20 notices queued, sent, unacked)" 0 "$(value "$after" "$depth")"
 step "7. Dropped envelopes, the other way: a server whose queue is at its bound of 5000"
 enroll_server "Metrics demo, full queue"
 S2="$SERVER_ID"; S2_TOKEN="$SESSION_TOKEN"
+# The hub limits each admin token's request rate (deploy/README.md, "Rate
+# limits"; 10 a second, bursts of 60 by default), and 5000 envelopes from one
+# token would take most of ten minutes. The filler is a fixture, not a client
+# pace, so it spreads the fill over throwaway tokens of its own, each spending
+# less than one burst, and revokes them after; every request still waits out
+# a 429's Retry-After, as a client of the limit must.
 python3 - "$HUB_URL" "$ADMIN_TOKEN" "$S2" <<'PY'
-import http.client, json, sys, urllib.parse
+import http.client, json, sys, time, urllib.parse
 hub, token, server = sys.argv[1:4]
 u = urllib.parse.urlparse(hub)
 c = http.client.HTTPConnection(u.hostname, u.port)
-headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+def call(bearer, method, path, body=None):
+    while True:
+        c.request(method, path, None if body is None else json.dumps(body),
+                  {"Authorization": "Bearer " + bearer, "Content-Type": "application/json"})
+        r = c.getresponse(); data = r.read()
+        if r.status != 429:
+            return r.status, json.loads(data) if data else {}
+        time.sleep(int(r.getheader("Retry-After") or 1))
+PER_TOKEN = 50
+fillers = []
 for i in range(5000):
-    c.request("POST", f"/api/v1/servers/{server}/envelopes", json.dumps({"type": "demo.filler", "body": {"n": i}}), headers)
-    r = c.getresponse(); r.read()
-    if r.status != 202:
-        sys.exit(f"queueing envelope {i} answered {r.status}")
-c.request("POST", f"/api/v1/servers/{server}/envelopes", json.dumps({"type": "demo.filler"}), headers)
-r = c.getresponse(); body = json.loads(r.read())
-print(f"  5000 queued; the 5001st is refused: {r.status} {body['error']['code']}")
+    if i % PER_TOKEN == 0:
+        status, minted = call(token, "POST", "/api/v1/tokens", {"name": f"metrics demo filler {i // PER_TOKEN}", "scopes": ["admin"]})
+        if status != 201:
+            sys.exit(f"minting a filler token answered {status}")
+        fillers.append(minted["token"]["id"]); filler = minted["secret"]
+    status, _ = call(filler, "POST", f"/api/v1/servers/{server}/envelopes", {"type": "demo.filler", "body": {"n": i}})
+    if status != 202:
+        sys.exit(f"queueing envelope {i} answered {status}")
+status, body = call(filler, "POST", f"/api/v1/servers/{server}/envelopes", {"type": "demo.filler"})
+print(f"  5000 queued from {len(fillers)} throwaway tokens; the 5001st is refused: {status} {body['error']['code']}")
+for token_id in fillers:
+    call(token, "DELETE", f"/api/v1/tokens/{token_id}")
 PY
 depth2='vyshka_outbound_queue_depth{server="'"$S2"'"}'
 before=$(scrape)

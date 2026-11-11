@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vyshka Admin API
-  version: 0.14.0
+  version: 0.15.0
   summary: Operator-facing API of the Vyshka hub.
   description: |
     The operator half of the Vyshka protocol. Normative text lives in
@@ -84,6 +84,7 @@ paths:
                   servers:
                     type: array
                     items: { $ref: "#/components/schemas/ServerRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [servers]
@@ -133,6 +134,7 @@ paths:
                   server: { $ref: "#/components/schemas/ServerRecord" }
                   enrollment: { $ref: "#/components/schemas/EnrollmentToken" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/servers/{serverId}:
@@ -148,6 +150,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ServerRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -178,6 +181,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/EnrollmentToken" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -195,6 +199,7 @@ paths:
       responses:
         "204":
           description: The credentials are revoked and no session survives.
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -255,6 +260,7 @@ paths:
                       type: { type: string }
                       ts: { type: string, format: date-time }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -282,6 +288,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ManifestRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -318,6 +325,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ContextEntries" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -425,6 +433,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -457,6 +466,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ActionRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -524,6 +534,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EventPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: |
@@ -560,6 +571,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -612,6 +624,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -641,6 +654,7 @@ paths:
                   tokens:
                     type: array
                     items: { $ref: "#/components/schemas/AdminTokenRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -710,6 +724,7 @@ paths:
                     type: string
                     description: Returned here and nowhere else, ever.
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -739,6 +754,7 @@ paths:
       responses:
         "204":
           description: Revoked.
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -788,6 +804,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
@@ -852,6 +869,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuditPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -905,6 +923,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PlayerEventPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -947,6 +966,7 @@ paths:
                     type: string
                     description: Opaque position to resume from. Absent on the last page.
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -984,6 +1004,7 @@ paths:
                     type: string
                     description: Opaque position to resume from. Absent on the last page.
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -1019,6 +1040,7 @@ paths:
                 properties:
                   note: { $ref: "#/components/schemas/PlayerNote" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
@@ -1043,6 +1065,7 @@ paths:
       responses:
         "204":
           description: Deleted.
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1093,6 +1116,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BanPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -1142,6 +1166,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BanChange" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1173,6 +1198,7 @@ paths:
                 required: [ban]
                 properties:
                   ban: { $ref: "#/components/schemas/Ban" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1199,6 +1225,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BanChange" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1227,6 +1254,7 @@ paths:
                   webhooks:
                     type: array
                     items: { $ref: "#/components/schemas/WebhookRecord" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -1307,6 +1335,7 @@ paths:
                     type: string
                     description: The HMAC-SHA256 signing key. Returned here and nowhere else.
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: |
@@ -1383,6 +1412,7 @@ paths:
                 properties:
                   webhook: { $ref: "#/components/schemas/WebhookRecord" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: |
@@ -1406,6 +1436,7 @@ paths:
       responses:
         "204":
           description: Deleted.
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1453,6 +1484,7 @@ paths:
                   deliveries:
                     type: array
                     items: { $ref: "#/components/schemas/WebhookDelivery" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1495,6 +1527,7 @@ paths:
                 required: [delivery]
                 properties:
                   delivery: { $ref: "#/components/schemas/WebhookDelivery" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: Missing `webhooks:manage`, or the token is not covered for the delivery's type.
@@ -1523,6 +1556,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/KVNamespaceList" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -1567,6 +1601,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KVKeyPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -1586,6 +1621,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KVEntry" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1616,6 +1652,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KVWriteResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
@@ -1637,6 +1674,7 @@ paths:
         "204":
           description: The key was deleted.
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -1672,6 +1710,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KVEntry" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
@@ -2472,6 +2511,19 @@ components:
               additionalProperties: true
 
   responses:
+    RateLimited:
+      description: |
+        The token is over the hub's rate limit (`rate_limited`, spec section
+        2.2.1). Nothing in the request was applied. Do not send it again
+        before `Retry-After` has passed; `details.retryAfterSeconds` carries
+        the same number.
+      headers:
+        Retry-After:
+          description: Whole seconds, at least 1, before the same request would be admitted.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     BadRequest:
       description: Malformed body, or a field missing, wrongly typed, or out of range.
       content:

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -92,6 +93,8 @@ type serveValues struct {
 	servePanel                                                       *bool
 	backupKeep                                                       *int
 	tls                                                              *autoTLSFlags
+	pluginRateLimit, adminRateLimit                                  *float64
+	pluginRateBurst, adminRateBurst                                  *int
 }
 
 // declareServeFlags defines every serve flag. It is separate from serve so
@@ -148,10 +151,38 @@ func declareServeFlags(flags *flag.FlagSet) (*serveValues, error) {
 		"PEM file of extra roots to trust for the ACME directory's own TLS, for a private or test CA (env VYSHKA_AUTO_TLS_CA_ROOTS)")
 	flags.StringVar(&tlsFlags.httpAddr, "auto-tls-http-addr", os.Getenv("VYSHKA_AUTO_TLS_HTTP_ADDR"),
 		"plain listener for ACME HTTP-01 and the redirect to https, nothing else; empty means :80, off disables it (env VYSHKA_AUTO_TLS_HTTP_ADDR)")
+	// Rate limits per credential (spec section 2.2.1); the defaults and where
+	// they come from are in hub/ratelimit.go.
+	pluginRate, err := envFloat("VYSHKA_PLUGIN_RATE_LIMIT", hub.DefaultPluginRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	pluginBurst, err := envInt("VYSHKA_PLUGIN_RATE_BURST", hub.DefaultPluginRateBurst)
+	if err != nil {
+		return nil, err
+	}
+	adminRate, err := envFloat("VYSHKA_ADMIN_RATE_LIMIT", hub.DefaultAdminRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	adminBurst, err := envInt("VYSHKA_ADMIN_RATE_BURST", hub.DefaultAdminRateBurst)
+	if err != nil {
+		return nil, err
+	}
+	pluginRateLimit := flags.Float64("plugin-rate-limit", pluginRate,
+		"Plugin API requests per second each server may sustain; a held poll counts once (env VYSHKA_PLUGIN_RATE_LIMIT); 0 disables the limit")
+	pluginRateBurst := flags.Int("plugin-rate-burst", pluginBurst,
+		"Plugin API requests a server may send back to back before -plugin-rate-limit applies (env VYSHKA_PLUGIN_RATE_BURST)")
+	adminRateLimit := flags.Float64("admin-rate-limit", adminRate,
+		"Admin API requests per second each token may sustain, the bootstrap token included (env VYSHKA_ADMIN_RATE_LIMIT); 0 disables the limit")
+	adminRateBurst := flags.Int("admin-rate-burst", adminBurst,
+		"Admin API requests a token may send back to back before -admin-rate-limit applies (env VYSHKA_ADMIN_RATE_BURST)")
 	return &serveValues{
 		addr: addr, dsn: dsn, adminToken: adminToken, logLevel: logLevel, mapsDir: mapsDir,
 		backupDir: backupDir, metricsAddr: metricsAddr, servePanel: servePanel, backupKeep: backupKeep,
-		tls: &tlsFlags,
+		tls:             &tlsFlags,
+		pluginRateLimit: pluginRateLimit, pluginRateBurst: pluginRateBurst,
+		adminRateLimit: adminRateLimit, adminRateBurst: adminRateBurst,
 	}, nil
 }
 
@@ -163,6 +194,8 @@ func serve(name string, args []string, describe bool) error {
 	}
 	addr, dsn, adminToken, logLevel, mapsDir := values.addr, values.dsn, values.adminToken, values.logLevel, values.mapsDir
 	backupDir, metricsAddr, servePanel, backupKeep, tlsFlags := values.backupDir, values.metricsAddr, values.servePanel, values.backupKeep, values.tls
+	pluginRateLimit, pluginRateBurst := values.pluginRateLimit, values.pluginRateBurst
+	adminRateLimit, adminRateBurst := values.adminRateLimit, values.adminRateBurst
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -181,6 +214,18 @@ func serve(name string, args []string, describe bool) error {
 	}
 	if *backupKeep < 1 {
 		return fmt.Errorf("backup keep: %d is below 1", *backupKeep)
+	}
+	for _, limit := range []struct {
+		name  string
+		rate  float64
+		burst int
+	}{{"plugin", *pluginRateLimit, *pluginRateBurst}, {"admin", *adminRateLimit, *adminRateBurst}} {
+		if limit.rate < 0 || math.IsNaN(limit.rate) || math.IsInf(limit.rate, 0) {
+			return fmt.Errorf("%s rate limit: %v is not a rate; 0 disables the limit", limit.name, limit.rate)
+		}
+		if limit.burst < 1 {
+			return fmt.Errorf("%s rate burst: %d is below 1", limit.name, limit.burst)
+		}
 	}
 	// An address from any source but the default (flag, environment, config
 	// file) keeps auto-TLS from moving the listener to :443.
@@ -235,6 +280,12 @@ func serve(name string, args []string, describe bool) error {
 		BackupDir:   *backupDir,
 		BackupKeep:  *backupKeep,
 		MetricsAddr: *metricsAddr,
+		// 0 from any source means off; in Config it means the default, and
+		// off is any negative rate.
+		PluginRateLimit: disabledIfZero(*pluginRateLimit),
+		PluginRateBurst: *pluginRateBurst,
+		AdminRateLimit:  disabledIfZero(*adminRateLimit),
+		AdminRateBurst:  *adminRateBurst,
 	}
 	if *servePanel {
 		config.Panel = panel.NewHandler(panel.Config{MapsDir: *mapsDir})
@@ -331,6 +382,28 @@ func envInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s=%q is not an integer", key, value)
 	}
 	return parsed, nil
+}
+
+// envFloat is envInt for a fractional flag's default.
+func envFloat(key string, fallback float64) (float64, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a number", key, value)
+	}
+	return parsed, nil
+}
+
+// disabledIfZero maps the settings' "0 disables" onto Config's "negative
+// disables, 0 means the default".
+func disabledIfZero(rate float64) float64 {
+	if rate == 0 {
+		return -1
+	}
+	return rate
 }
 
 func envOr(key, fallback string) string {

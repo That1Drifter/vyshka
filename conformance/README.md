@@ -53,6 +53,24 @@ could not run at all, so it drops straight into CI.
 | `-webhook-advertise` | bound address | Base URL the hub is told to deliver to, when it differs from the bound address (containers, tunnels) |
 | `-state-history-depth` | `500` | Snapshot history depth the hub under test is configured with; the replay-after-prune check pushes one snapshot more than this to force a history trim. Against a hub configured deeper the trim never happens and the check degrades to plain cross-session dedup; a depth in the tens of thousands also needs a larger `-check-timeout` to fit the pushes |
 | `-json` | off | Machine-readable results instead of the text report |
+| `-run` | all | Run only the checks whose id matches this regular expression |
+
+Rate limiting is optional for a hub (spec section 2.2.1), so its checks (`plugin.rateLimit`,
+`admin.rateLimit`, last in the suite) can end a third way: a hub that never answered their
+burst of 1000 requests with a 429 is reported `N/A`, not exercised, with the reason, and
+counts as neither a pass of the behavior nor a failure, and so is a hub naming a `Retry-After`
+longer than the suite waits (60 s), since the spec sets no ceiling. Each check spends the
+allowance of a credential of its own, so nothing it throttles is used by another check; a
+hub that limits is also graded on keying, a second credential's first request admitted
+while the first is drained, and a burst of session requests with a wrong secret for a
+server leaving that server's real credential unrefused. Everywhere
+else the suite behaves as section 2.2.1 asks of a client: a `429 rate_limited` is waited out
+for its `Retry-After` and the same request sent again, so a hub whose admin limit is below
+the pace the suite drives its own token at (the reference hub's default is) still grades
+every other check. The retry is not a blind one: a 429 without code `rate_limited`, or
+without a `Retry-After` of at least 1 s, fails the check that met it, an enrollment answered
+429 fails at once (a hub must never limit enrollment), and timed checks take the suite's
+own waits out of what they measure.
 
 Long-polls get their own client, with a timeout of the protocol's maximum `pollTimeout` plus
 the 5 s margin a plugin must also leave (spec section 3.1.1). A held request is the hub

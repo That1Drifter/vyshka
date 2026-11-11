@@ -45,7 +45,7 @@ it publishes anything (`RELEASING.md`).
 ```
 $ vyshka version
 <version>
-protocol draft 0.33
+protocol draft 0.34
 ```
 
 The first line is the client's version. The second is the draft of `spec/protocol.md` the
@@ -197,7 +197,7 @@ repeats.
 
 ### `vyshka version`
 
-Two lines: the client's version, then `protocol draft 0.33`. `--json` prints
+Two lines: the client's version, then `protocol draft 0.34`. `--json` prints
 `{"version", "protocolDraft"}`.
 
 ### `vyshka health`

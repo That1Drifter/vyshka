@@ -456,11 +456,21 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		if len(queued) > 0 {
 			release()
 			envelopes := make([]envelope, len(queued))
+			refund := false
 			for i, one := range queued {
 				envelopes[i] = newOutboundEnvelope(one)
 				if one.FirstSend {
 					s.metrics.envelopeDelivery.ObserveDuration(time.Since(one.CreatedAt))
+					refund = refund || adminCaused(one.Type) ||
+						(one.Type == envelopeTypeBansChanged && s.limits.takeBanNotice(session.ServerID))
 				}
+			}
+			// A poll that carries work an admin queued, on its first send, is
+			// not charged to the server (spec section 2.2.1): the plugin is
+			// answering the hub, and charging it would let the Admin API's
+			// pace throttle a plugin that did nothing but keep up.
+			if refund {
+				s.limits.plugin.Refund(session.ServerID)
 			}
 			s.log.Info("poll delivered envelopes",
 				"serverId", session.ServerID, "sessionId", session.ID,

@@ -233,7 +233,7 @@ var inlineChecks = []Check{
 			stale := plugin.Session.SessionToken
 
 			failed := make(chan error, 1)
-			started := time.Now()
+			clock := env.stopwatch()
 			go func() {
 				_, err := env.expectInline(ctx, env.PollClient, http.MethodPost, "/plugin/v1/poll"+inlineQuery, stale,
 					map[string]any{}, "session_invalid", http.StatusUnauthorized)
@@ -247,7 +247,7 @@ var inlineChecks = []Check{
 			if err := <-failed; err != nil {
 				return err
 			}
-			if elapsed := time.Since(started); elapsed > 5*time.Second {
+			if elapsed := clock(); elapsed > 5*time.Second {
 				return fmt.Errorf("the superseded poll took %s to answer inline; a held poll must not outlive its session however its refusal travels", elapsed)
 			}
 			return nil

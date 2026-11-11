@@ -262,6 +262,10 @@ func (s *Server) handleLiftBan(w http.ResponseWriter, r *http.Request) {
 // notice for, and logs what it could not queue.
 func (s *Server) announceBanChange(change store.BanChange, what string) {
 	for _, serverID := range change.Notified {
+		// Marked before the wake, so the poll that carries this notice is
+		// not charged to the plugin (spec section 2.2.1): an operator's ban
+		// edit, or the hub's own expiry, caused it, not the plugin.
+		s.limits.markBanNotice(serverID)
 		s.waiters.notify(serverID)
 	}
 	s.log.Info("installation ban list changed", "what", what, "banId", change.Ban.ID,

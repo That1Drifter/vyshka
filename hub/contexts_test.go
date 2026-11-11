@@ -47,6 +47,10 @@ func newEnumerationServer(t *testing.T, timeout, cacheTTL time.Duration) *hub.Se
 		Logger:                  slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		ContextEnumerateTimeout: timeout,
 		ContextCacheTTL:         cacheTTL,
+		// The queue-full test fills a server's queue with 5000 admin
+		// requests back to back, a fixture rather than a client, and the
+		// admin rate limit (issue #86) would refuse most of them.
+		AdminRateLimit: -1,
 	})
 	if err != nil {
 		t.Fatalf("boot hub: %v", err)

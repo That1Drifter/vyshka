@@ -224,10 +224,10 @@ func (p *fakePlugin) pollExpectingError(ctx context.Context, request pollRequest
 // result, so a check can do something to the hub while the request is held.
 func (p *fakePlugin) pollInBackground(ctx context.Context, request pollRequest) <-chan heldPoll {
 	done := make(chan heldPoll, 1)
-	started := time.Now()
+	clock := p.env.stopwatch()
 	go func() {
 		response, err := p.poll(ctx, request)
-		done <- heldPoll{Response: response, Err: err, Elapsed: time.Since(started)}
+		done <- heldPoll{Response: response, Err: err, Elapsed: clock()}
 	}()
 	// Give the hub a moment to actually be holding the request before the check
 	// does whatever is supposed to wake it.

@@ -169,6 +169,16 @@ type Config struct {
 	// internet, and the endpoint has no authentication, so it belongs on
 	// loopback or a private network (deploy/README.md, "Metrics").
 	MetricsAddr string
+	// PluginRateLimit and PluginRateBurst bound each enrolled server's Plugin
+	// API requests (spec section 2.2.1): a token bucket per server refilling
+	// at PluginRateLimit requests a second, holding up to PluginRateBurst.
+	// AdminRateLimit and AdminRateBurst do the same for each Admin API token,
+	// the bootstrap credential included. Zero means the default in
+	// ratelimit.go; a negative rate disables that API's limit.
+	PluginRateLimit float64
+	PluginRateBurst int
+	AdminRateLimit  float64
+	AdminRateBurst  int
 }
 
 func (c *Config) withDefaults() {
@@ -321,6 +331,18 @@ func (c *Config) withDefaults() {
 	if c.BackupKeep <= 0 {
 		c.BackupKeep = DefaultBackupKeep
 	}
+	if c.PluginRateLimit == 0 {
+		c.PluginRateLimit = DefaultPluginRateLimit
+	}
+	if c.PluginRateBurst <= 0 {
+		c.PluginRateBurst = DefaultPluginRateBurst
+	}
+	if c.AdminRateLimit == 0 {
+		c.AdminRateLimit = DefaultAdminRateLimit
+	}
+	if c.AdminRateBurst <= 0 {
+		c.AdminRateBurst = DefaultAdminRateBurst
+	}
 }
 
 // Server is a booted hub: an HTTP handler, its store, and its lifecycle.
@@ -356,6 +378,8 @@ type Server struct {
 	// metrics is the registry behind the metrics listener; it counts whether or
 	// not a listener is configured, which costs a map lookup per event.
 	metrics *hubMetrics
+	// limits holds the per-credential rate limiters (ratelimit.go).
+	limits *rateLimits
 	// backfilled counts the events the identity backfill has indexed, for the
 	// one log line that says it finished. Only the maintenance loop touches it.
 	backfilled int
@@ -447,6 +471,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		sweeperDone:    make(chan struct{}),
 		banSweeperDone: make(chan struct{}),
 		metrics:        m,
+		limits:         newRateLimits(cfg),
 		webhooks: webhook.NewDispatcher(webhook.Config{
 			Store:           st,
 			Log:             cfg.Logger,
@@ -508,6 +533,10 @@ func (s *Server) runMaintenance() {
 			}
 
 		case <-expiry.C:
+			// Runs of rate-limited requests that have ended get their
+			// closing records here, within a tick of the run's end (spec
+			// section 10.5); usually there is nothing to do.
+			s.closeRateLimitRuns(false)
 			// Bounded, because Close waits for this loop before closing the
 			// store: a job that could block forever could hang shutdown.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1018,6 +1047,9 @@ func (s *Server) Close() error {
 		s.webhooks.Close()
 		<-s.sweeperDone
 		<-s.banSweeperDone
+		// Outstanding counts of rate-limited mutations are written before
+		// the store closes; only a hub that stops abruptly loses them.
+		s.closeRateLimitRuns(true)
 		err = s.store.Close()
 	})
 	return err
@@ -1074,7 +1106,15 @@ func logRequests(log *slog.Logger, responseWriteTimeout time.Duration, next http
 
 		next.ServeHTTP(recorder, r)
 
-		log.Info("request",
+		// A rate-limited refusal is logged at debug: the limiter's own
+		// warning names the credential once a minute with the count, and a
+		// line per refusal would let a flooding credential fill the log the
+		// limit just refused it everything else of (spec section 2.2.1).
+		level := slog.LevelInfo
+		if recorder.status == http.StatusTooManyRequests {
+			level = slog.LevelDebug
+		}
+		log.Log(r.Context(), level, "request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", recorder.status,

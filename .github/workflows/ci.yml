@@ -137,6 +137,13 @@ jobs:
           VYSHKA_E2E: required
         run: go test ./...
 
+      - name: Race-test the rate limiter
+        # The one package whose whole job is concurrent access to shared
+        # state on the request path. -race needs cgo, which the runner has.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./hub/internal/ratelimit/
+
       - name: Test the hub against Postgres
         # The same hub and store suites, each test on a database of its own,
         # with the pool above one connection so the row locks are what keeps
