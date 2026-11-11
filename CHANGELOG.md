@@ -595,6 +595,9 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-11-11: the README notes what DayZ 1.30's base-building item falling does to what an
+  admin spawns onto a base, read from the game source and not measured (issue #149).
+
 - 2026-11-04: DayZ 1.30.164289 compatibility pass (issue #149): the self-test, the plugin
   suite, every client-free spike, a live client, and the Linux server re-verified.
 
