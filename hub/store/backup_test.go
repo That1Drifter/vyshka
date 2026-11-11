@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -25,7 +26,7 @@ func TestSnapshotIsOneCommittedInstantUnderConcurrentWrites(t *testing.T) {
 		t.Skip("snapshots are SQLite only")
 	}
 	ctx := context.Background()
-	st := openTemp(t)
+	st := openMigrated(t)
 	db := st.DB()
 	for _, ddl := range []string{
 		`CREATE TABLE pair_a (n INTEGER PRIMARY KEY, pad TEXT)`,
@@ -142,7 +143,7 @@ func TestSnapshotRefusesAnExistingFile(t *testing.T) {
 		}
 		return
 	}
-	st := openTemp(t)
+	st := openMigrated(t)
 	dest := filepath.Join(t.TempDir(), "taken.db")
 	if err := st.Snapshot(context.Background(), dest); err != nil {
 		t.Fatal(err)
@@ -185,5 +186,35 @@ func TestVacuumRefusesADatabaseInUse(t *testing.T) {
 	hubSide.Close()
 	if err := maintenance.Vacuum(ctx); err != nil {
 		t.Fatalf("vacuum once the other connection closed: %v", err)
+	}
+}
+
+// openMigrated is openTemp with the hub's schema applied: a snapshot refuses a
+// copy that has no sessions table, as the copy of a hub's database always has.
+func openMigrated(t *testing.T) *store.Store {
+	t.Helper()
+	st := openTemp(t)
+	if _, err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st
+}
+
+// A copy with no sessions table is not a backup of a hub, and Snapshot says so
+// rather than leaving a file a caller would rename into place.
+func TestSnapshotRefusesACopyWithoutTheHubSchema(t *testing.T) {
+	if dbtest.Backend() != "sqlite" {
+		t.Skip("snapshots are SQLite only")
+	}
+	st := openTemp(t)
+	if _, err := st.DB().ExecContext(context.Background(), `CREATE TABLE unrelated (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "not-a-hub.db")
+	if err := st.Snapshot(context.Background(), dest); err == nil {
+		t.Fatal("a snapshot of a database without the hub's schema succeeded")
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused copy was left behind: %v", err)
 	}
 }

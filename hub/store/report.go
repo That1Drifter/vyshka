@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -203,4 +206,43 @@ func (s *Store) tableBytes(ctx context.Context) (map[string]int64, error) {
 		sizes[name] = bytes
 	}
 	return sizes, rows.Err()
+}
+
+// OpenReadOnly opens a database for reading only, for reports that must not
+// change what they report on. A SQLite file is opened through a `mode=ro`
+// URI and without any of Open's pragmas: Open sets WAL journal mode, which
+// rewrote a snapshot's header (snapshots are in rollback-journal mode) and
+// changed its checksum, and a report on a read-only mount could not run at
+// all. A Postgres URL goes through Open, which only connects and pings there.
+func OpenReadOnly(ctx context.Context, dsn string) (*Store, error) {
+	driver, target, err := resolveDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if driver != dialectSQLite {
+		return Open(ctx, dsn)
+	}
+	if inMemory(target) {
+		return nil, ErrSnapshotNotAFile
+	}
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database read-only: %w", err)
+	}
+	path := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path // a Windows drive path: file:///C:/...
+	}
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	raw, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database read-only: %w", err)
+	}
+	raw.SetMaxOpenConns(1)
+	// busy_timeout is a setting of this connection, not of the file.
+	if _, err := raw.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("open sqlite database read-only: %w", err)
+	}
+	return &Store{db: &DB{raw: raw, d: dialectSQLite}, driver: dialectSQLite, target: target}, nil
 }

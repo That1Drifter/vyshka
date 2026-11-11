@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,31 @@ import (
 // Postgres ships (pg_dump), which see the database the way the hub's own
 // transactions do; the hub has no business reimplementing them.
 var ErrSnapshotUnsupported = errors.New("the hub snapshots SQLite only; back up Postgres with pg_dump")
+
+// ErrSnapshotNotAFile is what Snapshot answers for an in-memory SQLite
+// database. A second connection to `:memory:` opens a new, empty database, so
+// a snapshot through it would be a well-formed copy of nothing.
+var ErrSnapshotNotAFile = errors.New("this hub's SQLite database is in memory; there is no file to back up")
+
+// CanSnapshot reports whether Snapshot can work on this store at all:
+// ErrSnapshotUnsupported on Postgres, ErrSnapshotNotAFile for an in-memory
+// SQLite database, nil otherwise.
+func (s *Store) CanSnapshot() error {
+	if s.driver != dialectSQLite {
+		return ErrSnapshotUnsupported
+	}
+	if inMemory(s.target) {
+		return ErrSnapshotNotAFile
+	}
+	return nil
+}
+
+// inMemory reports whether a SQLite target names an in-memory database rather
+// than a file, in any of the spellings SQLite accepts.
+func inMemory(target string) bool {
+	return target == ":memory:" || strings.HasPrefix(target, "file::memory:") ||
+		strings.Contains(target, "mode=memory")
+}
 
 // Snapshot writes a consistent copy of a SQLite database to dest, which must
 // not exist yet. It runs `VACUUM INTO` on a connection of its own rather than
@@ -34,8 +60,8 @@ var ErrSnapshotUnsupported = errors.New("the hub snapshots SQLite only; back up 
 // before Snapshot returns, so a caller that renames it into place after a nil
 // error has a durable file.
 func (s *Store) Snapshot(ctx context.Context, dest string) error {
-	if s.driver != dialectSQLite {
-		return ErrSnapshotUnsupported
+	if err := s.CanSnapshot(); err != nil {
+		return err
 	}
 	if _, err := os.Lstat(dest); err == nil {
 		return fmt.Errorf("snapshot: %s already exists", dest)
@@ -150,8 +176,12 @@ func closeSnapshotSessions(ctx context.Context, path string, now time.Time) erro
 		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&tables); err != nil {
 		return fmt.Errorf("snapshot: read copy: %w", err)
 	}
+	// A hub's database always has a sessions table once it has booted, so a
+	// copy without one is not a copy of the hub's database (an empty file the
+	// side connection created, a target that changed under the hub) and must
+	// not be renamed into place as a backup.
 	if tables == 0 {
-		return nil
+		return errors.New("snapshot: the copy has no sessions table; it is not a copy of this hub's database")
 	}
 	if _, err := copied.ExecContext(ctx,
 		`UPDATE sessions SET ended_at = ?, end_reason = ? WHERE ended_at IS NULL`,

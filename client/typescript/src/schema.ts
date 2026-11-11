@@ -381,19 +381,24 @@ export interface paths {
          * @description Requires `admin`. Writes a consistent copy of the database, as of one
          *     committed instant, while the hub keeps serving, and answers once the
          *     file is complete and synced. The hub chooses the file's name
-         *     (`vyshka-<UTC time to the millisecond>.db`) and directory (its
-         *     configured backup directory, by default `backups` beside the database
-         *     file); the request has no body, and one sent is not read. A file still
-         *     being written carries a `.partial` suffix and is never counted as a
-         *     backup.
+         *     (`vyshka-<UTC time to the millisecond>.db`, or one millisecond after
+         *     the newest snapshot already in the directory when the clock is behind
+         *     it, so name order is creation order) and directory (its configured
+         *     backup directory, by default `backups` beside the database file).
+         *     Nothing in the request is used: like every authenticated mutation, a
+         *     body if sent is read (within the hub's 1 MiB limit) only to digest it
+         *     into the audit record (spec section 10.5). A file still being written
+         *     carries a `.partial` suffix and is never counted as a backup.
          *
          *     After each snapshot the directory is rotated down to the hub's
-         *     configured bound (default 7), deleting the oldest; only files named
-         *     like a snapshot are counted or deleted. One snapshot runs at a time.
+         *     configured bound (default 7), deleting the oldest by name; only files
+         *     named like a snapshot are counted or deleted, and the snapshot just
+         *     taken is never among those deleted. One snapshot runs at a time.
          *
          *     The copy is a SQLite database a hub can boot on directly; the restore
          *     procedure is in `deploy/README.md`. A hub on Postgres answers
-         *     `409 conflict`: back it up with `pg_dump`.
+         *     `409 conflict`: back it up with `pg_dump`. So does a hub whose SQLite
+         *     database is in memory, which has no file to copy.
          */
         post: operations["takeBackup"];
         delete?: never;
@@ -1211,12 +1216,14 @@ export interface components {
                 sizeBytes: number;
                 /**
                  * Format: date-time
-                 * @description When the snapshot started; also the time in its name.
+                 * @description When the snapshot started. The time in the name is the same,
+                 *     unless the clock was behind the newest snapshot already in the
+                 *     directory, when the name is one millisecond after that one.
                  */
                 takenAt: string;
                 durationMs: number;
             };
-            /** @description Every snapshot in the directory after rotation, newest first, this one included. */
+            /** @description Every snapshot in the directory after rotation, newest first by name; this one is always included and always first. */
             kept: string[];
             /** @description The snapshots rotation deleted to stay within the bound. */
             pruned: string[];
@@ -2267,11 +2274,24 @@ export interface operations {
                     "application/json": components["schemas"]["BackupResult"];
                 };
             };
+            /**
+             * @description A body was sent and did not arrive whole (the connection failed or
+             *     delivered it too slowly). The answer comes from reading the body
+             *     for the audit record; the operation itself uses no body.
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /**
-             * @description The hub runs on Postgres (`details.backend` names it), or a snapshot
-             *     is already being taken.
+             * @description The hub runs on Postgres (`details.backend` names it), its SQLite
+             *     database is in memory, or a snapshot is already being taken.
              */
             409: {
                 headers: {

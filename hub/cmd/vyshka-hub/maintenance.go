@@ -18,14 +18,20 @@ import (
 // schema this binary would migrate it to. It never creates a database (a
 // typo in -db would otherwise leave an empty file and report on it) and never
 // migrates one: these commands are meant to be safe to point at a database a
-// hub owns, and a migration is that hub's job at its next boot.
-func openForMaintenance(ctx context.Context, dsn string) (*store.Store, error) {
+// hub owns, and a migration is that hub's job at its next boot. readOnly
+// opens it so that not a byte of the file changes (store.OpenReadOnly), which
+// is what storage needs to report on a snapshot without altering it.
+func openForMaintenance(ctx context.Context, dsn string, readOnly bool) (*store.Store, error) {
 	if path, isSQLite := store.SQLitePath(dsn); isSQLite {
 		if _, err := os.Stat(path); err != nil {
 			return nil, fmt.Errorf("database: %w", err)
 		}
 	}
-	st, err := store.Open(ctx, dsn)
+	open := store.Open
+	if readOnly {
+		open = store.OpenReadOnly
+	}
+	st, err := open(ctx, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +70,7 @@ func runStorage(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	st, err := openForMaintenance(ctx, *dsn)
+	st, err := openForMaintenance(ctx, *dsn, true)
 	if err != nil {
 		return err
 	}
@@ -99,7 +105,13 @@ func runStorage(args []string) error {
 	for _, sweep := range report.Sweeps {
 		fmt.Fprintf(table, "%s\t%s\t%s\t%d\n", sweep.Sweep, sweep.Table, sweep.Effect, sweep.Rows)
 	}
-	return table.Flush()
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	fmt.Println("(event_batches counts every expired dedup marker; the event pass removes a server's")
+	fmt.Println(" markers only once that server has no expired event left, so while events remain it is")
+	fmt.Println(" an upper bound on what one pass removes)")
+	return nil
 }
 
 func runVacuum(args []string) error {
@@ -111,7 +123,7 @@ func runVacuum(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	st, err := openForMaintenance(ctx, *dsn)
+	st, err := openForMaintenance(ctx, *dsn, false)
 	if err != nil {
 		return err
 	}

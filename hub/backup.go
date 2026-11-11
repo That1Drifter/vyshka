@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/That1Drifter/vyshka/hub/store"
@@ -65,14 +66,20 @@ func (s *Server) backupDir() string {
 // handleBackup takes a consistent snapshot of a SQLite database while the hub
 // keeps serving (store.Snapshot says how), writes it under a name the hub
 // chooses in the directory the hub was configured with, and rotates the
-// directory down to the configured number of snapshots. It reads no body:
-// nothing a caller sends can choose a path, and a leaked admin token can
-// cost at most BackupKeep snapshots plus the one being written.
+// directory down to the configured number of snapshots. It uses nothing from
+// the request: the admin gate reads and digests a body for the audit record
+// like any mutation's, but no part of it reaches the handler's choices, so
+// nothing a caller sends can choose a path, and a leaked admin token can cost
+// at most BackupKeep snapshots plus the one being written.
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	if s.store.Driver() != "sqlite" {
 		writeErrorDetails(w, http.StatusConflict, codeConflict,
 			"this hub runs on "+s.store.Driver()+"; back it up with pg_dump (deploy/README.md, \"Backup and restore\")",
 			map[string]any{"backend": s.store.Driver()})
+		return
+	}
+	if err := s.store.CanSnapshot(); err != nil {
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
 		return
 	}
 	// One snapshot at a time: a second request answers at once instead of
@@ -104,7 +111,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	partial := final + ".partial"
 	if err := s.store.Snapshot(r.Context(), partial); err != nil {
 		os.Remove(partial)
-		if errors.Is(err, store.ErrSnapshotUnsupported) {
+		if errors.Is(err, store.ErrSnapshotUnsupported) || errors.Is(err, store.ErrSnapshotNotAFile) {
 			writeError(w, http.StatusConflict, codeConflict, err.Error())
 			return
 		}
@@ -149,10 +156,23 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// freeBackupName picks the snapshot's name from its start time, stepping a
-// millisecond forward past any name already taken (two snapshots inside one
-// millisecond, or a clock set back onto an old one).
+// freeBackupName picks the snapshot's name from its start time, but never a
+// name that sorts at or before a finished snapshot already in the directory:
+// when the clock is behind the newest name there (it was stepped back, or the
+// directory holds files from a host whose clock ran ahead), the name is one
+// millisecond after that newest one instead. Name order is therefore creation
+// order, which is what rotation trusts: the snapshot just taken is always the
+// newest and is never the one rotated out. Without this, a directory of
+// future-dated names made every new snapshot the oldest, and rotation deleted
+// it as it answered 201 naming it.
 func freeBackupName(dir string, at time.Time) (string, error) {
+	if existing := matching(dir, backupName); len(existing) > 0 {
+		newest := slices.Max(existing)
+		stamp := strings.TrimSuffix(strings.TrimPrefix(newest, "vyshka-"), ".db")
+		if last, err := time.Parse(backupNameLayout, stamp); err == nil && !at.After(last) {
+			at = last.Add(time.Millisecond)
+		}
+	}
 	for range 1000 {
 		name := "vyshka-" + at.Format(backupNameLayout) + ".db"
 		_, finalErr := os.Lstat(filepath.Join(dir, name))
