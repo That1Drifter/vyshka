@@ -5,7 +5,7 @@
 # time apart from the hold), queue depths, action outcomes by code, dropped
 # envelopes, webhook failures, and the sweeps.
 #
-#   VYSHKA_ADMIN_TOKEN=... VYSHKA_METRICS_URL=http://127.0.0.1:9090 \
+#   VYSHKA_ADMIN_TOKEN=... VYSHKA_METRICS_URL=http://127.0.0.1:9190 \
 #     scripts/demo-metrics.sh [hub-url]
 #
 # The hub must run with -metrics-addr (scripts/e2e.sh does that). Needs jq,
@@ -30,7 +30,7 @@ if [ -z "$ADMIN_TOKEN" ]; then
   exit 2
 fi
 if [ -z "$METRICS_URL" ]; then
-  echo "set VYSHKA_METRICS_URL to the hub's metrics listener, e.g. http://127.0.0.1:9090" >&2
+  echo "set VYSHKA_METRICS_URL to the hub's metrics listener, e.g. http://127.0.0.1:9190" >&2
   exit 2
 fi
 
@@ -311,7 +311,20 @@ check "vyshka_poll_hold_seconds_sum (a 5 s hold)" "$(value "$before" vyshka_poll
 at_most "vyshka_poll_handler_seconds_sum for the same poll" "$handler_moved" 1
 check "$depth (notices acked)" 0 "$(value "$after" "$depth")" 0
 
-step "10. Sweeps: the ban sweep and the expiry sweep report when they last succeeded"
+step "10. A revoked server's queue is no longer reported (nothing can drain it, so an alert on its age would never clear)"
+before=$(scrape)
+api DELETE "/api/v1/servers/$S2/credentials" "$ADMIN_TOKEN" > /dev/null
+after=$(scrape)
+check "$depth2 (credentials revoked: the series is gone)" "$(value "$before" "$depth2")" "$(value "$after" "$depth2")" -5000
+if printf '%s\n' "$after" | grep -q "server=\"$S2\""; then
+  echo "  FAIL  the revoked server still has series" >&2
+  failures=$((failures + 1))
+else
+  echo "  PASS  no series names the revoked server"
+fi
+check "$depth (the other server is unaffected)" "$(value "$before" "$depth")" "$(value "$after" "$depth")" 0
+
+step "11. Sweeps: the ban sweep and the expiry sweep report when they last succeeded"
 final=$(scrape)
 now=$(date +%s)
 for sweep in action_expiry ban_expiry; do
@@ -319,7 +332,7 @@ for sweep in action_expiry ban_expiry; do
   at_most "age of the last $sweep success, seconds" "$(awk -v n="$now" -v l="$last" 'BEGIN { print n - l }')" 30
 done
 
-step "11. The exposition is well formed"
+step "12. The exposition is well formed"
 bad=$(printf '%s\n' "$final" | grep -vE '^(#|[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})? [-+0-9.eEInfNa]+$)' || true)
 if [ -n "$bad" ]; then
   echo "  FAIL  lines that are neither comments nor samples:" >&2

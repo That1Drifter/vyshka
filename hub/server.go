@@ -892,6 +892,9 @@ func (s *Server) Serve(ctx context.Context) error {
 			return fmt.Errorf("listen for metrics on %s: %w", s.cfg.MetricsAddr, err)
 		}
 		s.warnIfExposed(metricsListener.Addr())
+		// A scraper needs one connection; the cap keeps a flood of idle ones
+		// from exhausting the process's descriptors.
+		metricsListener = capConnections(metricsListener, metricsMaxConns)
 		metricsServer = s.newMetricsServer()
 		go func() {
 			s.log.Info("metrics listening", "addr", metricsListener.Addr().String(), "path", "/metrics")
@@ -939,8 +942,10 @@ func (s *Server) shutdown(ctx context.Context, httpServer, metricsServer *http.S
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ShutdownTimeout)
 	defer cancel()
 	if metricsServer != nil {
-		// A scrape is short and holds nothing the main drain waits on.
-		_ = metricsServer.Shutdown(shutdownCtx)
+		// Closed outright, not drained: a scrape is a read of memory that a
+		// scraper retries, and a drain would spend the main listener's budget
+		// below on a scraper that may never read its answer.
+		_ = metricsServer.Close()
 	}
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)

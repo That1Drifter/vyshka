@@ -171,8 +171,11 @@ func seed(ctx context.Context, st *store.Store, plan seedPlan) (int, error) {
 	for i := range ids {
 		ids[i] = fmt.Sprintf("srv%03d", i)
 	}
-	if err := insert(`INSERT INTO servers (id, name, game, created_at) VALUES (?, ?, 'dayz', ?)`,
-		plan.servers, func(i int) []any { return []any{ids[i], "Server " + ids[i], stamp(-90 * 24 * time.Hour)} }); err != nil {
+	if err := insert(`INSERT INTO servers (id, name, game, created_at, enrolled_at) VALUES (?, ?, 'dayz', ?, ?)`,
+		plan.servers, func(i int) []any {
+			created := stamp(-90 * 24 * time.Hour)
+			return []any{ids[i], "Server " + ids[i], created, created}
+		}); err != nil {
 		return 0, err
 	}
 

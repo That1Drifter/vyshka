@@ -24,7 +24,7 @@ services:
       - "127.0.0.1:8080:8080"
       # Prometheus metrics, unauthenticated and so loopback only (deploy/README.md,
       # "Metrics"). Uncomment this and VYSHKA_METRICS_ADDR below to enable them.
-      # - "127.0.0.1:9090:9090"
+      # - "127.0.0.1:9190:9190"
     volumes:
       - ./data:/data
       # Map tilesets for the panel's live map, one directory per world
@@ -34,7 +34,7 @@ services:
     environment:
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
       VYSHKA_MAPS_DIR: /maps
-      # VYSHKA_METRICS_ADDR: 0.0.0.0:9090
+      # VYSHKA_METRICS_ADDR: 0.0.0.0:9190
       # The default is the SQLite file in ./data. To keep the system of
       # record in a Postgres you already run, set the URL here instead (the
       # README's "Database" section lists the accepted forms) and drop the

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func render(t *testing.T, r *Registry) string {
@@ -233,5 +235,67 @@ func TestHandler(t *testing.T) {
 	handler.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/metrics", nil))
 	if post.Code != http.StatusMethodNotAllowed || post.Header().Get("Allow") != "GET, HEAD" {
 		t.Fatalf("POST: %d allow=%q", post.Code, post.Header().Get("Allow"))
+	}
+}
+
+// blockingWriter is a scraper that stopped reading: its first Write parks
+// until released.
+type blockingWriter struct {
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return len(p), nil
+}
+
+// A scraper that stops reading must not hold up the code that counts into the
+// metrics: Write renders into memory and writes to the connection only after
+// every lock is released. With the old streaming write the counter below
+// blocks on the family's lock for as long as the writer does.
+func TestStalledScraperDoesNotBlockObservations(t *testing.T) {
+	r := New()
+	c := r.NewCounter("t_hot_total", "x", "k")
+	g := r.NewGauge("t_hot", "x")
+	h := r.NewHistogram("t_hot_seconds", "x", []float64{1})
+	c.Inc("a")
+
+	stalled := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	scraped := make(chan struct{})
+	go func() {
+		r.Write(context.Background(), stalled)
+		close(scraped)
+	}()
+	defer func() {
+		close(stalled.release)
+		<-scraped
+	}()
+	select {
+	case <-stalled.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scrape never reached its writer")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.Inc("a")
+		g.Set(1)
+		h.Observe(0.5)
+		// A second scrape must render too: the scrape lock is not held
+		// across the first one's network write.
+		var second bytes.Buffer
+		r.Write(context.Background(), &second)
+		if !strings.Contains(second.String(), `t_hot_total{k="a"} 2`) {
+			t.Errorf("second scrape missed the observation:\n%s", second.String())
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("observations and a second scrape are blocked behind a scraper that stopped reading")
 	}
 }

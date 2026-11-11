@@ -13,8 +13,8 @@
 #
 # Needs Go, jq, curl, python3, and openssl (the demos'). Set E2E_PORT to pick
 # the port; the default is random in 18000-18999. The hub also serves its
-# Prometheus endpoint on a second scratch port (E2E_METRICS_PORT, default random
-# in 19000-19999), which the demos read from VYSHKA_METRICS_URL.
+# Prometheus endpoint on a second scratch port (E2E_METRICS_PORT, default the
+# main port plus 1000), which the demos read from VYSHKA_METRICS_URL.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -38,7 +38,7 @@ done
 
 port="${E2E_PORT:-$((18000 + RANDOM % 1000))}"
 hub_url="http://127.0.0.1:$port"
-metrics_port="${E2E_METRICS_PORT:-$((19000 + RANDOM % 1000))}"
+metrics_port="${E2E_METRICS_PORT:-$((port + 1000))}"
 metrics_url="http://127.0.0.1:$metrics_port"
 run_dir="$(mktemp -d "${TMPDIR:-/tmp}/vyshka-e2e.XXXXXX")"
 # The binary carries the port in its name, so stopping this hub by name can

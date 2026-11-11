@@ -381,8 +381,8 @@ The hub keeps Prometheus metrics and serves them as `GET /metrics` in the text e
 format (0.0.4) from a listener of its own, off by default:
 
 ```
-vyshka-hub serve -metrics-addr 127.0.0.1:9090      # or VYSHKA_METRICS_ADDR=127.0.0.1:9090
-curl -s http://127.0.0.1:9090/metrics
+vyshka-hub serve -metrics-addr 127.0.0.1:9190      # or VYSHKA_METRICS_ADDR=127.0.0.1:9190
+curl -s http://127.0.0.1:9190/metrics
 ```
 
 **The endpoint has no authentication, which is why it is not on the Plugin API listener.**
@@ -392,21 +392,29 @@ it answers 404 like any unknown path, and the metrics listener answers 404 for e
 but `/metrics`. Bind the metrics listener to loopback (and scrape it from an agent on the
 box, or over an SSH tunnel) or to a private network address; the hub logs a warning at
 boot when it is bound anywhere else. Under compose, publish it on loopback the way the
-main port is (`127.0.0.1:9090:9090` with `VYSHKA_METRICS_ADDR: 0.0.0.0:9090` inside the
+main port is (`127.0.0.1:9190:9190` with `VYSHKA_METRICS_ADDR: 0.0.0.0:9190` inside the
 container, which only the published mapping exposes outside the compose network); the
-branch hub's compose file does this on `127.0.0.1:9190`.
+branch hub's compose file does this on `127.0.0.1:9190`, where the unauthenticated port is also
+reachable from the other containers on its proxy network. The listener accepts at most 16
+connections at once.
 
 ```yaml
 # prometheus.yml
 scrape_configs:
   - job_name: vyshka
     static_configs:
-      - targets: ["127.0.0.1:9090"]
+      - targets: ["127.0.0.1:9190"]
 ```
 
 A scrape reads the queue depths from the database in one statement (about a millisecond, two at worst,
 on a 295 MiB database with 780 000 rows, measured in
-`spikes/metrics-scrape`), and every other value is memory. Counters and histograms start at zero when
+`spikes/metrics-scrape`), and every other value is memory. The statement is index-only (SQLite
+plans a covering search for each half) but linear in what it counts: the outbound queues are
+bounded at 5000 per server, and the webhook backlog is counted on every scrape, up to 1000
+pending deliveries per webhook (a paused webhook stays at that bound until it is resumed;
+replays are exempt from it). A very large backlog therefore makes scrapes slower, by about
+60 microseconds per thousand pending deliveries: 7 ms at 100 000, which is a hundred paused
+webhooks. Counters and histograms start at zero when
 the hub starts, as Prometheus expects, and a labelled series appears the first time its
 event happens, so use `rate()` and `increase()` rather than reading raw values.
 
@@ -438,12 +446,16 @@ A long-poll is held open on purpose (up to the negotiated `pollTimeout`, 25 s fo
 a request's total duration measures the plugin's cadence, not the hub. The metrics split
 it three ways:
 
-- `vyshka_poll_handler_seconds` is the time an authenticated poll spent in the hub **less
-  the hold**: reading the request, applying acks and envelopes in one database transaction,
-  reading the queue. This is the latency to alert on. On SQLite it includes waiting for the
-  single connection, so it rises when anything else (a sweep, an admin write) holds it.
-- `vyshka_poll_hold_seconds` is the time spent parked. Near `pollTimeout` means an idle
-  server; near 0 means work arrived or the poll was answered at once.
+- `vyshka_poll_handler_seconds` is the time an authenticated poll spent in the hub **outside
+  the hold**: what runs before the poll first parks (reading the request, applying acks and
+  envelopes in one database transaction, the first queue read) and after it last wakes (the
+  final queue read and the response). This is the latency to alert on. On SQLite it
+  includes waiting for the single connection, so it rises when anything else (a sweep, an
+  admin write) holds it. It does not grow with how long a poll is held.
+- `vyshka_poll_hold_seconds` is the hold: from the first time the poll parks to the last
+  time it wakes, which includes the one-second rechecks a held poll makes of its session
+  and queue in between. Near `pollTimeout` means an idle server; near 0 means work arrived
+  or the poll was answered at once.
 - `vyshka_envelope_delivery_seconds` is the time an envelope waited between being queued
   (an action dispatched, a notice, a raw envelope) and the first poll response that carried
   it. It is the operator's "how long until my kick reaches the game server" less the
@@ -456,10 +468,10 @@ it three ways:
 |---|---|---|---|
 | `vyshka_build_info` | gauge | `version`, `goversion`, `database` | Always 1; the labels say what is running |
 | `vyshka_start_time_seconds` | gauge | none | Set at boot; `time() - vyshka_start_time_seconds` is uptime |
-| `vyshka_poll_handler_seconds` | histogram | none | Every authenticated poll, once, when it ends; refused credentials are not counted |
-| `vyshka_poll_hold_seconds` | histogram | none | The same polls; 0 for one answered without a hold |
+| `vyshka_poll_handler_seconds` | histogram | none | Every authenticated poll, once, when it ends, for the time outside its hold; refused credentials are not counted |
+| `vyshka_poll_hold_seconds` | histogram | none | The same polls, for the time held; 0 for one answered without a hold |
 | `vyshka_envelope_delivery_seconds` | histogram | none | An envelope's first appearance in a poll response |
-| `vyshka_outbound_queue_depth` | gauge | `server` | Read at scrape time: envelopes queued for the server and not yet acked, sent or not (the bound is 5000, spec section 9.2). One series per enrolled server, 0 when empty |
+| `vyshka_outbound_queue_depth` | gauge | `server` | Read at scrape time: envelopes queued for the server and not yet acked, sent or not (the bound is 5000, spec section 9.2). One series per server that is enrolled and not revoked, 0 when empty; a revoked server's series disappears at the next scrape (and comes back if it enrolls again), and a server that never enrolled has none |
 | `vyshka_outbound_queue_oldest_seconds` | gauge | `server` | Read at scrape time: age of the longest-waiting of those; 0 when empty |
 | `vyshka_webhook_deliveries_pending` | gauge | none | Read at scrape time: deliveries waiting for an attempt or a retry, across all webhooks |
 | `vyshka_actions_finished_total` | counter | `code`, `outcome` = `completed`, `failed`, `expired` | An action leaving its last non-terminal state: the plugin's result, the expiry sweep, or a read that finds the deadline passed. Counted once, where the transition commits |
@@ -484,6 +496,9 @@ Webhook failure rate is derived: the rate of attempts with `result!="delivered"`
 rate of all attempts, per webhook. Some starting alerts:
 
 ```yaml
+# A server that is up but not polling. Revoking a server removes its series, so
+# this stops firing for it; a down server that is still enrolled keeps firing,
+# which is the point.
 - alert: VyshkaQueueNotDraining
   expr: vyshka_outbound_queue_oldest_seconds > 300
 - alert: VyshkaWebhookFailing

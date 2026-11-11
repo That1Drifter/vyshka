@@ -39,6 +39,14 @@ rendering happens after it is released. The statement walks only the pending ran
 `outbound_envelopes_pending` for each server (acked rows are never visited), which is why 760 000
 rows of history cost nothing and the 5 000-deep queue is the dominant term.
 
+The webhook half of the statement counts every pending delivery on each scrape (a covering
+search of `webhook_deliveries_due`; plan: `SEARCH webhook_deliveries USING COVERING INDEX
+webhook_deliveries_due (state=?)`). Seeding 100 000 pending deliveries instead of 1 000 (2 760 721
+rows, 977 MiB) moved the statement's median from 1.0 ms to 7.0 ms (p99 10.0 ms): linear, about
+60 microseconds per thousand rows. The dispatcher bounds a webhook at 1 000 pending (spec
+section 11.5), so that is a hundred paused webhooks, not a typical installation. The servers
+the statement walks are the enrolled, not-revoked ones, so the seed sets `enrolled_at`.
+
 ## Reproducing
 
 ```

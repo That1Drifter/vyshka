@@ -73,7 +73,9 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Handler time is the whole request less the hold: a long-poll's wait is
-	// the plugin's cadence, not the hub's latency, so it is booked apart.
+	// the plugin's cadence, not the hub's latency, so it is booked apart. The
+	// hold runs from the first time the poll parks to the last time it wakes,
+	// the backstop rechecks in between included (see holdPoll).
 	var held time.Duration
 	defer func() {
 		s.metrics.pollHandler.ObserveDuration(max(0, time.Since(started)-held))
@@ -399,7 +401,12 @@ func backlogFloor(more bool, envelopes []inboundEnvelope) int64 {
 // higher ack and be answered while this one is still held, and an ack the hub
 // has reported must never be lowered by a later response (spec section 9.1).
 //
-// held accumulates the time spent parked, for the poll metrics.
+// held receives how long the poll was held, for the poll metrics: from the first
+// time it parks to the last time it wakes. Everything in between is hold, the
+// one-second backstop rechecks (a session lookup and a queue read each) as much
+// as the waiting, because they scale with how long the poll is held and not with
+// anything the hub was asked to do. What runs before the first park (answering
+// at once is a poll that never parks) and after the last wake is handler time.
 func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64, backlogFloor int64, held *time.Duration) {
 	pollTimeout := clampPollTimeout(time.Duration(session.PollTimeoutSeconds) * time.Second)
 	deadline := time.Now().Add(pollTimeout)
@@ -408,6 +415,8 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 	if session.ExpiresAt.Before(deadline) {
 		deadline = session.ExpiresAt
 	}
+
+	var parkedAt time.Time
 
 	respond := func(envelopes []envelope) {
 		if envelopes == nil {
@@ -468,19 +477,21 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		}
 
 		timer := time.NewTimer(min(remaining, pollBackstop))
-		parked := time.Now()
+		if parkedAt.IsZero() {
+			parkedAt = time.Now()
+		}
 		select {
 		case <-signal:
 		case <-timer.C:
 		case <-r.Context().Done():
 			// The plugin gave up on this request. Nothing was acked and nothing
 			// was sent, so the next poll picks up exactly where this one was.
-			*held += time.Since(parked)
+			*held = time.Since(parkedAt)
 			timer.Stop()
 			release()
 			return
 		}
-		*held += time.Since(parked)
+		*held = time.Since(parkedAt)
 		timer.Stop()
 		release()
 

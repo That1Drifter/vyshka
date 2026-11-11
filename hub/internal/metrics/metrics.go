@@ -20,6 +20,7 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -345,8 +346,24 @@ func (r *Registry) OnScrape(name string, fn func(context.Context) error) {
 	r.collectors = append(r.collectors, collector{name: name, fn: fn})
 }
 
-// Write runs the scrape hooks and renders every metric, sorted by name.
+// Write runs the scrape hooks, renders every metric sorted by name, and then
+// writes the result to w.
+//
+// The exposition is rendered into memory first, under the scrape lock and each
+// family's own lock, and written to w only after every lock is released. w is
+// a network connection in practice, and a scraper that stops reading would
+// otherwise hold a family's lock for as long as the write blocks: every hot
+// path that counts into that family (a poll, a sweep, a webhook worker) would
+// park behind it. A stalled scraper now costs its own goroutine and nothing
+// else.
 func (r *Registry) Write(ctx context.Context, w io.Writer) {
+	rendered := r.render(ctx)
+	_, _ = w.Write(rendered)
+}
+
+// render runs the hooks and returns the whole exposition. No lock is held when
+// it returns.
+func (r *Registry) render(ctx context.Context) []byte {
 	r.scrape.Lock()
 	defer r.scrape.Unlock()
 
@@ -361,9 +378,11 @@ func (r *Registry) Write(ctx context.Context, w io.Writer) {
 		}
 	}
 	sort.Slice(families, func(i, j int) bool { return families[i].name() < families[j].name() })
+	var out bytes.Buffer
 	for _, f := range families {
-		f.write(w)
+		f.write(&out)
 	}
+	return out.Bytes()
 }
 
 // Handler serves the registry as GET /metrics would: the exposition format for

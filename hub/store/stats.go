@@ -44,8 +44,12 @@ type ServerQueue struct {
 
 // QueueStats is what a metrics scrape reads from the database.
 type QueueStats struct {
-	// Servers has one entry per enrolled server, the empty queues included, so
-	// a gauge built from it reads 0 rather than disappearing.
+	// Servers has one entry per server that can still drain a queue: enrolled
+	// and not revoked, empty queues included, so a gauge built from it reads 0
+	// rather than disappearing. A revoked server (until it enrolls again) or
+	// one that never enrolled has no credentials to poll with, so whatever sits
+	// in its queue only ages and would keep any "queue not draining" alert
+	// firing for good.
 	Servers []ServerQueue
 	// WebhookPending counts webhook deliveries waiting for an attempt or a
 	// retry (spec section 11.5).
@@ -54,15 +58,21 @@ type QueueStats struct {
 
 // QueueStats reads every queue depth in one statement, so a scrape holds the
 // store's single SQLite connection for one short query rather than one per
-// server. Both halves are index-only: the outbound count walks the pending
-// range of outbound_envelopes_pending (server_id, acked_at, created_at) for
-// each server, which the queue bound (spec section 9.2) caps, and the webhook
-// count walks webhook_deliveries_due (state, next_attempt_at).
+// server. Both halves are index-only (SQLite's plan: a covering search of
+// outbound_envelopes_pending (server_id, acked_at, created_at) for each server,
+// and a covering search of webhook_deliveries_due (state, next_attempt_at)),
+// which is cheap but not constant: each is linear in the rows it counts. The
+// outbound count is capped per server by the queue bound (spec section 9.2).
+// The webhook count is capped per webhook by the pending bound (1000, section
+// 11.5), but a paused webhook sits at that bound for as long as it is paused,
+// and replays are exempt from it, so the total is the number of webhooks times
+// 1000 plus whatever replays add. The README says so.
 func (s *Store) QueueStats(ctx context.Context) (QueueStats, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT 'outbound', s.id, COUNT(o.created_at), MIN(o.created_at)
 		   FROM servers s
 		   LEFT JOIN outbound_envelopes o ON o.server_id = s.id AND o.acked_at IS NULL
+		  WHERE s.enrolled_at IS NOT NULL AND s.revoked_at IS NULL
 		  GROUP BY s.id
 		 UNION ALL
 		 SELECT 'webhook', '', COUNT(*), NULL

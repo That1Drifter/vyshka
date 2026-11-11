@@ -161,6 +161,9 @@ func (m *hubMetrics) sweep(name string, started time.Time, removed int, err erro
 	m.sweepLast.Set(float64(time.Now().UnixNano())/1e9, name)
 }
 
+// metricsMaxConns caps concurrent connections to the metrics listener.
+const metricsMaxConns = 16
+
 // MetricsHandler serves the Prometheus exposition for every path it is given.
 // The reference binary mounts it on its own listener (Config.MetricsAddr);
 // the main router never routes it, because the Plugin API listener is
