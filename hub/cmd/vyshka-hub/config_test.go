@@ -821,6 +821,15 @@ func TestKeywordDSNIsRefused(t *testing.T) {
 			}
 		})
 	}
+	// libpq allows spaces around the = of a pair.
+	clearEnv(t)
+	spaced, resolvedSpaced, err := resolveServe(t, "-db", "host = db.example user = u password = PW_SECRET")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolvedSpaced.secret("db", spaced.Lookup("db").Value.String()); err == nil || strings.Contains(err.Error(), "PW_SECRET") {
+		t.Errorf("a key = value connection string with spaces: %v", err)
+	}
 	// A path with an = in it is still a path.
 	clearEnv(t)
 	flags, resolved, err := resolveServe(t, "-db", "/var/lib/vyshka/a=b.db")

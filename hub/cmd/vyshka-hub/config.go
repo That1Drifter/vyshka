@@ -606,7 +606,12 @@ func keywordDSN(text string) bool {
 	if strings.Contains(text, "://") {
 		return false
 	}
-	for _, field := range strings.Fields(strings.ToLower(text)) {
+	// libpq allows spaces around the = of a pair; close them up first.
+	joined := strings.Join(strings.Fields(strings.ToLower(text)), " ")
+	for _, spaced := range []string{" = ", " =", "= "} {
+		joined = strings.ReplaceAll(joined, spaced, "=")
+	}
+	for _, field := range strings.Fields(joined) {
 		for _, key := range []string{"host=", "hostaddr=", "port=", "user=", "password=", "dbname=", "sslmode="} {
 			if strings.HasPrefix(field, key) {
 				return true
