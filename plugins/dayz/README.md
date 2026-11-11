@@ -23,6 +23,20 @@ live client session, and a Linux server. Earlier 1.30 builds differ only where t
 says so. A fact this README dates to 1.29 alone was measured there and not again on 1.30.
 1.29 is no longer tested, since a 1.29 server cannot take 1.30 clients.
 
+**Base building on 1.30.** When a base part is dismantled or destroyed, 1.30 searches a box
+around the part for what rests on it: a vehicle is woken so it settles, a character gets a
+small push down, and an item is thrown physically. A fence, watchtower, totem, or shelter
+site standing there is itself destroyed. `cfggameplay.json` (`BaseBuildingData.ConstructionData`)
+has three switches, all `false` in the stock missions: `disableItemFalling` turns the
+search off, `disableDropAttachmentsOnFall` keeps a falling base piece from throwing out its
+attachments and cargo, and `disableRefundMaterialsOnFall` makes such a piece vanish at once
+instead of being taken apart part by part. The plugin looks for no base parts: a ground
+spawn and a vehicle preset start from the terrain height, a teleport takes the position it
+is given (lifted to the terrain if below it), and unstuck lifts a vehicle from where it
+stands. So what an admin puts on a player's floor or roof is treated like what a player
+put there, and falls when that support goes. This was read from the 1.30 script source
+(build 164078, and the 164289 diff to it), not measured on a live server.
+
 ## Layout
 
 | Path | What it is |
@@ -365,9 +379,10 @@ to 100, energy 0 to 5000, water 0 to 5000, stamina 0 to 100, heat buffer -30 to 
 **Stop bleeding** removes every bleeding source through the server-side bleeding manager,
 the same call the heal makes, and reports how many there were. The engine treats a source
 removed with no bandage as a wound that closed by itself and rolls a wound infection on
-each (40% on 1.29); an admin's stop is a perfect bandage, so the action puts the wound
-agent back to what it was before the removal and reports `infectionPrevented` when a roll
-had hit (an infection the player already carried is kept). **Dry** sets every item in
+each (40% on 1.29 and 1.30, read from the game source); an admin's stop is a perfect
+bandage, so the action puts the wound agent back to what it was before the removal and
+reports `infectionPrevented` when a roll had hit (an infection the player already carried
+is kept). **Dry** sets every item in
 the player's inventory tree (clothing, hands, cargo, and attachments alike) to its minimum
 wetness and clears the player's own wet flag at once rather than waiting for the engine's
 environment tick to notice the dry clothes. **Broken legs** with `broken: true` activates
@@ -450,8 +465,8 @@ budget, describes one level of containers less each time until it does, keeping 
 container the count of what it holds and saying so in `truncated` and `depth`; `slot`
 then gives one worn container's subtree the whole budget to itself (a subtree that alone
 is over the budget is cut the same way). Should even the top level not fit, the action
-fails and says so rather than answer a payload the hub would drop. On a stock 1.29 server
-the cut was not needed for anything measured: the heaviest loadout
+fails and says so rather than answer a payload the hub would drop. On a stock server, 1.29 and
+1.30.164289 alike, the cut was not needed for anything measured: the heaviest loadout
 `spikes/dayz-inventory-tree` builds from named classes (an Alice bag, a hunting jacket, a
 high-capacity vest, hunter pants, a belt with a holstered pistol, three rifles with every
 attachment, cases nested in every cargo and every cargo filled) is 131 items and 14 KiB,
@@ -509,7 +524,7 @@ the plugin logs the hub's reasons as `ERROR` lines and carries on.
 | `core.player.ban` | `vyshka.ban` records an identity | `player`, `name` when known, `reason`, `expiresAt` when not permanent, `actionId` |
 | `core.server.fps` | Every `fpsIntervalSeconds` after the first interval | `fps` (the server's frame rate over the interval, one decimal, counted from the mission's update frames because the engine's own `GetFps()` reads a constant 0.1 on a dedicated server), `players` |
 | `vyshka.player.unban` | `vyshka.unban` lifts a ban (a custom type: the core set has no unban) | `player`, `name` when known, `actionId` |
-| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, a destroyed boat's decay tick fired it every 10 s), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens). A wreck saved at shutdown is loaded again at the next boot, runs the kill hook inside its own load, and is deleted by the engine half a second later (measured on DayZ 1.29); that destruction belongs to the earlier run and is not reported | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`), `state` (`destroyed`, or `exploded` when an explosion did it), and when a hit destroyed it `damageType` and `ammo` as the damage event reports them (a scripted health write destroys with no hit). The engine names the vehicle itself as the killer of an explosion (measured: a plastic explosive), so a vehicle that is its own killer is described by what its fatal hit came from, which is how an explosion reads as `explosion` with `weapon` |
+| `core.vehicle.destroy` | A vehicle's health reaches zero (the engine's kill hook on the vehicle), once per destruction: the hook fires again on every later hit on the wreck (measured on DayZ 1.29, where a destroyed boat's decay tick fired it every 10 s; the repeat was not re-measured on 1.30, and the plugin's list of reported wrecks drops it either way), and the plugin reports the first, until the vehicle is deleted or its global health level leaves ruined (a repair, which the health-level hook reports as it happens). A wreck saved at shutdown is loaded again at the next boot, runs the kill hook inside its own load, and is deleted by the engine half a second later (measured on DayZ 1.29); that destruction belongs to the earlier run and is not reported | `vehicle` (the snapshot id), `type`, `kind`, `position`, `crew` (who was in it), `cause` (`player` with `killer`, `killerName`, and `weapon`; `explosion` with `weapon`; `vehicle`; `self`; `other` with `killerType`; or `unknown`), `state` (`destroyed`, or `exploded` when an explosion did it), and when a hit destroyed it `damageType` and `ammo` as the damage event reports them (a scripted health write destroys with no hit). The engine names the vehicle itself as the killer of an explosion (measured: a plastic explosive), so a vehicle that is its own killer is described by what its fatal hit came from, which is how an explosion reads as `explosion` with `weapon` |
 | `vyshka.vehicle.enter` | A player's vehicle command starts: the character takes a seat (a custom type: the core set has no enter) | `player`, `name`, `vehicle`, `type`, `kind`, `position`, `seat` (the crew index), `driver` |
 | `vyshka.vehicle.exit` | The vehicle command finishes (the character got out, or the command gave way to another, a death in the seat included), or a seated player disconnects; a seat switch inside the vehicle is not an exit, and the `seat` and `driver` reported are those of the seat actually left | the same, plus `cause` (`left` or `disconnect`) |
 
