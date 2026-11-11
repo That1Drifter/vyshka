@@ -4,7 +4,8 @@ The hub is one static binary; `Dockerfile` at the repository root wraps it in a 
 image running as a non-root user, with the SQLite file on `/data`. This directory holds two
 reference single-host layouts, both with the hub on loopback and a reverse proxy terminating
 TLS in front of it (spec section 3.3): the container with compose, and the binary from a
-release archive under systemd. An operator who already runs Postgres sets `DATABASE_URL`
+release archive under systemd. Either can drop the proxy and let the hub get its own
+certificate over ACME instead (`-auto-tls`, "Without a proxy" below). An operator who already runs Postgres sets `DATABASE_URL`
 instead of using the SQLite file; the accepted URL forms are in the repository README under
 "Database".
 
@@ -13,7 +14,8 @@ instead of using the SQLite file; the accepted URL forms are in the repository R
 | `docker-compose.yml` | Builds the image from the repository and runs it on `127.0.0.1:8080` with the admin token read from a file, never from the environment |
 | `nginx-vyshka.conf.example` | A server block with the two settings a hub needs from its proxy: a read timeout above the 60 s poll hold, and a body cap at or above the hub's 1 MiB |
 | `vyshka-hub.service` | A systemd unit for the static binary: a dedicated user, the state under `/var/lib/vyshka`, the admin token as a systemd credential, confinement a static Go binary tolerates |
-| `hub.env.example` | The unit's environment file, `/etc/vyshka/hub.env`: listen address, database URL, maps directory, log level |
+| `hub.env.example` | The unit's environment file, `/etc/vyshka/hub.env`: listen address, database URL, maps directory, log level, auto-TLS |
+| `docker-compose.auto-tls.yml` | An override for `docker-compose.yml` that publishes 443 and 80 and turns on `-auto-tls`, for a host with no proxy |
 | `branch-hub.compose.yml` | A disposable second hub beside a live one, running whatever branch `scripts/deploy-branch-hub.sh` last deployed |
 
 ## The container with compose
@@ -514,6 +516,113 @@ rate of all attempts, per webhook. Some starting alerts:
 Not here, deliberately: Go runtime and process metrics, per-route HTTP counters, and
 anything about players. The rate limits (issue #86) will add their own counters through
 the same registry (`hub/metrics.go`: a field and a one-line call where the event happens).
+
+## Without a proxy: `-auto-tls`
+
+Game servers usually run on other machines than the hub, so every plugin reaches it over
+TLS. With `-auto-tls` the hub obtains a certificate over ACME (Let's Encrypt production by
+default), renews it, and terminates TLS itself, so the proxy becomes optional. Turning it on
+accepts the CA's subscriber agreement.
+
+| Flag | Env | Meaning |
+|---|---|---|
+| `-auto-tls` | `VYSHKA_AUTO_TLS` | Turn it on. `-addr` is then the TLS listener and defaults to `:443` when not given |
+| `-auto-tls-hosts` | `VYSHKA_AUTO_TLS_HOSTS` | Required. Comma-separated DNS names; the hub requests certificates for these and no others, whatever name a client asks for |
+| `-auto-tls-cache` | `VYSHKA_AUTO_TLS_CACHE` | Where the ACME account key and certificates live, created 0700 with 0600 files. Default: `acme-cache` beside the SQLite file; required with Postgres |
+| `-auto-tls-email` | `VYSHKA_AUTO_TLS_EMAIL` | Optional contact address for the CA |
+| `-auto-tls-directory` | `VYSHKA_AUTO_TLS_DIRECTORY` | The ACME directory URL: Let's Encrypt staging to rehearse, or a private CA |
+| `-auto-tls-ca-roots` | `VYSHKA_AUTO_TLS_CA_ROOTS` | A PEM file of extra roots for the directory's own TLS, for a private or test CA |
+| `-auto-tls-http-addr` | `VYSHKA_AUTO_TLS_HTTP_ADDR` | The plain listener, default `:80`; `off` drops it |
+
+The CA validates over TLS-ALPN-01 on the TLS listener, which is enough on its own when the
+CA can reach port 443. The plain listener adds HTTP-01, so issuance should still work when
+only port 80 is reachable from the CA, and it redirects a browser that typed `http://` to
+the panel over https. It answers the ACME challenge path and that redirect (GET and HEAD
+for a configured name, with a path as the target) and nothing else: the Plugin and Admin
+APIs exist only on the TLS listener, so a plugin misconfigured with `http://` gets an error
+instead of a hub that answers in clear. Set it `off` when port 80 belongs to something
+else.
+
+Issuance through HTTP-01 is traced from the ACME library's source, not demonstrated:
+`scripts/demo-auto-tls.sh` issues over TLS-ALPN-01 every time, because the library tries
+that first and the test CA can reach the TLS port. The test rig cannot show HTTP-01 as it
+stands: the test CA puts the port in the Host header of its validation request
+(`name:<port>`, since its HTTP-01 port is not 80 there), and the library matches the Host
+against the configured names exactly, so it would refuse. A real CA validates on port 80
+and sends the bare name, which the library accepts.
+
+The TLS listener is the same server as the plain one: the same handler, timeouts,
+connection cap (256 connections), and drain on shutdown, TLS 1.2 or later. The plain
+listener has a cap of its own, 64 connections, so idle connections there cannot use up
+the memory or file descriptors the TLS listener needs. The TLS listener speaks HTTP/1.1
+only, also to clients that offer HTTP/2: the hub's bounds are per connection, and over
+HTTP/2 one connection carries many requests, so they would stop bounding what they bound.
+
+Each configured name gets one ECDSA certificate, served to every client whatever it
+offers. A client that cannot verify ECDSA at all gets no certificate; every current
+browser and TLS library can. A handshake never orders a certificate or waits on the CA: it
+is answered from the certificate already in memory, and ordering happens only at boot and
+on the retry schedule below (plus the library's own renewal timer).
+
+What the hub does when things go wrong:
+
+- **Incoherent flags** (on without hosts, a wildcard or IP as a host, auto-TLS flags set
+  with `-auto-tls` off, Postgres without `-auto-tls-cache`): `serve` refuses to start and
+  says which.
+- **Cache directory not creatable or not writable:** `serve` refuses to start.
+- **CA unreachable at boot, or validation failing:** the hub starts and serves, logs
+  `tls certificate unavailable` with the CA's error and the time to the next attempt, and
+  handshakes fail until a certificate is obtained. It retries after 5 minutes, then 10, 20,
+  40, and every hour from then on, starting over at 5 once it succeeds; handshakes do not
+  retry. Each attempt with DNS or a port wrong is a failed validation, or two with the plain
+  listener on (TLS-ALPN-01, then HTTP-01), and Let's Encrypt allows only five of those per
+  name per hour, so rehearse against its staging directory
+  rather than spend production's limits while debugging.
+- **The host's clock behind:** if the clock is more than a little behind, the hub rejects a
+  certificate the CA did issue, because it is not valid yet by the hub's clock, and logs
+  `tls certificate unavailable`. Every retry is then a real issuance counted against the
+  CA's duplicate-certificate limit (five a week for the same names at Let's Encrypt), which
+  the schedule above spends in a few hours. Keep the host on NTP.
+- **Renewal failing:** renewal starts when a third of the certificate's lifetime is left
+  (about 30 days for Let's Encrypt's 90-day certificates). While it fails the hub keeps
+  serving the cached certificate and logs `tls certificate renewal overdue` with the expiry;
+  it logs `tls certificate renewed` once renewal succeeds.
+- **A name outside `-auto-tls-hosts`:** the handshake fails and no order is placed.
+
+Key material is never logged. The cache directory holds it, so back it up with the
+database and keep it private.
+
+**With compose,** point the DNS name at the host, set it in `docker-compose.auto-tls.yml`,
+and layer that file over the base one. It publishes 443 and 80 on all interfaces in place of
+loopback 8080, and the cache lands in `./data/acme-cache`:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.auto-tls.yml up -d --build
+docker compose logs hub | grep 'tls certificate'
+curl -s https://hub.example.org/healthz
+```
+
+**Under systemd,** the service user needs to bind 443 and 80. Grant it exactly that
+capability with a drop-in (`sudo systemctl edit vyshka-hub`), which leaves the rest of the
+unit's confinement as it is:
+
+```
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+The unit's empty `CapabilityBoundingSet=` would otherwise strip the capability; a non-empty
+assignment in a drop-in adds to it. Then set `VYSHKA_ADDR=:443`, `VYSHKA_AUTO_TLS=true`, and
+`VYSHKA_AUTO_TLS_HOSTS` in `/etc/vyshka/hub.env` (the commented block in `hub.env.example`)
+and restart. The cache defaults to `/var/lib/vyshka/acme-cache`, inside the unit's state
+directory.
+
+**Still prefer a proxy** when the host already serves other sites on 80 and 443 (two
+programs cannot both bind them), when the hub shares a name or certificate with other sites,
+when you want per-client connection limits or access logs at the edge (the hub's connection
+cap is global), or when the certificate cannot come from an ACME CA that reaches this host
+over HTTP-01 or TLS-ALPN-01: a wildcard or DNS-01 setup, or an internal PKI.
 
 ## A branch hub beside a live one
 

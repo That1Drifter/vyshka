@@ -5,6 +5,7 @@ package hub
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,12 @@ var Version = "dev"
 type Config struct {
 	// Addr is the listen address, host:port.
 	Addr string
+	// TLSConfig, when set, makes Serve terminate TLS on Addr itself, with
+	// the same handler, timeouts, connection cap, and drain as the plain
+	// listener (the reference binary fills it from --auto-tls). Serve offers
+	// HTTP/1.1 only and raises MinVersion to TLS 1.2; see Serve for why h2
+	// stays off. Nil serves plain HTTP.
+	TLSConfig *tls.Config
 	// DatabaseURL selects the database. Empty means the default SQLite file.
 	DatabaseURL string
 	// AdminToken is the bootstrap Admin API credential, which carries the
@@ -879,6 +886,26 @@ func (s *Server) Serve(ctx context.Context) error {
 		IdleTimeout:       s.cfg.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
+	if s.cfg.TLSConfig != nil {
+		// TLS wraps the capped listener, so a slot is held from accept to
+		// close whatever the handshake does. net/http puts the smallest of
+		// its read and write timeouts on the socket during the handshake,
+		// which bounds reading and writing but not a GetCertificate that
+		// blocks: that callback must answer promptly, and the reference
+		// binary's answers from memory and never waits on a CA.
+		listener = tls.NewListener(listener, http1Only(s.cfg.TLSConfig))
+		// HTTP/2 stays off. Every bound above is per connection, and over h2
+		// one connection carries up to 250 concurrent streams: MaxConns
+		// would stop capping requests, ReadTimeout and WriteTimeout would
+		// apply per stream instead of per socket, and hangUp's
+		// Connection: close (a header h2 forbids) would no longer end the
+		// refused caller's connection. Plugins speak HTTP/1.1 anyway (DayZ's
+		// RestApi has nothing else), and the panel loses nothing that
+		// matters at its size.
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		httpServer.Protocols = protocols
+	}
 
 	// The metrics endpoint listens on an address of its own (see
 	// Config.MetricsAddr). It is bound before anything serves, so a bad
@@ -904,7 +931,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		s.log.Info("hub listening", "addr", listener.Addr().String(), "version", Version)
+		s.log.Info("hub listening", "addr", listener.Addr().String(), "tls", s.cfg.TLSConfig != nil, "version", Version)
 		serveErr <- httpServer.Serve(listener)
 	}()
 
@@ -951,6 +978,33 @@ func (s *Server) shutdown(ctx context.Context, httpServer, metricsServer *http.S
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	return nil
+}
+
+// http1Only returns a copy of a TLS configuration that never negotiates h2
+// and never accepts less than TLS 1.2. Other ALPN names it offers (the ACME
+// TLS-ALPN-01 challenge's acme-tls/1) are kept, and http/1.1 is added when
+// missing so a client that offers only h2 and http/1.1 still finds a match.
+func http1Only(in *tls.Config) *tls.Config {
+	out := in.Clone()
+	protos := make([]string, 0, len(in.NextProtos)+1)
+	hasHTTP1 := false
+	for _, proto := range in.NextProtos {
+		switch proto {
+		case "h2":
+			continue
+		case "http/1.1":
+			hasHTTP1 = true
+		}
+		protos = append(protos, proto)
+	}
+	if !hasHTTP1 {
+		protos = append([]string{"http/1.1"}, protos...)
+	}
+	out.NextProtos = protos
+	if out.MinVersion < tls.VersionTLS12 {
+		out.MinVersion = tls.VersionTLS12
+	}
+	return out
 }
 
 // Close releases resources owned by the server. It is idempotent: a test that

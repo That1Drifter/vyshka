@@ -69,7 +69,11 @@ SQLite file; see below), `-admin-token` (env `VYSHKA_ADMIN_TOKEN`, also accepts 
 `-log-level`, `-panel` (env `VYSHKA_PANEL`; `false` serves no panel), and `-maps-dir` (env
 `VYSHKA_MAPS_DIR`, a directory of map tilesets for the panel's live map; see
 `panel/README.md`), plus `-backup-dir` and `-backup-keep` (env `VYSHKA_BACKUP_DIR`,
-`VYSHKA_BACKUP_KEEP`) for the backup endpoint. With no admin token configured the hub mints one at boot and logs it,
+`VYSHKA_BACKUP_KEEP`) for the backup endpoint. `-auto-tls` (env `VYSHKA_AUTO_TLS`) with
+`-auto-tls-hosts` makes the hub get its own certificate over ACME and serve TLS without a
+proxy; its other flags (`-auto-tls-cache`, `-auto-tls-email`, `-auto-tls-directory`,
+`-auto-tls-ca-roots`, `-auto-tls-http-addr`) are in `deploy/README.md`, "Without a proxy".
+With no admin token configured the hub mints one at boot and logs it,
 which keeps first run to a single command; set the flag to keep it stable across restarts.
 That generated credential is first-run behavior only: once the hub holds a scoped token of
 its own it stops minting one, because a fresh superuser token on every boot would mean

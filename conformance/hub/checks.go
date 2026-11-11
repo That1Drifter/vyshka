@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +50,13 @@ type Env struct {
 	// history; against a hub configured deeper the trim never happens and that
 	// check degrades to plain cross-session dedup.
 	StateHistoryDepth int
+	// RootCAs, when set, are the roots trusted for an https hub instead of
+	// the system's (the system's plus -ca-file). ConnectTo, when set, is the
+	// host:port dialed for the hub instead of its URL's host; TLS still
+	// verifies the URL's name. Both serve a hub whose certificate comes from
+	// a private or test CA under a name with no DNS record here.
+	RootCAs   *x509.CertPool
+	ConnectTo string
 }
 
 // get issues a GET against the target hub and returns the response body.

@@ -95,6 +95,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-10-03: hub 0.3.0 and DayZ plugin 0.9.0 released (#144).
 - 2026-11-11: backup endpoint, restore runbook, `storage` and `vacuum` commands (#83).
 - 2026-11-11: `/metrics` for Prometheus, on a listener of its own (#82).
+- 2026-11-11: `-auto-tls`, embedded ACME, so the hub serves TLS without a proxy (#85).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -104,9 +105,6 @@ working against the branch hub on the staging box (`deploy/README.md`, "A branch
 beside a live one"), never the live staging hub: backup first because staging holds live data, then TLS,
 rate limits, metrics, the capacity measurement, and the config file last.
 
-- **`--auto-tls`** (#85): embedded ACME. Under the design persona the game servers live on
-  other boxes than the hub, so every plugin connects over TLS and this is the default
-  deployment story, not a single-box convenience.
 - **Rate limits per credential** (#86): per-server and per-token bounds on the Plugin and
   Admin APIs. Hardening, not scaling: the Plugin API is internet-facing, so a leaked server
   credential must be bounded in what it can do to the hub.

@@ -108,11 +108,16 @@ func (e Env) refusedBeforeBody(ctx context.Context, method, path, bearer string)
 		deadline = d
 	}
 	dialer := net.Dialer{Deadline: deadline}
+	dialAddr := host
+	if e.ConnectTo != "" {
+		dialAddr = e.ConnectTo
+	}
 	var conn net.Conn
 	if target.Scheme == "https" {
-		conn, err = tls.DialWithDialer(&dialer, "tcp", host, &tls.Config{ServerName: target.Hostname()})
+		conn, err = tls.DialWithDialer(&dialer, "tcp", dialAddr,
+			&tls.Config{ServerName: target.Hostname(), RootCAs: e.RootCAs})
 	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", host)
+		conn, err = dialer.DialContext(ctx, "tcp", dialAddr)
 	}
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", host, err)
