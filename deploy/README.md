@@ -574,8 +574,9 @@ What the hub does when things go wrong:
   `tls certificate unavailable` with the CA's error and the time to the next attempt, and
   handshakes fail until a certificate is obtained. It retries after 5 minutes, then 10, 20,
   40, and every hour from then on, starting over at 5 once it succeeds; handshakes do not
-  retry. Each attempt with DNS or a port wrong is a failed validation, and Let's Encrypt
-  allows only five of those per name per hour, so rehearse against its staging directory
+  retry. Each attempt with DNS or a port wrong is a failed validation, or two with the plain
+  listener on (TLS-ALPN-01, then HTTP-01), and Let's Encrypt allows only five of those per
+  name per hour, so rehearse against its staging directory
   rather than spend production's limits while debugging.
 - **The host's clock behind:** if the clock is more than a little behind, the hub rejects a
   certificate the CA did issue, because it is not valid yet by the hub's clock, and logs

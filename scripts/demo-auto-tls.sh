@@ -177,7 +177,10 @@ echo "POST /plugin/v1/poll:      $(curl -s -w ' (%{http_code})' -X POST -H "Host
 echo "GET  /api/v1/servers:      $(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' -H "Host: $HOST" "http://127.0.0.1:$http_port/api/v1/servers")"
 echo "GET  Host $OTHER:  $(curl -s -w ' (%{http_code})' -H "Host: $OTHER" "http://127.0.0.1:$http_port/healthz")"
 echo "GET  unknown challenge:    $(curl -s -w ' (%{http_code})' -H "Host: $HOST" "http://127.0.0.1:$http_port/.well-known/acme-challenge/nope")"
-echo "GET  300-char challenge:   $(curl -s -w ' (%{http_code})' -H "Host: $HOST" "http://127.0.0.1:$http_port/.well-known/acme-challenge/$(printf 'A%.0s' $(seq 1 300))")"
+long="$(curl -s -w ' (%{http_code})' -H "Host: $HOST" "http://127.0.0.1:$http_port/.well-known/acme-challenge/$(printf 'A%.0s' $(seq 1 300))")"
+echo "GET  300-char challenge:   $long"
+case "$long" in *"(404)") ;; *) fail "an over-long challenge token was not answered 404" ;; esac
+case "$long" in *acme-cache*|*"file name"*) fail "an over-long challenge token's answer carries a filesystem error" ;; esac
 code="$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --request-target 'x:@evil.example/p' -H "Host: $HOST" "http://127.0.0.1:$http_port/")"
 echo "GET  x:@evil.example/p:    $code"
 case "$code" in 400*) ;; *) fail "a non-path request target was answered with $code" ;; esac
@@ -195,10 +198,14 @@ wait_log "$run_dir/idle.log" "opened" 20
 echo "  $(cat "$run_dir/idle.log")"
 plain="$(curl -s -o /dev/null --max-time 3 -w '%{http_code}' -H "Host: $HOST" "http://127.0.0.1:$http_port/healthz" || true)"
 echo "  plain listener meanwhile: ${plain} (000 = not accepted within 3 s: the cap is full)"
-echo "  TLS listener meanwhile:   $(tls_curl --fail -o /dev/null -w '%{http_code}' "https://$HOST:$tls_port/healthz")"
+over_tls="$(tls_curl -o /dev/null --max-time 5 -w '%{http_code}' "https://$HOST:$tls_port/healthz" || true)"
+echo "  TLS listener meanwhile:   $over_tls"
 [ "$plain" = 000 ] || fail "the plain listener accepted a connection past its cap"
+[ "$over_tls" = 200 ] || fail "the TLS listener stopped answering while the plain listener's cap was full"
 stop "$idle_pid"
-echo "  plain listener after the idle connections close: $(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Host: $HOST" "http://127.0.0.1:$http_port/healthz" || true)"
+after="$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Host: $HOST" "http://127.0.0.1:$http_port/healthz" || true)"
+echo "  plain listener after the idle connections close: $after"
+[ "$after" = 302 ] || fail "the plain listener did not release its slots when the idle connections closed"
 
 step "One certificate per name, whatever the client offers"
 before=$(orders)

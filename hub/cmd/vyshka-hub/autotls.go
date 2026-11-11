@@ -320,7 +320,13 @@ func (a *autoTLS) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 	}
 	name := strings.TrimSuffix(strings.ToLower(hello.ServerName), ".")
 	if !a.allowed[name] {
-		return nil, fmt.Errorf("auto-tls: host %q is not in -auto-tls-hosts", hello.ServerName)
+		// The name is the peer's to choose and can be tens of kilobytes, and
+		// net/http logs this error once per connection: echo a bounded part.
+		requested := hello.ServerName
+		if len(requested) > 64 {
+			requested = requested[:64] + "..."
+		}
+		return nil, fmt.Errorf("auto-tls: host %q is not in -auto-tls-hosts", requested)
 	}
 	cert, ok := a.certs.Load(name)
 	if !ok {
