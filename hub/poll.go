@@ -67,10 +67,18 @@ type pollResponse struct {
 // holding for it. Everything the plugin sent is applied before the hold begins,
 // so a poll that only acks takes effect at once rather than in 25 seconds.
 func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	session, server, ok := s.authenticateSession(w, r)
 	if !ok {
 		return
 	}
+	// Handler time is the whole request less the hold: a long-poll's wait is
+	// the plugin's cadence, not the hub's latency, so it is booked apart.
+	var held time.Duration
+	defer func() {
+		s.metrics.pollHandler.ObserveDuration(max(0, time.Since(started)-held))
+		s.metrics.pollHold.ObserveDuration(held)
+	}()
 	sessionTokenHash := token.Hash(bearerToken(r))
 
 	var request pollRequest
@@ -248,6 +256,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inboundAck := applied.Ack
+	s.countInbound(batch, applied, rejectedManifests, refusedEventBatches, refusedSnapshots, suppressedNotices)
 
 	// Context enumeration replies change no durable state, so they are
 	// handed to the reads waiting on them once the batch is committed, and
@@ -327,7 +336,22 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.holdPoll(w, r, session, sessionTokenHash, inboundAck, backlogFloor(more, request.Envelopes))
+	s.holdPoll(w, r, session, sessionTokenHash, inboundAck, backlogFloor(more, request.Envelopes), &held)
+}
+
+// countInbound books what one committed poll did to the inbound envelope
+// counters. It runs after the commit, so a poll that failed or retried counts
+// nothing.
+func (s *Server) countInbound(batch inboundBatch, applied store.InboundApplied, manifests, eventBatches, snapshots, suppressed int) {
+	m := s.metrics
+	m.inbound.Add(float64(len(batch.Accepted)), inboundAccepted)
+	m.inbound.Add(float64(batch.Duplicate), inboundDuplicate)
+	m.inbound.Add(float64(batch.Gapped), inboundGapped)
+	m.inboundRefused.Add(float64(manifests), refusedManifest)
+	m.inboundRefused.Add(float64(eventBatches), refusedEventBatch)
+	m.inboundRefused.Add(float64(snapshots), refusedSnapshot)
+	m.outboundDropped.Add(float64(applied.NoticesDropped), droppedQueueFull)
+	m.outboundDropped.Add(float64(suppressed), droppedNoticeCap)
 }
 
 // decodeMore reads the poll's more member: absent is false, and anything but
@@ -374,7 +398,9 @@ func backlogFloor(more bool, envelopes []inboundEnvelope) int64 {
 // never left at the value this request ingested: a concurrent poll may commit a
 // higher ack and be answered while this one is still held, and an ack the hub
 // has reported must never be lowered by a later response (spec section 9.1).
-func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64, backlogFloor int64) {
+//
+// held accumulates the time spent parked, for the poll metrics.
+func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.Session, sessionTokenHash string, inboundAck int64, backlogFloor int64, held *time.Duration) {
 	pollTimeout := clampPollTimeout(time.Duration(session.PollTimeoutSeconds) * time.Second)
 	deadline := time.Now().Add(pollTimeout)
 	// A hold that outlives its own session would answer 401 late; ending it at
@@ -423,6 +449,9 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			envelopes := make([]envelope, len(queued))
 			for i, one := range queued {
 				envelopes[i] = newOutboundEnvelope(one)
+				if one.FirstSend {
+					s.metrics.envelopeDelivery.ObserveDuration(time.Since(one.CreatedAt))
+				}
 			}
 			s.log.Info("poll delivered envelopes",
 				"serverId", session.ServerID, "sessionId", session.ID,
@@ -439,16 +468,19 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		}
 
 		timer := time.NewTimer(min(remaining, pollBackstop))
+		parked := time.Now()
 		select {
 		case <-signal:
 		case <-timer.C:
 		case <-r.Context().Done():
 			// The plugin gave up on this request. Nothing was acked and nothing
 			// was sent, so the next poll picks up exactly where this one was.
+			*held += time.Since(parked)
 			timer.Stop()
 			release()
 			return
 		}
+		*held += time.Since(parked)
 		timer.Stop()
 		release()
 

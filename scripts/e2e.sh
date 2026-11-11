@@ -12,7 +12,9 @@
 # extends a demo, and this script's output for it is the evidence in the PR.
 #
 # Needs Go, jq, curl, python3, and openssl (the demos'). Set E2E_PORT to pick
-# the port; the default is random in 18000-18999.
+# the port; the default is random in 18000-18999. The hub also serves its
+# Prometheus endpoint on a second scratch port (E2E_METRICS_PORT, default random
+# in 19000-19999), which the demos read from VYSHKA_METRICS_URL.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -22,7 +24,7 @@ wanted=()
 for arg in "$@"; do
   case "$arg" in
     --no-conformance) conformance=0 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown flag $arg" >&2; exit 2 ;;
     *) name="${arg#demo-}"; wanted+=("scripts/demo-${name%.sh}.sh") ;;
   esac
@@ -36,6 +38,8 @@ done
 
 port="${E2E_PORT:-$((18000 + RANDOM % 1000))}"
 hub_url="http://127.0.0.1:$port"
+metrics_port="${E2E_METRICS_PORT:-$((19000 + RANDOM % 1000))}"
+metrics_url="http://127.0.0.1:$metrics_port"
 run_dir="$(mktemp -d "${TMPDIR:-/tmp}/vyshka-e2e.XXXXXX")"
 # The binary carries the port in its name, so stopping this hub by name can
 # never take down another one on the same machine.
@@ -43,6 +47,7 @@ hub_bin="$run_dir/vyshka-hub-e2e-$port"
 case "$(go env GOOS)" in windows) hub_bin="$hub_bin.exe" ;; esac
 export VYSHKA_ADMIN_TOKEN="vya_e2e_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 export VYSHKA_HUB_URL="$hub_url"
+export VYSHKA_METRICS_URL="$metrics_url"
 
 hub_pid=""
 cleanup() {
@@ -60,8 +65,9 @@ banner "Build the hub ($(git rev-parse --short HEAD)$(git diff --quiet HEAD -- |
 go build -o "$hub_bin" ./hub/cmd/vyshka-hub
 "$hub_bin" version
 
-banner "Boot it at $hub_url on a fresh database"
-"$hub_bin" serve -addr "127.0.0.1:$port" -db "$run_dir/e2e.db" > "$run_dir/hub.log" 2>&1 &
+banner "Boot it at $hub_url (metrics at $metrics_url) on a fresh database"
+"$hub_bin" serve -addr "127.0.0.1:$port" -metrics-addr "127.0.0.1:$metrics_port" \
+  -db "$run_dir/e2e.db" > "$run_dir/hub.log" 2>&1 &
 hub_pid=$!
 for _ in $(seq 1 100); do
   curl --silent --fail "$hub_url/healthz" > /dev/null 2>&1 && break

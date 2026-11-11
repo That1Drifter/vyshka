@@ -375,6 +375,131 @@ $ sudo systemctl start vyshka-hub
 
 A snapshot is already compacted, so taking a backup also shows what a vacuum would gain.
 
+## Metrics
+
+The hub keeps Prometheus metrics and serves them as `GET /metrics` in the text exposition
+format (0.0.4) from a listener of its own, off by default:
+
+```
+vyshka-hub serve -metrics-addr 127.0.0.1:9090      # or VYSHKA_METRICS_ADDR=127.0.0.1:9090
+curl -s http://127.0.0.1:9090/metrics
+```
+
+**The endpoint has no authentication, which is why it is not on the Plugin API listener.**
+That listener faces the internet, and the numbers below say which servers are busy, how
+long their queues are, and which webhooks fail. The main listener never routes `/metrics`:
+it answers 404 like any unknown path, and the metrics listener answers 404 for every path
+but `/metrics`. Bind the metrics listener to loopback (and scrape it from an agent on the
+box, or over an SSH tunnel) or to a private network address; the hub logs a warning at
+boot when it is bound anywhere else. Under compose, publish it on loopback the way the
+main port is (`127.0.0.1:9090:9090` with `VYSHKA_METRICS_ADDR: 0.0.0.0:9090` inside the
+container, which only the published mapping exposes outside the compose network); the
+branch hub's compose file does this on `127.0.0.1:9190`.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: vyshka
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+A scrape reads the queue depths from the database in one statement (about a millisecond, two at worst,
+on a 295 MiB database with 780 000 rows, measured in
+`spikes/metrics-scrape`), and every other value is memory. Counters and histograms start at zero when
+the hub starts, as Prometheus expects, and a labelled series appears the first time its
+event happens, so use `rate()` and `increase()` rather than reading raw values.
+
+### Naming and labels
+
+Every metric starts with `vyshka_`, uses base units (seconds, bytes), and a counter ends
+in `_total`. Label values come from a fixed vocabulary or from an identifier the operator
+created, never from anything a plugin or a caller can mint:
+
+- **`server`** is the server's id. One hub serves a handful of servers (the design persona,
+  `CONTEXT.md`), so a series per server is cheap and is what an operator needs: which
+  server's queue is backing up. Join to names with `GET /api/v1/servers`. A hub meant to
+  hold thousands of servers would have to drop this label first; that is not a supported
+  deployment.
+- **`webhook`** is the webhook's id, for the same reason: which target is failing.
+- **`code`** on action outcomes is the action's code, such as `dayz.player.kick`. It is
+  declared in the plugin's manifest, but a series exists only for an action an operator
+  dispatched, so a plugin cannot mint series by publishing manifests. The action's `error`
+  text, which a plugin writes freely, is **not** a label.
+- Everything else (`outcome`, `result`, `reason`, `kind`, `sweep`) is a closed set listed
+  below. No player identifier appears anywhere.
+
+As a backstop, one metric keeps at most 1000 distinct label sets; the one that would be
+the 1001st is folded into a series whose labels all read `other`.
+
+### Poll latency
+
+A long-poll is held open on purpose (up to the negotiated `pollTimeout`, 25 s for DayZ), so
+a request's total duration measures the plugin's cadence, not the hub. The metrics split
+it three ways:
+
+- `vyshka_poll_handler_seconds` is the time an authenticated poll spent in the hub **less
+  the hold**: reading the request, applying acks and envelopes in one database transaction,
+  reading the queue. This is the latency to alert on. On SQLite it includes waiting for the
+  single connection, so it rises when anything else (a sweep, an admin write) holds it.
+- `vyshka_poll_hold_seconds` is the time spent parked. Near `pollTimeout` means an idle
+  server; near 0 means work arrived or the poll was answered at once.
+- `vyshka_envelope_delivery_seconds` is the time an envelope waited between being queued
+  (an action dispatched, a notice, a raw envelope) and the first poll response that carried
+  it. It is the operator's "how long until my kick reaches the game server" less the
+  plugin's own cycle, and for a server whose plugin is down it is how long the queue has
+  been waiting. A retransmission is not observed again.
+
+### Reference
+
+| Metric | Type | Labels | What moves it |
+|---|---|---|---|
+| `vyshka_build_info` | gauge | `version`, `goversion`, `database` | Always 1; the labels say what is running |
+| `vyshka_start_time_seconds` | gauge | none | Set at boot; `time() - vyshka_start_time_seconds` is uptime |
+| `vyshka_poll_handler_seconds` | histogram | none | Every authenticated poll, once, when it ends; refused credentials are not counted |
+| `vyshka_poll_hold_seconds` | histogram | none | The same polls; 0 for one answered without a hold |
+| `vyshka_envelope_delivery_seconds` | histogram | none | An envelope's first appearance in a poll response |
+| `vyshka_outbound_queue_depth` | gauge | `server` | Read at scrape time: envelopes queued for the server and not yet acked, sent or not (the bound is 5000, spec section 9.2). One series per enrolled server, 0 when empty |
+| `vyshka_outbound_queue_oldest_seconds` | gauge | `server` | Read at scrape time: age of the longest-waiting of those; 0 when empty |
+| `vyshka_webhook_deliveries_pending` | gauge | none | Read at scrape time: deliveries waiting for an attempt or a retry, across all webhooks |
+| `vyshka_actions_finished_total` | counter | `code`, `outcome` = `completed`, `failed`, `expired` | An action leaving its last non-terminal state: the plugin's result, the expiry sweep, or a read that finds the deadline passed. Counted once, where the transition commits |
+| `vyshka_inbound_envelopes_total` | counter | `result` = `accepted`, `duplicate`, `gapped` | Envelopes in plugin polls: taken in order, already acked and ignored, or ahead of a missing seq and not taken (section 9.1) |
+| `vyshka_inbound_envelopes_refused_total` | counter | `kind` = `manifest`, `event_batch`, `state_snapshot` | An accepted envelope the hub would not apply and answered with a rejection notice (sections 6.4, 8.1, 8.3); also counted in `accepted` |
+| `vyshka_outbound_envelopes_dropped_total` | counter | `reason` = `queue_full`, `notice_cap` | A hub-originated notice that was never queued: the server's queue was at its bound (rejection notices, `bans.changed`), or one poll owed more than 20 rejection notices. A dispatch refused with `outbound_queue_full` is an error to its caller, not a drop, and is not counted here |
+| `vyshka_webhook_attempts_total` | counter | `webhook`, `result` = `delivered`, `retry`, `dead` | A delivery attempt the store booked: a 2xx; a failure with another attempt scheduled; a failure that exhausted the schedule (section 11.5) |
+| `vyshka_sweep_runs_total` | counter | `sweep`, `result` = `ok`, `error` | One run of a background sweep |
+| `vyshka_sweep_removed_total` | counter | `sweep` | Rows the run changed: actions expired by the sweep, bans lifted, rows deleted by retention |
+| `vyshka_sweep_duration_seconds` | histogram | `sweep` | Each run; on SQLite this is how long the run held the database's only connection |
+| `vyshka_sweep_last_success_timestamp_seconds` | gauge | `sweep` | Each run that did not fail |
+| `vyshka_collect_errors_total` | counter | `collector` | A scrape-time database read failed; its gauges are missing from that scrape |
+
+The `sweep` values are `action_expiry` (every 0.5 s), `ban_expiry` (every 5 s),
+and the retention passes `prune_events`, `prune_audit`, `prune_kv`,
+`prune_state_snapshots`, and `prune_webhook_deliveries` (every 5 minutes). An action the
+read path expired (`GET /api/v1/actions/{id}` after its deadline) is counted in
+`vyshka_actions_finished_total` but not in `vyshka_sweep_removed_total`, because the sweep
+never saw it.
+
+Webhook failure rate is derived: the rate of attempts with `result!="delivered"` over the
+rate of all attempts, per webhook. Some starting alerts:
+
+```yaml
+- alert: VyshkaQueueNotDraining
+  expr: vyshka_outbound_queue_oldest_seconds > 300
+- alert: VyshkaWebhookFailing
+  expr: >
+    sum by (webhook) (rate(vyshka_webhook_attempts_total{result!="delivered"}[15m]))
+      / sum by (webhook) (rate(vyshka_webhook_attempts_total[15m])) > 0.5
+- alert: VyshkaSlowPolls
+  expr: histogram_quantile(0.99, sum by (le) (rate(vyshka_poll_handler_seconds_bucket[5m]))) > 1
+- alert: VyshkaSweepStalled
+  expr: time() - vyshka_sweep_last_success_timestamp_seconds{sweep="action_expiry"} > 60
+```
+
+Not here, deliberately: Go runtime and process metrics, per-route HTTP counters, and
+anything about players. The rate limits (issue #86) will add their own counters through
+the same registry (`hub/metrics.go`: a field and a one-line call where the event happens).
+
 ## A branch hub beside a live one
 
 To try unreleased work over a real network without touching a hub that serves live game

@@ -110,6 +110,10 @@ on loopback by default; put TLS in front before enrolling a server from another 
 DayZ plugin ships as its own release, the `@Vyshka` server-mod folder as a zip, installed
 per [`plugins/dayz/README.md`](plugins/dayz/README.md).
 
+The hub serves Prometheus metrics on a listener of its own when started with `-metrics-addr`
+(or `VYSHKA_METRICS_ADDR`); [`deploy/README.md`](deploy/README.md#metrics) lists every metric and
+says why the endpoint stays off the public listener.
+
 ### Database
 
 SQLite is the default and needs no configuration: with `-db` empty the hub keeps

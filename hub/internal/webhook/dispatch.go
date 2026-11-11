@@ -163,7 +163,20 @@ type Config struct {
 	// 11.1). The view is the Admin API's to define, so it is handed in rather
 	// than rebuilt here. Nil renders an empty object.
 	AuditData func(store.AuditRecord) json.RawMessage
+	// Attempted, when set, hears the outcome of every delivery attempt the
+	// store booked: "delivered", "retry" (failed, another attempt is
+	// scheduled), or "dead" (failed, schedule exhausted). An outcome the store
+	// refused to book (a replay won the race) is not reported. It runs on a
+	// delivery worker and must not block.
+	Attempted func(webhookID, result string)
 }
+
+// Results Attempted is told.
+const (
+	AttemptDelivered = "delivered"
+	AttemptRetry     = "retry"
+	AttemptDead      = "dead"
+)
 
 // Dispatcher is the webhook delivery engine: it fans stored notifications out
 // to deliveries, attempts what is due, and watches server links (spec section
@@ -175,6 +188,7 @@ type Dispatcher struct {
 	retryDelays     []time.Duration
 	deliveryTimeout time.Duration
 	auditData       func(store.AuditRecord) json.RawMessage
+	attempted       func(webhookID, result string)
 	// client makes the delivery attempts.
 	client *http.Client
 	// wake nudges the loop when fresh work landed; stop ends it and done
@@ -202,6 +216,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 		retryDelays:     cfg.RetryDelays,
 		deliveryTimeout: cfg.DeliveryTimeout,
 		auditData:       cfg.AuditData,
+		attempted:       cfg.Attempted,
 		client: &http.Client{
 			Timeout: cfg.DeliveryTimeout,
 			// A 3xx is handed back as the final answer, never followed: a
@@ -633,6 +648,7 @@ func (d *Dispatcher) attemptDelivery(due store.DueDelivery) {
 			d.logOutcomeNotBooked(due, err)
 			return
 		}
+		d.reportAttempt(due.Delivery.WebhookID, AttemptDelivered)
 		d.log.Info("webhook delivered",
 			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID,
 			"type", due.Delivery.Type, "attempt", attempt, "status", response.StatusCode)
@@ -647,6 +663,14 @@ func (d *Dispatcher) attemptDelivery(due store.DueDelivery) {
 		message += " (redirects are not followed)"
 	}
 	fail(&status, message)
+}
+
+// reportAttempt tells the Attempted observer, when there is one, the booked
+// outcome of an attempt.
+func (d *Dispatcher) reportAttempt(webhookID, result string) {
+	if d.attempted != nil {
+		d.attempted(webhookID, result)
+	}
 }
 
 // logOutcomeNotBooked reports an outcome the store did not book. A stale
@@ -682,11 +706,13 @@ func (d *Dispatcher) recordFailure(ctx context.Context, due store.DueDelivery, a
 		return
 	}
 	if nextAttemptAt == nil {
+		d.reportAttempt(due.Delivery.WebhookID, AttemptDead)
 		d.log.Warn("webhook delivery dead-lettered",
 			"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID,
 			"type", due.Delivery.Type, "attempts", attempt, "lastError", message)
 		return
 	}
+	d.reportAttempt(due.Delivery.WebhookID, AttemptRetry)
 	d.log.Warn("webhook delivery failed, retry scheduled",
 		"webhookId", due.Delivery.WebhookID, "deliveryId", due.Delivery.ID,
 		"type", due.Delivery.Type, "attempt", attempt, "lastError", message,

@@ -21,6 +21,8 @@ before that date stay as they were written.
 
 - 2026-11-11: `POST /api/v1/admin/backup` snapshots a running SQLite hub into a bounded
   directory; `vyshka-hub storage` and `vacuum`, and a restore runbook in `deploy/README.md` (#83).
+- 2026-11-11: Prometheus metrics at `GET /metrics` on a listener of its own (`-metrics-addr`,
+  off by default; issue #82); every metric is documented in `deploy/README.md`.
 
 ### [0.3.0] - 2026-10-03
 

@@ -156,6 +156,12 @@ type Config struct {
 	// Admin API with no route of its own into the hub; it authenticates with
 	// the same bearer tokens as any other admin client.
 	Panel http.Handler
+	// MetricsAddr is the listen address of the Prometheus endpoint, host:port,
+	// serving GET /metrics. Empty disables it. It is a listener of its own,
+	// never a route on Addr: the Plugin API listener is reachable from the
+	// internet, and the endpoint has no authentication, so it belongs on
+	// loopback or a private network (deploy/README.md, "Metrics").
+	MetricsAddr string
 }
 
 func (c *Config) withDefaults() {
@@ -340,6 +346,9 @@ type Server struct {
 	closeOnce sync.Once
 	// backupRunning admits one snapshot at a time (backup.go).
 	backupRunning sync.Mutex
+	// metrics is the registry behind the metrics listener; it counts whether or
+	// not a listener is configured, which costs a map lookup per event.
+	metrics *hubMetrics
 	// backfilled counts the events the identity backfill has indexed, for the
 	// one log line that says it finished. Only the maintenance loop touches it.
 	backfilled int
@@ -417,6 +426,8 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		}
 	}
 
+	started := time.Now()
+	m := newHubMetrics(st, started)
 	s := &Server{
 		cfg:            cfg,
 		log:            cfg.Logger,
@@ -424,16 +435,20 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		waiters:        newWaiters(),
 		holds:          newHolds(),
 		enumerations:   newEnumerations(cfg.ContextCacheTTL, cfg.ContextEnumerateTimeout),
-		started:        time.Now(),
+		started:        started,
 		stopSweeper:    make(chan struct{}),
 		sweeperDone:    make(chan struct{}),
 		banSweeperDone: make(chan struct{}),
+		metrics:        m,
 		webhooks: webhook.NewDispatcher(webhook.Config{
 			Store:           st,
 			Log:             cfg.Logger,
 			RetryDelays:     cfg.WebhookRetryDelays,
 			DeliveryTimeout: cfg.WebhookDeliveryTimeout,
 			AuditData:       auditNotificationData,
+			Attempted: func(webhookID, result string) {
+				m.webhookAttempts.Inc(webhookID, result)
+			},
 		}),
 	}
 	if bootstrapToken != "" {
@@ -489,8 +504,10 @@ func (s *Server) runMaintenance() {
 			// Bounded, because Close waits for this loop before closing the
 			// store: a job that could block forever could hang shutdown.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			sweepStarted := time.Now()
 			expired, err := s.store.ExpireActions(ctx)
 			cancel()
+			s.metrics.sweep(sweepActionExpiry, sweepStarted, expired, err)
 			if err != nil {
 				s.log.Error("action expiry sweep failed", "error", err.Error())
 				continue
@@ -502,11 +519,11 @@ func (s *Server) runMaintenance() {
 				s.webhooks.Nudge()
 			}
 		case <-prune.C:
-			s.prune("events", s.store.PruneEvents)
-			s.prune("audit records", s.store.PruneAudit)
-			s.prune("kv entries", s.store.PruneKV)
-			s.prune("state snapshots", s.store.PruneSnapshots)
-			s.prune("webhook deliveries", func(ctx context.Context, limit int) (int, error) {
+			s.prune("events", sweepPruneEvents, s.store.PruneEvents)
+			s.prune("audit records", sweepPruneAudit, s.store.PruneAudit)
+			s.prune("kv entries", sweepPruneKV, s.store.PruneKV)
+			s.prune("state snapshots", sweepPruneSnapshots, s.store.PruneSnapshots)
+			s.prune("webhook deliveries", sweepPruneDeliveries, func(ctx context.Context, limit int) (int, error) {
 				cutoff := time.Now().UTC().Add(-s.cfg.WebhookDeliveryRetention)
 				return s.store.PruneWebhookDeliveries(ctx, cutoff, limit)
 			})
@@ -549,14 +566,21 @@ func (s *Server) backfillIdentities() bool {
 // prune runs one retention pass, in bounded batches, until it stops finding
 // work or the pass has taken long enough that the next tick can pick up where
 // it left off. Nothing is lost by stopping early: expired rows stay expired.
-func (s *Server) prune(what string, delete func(context.Context, int) (int, error)) {
-	deadline := time.Now().Add(30 * time.Second)
+//
+// sweep names the pass in the metrics (vyshka_sweep_*): one run is the whole
+// pass over its batches, however many there were.
+func (s *Server) prune(what, sweep string, delete func(context.Context, int) (int, error)) {
+	started := time.Now()
+	deadline := started.Add(30 * time.Second)
 	total := 0
+	var failure error
+	defer func() { s.metrics.sweep(sweep, started, total, failure) }()
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pruned, err := delete(ctx, pruneBatch)
 		cancel()
 		if err != nil {
+			failure = err
 			s.log.Error("retention pass failed", "what", what, "error", err.Error())
 			return
 		}
@@ -856,6 +880,25 @@ func (s *Server) Serve(ctx context.Context) error {
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
 
+	// The metrics endpoint listens on an address of its own (see
+	// Config.MetricsAddr). It is bound before anything serves, so a bad
+	// address fails the boot instead of leaving a hub with no metrics.
+	var metricsServer *http.Server
+	metricsErr := make(chan error, 1)
+	if s.cfg.MetricsAddr != "" {
+		metricsListener, err := net.Listen("tcp", s.cfg.MetricsAddr)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("listen for metrics on %s: %w", s.cfg.MetricsAddr, err)
+		}
+		s.warnIfExposed(metricsListener.Addr())
+		metricsServer = s.newMetricsServer()
+		go func() {
+			s.log.Info("metrics listening", "addr", metricsListener.Addr().String(), "path", "/metrics")
+			metricsErr <- metricsServer.Serve(metricsListener)
+		}()
+	}
+
 	serveErr := make(chan error, 1)
 	go func() {
 		s.log.Info("hub listening", "addr", listener.Addr().String(), "version", Version)
@@ -864,19 +907,45 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	select {
 	case err := <-serveErr:
+		if metricsServer != nil {
+			metricsServer.Close()
+		}
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
-	case <-ctx.Done():
-		s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout.String())
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ShutdownTimeout)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("graceful shutdown: %w", err)
+	case err := <-metricsErr:
+		// The metrics listener died on its own, which only a broken socket
+		// does. The hub itself is fine, so say so and keep serving rather
+		// than take game servers down over telemetry.
+		s.log.Error("metrics listener stopped; the hub keeps serving without it", "error", err)
+		select {
+		case err := <-serveErr:
+			if errors.Is(err, http.ErrServerClosed) {
+				return nil
+			}
+			return err
+		case <-ctx.Done():
 		}
-		return nil
+		return s.shutdown(ctx, httpServer, nil)
+	case <-ctx.Done():
+		return s.shutdown(ctx, httpServer, metricsServer)
 	}
+}
+
+// shutdown drains the listeners within the configured timeout.
+func (s *Server) shutdown(ctx context.Context, httpServer, metricsServer *http.Server) error {
+	s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout.String())
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ShutdownTimeout)
+	defer cancel()
+	if metricsServer != nil {
+		// A scrape is short and holds nothing the main drain waits on.
+		_ = metricsServer.Shutdown(shutdownCtx)
+	}
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	return nil
 }
 
 // Close releases resources owned by the server. It is idempotent: a test that

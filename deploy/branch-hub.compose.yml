@@ -18,11 +18,18 @@ services:
       # Loopback only, for the deploy script's health check; the public name
       # is the proxy's, over the network below.
       - "127.0.0.1:${VYSHKA_BRANCH_PORT:-8090}:8080"
+      # The Prometheus endpoint (deploy/README.md, "Metrics"), unauthenticated
+      # and therefore loopback only here too: scrape it over ssh, for example
+      # `ssh -L 9190:127.0.0.1:9190 <host>`, never through the proxy.
+      - "127.0.0.1:${VYSHKA_BRANCH_METRICS_PORT:-9190}:9090"
     volumes:
       - ./bin:/opt/vyshka:ro
       - ./data:/data
     environment:
       VYSHKA_ADDR: 0.0.0.0:8080
+      # Inside the container only; the published mapping above is the
+      # sole way in from the host (the hub warns about the non-loopback bind).
+      VYSHKA_METRICS_ADDR: 0.0.0.0:9090
       DATABASE_URL: /data/vyshka.db
       VYSHKA_ADMIN_TOKEN: file:/run/secrets/admin_token
     secrets:
