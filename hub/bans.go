@@ -267,6 +267,7 @@ func (s *Server) announceBanChange(change store.BanChange, what string) {
 	s.log.Info("installation ban list changed", "what", what, "banId", change.Ban.ID,
 		"revision", change.Revision, "notified", len(change.Notified))
 	if len(change.Dropped) > 0 {
+		s.metrics.outboundDropped.Add(float64(len(change.Dropped)), droppedQueueFull)
 		// A notice is a nudge; the next session response carries the
 		// revision. Loud all the same, since the servers named here are
 		// running on the list they had until they reconnect.
@@ -515,7 +516,9 @@ func (s *Server) runBanSweeper() {
 func (s *Server) sweepBans() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	started := time.Now()
 	change, swept, err := s.store.SweepExpiredBans(ctx, outboundQueueLimit)
+	s.metrics.sweep(sweepBanExpiry, started, swept, err)
 	if err != nil {
 		s.log.Error("ban expiry sweep failed", "error", err.Error())
 		return

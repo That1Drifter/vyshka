@@ -4,6 +4,7 @@
 //
 //	vyshka-hub serve [-addr host:port] [-db DSN] [-log-level level] [-panel=false] [-maps-dir DIR]
 //	                 [-backup-dir DIR] [-backup-keep N]
+//	                 [-metrics-addr host:port]
 //	vyshka-hub storage [-db DSN] [-json]
 //	vyshka-hub vacuum [-db DSN]
 //	vyshka-hub version
@@ -93,6 +94,9 @@ func runServe(args []string) error {
 	}
 	backupKeep := flags.Int("backup-keep", keepDefault,
 		"snapshots the backup endpoint keeps before deleting the oldest (env VYSHKA_BACKUP_KEEP)")
+	metricsAddr := flags.String("metrics-addr", os.Getenv("VYSHKA_METRICS_ADDR"),
+		"listen address of the Prometheus endpoint, GET /metrics on a listener of its own, unauthenticated: "+
+			"keep it on loopback or a private network (env VYSHKA_METRICS_ADDR); empty disables it")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -133,6 +137,7 @@ func runServe(args []string) error {
 		Logger:      logger,
 		BackupDir:   *backupDir,
 		BackupKeep:  *backupKeep,
+		MetricsAddr: *metricsAddr,
 	}
 	if *servePanel {
 		config.Panel = panel.NewHandler(panel.Config{MapsDir: *mapsDir})

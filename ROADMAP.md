@@ -94,6 +94,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
   one-line changelog entries (#144).
 - 2026-10-03: hub 0.3.0 and DayZ plugin 0.9.0 released (#144).
 - 2026-11-11: backup endpoint, restore runbook, `storage` and `vacuum` commands (#83).
+- 2026-11-11: `/metrics` for Prometheus, on a listener of its own (#82).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -109,9 +110,6 @@ rate limits, metrics, the capacity measurement, and the config file last.
 - **Rate limits per credential** (#86): per-server and per-token bounds on the Plugin and
   Admin APIs. Hardening, not scaling: the Plugin API is internet-facing, so a leaked server
   credential must be bounded in what it can do to the hub.
-- **`/metrics` for Prometheus** (#82): poll latency, queue depths, action outcomes by code,
-  dropped envelopes, webhook failure rate, and the sweep counters. The hub already counts
-  most of these; the endpoint and the naming are the work.
 - **Measured capacity** (#87, spike): replaces the "20 servers at 100 players" estimate,
   which has no provenance, with a number under `spikes/`. That number is also the trigger
   for the parked multi-instance hub and what the rate-limit defaults are set against.

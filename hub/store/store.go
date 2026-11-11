@@ -25,6 +25,9 @@ type Store struct {
 	// target is what Target reports: a file path for SQLite, and for Postgres
 	// a description with the password removed. The raw DSN is not kept.
 	target string
+	// actionFinished, when set, hears every action's move into a terminal
+	// state (OnActionFinished).
+	actionFinished func(ActionOutcome)
 }
 
 // Postgres pool bounds. The pool is what makes Postgres worth having over the

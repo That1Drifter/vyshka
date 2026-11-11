@@ -186,13 +186,20 @@ const actionColumns = `id, server_id, code, context, reference_key, params,
 // than the sweeper's global pass, so a hot read path never pays for, or
 // contends on, everyone else's deadlines.
 func (s *Store) ActionByID(ctx context.Context, actionID string) (Action, error) {
-	if _, err := s.db.ExecContext(ctx,
+	var expiredCode string
+	switch err := s.db.QueryRowContext(ctx,
 		`UPDATE actions SET state = ?, finished_at = ?
-		  WHERE id = ? AND state IN (?, ?, ?) AND expires_at <= ?`,
+		  WHERE id = ? AND state IN (?, ?, ?) AND expires_at <= ?
+		  RETURNING code`,
 		ActionExpired, formatTime(time.Now().UTC()), actionID,
 		ActionQueued, ActionDelivered, ActionRunning, formatTime(time.Now().UTC()),
-	); err != nil {
+	).Scan(&expiredCode); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Not expired by this read: the common case.
+	case err != nil:
 		return Action{}, fmt.Errorf("expire action on read: %w", err)
+	default:
+		s.observeFinished(ActionOutcome{Code: expiredCode, State: ActionExpired})
 	}
 
 	row := s.db.QueryRowContext(ctx,
@@ -279,14 +286,25 @@ func (s *Store) ExpireActions(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("retire expired dispatch envelopes: %w", err)
 	}
 
-	result, err := tx.ExecContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		`UPDATE actions SET state = ?, finished_at = ?
-		  WHERE state IN (?, ?, ?) AND expires_at <= ?`,
+		  WHERE state IN (?, ?, ?) AND expires_at <= ?
+		  RETURNING code`,
 		ActionExpired, now, ActionQueued, ActionDelivered, ActionRunning, now)
 	if err != nil {
 		return 0, fmt.Errorf("expire actions: %w", err)
 	}
-	expired, err := result.RowsAffected()
+	var outcomes []ActionOutcome
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("expire actions: %w", err)
+		}
+		outcomes = append(outcomes, ActionOutcome{Code: code, State: ActionExpired})
+	}
+	err = rows.Err()
+	rows.Close()
 	if err != nil {
 		return 0, fmt.Errorf("expire actions: %w", err)
 	}
@@ -294,7 +312,8 @@ func (s *Store) ExpireActions(ctx context.Context) (int, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit expire actions: %w", err)
 	}
-	return int(expired), nil
+	s.observeFinished(outcomes...)
+	return len(outcomes), nil
 }
 
 // markDelivered flips queued actions whose dispatch envelopes the plugin just
@@ -356,7 +375,7 @@ type ActionResult struct {
 // already been told the action expired and a state that flip-flops afterwards
 // would be worse than a lost result. serverID scopes the update for the same
 // reason as in applyActionAck: an actionId is not a credential.
-func applyActionResult(ctx context.Context, tx *Tx, serverID string, result ActionResult, now time.Time) (bool, error) {
+func applyActionResult(ctx context.Context, tx *Tx, serverID string, result ActionResult, now time.Time) (ActionOutcome, bool, error) {
 	// ok is an INTEGER column on both engines. SQLite would take a Go bool
 	// and store 0 or 1; Postgres refuses a boolean for an integer column, so
 	// the conversion is explicit here rather than left to the driver.
@@ -373,23 +392,26 @@ func applyActionResult(ctx context.Context, tx *Tx, serverID string, result Acti
 		errorText = result.Error
 	}
 
-	outcome, err := tx.ExecContext(ctx,
+	// RETURNING names the action's code, which the metrics count outcomes by;
+	// no row back means the update matched nothing.
+	var code string
+	switch err := tx.QueryRowContext(ctx,
 		`UPDATE actions
 		    SET state = ?, finished_at = ?, running_at = COALESCE(running_at, ?),
 		        delivered_at = COALESCE(delivered_at, ?),
 		        ok = ?, result = ?, error = ?, duration_ms = ?
-		  WHERE id = ? AND server_id = ? AND state IN (?, ?, ?) AND expires_at > ?`,
+		  WHERE id = ? AND server_id = ? AND state IN (?, ?, ?) AND expires_at > ?
+		  RETURNING code`,
 		state, formatTime(now), formatTime(now), formatTime(now),
 		okStored, resultJSON, errorText, result.DurationMs,
-		result.ActionID, serverID, ActionQueued, ActionDelivered, ActionRunning, formatTime(now))
-	if err != nil {
-		return false, fmt.Errorf("apply action result: %w", err)
+		result.ActionID, serverID, ActionQueued, ActionDelivered, ActionRunning, formatTime(now),
+	).Scan(&code); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ActionOutcome{}, false, nil
+	case err != nil:
+		return ActionOutcome{}, false, fmt.Errorf("apply action result: %w", err)
 	}
-	affected, err := outcome.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("apply action result: %w", err)
-	}
-	return affected > 0, nil
+	return ActionOutcome{Code: code, State: state}, true, nil
 }
 
 func scanAction(row rowScanner) (Action, error) {

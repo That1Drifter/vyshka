@@ -65,6 +65,11 @@ type OutboundEnvelope struct {
 	Body      json.RawMessage
 	CreatedAt time.Time
 	Seq       int64
+	// FirstSend is set by NextOutbound on the one call that puts the envelope
+	// on the wire for the first time ever: later retransmissions, and the
+	// renumbering into a new session, come back with it false. The metrics
+	// time the queue wait on it.
+	FirstSend bool
 }
 
 // QueueEnvelope puts one envelope on a server's queue. limit bounds the queue:
@@ -188,7 +193,7 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	// plugin's contiguous ack could never cross. Locked, the delete waits
 	// and then finds the row numbered, which its predicate excludes.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, type, body, created_at, session_id, seq
+		`SELECT id, type, body, created_at, session_id, seq, sent_at
 		   FROM outbound_envelopes
 		  WHERE server_id = ? AND acked_at IS NULL
 		  ORDER BY created_at, id
@@ -209,9 +214,10 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			createdAt string
 			sessionOf sql.NullString
 			seq       sql.NullInt64
+			sentAt    sql.NullString
 		)
 		if err := rows.Scan(&row.envelope.ID, &row.envelope.Type, &body, &createdAt,
-			&sessionOf, &seq); err != nil {
+			&sessionOf, &seq, &sentAt); err != nil {
 			rows.Close()
 			return nil, 0, 0, fmt.Errorf("scan outbound envelope: %w", err)
 		}
@@ -220,6 +226,7 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 			rows.Close()
 			return nil, 0, 0, err
 		}
+		row.envelope.FirstSend = !sentAt.Valid
 		// A seq from an earlier session means nothing here: sequence spaces are
 		// per session, so the envelope is renumbered into this one.
 		if sessionOf.Valid && sessionOf.String == sessionID && seq.Valid {
@@ -393,8 +400,10 @@ type InboundApplied struct {
 	// ManifestsApplied counts manifests that replaced the stored one; the rest
 	// carried an equal or lower revision and were ignored (spec section 6.1).
 	ManifestsApplied int
-	// NoticesQueued counts notices that made it onto the queue.
-	NoticesQueued int
+	// NoticesQueued counts notices that made it onto the queue, and
+	// NoticesDropped those that found it at its bound (spec section 9.2).
+	NoticesQueued  int
+	NoticesDropped int
 	// ActionsStarted counts acks that moved an action to running, and
 	// ActionsFinished results that reached a terminal state; the difference
 	// against what was sent is late or duplicate traffic, which is normal.
@@ -520,6 +529,8 @@ func (s *Store) applyInbound(ctx context.Context, sessionID string, classify fun
 				}
 				if queued {
 					applied.NoticesQueued++
+				} else {
+					applied.NoticesDropped++
 				}
 			}
 		}
@@ -529,6 +540,7 @@ func (s *Store) applyInbound(ctx context.Context, sessionID string, classify fun
 		case errors.Is(err, ErrOutboundQueueFull):
 			// Dropped. The queue bound protects the plugin's own traffic, and a
 			// notice must never turn a valid poll into a failure.
+			applied.NoticesDropped++
 		case err != nil:
 			return InboundApplied{}, err
 		default:
@@ -544,13 +556,15 @@ func (s *Store) applyInbound(ctx context.Context, sessionID string, classify fun
 			applied.ActionsStarted++
 		}
 	}
+	var outcomes []ActionOutcome
 	for _, result := range application.ActionResults {
-		finished, err := applyActionResult(ctx, tx, serverID, result, now)
+		outcome, finished, err := applyActionResult(ctx, tx, serverID, result, now)
 		if err != nil {
 			return InboundApplied{}, err
 		}
 		if finished {
 			applied.ActionsFinished++
+			outcomes = append(outcomes, outcome)
 		}
 	}
 	stored, err := insertEventBatches(ctx, tx, serverID, application.EventBatches, now)
@@ -578,6 +592,7 @@ func (s *Store) applyInbound(ctx context.Context, sessionID string, classify fun
 	if err := tx.Commit(); err != nil {
 		return InboundApplied{}, fmt.Errorf("commit apply inbound: %w", err)
 	}
+	s.observeFinished(outcomes...)
 	return applied, nil
 }
 
