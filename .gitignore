@@ -19,6 +19,7 @@ vyshka-spec.md
 
 # The reference deployment's secret, database, and map tilesets (deploy/README.md)
 /deploy/admin-token
+/deploy/hub.toml
 /deploy/data/
 /deploy/maps/
 

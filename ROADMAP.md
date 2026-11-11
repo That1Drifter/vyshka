@@ -96,6 +96,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-11-11: backup endpoint, restore runbook, `storage` and `vacuum` commands (#83).
 - 2026-11-11: `/metrics` for Prometheus, on a listener of its own (#82).
 - 2026-11-11: `-auto-tls`, embedded ACME, so the hub serves TLS without a proxy (#85).
+- 2026-11-11: TOML config file under flags and the environment, with `file:` secrets (#84).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -111,8 +112,6 @@ rate limits, metrics, the capacity measurement, and the config file last.
 - **Measured capacity** (#87, spike): replaces the "20 servers at 100 players" estimate,
   which has no provenance, with a number under `spikes/`. That number is also the trigger
   for the parked multi-instance hub and what the rate-limit defaults are set against.
-- **Config file** (#84): one TOML file as an alternative to flags and environment variables,
-  with `file:` indirection for secrets. Flags stay.
 
 ## Horizon 3: protocol items the spec names and the hub does not implement
 

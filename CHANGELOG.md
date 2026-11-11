@@ -19,6 +19,9 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+- 2026-11-11: one TOML config file (`-config`, `VYSHKA_HUB_CONFIG`) under flags and the environment,
+  with `file:` secrets for `db` and `admin-token`, and `vyshka-hub config` to print the
+  settings in effect and their sources (issue #84; `deploy/hub.toml.example`, `scripts/demo-config.sh`).
 - 2026-11-11: `POST /api/v1/admin/backup` snapshots a running SQLite hub into a bounded
   directory; `vyshka-hub storage` and `vacuum`, and a restore runbook in `deploy/README.md` (#83).
 - 2026-11-11: Prometheus metrics at `GET /metrics` on a listener of its own (`-metrics-addr`,

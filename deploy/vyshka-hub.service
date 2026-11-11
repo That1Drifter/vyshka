@@ -26,6 +26,14 @@ EnvironmentFile=-/etc/vyshka/hub.env
 LoadCredential=admin_token:/etc/vyshka/admin-token
 Environment=VYSHKA_ADMIN_TOKEN=file:%d/admin_token
 
+# A TOML config file (hub.toml.example; deploy/README.md, "The config file")
+# travels the same way, as a credential. Enable both lines. It holds the
+# non-secret settings; the admin token stays the credential above. An
+# environment variable outranks the file: to set addr or db there, delete the
+# two Environment= defaults above.
+#LoadCredential=hub.toml:/etc/vyshka/hub.toml
+#Environment=VYSHKA_HUB_CONFIG=%d/hub.toml
+
 # /var/lib/vyshka is created and owned by the service user; the database,
 # its WAL files, and any map tilesets (VYSHKA_MAPS_DIR) live there.
 StateDirectory=vyshka
