@@ -61,6 +61,19 @@
 # VYSHKA_METRICS_ADDR.
 #metrics-addr = "127.0.0.1:9190"
 
+# Rate limits per credential (deploy/README.md, "Rate limits"; spec section
+# 2.2.1). A rate of 0 turns that limit off. Environment variables:
+# VYSHKA_PLUGIN_RATE_LIMIT, VYSHKA_PLUGIN_RATE_BURST, VYSHKA_ADMIN_RATE_LIMIT,
+# VYSHKA_ADMIN_RATE_BURST.
+# Plugin API requests per second each enrolled server may sustain.
+#plugin-rate-limit = 5
+# Plugin API requests a server may send back to back before the rate applies.
+#plugin-rate-burst = 60
+# Admin API requests per second each token may sustain, the bootstrap one too.
+#admin-rate-limit = 10
+# Admin API requests a token may send back to back before the rate applies.
+#admin-rate-burst = 60
+
 # Serve TLS without a proxy: the hub gets its own certificate over ACME
 # (deploy/README.md, "Without a proxy"). Turning it on accepts the CA's
 # subscriber agreement. With it on and no addr, the hub listens on :443.

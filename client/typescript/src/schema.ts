@@ -1400,6 +1400,22 @@ export interface components {
         };
     };
     responses: {
+        /**
+         * @description The token is over the hub's rate limit (`rate_limited`, spec section
+         *     2.2.1). Nothing in the request was applied. Do not send it again
+         *     before `Retry-After` has passed; `details.retryAfterSeconds` carries
+         *     the same number.
+         */
+        RateLimited: {
+            headers: {
+                /** @description Whole seconds, at least 1, before the same request would be admitted. */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Malformed body, or a field missing, wrongly typed, or out of range. */
         BadRequest: {
             headers: {
@@ -1501,6 +1517,7 @@ export type KVWriteResult = components['schemas']['KVWriteResult'];
 export type KVSetRequest = components['schemas']['KVSetRequest'];
 export type KVIncrRequest = components['schemas']['KVIncrRequest'];
 export type Error = components['schemas']['Error'];
+export type ResponseRateLimited = components['responses']['RateLimited'];
 export type ResponseBadRequest = components['responses']['BadRequest'];
 export type ResponseUnauthorized = components['responses']['Unauthorized'];
 export type ResponseForbidden = components['responses']['Forbidden'];
@@ -1535,6 +1552,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
         };
     };
     createServer: {
@@ -1586,6 +1604,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
         };
     };
     getServer: {
@@ -1611,6 +1630,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     issueEnrollmentToken: {
@@ -1643,6 +1663,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     revokeServerCredentials: {
@@ -1666,6 +1687,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     queueEnvelope: {
@@ -1739,6 +1761,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     getServerManifest: {
@@ -1764,6 +1787,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     enumerateContext: {
@@ -1815,6 +1839,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
             /**
              * @description The plugin's reply was outside the bounds of spec section 6.2
              *     (`enumeration_invalid`).
@@ -1929,6 +1954,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     getAction: {
@@ -1954,6 +1980,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listEvents: {
@@ -2020,6 +2047,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     getState: {
@@ -2068,6 +2096,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     getStateHistory: {
@@ -2122,6 +2151,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listTokens: {
@@ -2146,6 +2176,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     createToken: {
@@ -2223,6 +2254,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     revokeToken: {
@@ -2254,6 +2286,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     takeBackup: {
@@ -2301,6 +2334,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listAudit: {
@@ -2341,6 +2375,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listPlayerEvents: {
@@ -2383,6 +2418,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listPlayerActions: {
@@ -2425,6 +2461,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listPlayerNotes: {
@@ -2467,6 +2504,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     createPlayerNote: {
@@ -2520,6 +2558,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     deletePlayerNote: {
@@ -2562,6 +2601,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listBans: {
@@ -2594,6 +2634,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     createBan: {
@@ -2664,6 +2705,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     getBan: {
@@ -2700,6 +2742,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     liftBan: {
@@ -2734,6 +2777,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listWebhooks: {
@@ -2758,6 +2802,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     createWebhook: {
@@ -2850,6 +2895,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     deleteWebhook: {
@@ -2881,6 +2927,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     updateWebhook: {
@@ -2946,6 +2993,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listWebhookDeliveries: {
@@ -2988,6 +3036,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     replayWebhookDelivery: {
@@ -3032,6 +3081,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     listKVNamespaces: {
@@ -3054,6 +3104,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listKVKeys: {
@@ -3094,6 +3145,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     kvGet: {
@@ -3131,6 +3183,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     kvSet: {
@@ -3176,6 +3229,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     kvDelete: {
@@ -3211,6 +3265,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
     kvIncr: {
@@ -3256,6 +3311,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
         };
     };
 }

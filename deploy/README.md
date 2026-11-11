@@ -659,6 +659,7 @@ it three ways:
 | `vyshka_inbound_envelopes_refused_total` | counter | `kind` = `manifest`, `event_batch`, `state_snapshot` | An accepted envelope the hub would not apply and answered with a rejection notice (sections 6.4, 8.1, 8.3); also counted in `accepted` |
 | `vyshka_outbound_envelopes_dropped_total` | counter | `reason` = `queue_full`, `notice_cap` | A hub-originated notice that was never queued: the server's queue was at its bound (rejection notices, `bans.changed`), or one poll owed more than 20 rejection notices. A dispatch refused with `outbound_queue_full` is an error to its caller, not a drop, and is not counted here |
 | `vyshka_webhook_attempts_total` | counter | `webhook`, `result` = `delivered`, `retry`, `dead` | A delivery attempt the store booked: a 2xx; a failure with another attempt scheduled; a failure that exhausted the schedule (section 11.5) |
+| `vyshka_rate_limited_total` | counter | `api` = `plugin`, `admin` | A request refused `429 rate_limited` because its server or token was over its limit ("Rate limits" below). No per-credential label: the hub's log names the server or token, once a minute per credential while it is refused |
 | `vyshka_sweep_runs_total` | counter | `sweep`, `result` = `ok`, `error` | One run of a background sweep |
 | `vyshka_sweep_removed_total` | counter | `sweep` | Rows the run changed: actions expired by the sweep, bans lifted, rows deleted by retention |
 | `vyshka_sweep_duration_seconds` | histogram | `sweep` | Each run; on SQLite this is how long the run held the database's only connection |
@@ -689,11 +690,132 @@ rate of all attempts, per webhook. Some starting alerts:
   expr: histogram_quantile(0.99, sum by (le) (rate(vyshka_poll_handler_seconds_bucket[5m]))) > 1
 - alert: VyshkaSweepStalled
   expr: time() - vyshka_sweep_last_success_timestamp_seconds{sweep="action_expiry"} > 60
+# Some credential has been over its limit for a while: a leaked or runaway one,
+# or a limit set below what a real client needs. The log names which.
+- alert: VyshkaRateLimited
+  expr: sum by (api) (rate(vyshka_rate_limited_total[10m])) > 1
 ```
 
 Not here, deliberately: Go runtime and process metrics, per-route HTTP counters, and
-anything about players. The rate limits (issue #86) will add their own counters through
-the same registry (`hub/metrics.go`: a field and a one-line call where the event happens).
+anything about players. A later metric is a field in `hub/metrics.go` and a one-line call
+where the event happens.
+
+## Rate limits
+
+The hub limits how fast each credential may call it (spec section 2.2.1), so a leaked
+server secret or a runaway script is bounded in what it can do to the hub and to the other
+servers on it. Each enrolled server has a token bucket for its Plugin API requests, and each
+admin token, the bootstrap one included, has one for its Admin API requests. A request over
+the limit is answered `429 rate_limited` with a `Retry-After` in whole seconds (and the same
+number in `details.retryAfterSeconds`), and nothing in it is applied: no envelope taken, no
+ack moved, no action dispatched, no session started. The plugin sends it again after the
+wait and loses nothing.
+
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `-plugin-rate-limit` | `VYSHKA_PLUGIN_RATE_LIMIT` | 5 | Plugin API requests per second each server may sustain; 0 turns the limit off |
+| `-plugin-rate-burst` | `VYSHKA_PLUGIN_RATE_BURST` | 60 | Requests a server may send back to back before the rate applies |
+| `-admin-rate-limit` | `VYSHKA_ADMIN_RATE_LIMIT` | 10 | Admin API requests per second each token may sustain; 0 turns the limit off |
+| `-admin-rate-burst` | `VYSHKA_ADMIN_RATE_BURST` | 60 | Requests a token may send back to back before the rate applies |
+
+What counts, and what does not:
+
+- A held poll is one request, however long it is held. A plugin idling on the default
+  25 s hold spends one token per 25 s.
+- A poll the hub answers with work an admin or the hub itself queued (an action dispatch,
+  a context question, a raw envelope, a `bans.changed` after a ban edit or a ban's expiry),
+  sent for the first time, is not charged: the plugin is answering the hub. (A
+  `bans.changed`'s cause is kept in memory, so the one poll that carries a notice queued
+  before a restart is charged.) Without that,
+  an admin token dispatching at its own 10 a second to one server would throttle that
+  server's plugin about 12 s in, and the refusals would delay the very actions being
+  dispatched. Retransmissions, rejection notices, and the `bans.changed` a plugin's own
+  manifest causes are charged, because a plugin's own traffic can make the hub queue
+  those; a leaked server credential cannot earn an uncharged poll without an admin
+  queueing work for it.
+- The walk of the ban list a `bans.changed` asks for is the plugin's own requests, one per
+  100 entries, and is charged. So a bulk ban import costs every server declaring `bans`
+  one walk per change it sees. Measured at the defaults, with two such plugins walking
+  after every notice and one `bans:manage` token importing as fast as it is allowed: up to
+  200 changes cost the plugins no refusals, and some from about 300 (3 to 6 each at 300,
+  25 to 33 at 500), each a one-second delay to that plugin's next request, nothing lost. An operator importing
+  thousands of bans sees `vyshka_rate_limited_total{api="plugin"}` move while the import
+  runs; raising `-plugin-rate-burst` for the import is the remedy.
+- A request counts against the server or token it authenticated as, and nothing else does.
+  A flooding server cannot spend another server's allowance, and a request with a wrong
+  or unknown credential counts against nobody: keying on a server id the request merely
+  claims would let anyone who has seen the id lock that server out. Those requests are
+  bounded by the connection cap and by the proxy in front (below).
+- Enrollment is never limited; the enrollment token is spent by its first success. A
+  session request counts once its secret has checked out.
+- Admin requests are checked before scope, so a token flooding requests it may not even
+  make is refused here. Its refused writes are audited as a run (spec section 10.5): the
+  first at once, then at least one a minute while the refusals go on, then a closing record
+  (`detail.runClosed: true`) within a second of the run ending, a minute after its last
+  refusal, or at a clean shutdown. Each record names one refused request and carries in
+  `detail.unrecordedRefusals` how many more the token had refused since the run's previous
+  record, on any path and any server, so the records and their counts add up to every
+  refused write; filter the audit log by `tokenId`, not `serverId`, to see a run whole. A
+  record the hub fails to write keeps its count for the next one; only a hub that stops
+  abruptly loses the count since a run's last record. The request log demotes 429s to
+  `debug`; the warning `... is over its rate limit`, once a minute per credential, names
+  the server or token and counts what it refused since, and `a run of rate-limited
+  requests ended` closes it.
+
+Where the defaults come from: the capacity spike of issue #87
+(`spikes/hub-capacity/README.md`, "Request rates per credential") measured a legitimate
+DayZ-shaped plugin at 0.8 requests/s per server over its busiest 10 s and 4 requests in its
+busiest second (3 for the realistic profile), and a panel-like admin client at 5.6 requests/s per token over its busiest
+10 s and 14 in its busiest second. The plugin default is about six times that busiest 10 s,
+and its burst of 60 covers a backlog drain of a full 5000-envelope queue (25 polls of 200);
+it is wider than the spike's recommended 2/s and 30 because a plugin's key/value traffic was
+not measured and the mod surface hands the store to third-party mods. Session start was
+outside the spike's window; measured on its own, the reference driver's is four requests
+(enrollment, which is never charged, a session, one page of the ban list, a poll), and a
+plugin walking the ban list spends one request per 100 entries, so the burst covers a list
+of a few thousand entries read back to back. The admin default is
+the spike's recommendation, 1.8 times the busiest panel client's 10 s and four times its
+busiest second. A panel with more views open than the spike modeled, several people sharing
+one token, or a script paging through a long event feed can need more: give each admin and
+each script its own token, which is also what keeps one runaway from throttling the others,
+or raise the flags. Every default is in `hub/ratelimit.go`, which cites the same source.
+
+Who the limit bounds: a leaked server credential, and a leaked or runaway token without the
+`admin` scope. An `admin`-scope token (the bootstrap one included) can mint tokens, each
+with an allowance of its own, as it can already do anything else; revoke it, or remove a
+bootstrap token from the hub's configuration.
+
+The DayZ plugin, version 0.9.0, reads the 429 and keeps its session, but it does not yet
+read the wait the hub names, fails a mod's key/value call outright, and restarts a ban-list
+walk from its first page on a refusal, so an installation list of roughly 8000 entries or
+more cannot finish walking at the default plugin limit; for such a hub raise
+`-plugin-rate-burst` or `-plugin-rate-limit` (`plugins/dayz/README.md`, "Rate limits").
+
+What the limit does not bound is how much a request carries. A poll may carry 200 envelopes
+and 1000 events, so a credential within 5 polls a second can still send far more events than
+the hub ingested at its measured ceiling (921 events/s in total, across 75 servers on one
+SQLite connection). The request limit bounds how often a credential can make the hub do
+work, not how much work each request is; an event or byte budget per credential is a
+separate, later change, and until then a leaked server credential can still load the hub's
+ingest path. Revoke it (`DELETE /api/v1/servers/{id}/credentials`); that ends its session at
+once.
+
+The connection cap comes first. The hub accepts at most 256 connections at once (no flag;
+`Config.MaxConns` for an embedder), and a connection over it waits unaccepted in the
+kernel's backlog. Every connected plugin holds one connection for its held poll, and the
+panel a few. The rate limit only runs after a connection has been accepted and a request on
+it has been read and authenticated, so a flood of connections, authenticated or not, meets
+the cap before it meets any limit here, and a flood that fills the cap delays every plugin's
+next poll whatever its credential. Bounding connections per client is the proxy's job.
+
+The limits are not a substitute for the proxy's own. nginx sees every connection, including
+ones that never authenticate, and `limit_conn` there (`nginx-vyshka.conf.example`) bounds
+what an anonymous client can hold; the hub sees only who a request authenticated as, and
+bounds what each credential can make it do. Keep both. If you add `limit_req` at the proxy,
+set it well above the hub's per-credential figures times the servers behind one address,
+and give it `limit_req_status 429`: the proxy's refusal carries no `Retry-After` and no
+protocol body, and a plugin on an engine that cannot read a status (the DayZ one) sees it
+as an opaque client error, which the hub's own refusal never is.
 
 ## Without a proxy: `-auto-tls`
 

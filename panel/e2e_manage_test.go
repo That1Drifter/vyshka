@@ -147,22 +147,45 @@ func adminRequest(t *testing.T, method, url string, body any) (int, []byte) {
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, url, reader)
-	if err != nil {
-		t.Fatalf("build %s %s: %v", method, url, err)
+	// Seeding runs at fixture pace through the same token as the panel, so
+	// it waits out the hub's per-token rate limit (issue #86) the way a
+	// client must: Retry-After, then the same request, nothing applied.
+	var encoded []byte
+	if reader != nil {
+		encoded, _ = io.ReadAll(reader)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+e2eAdminToken)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
+	// Paced under the default admin refill of 10 a second, because the
+	// browser signs in with this same token: seeding 101 keys back to back
+	// would drain the bucket the panel's next reads come out of, and the
+	// test would time out waiting for a page the hub is rightly throttling.
+	time.Sleep(150 * time.Millisecond)
+	for {
+		var body io.Reader
+		if encoded != nil {
+			body = bytes.NewReader(encoded)
+		}
+		request, err := http.NewRequest(method, url, body)
+		if err != nil {
+			t.Fatalf("build %s %s: %v", method, url, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+e2eAdminToken)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+		if err != nil {
+			t.Fatalf("read %s %s: %v", method, url, err)
+		}
+		if response.StatusCode == http.StatusTooManyRequests {
+			wait, _ := strconv.Atoi(response.Header.Get("Retry-After"))
+			time.Sleep(time.Duration(max(wait, 1)) * time.Second)
+			continue
+		}
+		return response.StatusCode, answer
 	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		t.Fatalf("read %s %s: %v", method, url, err)
-	}
-	return response.StatusCode, answer
 }
 
 func adminGet(t *testing.T, url string, out any) {

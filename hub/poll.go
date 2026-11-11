@@ -456,11 +456,27 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		if len(queued) > 0 {
 			release()
 			envelopes := make([]envelope, len(queued))
+			refund := false
 			for i, one := range queued {
 				envelopes[i] = newOutboundEnvelope(one)
 				if one.FirstSend {
 					s.metrics.envelopeDelivery.ObserveDuration(time.Since(one.CreatedAt))
+					// The ban mark is consumed on every first send of a notice,
+					// whether or not this poll is already refunded, so it does
+					// not outlive the notice it was set for. One window is
+					// left: the mark is set just after the list change
+					// commits, so a poll that sends the notice in between is
+					// charged and the mark waits for that server's next one.
+					banMarked := one.Type == envelopeTypeBansChanged && s.limits.takeBanNotice(session.ServerID)
+					refund = refund || adminCaused(one.Type) || banMarked
 				}
+			}
+			// A poll that carries work an admin queued, on its first send, is
+			// not charged to the server (spec section 2.2.1): the plugin is
+			// answering the hub, and charging it would let the Admin API's
+			// pace throttle a plugin that did nothing but keep up.
+			if refund {
+				s.limits.plugin.Refund(session.ServerID)
 			}
 			s.log.Info("poll delivered envelopes",
 				"serverId", session.ServerID, "sessionId", session.ID,

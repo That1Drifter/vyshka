@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vyshka Plugin API
-  version: 0.6.0
+  version: 0.7.0
   summary: Game-server-facing API of the Vyshka hub.
   description: |
     The plugin half of the Vyshka protocol. Normative text lives in
@@ -172,6 +172,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401":
           description: |
             Credentials do not match (`credentials_invalid`) or were revoked
@@ -197,6 +198,7 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/Session"
                   - $ref: "#/components/schemas/InlineError"
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
   /plugin/v1/poll:
@@ -294,6 +296,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
 
   /plugin/v1/kv/{namespace}/{key}:
@@ -317,6 +320,7 @@ paths:
                   - $ref: "#/components/schemas/KVEntry"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "404": { $ref: "#/components/responses/KVNotFound" }
@@ -348,6 +352,7 @@ paths:
                   - $ref: "#/components/schemas/KVWriteResult"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "409": { $ref: "#/components/responses/KVRevisionMismatch" }
@@ -365,6 +370,7 @@ paths:
           description: The key was deleted.
         "200": { $ref: "#/components/responses/InlineError" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "404": { $ref: "#/components/responses/KVNotFound" }
@@ -394,6 +400,7 @@ paths:
                   - $ref: "#/components/schemas/KVEntry"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "404": { $ref: "#/components/responses/KVNotFound" }
@@ -427,6 +434,7 @@ paths:
                   - $ref: "#/components/schemas/KVWriteResult"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "409": { $ref: "#/components/responses/KVRevisionMismatch" }
@@ -450,6 +458,7 @@ paths:
           description: The key was deleted.
         "200": { $ref: "#/components/responses/InlineError" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "404": { $ref: "#/components/responses/KVNotFound" }
@@ -486,6 +495,7 @@ paths:
                   - $ref: "#/components/schemas/KVEntry"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "403": { $ref: "#/components/responses/KVForbidden" }
         "409":
@@ -524,6 +534,7 @@ paths:
                   - $ref: "#/components/schemas/BanPage"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "409": { $ref: "#/components/responses/BanRevisionGone" }
 
@@ -553,6 +564,7 @@ paths:
                   - $ref: "#/components/schemas/BanPage"
                   - $ref: "#/components/schemas/InlineError"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/SessionInvalid" }
         "409": { $ref: "#/components/responses/BanRevisionGone" }
 
@@ -934,6 +946,23 @@ components:
       description: A key within the namespace (spec section 12.1). Case-sensitive.
 
   responses:
+    RateLimited:
+      description: |
+        The server is over the hub's rate limit (`rate_limited`, spec section
+        2.2.1). Nothing in the request was applied. Do not send it again, and
+        after a refused poll do not poll again, before the seconds `Retry-After`
+        and `details.retryAfterSeconds` name have passed; hold other requests
+        under the same credential that long too. What a refused poll carried
+        stays unacknowledged and is retransmitted like any unacked envelope
+        (spec section 9.3). Not a session failure: do not start a new session
+        or re-enroll over it.
+      headers:
+        Retry-After:
+          description: Whole seconds, at least 1, before the same request would be admitted.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     BanRevisionGone:
       description: |
         The hub cannot serve the revision the cursor names (`conflict`): start

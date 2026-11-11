@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,6 +51,10 @@ type Env struct {
 	// history; against a hub configured deeper the trim never happens and that
 	// check degrades to plain cross-session dedup.
 	StateHistoryDepth int
+	// Slept totals how long doWith has spent waiting out 429s, suite-wide,
+	// so a timed check can take the suite's own waits out of what it bills
+	// the hub for (stopwatch). Nil counts nothing.
+	Slept *atomic.Int64
 	// RootCAs, when set, are the roots trusted for an https hub instead of
 	// the system's (the system's plus -ca-file). ConnectTo, when set, is the
 	// host:port dialed for the hub instead of its URL's host; TLS still
@@ -57,6 +62,23 @@ type Env struct {
 	// a private or test CA under a name with no DNS record here.
 	RootCAs   *x509.CertPool
 	ConnectTo string
+}
+
+// sleptTotal is how long the suite has slept on rate limits so far.
+func (e Env) sleptTotal() time.Duration {
+	if e.Slept == nil {
+		return 0
+	}
+	return time.Duration(e.Slept.Load())
+}
+
+// stopwatch starts timing something the hub does. The function it returns
+// reports the time since, less whatever the suite spent meanwhile waiting
+// out Retry-After on any request (doWith): those seconds are the suite's,
+// and a timed check must bill the hub neither for them nor with them.
+func (e Env) stopwatch() func() time.Duration {
+	started, base := time.Now(), e.sleptTotal()
+	return func() time.Duration { return time.Since(started) - (e.sleptTotal() - base) }
 }
 
 // get issues a GET against the target hub and returns the response body.
@@ -70,21 +92,91 @@ func (e Env) do(ctx context.Context, method, path, bearer string, body any) (*ht
 	return e.doWith(e.Client, ctx, method, path, bearer, body)
 }
 
+// doWith issues one request, as a well-behaved client of a rate-limited hub
+// would (spec section 2.2.1): a 429 rate_limited answer is waited out for the
+// Retry-After it names and the same request sent again, since nothing in it
+// was applied. Without that, a hub that limits its admin tokens below the
+// pace this suite drives its own credential at would fail checks that have
+// nothing to do with rate limits. The rate-limit checks see the raw 429 for
+// the credentials they burst with (rawRateLimits); every other request,
+// theirs included, is retried.
 func (e Env) doWith(client *http.Client, ctx context.Context, method, path, bearer string, body any) (*http.Response, []byte, error) {
-	var reader io.Reader
+	var encoded []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
+		var err error
+		encoded, err = json.Marshal(body)
 		if err != nil {
 			return nil, nil, fmt.Errorf("encode request body: %w", err)
 		}
+	}
+	for attempt := 1; ; attempt++ {
+		resp, responseBody, err := e.send(client, ctx, method, path, bearer, encoded, body != nil)
+		if err != nil || resp.StatusCode != http.StatusTooManyRequests || rawRateLimit(ctx, bearer) || attempt > rateRetryAttempts {
+			return resp, responseBody, err
+		}
+		// Waited out only when it is the refusal section 2.2.1 defines; the
+		// retry must never hide a hub that refuses something it may not, or
+		// refuses it in a shape a client cannot act on.
+		if strings.HasPrefix(path, "/plugin/v1/enroll") {
+			return resp, responseBody, fmt.Errorf("%s %s answered 429 (body %q): a hub MUST NOT answer enrollment rate_limited (section 2.2.1)", method, path, truncate(responseBody))
+		}
+		refusal := readRefusal(resp, responseBody)
+		if err := assertErrorCode(method, path, responseBody, "rate_limited"); err != nil {
+			return resp, responseBody, fmt.Errorf("%w; a 429 carries code rate_limited (section 2.2.1)", err)
+		}
+		if refusal.RetryAfter < 1 {
+			return resp, responseBody, fmt.Errorf("%s %s answered 429 with Retry-After %q; a rate_limited refusal carries whole seconds, at least 1 (section 2.2.1)", method, path, refusal.Raw)
+		}
+		wait := min(time.Duration(refusal.RetryAfter)*time.Second, rateMaxWait) + rateRetrySlack
+		if err := sleepCtx(ctx, wait); err != nil {
+			return resp, responseBody, nil
+		}
+		if e.Slept != nil {
+			e.Slept.Add(int64(wait))
+		}
+	}
+}
+
+// rateRetryAttempts bounds how often one request is resent after 429s.
+const rateRetryAttempts = 10
+
+// rawRateLimitsKey carries the bearer credentials whose 429s a rate-limit
+// check grades itself, which doWith must hand back unretried.
+type rawRateLimitsKey struct{}
+
+// withRawRateLimits marks bearer credentials whose 429s the caller wants to
+// see as they are.
+func withRawRateLimits(ctx context.Context, bearers ...string) context.Context {
+	set := map[string]bool{}
+	if existing, ok := ctx.Value(rawRateLimitsKey{}).(map[string]bool); ok {
+		for bearer := range existing {
+			set[bearer] = true
+		}
+	}
+	for _, bearer := range bearers {
+		set[bearer] = true
+	}
+	return context.WithValue(ctx, rawRateLimitsKey{}, set)
+}
+
+func rawRateLimit(ctx context.Context, bearer string) bool {
+	set, ok := ctx.Value(rawRateLimitsKey{}).(map[string]bool)
+	return ok && bearer != "" && set[bearer]
+}
+
+// send performs one HTTP exchange and reads the answer.
+func (e Env) send(client *http.Client, ctx context.Context, method, path, bearer string, encoded []byte, hasBody bool) (*http.Response, []byte, error) {
+	var reader io.Reader
+	if hasBody {
 		reader = bytes.NewReader(encoded)
 	}
+	body := hasBody
 
 	req, err := http.NewRequestWithContext(ctx, method, e.BaseURL+path, reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	if body != nil {
+	if body {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if bearer != "" {
@@ -839,12 +931,12 @@ var checks = []Check{
 				return err
 			}
 
-			started := time.Now()
+			clock := env.stopwatch()
 			response, err := plugin.pollAndAck(ctx)
 			if err != nil {
 				return err
 			}
-			held := time.Since(started)
+			held := clock()
 
 			if len(response.Envelopes) != 0 {
 				return fmt.Errorf("an idle poll answered with %d envelopes", len(response.Envelopes))
@@ -1062,7 +1154,7 @@ var checks = []Check{
 			stale := plugin.Session.SessionToken
 
 			failed := make(chan error, 1)
-			started := time.Now()
+			clock := env.stopwatch()
 			go func() {
 				failed <- env.expectPollError(ctx, stale, pollRequest{},
 					http.StatusUnauthorized, "session_invalid")
@@ -1077,7 +1169,7 @@ var checks = []Check{
 			if err := <-failed; err != nil {
 				return err
 			}
-			if elapsed := time.Since(started); elapsed > 5*time.Second {
+			if elapsed := clock(); elapsed > 5*time.Second {
 				return fmt.Errorf("the superseded poll took %s to answer 401; a held poll must not outlive its session",
 					elapsed)
 			}
@@ -1101,13 +1193,13 @@ var checks = []Check{
 				return err
 			}
 
-			started := time.Now()
+			clock := env.stopwatch()
 			response, err := plugin.pollAndAck(ctx)
 			if err != nil {
 				return err
 			}
 			// Work was already queued, so there was nothing to hold for.
-			if elapsed := time.Since(started); elapsed > 2*time.Second {
+			if elapsed := clock(); elapsed > 2*time.Second {
 				return fmt.Errorf("the hub held for %s with an envelope already queued; it must answer at once when work is waiting",
 					elapsed)
 			}
@@ -1185,12 +1277,12 @@ var checks = []Check{
 				return err
 			}
 			first := plugin.nextOutbound(unknownType(), nil)
-			started := time.Now()
+			clock := env.stopwatch()
 			landed, err := plugin.poll(ctx, pollRequest{Envelopes: []envelope{first}, More: true})
 			if err != nil {
 				return err
 			}
-			if elapsed := time.Since(started); elapsed > 5*time.Second {
+			if elapsed := clock(); elapsed > 5*time.Second {
 				return fmt.Errorf("the hub held a poll saying more for %s after acking its batch; such a poll is answered as soon as it is applied, or a backlog drains one batch per pollTimeout", elapsed)
 			}
 			if landed.Ack != first.Seq {
@@ -1214,7 +1306,7 @@ var checks = []Check{
 				{"a batch above a gap", pollRequest{Envelopes: []envelope{gapped}, More: true}},
 				{"no envelopes", pollRequest{More: true}},
 			} {
-				started := time.Now()
+				clock := env.stopwatch()
 				response, err := short.poll(ctx, stalled.request)
 				if err != nil {
 					return fmt.Errorf("a poll saying more with %s: %w", stalled.what, err)
@@ -1222,7 +1314,7 @@ var checks = []Check{
 				if response.Ack != 0 {
 					return fmt.Errorf("ack = %d after a poll saying more with %s, want 0", response.Ack, stalled.what)
 				}
-				if held := time.Since(started); held < negotiated/2 {
+				if held := clock(); held < negotiated/2 {
 					return fmt.Errorf("the hub answered a poll saying more with %s after %s; when the ack covers nothing the poll carried, the next poll carries the same batch, so the hub holds it as it would any other", stalled.what, held)
 				}
 			}
@@ -1721,7 +1813,7 @@ var checks = []Check{
 			}
 
 			failed := make(chan error, 1)
-			started := time.Now()
+			clock := env.stopwatch()
 			go func() {
 				failed <- env.expectPollError(ctx, plugin.Session.SessionToken, pollRequest{},
 					http.StatusUnauthorized, "session_invalid")
@@ -1737,7 +1829,7 @@ var checks = []Check{
 			if err := <-failed; err != nil {
 				return err
 			}
-			if elapsed := time.Since(started); elapsed > 5*time.Second {
+			if elapsed := clock(); elapsed > 5*time.Second {
 				return fmt.Errorf("the held poll took %s to answer 401 after revocation; it must not be left to expire",
 					elapsed)
 			}

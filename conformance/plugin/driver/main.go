@@ -66,6 +66,23 @@ type hubError struct {
 	Message string
 	Index   int
 	HasIdx  bool
+	// RetryAfter is the wait a rate_limited refusal names in
+	// details.retryAfterSeconds (spec section 2.2.1). The driver reads the
+	// body, not the Retry-After header, because the body is what an engine
+	// that cannot read headers is left with, and the driver plays one.
+	RetryAfter time.Duration
+}
+
+// rateLimited reports whether the refusal is rate_limited, read from the code
+// or, from a hub that sent none the driver knows, from the 429 status.
+func (f *hubError) rateLimited() bool {
+	return f.Code == "rate_limited" || (f.Code == "" && f.Status == http.StatusTooManyRequests)
+}
+
+// rateWait is how long to wait before sending a rate-limited request again:
+// what the hub named, and never less than the 1 s of section 2.3.
+func (f *hubError) rateWait() time.Duration {
+	return max(f.RetryAfter, time.Second)
 }
 
 type driver struct {
@@ -303,11 +320,16 @@ func decodeHubError(raw json.RawMessage) *hubError {
 		Status  int    `json:"status"`
 		Message string `json:"message"`
 		Details struct {
-			Index json.RawMessage `json:"index"`
+			Index             json.RawMessage `json:"index"`
+			RetryAfterSeconds json.RawMessage `json:"retryAfterSeconds"`
 		} `json:"details"`
 	}
 	_ = json.Unmarshal(raw, &wire)
 	failure := &hubError{Code: wire.Code, Status: wire.Status, Message: wire.Message}
+	var seconds int
+	if json.Unmarshal(wire.Details.RetryAfterSeconds, &seconds) == nil && seconds > 0 && seconds <= 3600 {
+		failure.RetryAfter = time.Duration(seconds) * time.Second
+	}
 	// The index is usable only as an integer. A wrongly typed one is not an
 	// instruction to remove anything: decoded separately, so a failed decode
 	// cannot leave a zero behind that looks like "the first envelope".
@@ -381,6 +403,11 @@ func (d *driver) startSession(game string) error {
 		// An opaque client error on a session request is treated the same way
 		// (Appendix A): the class is all the driver has, and rejected
 		// credentials are its likeliest meaning.
+		// A rate limit is neither: the request was fine and comes again,
+		// unchanged, once the hub's wait has passed (section 2.2.1).
+		if failure.rateLimited() {
+			return errRetry{failure}
+		}
 		opaqueClientError := failure.Code == "" && failure.Status >= 400 && failure.Status < 500
 		if failure.Status == http.StatusUnauthorized || failure.Code == "credentials_invalid" || failure.Code == "credentials_revoked" || failure.Code == "protocol_version_unsupported" || opaqueClientError {
 			return errRefused{failure}
@@ -483,8 +510,12 @@ func (d *driver) run(game string) {
 				}
 				var retry errRetry
 				if errors.As(err, &retry) {
-					log.Printf("%v; retrying", err)
-					time.Sleep(time.Second)
+					wait := time.Second
+					if retry.failure.rateLimited() {
+						wait = retry.failure.rateWait()
+					}
+					log.Printf("%v; retrying in %s", err, wait)
+					time.Sleep(wait)
 					continue
 				}
 				if d.transportFailed() {
@@ -619,6 +650,13 @@ func (d *driver) recover(failure *hubError) {
 		// A 200 that was not JSON: retry, touching nothing.
 		log.Printf("poll: malformed answer (%s); re-polling", failure.Message)
 		time.Sleep(time.Second)
+
+	case failure.rateLimited():
+		// The hub applied nothing and the session is fine: wait what it
+		// asked, then send the same buffer again on the same session, an
+		// unchanged retransmission (section 2.2.1). Never a new session.
+		log.Printf("poll rate limited; retrying in %s", failure.rateWait())
+		time.Sleep(failure.rateWait())
 
 	case failure.Code == "session_invalid", failure.Status == http.StatusUnauthorized:
 		// Named or not, a 401 on a poll says the session is gone (section
@@ -886,6 +924,13 @@ func (d *driver) walkBans() {
 		return
 	}
 	if ok, failure := d.classify(status, body); !ok {
+		if failure.rateLimited() {
+			// The page comes again after the hub's wait; the walk keeps its
+			// place (section 2.2.1).
+			log.Printf("bans: page rate limited; retrying in %s", failure.rateWait())
+			d.bansNextTry = time.Now().Add(failure.rateWait())
+			return
+		}
 		if failure.Code == "conflict" || (failure.Code == "" && failure.Status == http.StatusConflict) {
 			restart("the hub cannot serve the walk's revision any more")
 			return

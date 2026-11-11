@@ -307,13 +307,21 @@ async function viewServers(app, seq) {
   // A navigation during the first load has already replaced this view; a
   // timer armed now would outlive it.
   if (stale(seq)) return;
+  // One refresh at a time, as the event feed and the map tick: a load still
+  // waiting out a rate limit must not be overtaken and then draw over the
+  // newer answer.
+  let inFlight = false;
   const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
     load().catch((err) => {
       // A refresh that began under a token since replaced must not sign
       // out whoever signed in after it: clearing the interval does not
       // recall a request already in flight.
       if (stale(seq)) return;
       if (err instanceof ApiError && err.status === 401) signOut('The hub rejected this token.');
+    }).finally(() => {
+      inFlight = false;
     });
   }, SERVER_LIST_REFRESH_MS);
   setTeardown(() => clearInterval(timer));

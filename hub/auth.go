@@ -67,6 +67,38 @@ func (s *Server) adminGate(resource, verb string, pathValue func(*http.Request) 
 		mutation := r.Method != http.MethodGet && r.Method != http.MethodHead
 		var entry *auditEntry
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		// The rate limit runs first among the checks on an authenticated
+		// caller, before scope and before the body (spec section 2.2.1), so a
+		// token flooding requests it may not even make is answered here, at
+		// the cost of one bucket lookup. Its mutations are audited, but a run
+		// of them collapses to a record a minute, each counting the refusals
+		// it stands for, and a closing record when the run ends (section
+		// 10.5): one record per refusal would hand the flood the audit log
+		// the limit just refused it.
+		if allowed, wait := s.limits.admin.Allow(adminRateKey(caller)); !allowed {
+			s.metrics.rateLimited.Inc(rateLimitedAdmin)
+			key := adminRateKey(caller)
+			if report, skipped := s.limits.adminLog.Refused(key, nil); report {
+				s.log.Warn("admin request refused: the token is over its rate limit",
+					"tokenId", caller.TokenID, "tokenName", caller.Name, "path", r.URL.Path,
+					"retryAfter", wait.String(), "refusedSincePreviousWarning", skipped)
+				s.limits.adminLog.Recorded(key, true)
+			}
+			s.writeRateLimited(recorder, r, wait, "this token is over the hub's request rate limit")
+			if mutation {
+				refused := rateLimitedMutation{
+					tokenID: caller.TokenID, tokenName: caller.Name, method: r.Method,
+					path: r.URL.Path, serverID: r.PathValue("serverId"), sourceIP: sourceIP(r),
+				}
+				if report, skipped := s.limits.adminAudit.Refused(key, refused); report {
+					// The run moves on only once the record is written; a
+					// failed write keeps its count for the next refusal.
+					s.limits.adminAudit.Recorded(key, s.recordRateLimited(refused, skipped, false))
+				}
+			}
+			return
+		}
 		if mutation {
 			// The entry exists before the body is read, so that a request that
 			// dies while its body is in flight is still recorded. Creating it

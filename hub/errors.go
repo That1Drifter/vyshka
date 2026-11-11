@@ -39,6 +39,7 @@ const (
 	codeLinkDown                   = "link_down"
 	codeEnumerationTimeout         = "enumeration_timeout"
 	codeEnumerationInvalid         = "enumeration_invalid"
+	codeRateLimited                = "rate_limited"
 )
 
 // maxRequestBody caps request bodies. Nothing in this slice is large, and the

@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.33 (2026-09-23)
+**Status:** draft 0.34 (2026-11-11)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -113,10 +113,156 @@ General codes, usable by any endpoint:
 | `conflict` | 409 | The request contradicts current state |
 | `unsupported_media_type` | 415 | Body was not `application/json` |
 | `payload_too_large` | 413 | Body exceeded the hub's limit |
-| `rate_limited` | 429 | Reserved; hubs MAY rate-limit and SHOULD send `Retry-After` |
+| `rate_limited` | 429 | The credential is over the hub's rate limit and nothing in the request was applied (section 2.2.1) |
 | `internal` | 500 | The hub failed; the client MAY retry |
 
 Endpoint-specific codes are defined with the endpoints that raise them (section 5).
+
+### 2.2.1 Rate limiting
+
+A hub MAY limit how fast each credential may call it, so that a leaked or runaway
+credential is bounded in what it can do to the hub and to everything else enrolled in it.
+A hub that does MUST follow this section. A hub that does not never answers `rate_limited`,
+and nothing else in this document changes.
+
+**What a limit is keyed on.** A limit applies to an authenticated credential, and only once
+it has authenticated:
+
+- A Plugin API request counts against the server it authenticated as, whether it presented
+  a session token or, on a session request (section 5.3), the server id and secret. A
+  session request that fails authentication counts against nothing.
+- An Admin API request counts against the token it authenticated with, a bootstrap
+  credential (section 10.6) included.
+- Enrollment (section 5.2) counts against no credential, and a hub MUST NOT answer it
+  `rate_limited`: the enrollment token is spent by its first success, so the operator who
+  issued it already bounds how often enrollment can succeed, and a failed enrollment never
+  authenticated.
+
+A hub MUST NOT count a request against a server or token it did not authenticate as, and
+one credential's requests MUST NOT spend another's allowance: a server or token that keeps
+within its limit is never refused because a different one is flooding the hub. Requests
+that fail authentication are outside this section. A limit keyed on an identity a request
+merely claims, such as the `serverId` of a session request whose secret is wrong, would let
+anyone who has seen a server id lock that server out; a hub bounds unauthenticated traffic
+by other means (a connection cap, a reverse proxy in front of it, section 3.3).
+
+**What a request is.** The limit counts HTTP requests. Every request counts once, when it
+arrives. A long-poll the hub holds (section 3.1.2) is one request however long it is held,
+and the hold is never charged as time spent. The WebSocket transport of section 3.2 is
+outside this section until it is specified.
+
+**Polls the hub caused.** The two APIs' limits are coupled through the long-poll: every
+envelope queued for a server ends that server's held poll, and the plugin polls again at
+once (section 3.1), so an admin client working at its own permitted pace would drive a
+behaving plugin into the plugin limit, whose refusals would then delay what the admin
+asked for. A hub that limits the Plugin API therefore MUST NOT charge a poll whose answer
+carries, for the first time on any session, an envelope only an Admin API request can
+queue: an action dispatch (section 7), a context question (section 6.2), or an envelope
+queued through section 5.5. It SHOULD NOT charge one whose answer carries, for the first
+time, a `bans.changed` queued because the installation ban list changed, through the
+Admin API or by a ban's expiry (section 13.1); this is a SHOULD because the same notice is
+also queued when a manifest newly declares the `bans` capability (section 13.3), and a hub
+may not know which caused a pending notice, after a restart above all. A notice refreshed
+by both causes before its first send counts as the list change's; the reference hub
+carries the cause in memory, so it charges such a poll when it has restarted since the
+change, or when the poll sends the notice in the instant between the change being stored
+and its cause being noted. A hub MAY charge the poll on arrival and give the charge back once it knows
+the answer. Everything else is charged: an answer carrying only retransmissions, which a
+plugin that never acks would otherwise receive on every poll for free, and one carrying
+only what a plugin's own traffic can make the hub queue for it (`manifest.reject`,
+`event.reject`, `state.reject`, and a `bans.changed` that only a manifest caused), since
+exempting those would let a leaked server credential earn its own exemptions.
+
+What a plugin may rely on, then: a plugin that keeps one poll in flight and polls again
+after each answer is never charged for the polls that deliver what admins queue for it,
+and on a hub that follows the SHOULD above, for the polls that deliver ban-list notices
+either. The requests it makes of its own accord are charged, including the walk of the
+ban list a `bans.changed` asks for (section 13.4), one request per page. A sustained run of
+ban-list changes can therefore spend a plugin's allowance through its walks, though not
+through its polls.
+
+> **Note (informative): a bulk ban import.** Each change to the installation list sends
+> every server declaring `bans` one notice and costs it one walk. At the reference hub's
+> defaults (plugin 5 requests/s with a burst of 60, admin 10/s with a burst of 60), with
+> one admin token importing as fast as it is allowed, up to 200 changes were measured to
+> cost two such plugins no refusals, and some from about 300 (3 to 6 each at 300, 25 to 33
+> at 500), mostly pages of the walk, each delaying that plugin's next request by about a
+> second and losing nothing. An operator importing
+> thousands sees the plugins' rate-limited counters move while the import runs.
+
+A hub SHOULD set its limits so that a plugin behaving as this document asks is never
+refused: one poll in flight, the back-to-back polls of a backlog draining under `more`
+(section 3.1.2) or of a queue the hub is draining toward the plugin (section 9.2), and the
+burst of a session start (session, manifest publish, first polls, key/value and ban-list
+reads). A limit that refuses that plugin is not bounding a leaked credential; it is
+breaking a working one.
+
+> **Note (informative): what a request limit bounds.** It bounds how often a credential can
+> make the hub do work, not how much work each request is. A poll may carry a whole batch
+> (at least 200 envelopes, section 3.1.2, and a plugin's own event budget per poll), so a
+> credential well within a few requests a second can still deliver more events than a hub
+> ingests: the reference hub's measured ceiling on one SQLite connection was 921 events/s
+> across all of its servers together. This section is not an ingest cap and nothing in it
+> limits events or bytes per credential. It also runs only once a connection is accepted
+> and a request on it authenticated, so it does nothing against a flood of connections;
+> a hub's connection cap, and the proxy in front of it, bound those. And it bounds a
+> server credential, or a token without the `admin` scope, but not an `admin` token: one
+> can mint tokens (section 10.4), each with an allowance of its own, as it can already do
+> anything else the Admin API offers.
+
+**The refusal.** A hub refusing a request over its limit:
+
+- MUST answer `429` with code `rate_limited` in the body of section 2.2, or inline when the
+  request asked for that (section 2.3).
+- MUST send a `Retry-After` header carrying a whole number of seconds, at least 1, after
+  which the same request from the same credential would be admitted if nothing else were
+  sent meanwhile. It MUST also put the same integer in `details.retryAfterSeconds`, because
+  a plugin on an engine that cannot read response headers (Appendix A) reads the body
+  alone.
+- MUST apply nothing from the request: no envelope ingested, no `ack` applied, no action
+  dispatched, no session created or superseded, no key written, and no `lastSeenAt`
+  moved. The request is refused as a whole, exactly as a malformed batch is (section
+  3.1.2), so the client can send it again unchanged.
+- SHOULD decide as soon as the credential has authenticated, before reading a request body
+  it does not need for authentication. On the Admin API the check runs before the scope
+  checks of section 10.2, so a token flooding requests it is not allowed to make is refused
+  here and recorded as section 10.5 sets out.
+
+At-least-once delivery (section 9) is unaffected in both directions. A refused poll moved
+nothing, so the plugin's retransmission of it is the first time the hub sees those
+envelopes and their `ack`; envelopes the hub holds for the plugin stay queued until a poll
+is admitted.
+
+**What a plugin does.** A plugin that meets `rate_limited` on any Plugin API request:
+
+- MUST NOT send that request again before the number of seconds the refusal names has
+  passed, from `details.retryAfterSeconds` or `Retry-After`, whichever it can read. A
+  plugin that can read neither waits at least 1 s and lengthens the wait on repeated
+  refusals, as section 2.3 asks of any backoff. After a refused poll that includes its
+  next poll: it MUST NOT poll again before that time has passed.
+- SHOULD hold its other requests under the same credential for that time too: they count
+  against the same allowance and would only be refused.
+- Treats what the refused request carried as not sent. The envelopes a refused poll
+  carried stay unacknowledged and are retransmitted under sections 9.1 and 9.3, like any
+  other unacked envelope; nothing else obliges the plugin to ask the same question again,
+  and one that is shutting down, or no longer needs an answer, need not.
+- MUST NOT treat `rate_limited` as the loss of its session or of its credentials. It starts
+  no new session over it, never re-enrolls, and keeps its outbound buffer. A new session
+  would not help in any case: the session request counts against the same server.
+
+A plugin that cannot read the refusal at all (an opaque client error, Appendix A) cannot
+tell it from the other client errors there, which is one more reason such a plugin opts in
+to inline errors on every request.
+
+**What an Admin API client does.** An admin client that meets `rate_limited` MUST NOT send
+the refused request again before `Retry-After` has passed. Retrying it then is safe, since
+nothing was applied; a dispatch that carried an idempotency key (section 7) carries the same
+key again. A client meeting the limit repeatedly is sending faster than the operator meant
+that token to, and SHOULD slow its own cadence rather than retry at the edge of the limit.
+
+Limits, their values, and whether the Admin API and the Plugin API are limited at all are hub
+configuration, not protocol. The reference hub's defaults and switches are documented in its
+deployment guide.
 
 ### 2.3 Inline errors (Plugin API)
 
@@ -198,6 +344,7 @@ it. Each is stated once here rather than with its endpoint.
 | `envelope_invalid` (400) | The hub applied nothing, including the `ack`. The plugin MUST take the envelope at `details.index` out of its outbox before retrying, MUST NOT count it as delivered, and MUST surface it (log it, set it aside on disk) rather than discard it silently. It closes the gap by moving every queued envelope behind the removed one, in the batch or not yet sent, down one `seq` each. That shift is the one exception to sections 9.1 and 9.3, and it is safe only under the sending discipline this document already requires: a batch is a contiguous run of the outbox in ascending `seq`, and framing validity depends on the envelope's content alone, so an envelope behind the refused one can have been accepted by an earlier poll only if the refused one was too, which its refusal rules out. A plugin that cannot establish that (one that sends batches which are not such a run) MUST start a new session instead, which renumbers the whole outbox. |
 | `ack_out_of_range` (400) | The plugin's inbound ack is ahead of anything the hub sent on this session, which no retry reconciles. Start a new session, whose sequence space begins at 0. |
 | `bad_request` on a poll (400) | Usually the batch is over the hub's cap: retry with a smaller batch. Do not start a new session. |
+| `rate_limited` (429) | Nothing was applied. Do not send the request, or after a refused poll the next poll, before `details.retryAfterSeconds` (or `Retry-After`) has passed; what a refused poll carried stays unacked and is retransmitted under section 9.3 (section 2.2.1). It is not a session or credential failure: no new session, no re-enrollment, nothing dropped from the outbox. |
 | `internal` (5xx), or any unrecognized code with a 5xx `status` | Retry the same request after backoff, on the same session. |
 | Unrecognized code with a 401 `status` | As `session_invalid`. |
 | Unrecognized code with any other 4xx `status` | The request was wrong and a new session does not make it right: log, back off, and retry; MUST NOT start a new session over it. |
@@ -2060,9 +2207,47 @@ worse than no field at all. Nothing was accepted from such a request in any case
 
 An authenticated token can grow the log by repeating mutations it is not allowed to perform,
 since refusals are recorded. That is the intended trade, and the lever against it is
-revocation rather than silence: a hub MUST bound retention, and MAY rate-limit
-(`rate_limited`, section 2.2). What a hub MUST NOT do is stop recording refusals, which are
-the entries this log exists for.
+revocation rather than silence: a hub MUST bound retention, and MAY rate-limit (section
+2.2.1). What a hub MUST NOT do is stop recording refusals, which are the entries this log
+exists for.
+
+A mutation refused as `rate_limited` is a refusal and is recorded as one, with one
+allowance. Recorded one for one, a flood would get from the audit log what the limit
+refused it everywhere else: a token sending as fast as its connection allows is refused at
+every request but the few its limit admits, each refusal would be a record, and retention
+bounds the age of records, not their number. A hub MAY therefore collapse a credential's
+rate-limited mutations into runs, on these terms, which keep the count exact:
+
+- A **run** begins with a credential's rate-limited mutation when that credential has no
+  run open. That mutation is recorded at once. While the credential's mutations go on
+  being refused, the first one 60 s or more after the run's previous record is recorded
+  too, so a run is never absent from the log for longer than that. The run **ends** when
+  60 s pass with no rate-limited mutation by the credential. If any of its refusals then
+  have no record of their own, the hub writes a **closing record** for it at its next
+  maintenance pass after those 60 s (the reference hub's runs every half second, but other
+  maintenance sharing the pass can delay it), and the same closing record, at once, for
+  every run it holds when it shuts down cleanly. A closing record carries
+  `detail.runClosed: true`, and its `at` is when the run was closed, not when the refusal it
+  names was answered. A hub that stops abruptly loses the count since each run's last
+  record.
+- Each record is written for one rate-limited mutation and carries that mutation's
+  `method`, `path`, `serverId` (when the path names one), and `sourceIp`; a closing record
+  is written for the first of the refusals it counts. Its `detail.unrecordedRefusals` is how
+  many more of the credential's rate-limited mutations since the run's previous record (or
+  since the run began) have no record of their own, whatever their path, method, target
+  server, or source address. Summed over a run, the records and their counts are every
+  rate-limited mutation the run saw. Because the fields describe one refusal, a run of
+  refusals aimed at several servers is found by a `serverId` filter only through records
+  whose own mutation named that server; filter by `tokenId` to see a credential's runs
+  whole.
+- A run moves on only once its record is written: a record the hub failed to write leaves
+  its count with the run, for the next record to carry.
+- A hub SHOULD also count every refusal where an operator can see the whole of it, in its
+  logs or metrics.
+
+Every other refusal, `forbidden` above all, is still recorded one for one. A mutation the
+scope check would also have refused, sent while its token is over the limit, is recorded as
+the `429` it was answered with, because the rate check runs first (section 2.2.1).
 
 Nothing in the Admin API may update or delete an individual audit record. Retention is hub
 configuration rather than protocol, and a hub MUST NOT let it be unbounded in practice; the
@@ -3060,12 +3245,18 @@ Two black-box suites accompany this document:
 
 - **Hub conformance** runs against any hub URL and answers "is this hub compliant?",
   including whether every Plugin API refusal arrives inline when asked for (section 2.3).
+  Rate limiting is optional (section 2.2.1), so its checks burst requests from credentials
+  of their own: a hub that refuses some is graded on the refusal's shape, on having applied
+  nothing, and on admitting the same request after `Retry-After`, and a hub that refuses
+  none is reported as not exercised rather than as passing.
 - **Plugin conformance** is a mock hub that drives a candidate plugin through enrollment,
   manifest publish, action round-trips (including a forced re-delivery to verify dedup), a
   simulated network outage (to verify buffering), a forced session change with envelopes
   still unacked (to verify renumbering, section 9.1), a schema-invalid dispatch (which
   must never crash the game server), and a burst of dispatches that leaves the plugin
-  more to send than one poll carries (to verify `more`, section 3.1.2). A candidate whose manifest declares the `bans`
+  more to send than one poll carries (to verify `more`, section 3.1.2), and a poll refused
+  as `rate_limited` (to verify that the plugin waits out `Retry-After` and retransmits the
+  same envelopes on the same session, section 2.2.1). A candidate whose manifest declares the `bans`
   capability (section 6.7) is also walked through a paged read of the installation ban
   list and graded on the revision it reports applying (section 13.4).
 

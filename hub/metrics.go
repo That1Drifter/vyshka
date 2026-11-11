@@ -58,6 +58,7 @@ type hubMetrics struct {
 	inboundRefused  *metrics.Counter
 	outboundDropped *metrics.Counter
 	webhookAttempts *metrics.Counter
+	rateLimited     *metrics.Counter
 
 	sweepRuns     *metrics.Counter
 	sweepRemoved  *metrics.Counter
@@ -109,6 +110,11 @@ func newHubMetrics(st *store.Store, started time.Time) *hubMetrics {
 	m.webhookAttempts = r.NewCounter("vyshka_webhook_attempts_total",
 		"Webhook delivery attempts, by webhook and result: delivered (2xx), retry (failed, another attempt is scheduled), or dead (failed, schedule exhausted).",
 		"webhook", "result")
+
+	m.rateLimited = r.NewCounter("vyshka_rate_limited_total",
+		"Requests refused with 429 rate_limited because their credential was over its limit, by API (plugin or admin). "+
+			"The hub's log names the server or token, once a minute per credential while it is refused.",
+		"api")
 
 	m.sweepRuns = r.NewCounter("vyshka_sweep_runs_total",
 		"Background sweeps run, by sweep and result (ok or error).", "sweep", "result")

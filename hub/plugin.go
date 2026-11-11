@@ -157,6 +157,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, r, err)
 		return
 	}
+	// The session request is charged to the server only now that its secret
+	// checked out: a limit keyed on a claimed serverId would let anyone who
+	// has seen the id lock the real plugin out (spec section 2.2.1). A
+	// refusal here starts nothing and supersedes nothing.
+	if !s.limitPlugin(w, r, server.ID) {
+		return
+	}
 
 	pollTimeout := clampPollTimeout(time.Duration(request.PollTimeoutSeconds) * time.Second)
 	sessionToken := token.New(token.Session)
@@ -269,6 +276,11 @@ func (s *Server) authenticateSession(w http.ResponseWriter, r *http.Request) (st
 	}
 	if server.RevokedAt != nil {
 		s.rejectSession(w, "the credentials behind this session were revoked")
+		return store.Session{}, store.Server{}, false
+	}
+	// Charged to the server once it is known, before any handler reads a body
+	// or applies anything (spec section 2.2.1). A held poll passes here once.
+	if !s.limitPlugin(w, r, server.ID) {
 		return store.Session{}, store.Server{}, false
 	}
 	return session, server, true

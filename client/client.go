@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -43,7 +44,7 @@ var Version = "dev"
 // against. A newer hub stays usable, because every record here tolerates
 // fields and values it does not know, but anything a later draft added is
 // invisible to this client.
-const ProtocolDraft = "0.33"
+const ProtocolDraft = "0.34"
 
 // defaultTimeout bounds one request when the caller supplies no HTTP client.
 // The longest Admin API answer is a context enumeration, which the hub holds
@@ -133,18 +134,33 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 // is for people. An answer that did not carry the protocol error shape (a
 // reverse proxy's error page, say) has an empty Code and the HTTP status text
 // as its Message.
+//
+// A rate_limited refusal (spec section 2.2.1) carries RetryAfter, read from
+// the Retry-After header or, failing that, from details.retryAfterSeconds.
+// The client never waits and retries on its own: whether a script should
+// sleep, give up, or report is the caller's decision, and a library that
+// absorbed the refusal would hide from the operator exactly the signal that a
+// token is sending faster than it was meant to. Nothing in a refused request
+// was applied, so sending it again once RetryAfter has passed is safe.
 type Error struct {
 	Status  int
 	Code    string
 	Message string
 	Details map[string]any
+	// RetryAfter is how long the hub asked the caller to wait before sending
+	// the same request again; zero unless the hub named a wait.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {
+	text := fmt.Sprintf("%s (%d): %s", e.Code, e.Status, e.Message)
 	if e.Code == "" {
-		return fmt.Sprintf("%s (%d)", e.Message, e.Status)
+		text = fmt.Sprintf("%s (%d)", e.Message, e.Status)
 	}
-	return fmt.Sprintf("%s (%d): %s", e.Code, e.Status, e.Message)
+	if e.RetryAfter > 0 {
+		text += fmt.Sprintf("; retry after %s", e.RetryAfter)
+	}
+	return text
 }
 
 // TransportError is a failure below the protocol: the hub could not be
@@ -160,6 +176,17 @@ func (e *TransportError) Error() string { return e.Op + ": " + e.Err.Error() }
 // Unwrap exposes the cause, so errors.Is can find context.DeadlineExceeded
 // and the like.
 func (e *TransportError) Unwrap() error { return e.Err }
+
+// RateLimited reports whether err is the hub's rate_limited refusal and, when
+// it is, how long the hub asked the caller to wait before retrying (at least
+// one second, spec section 2.2.1, even from a hub that named no wait).
+func RateLimited(err error) (time.Duration, bool) {
+	var refusal *Error
+	if !errors.As(err, &refusal) || (refusal.Code != "rate_limited" && refusal.Status != http.StatusTooManyRequests) {
+		return 0, false
+	}
+	return max(refusal.RetryAfter, time.Second), true
+}
 
 // IsNotFound reports whether err is the hub's not_found refusal.
 func IsNotFound(err error) bool {
@@ -312,10 +339,11 @@ func refusal(got answer) *Error {
 	}
 	if json.Unmarshal(got.body, &shaped) == nil && shaped.Error != nil && shaped.Error.Code != "" {
 		return &Error{
-			Status:  got.status,
-			Code:    shaped.Error.Code,
-			Message: shaped.Error.Message,
-			Details: shaped.Error.Details,
+			Status:     got.status,
+			Code:       shaped.Error.Code,
+			Message:    shaped.Error.Message,
+			Details:    shaped.Error.Details,
+			RetryAfter: retryAfter(got, shaped.Error.Details),
 		}
 	}
 
@@ -328,7 +356,23 @@ func refusal(got answer) *Error {
 			message += "; the hub redirected to " + location + ", which this client does not follow"
 		}
 	}
-	return &Error{Status: got.status, Message: message}
+	return &Error{Status: got.status, Message: message, RetryAfter: retryAfter(got, nil)}
+}
+
+// retryAfter reads the wait a 429 names: the Retry-After header in whole
+// seconds, or details.retryAfterSeconds when the header is absent or is an
+// HTTP date this client does not interpret. Zero when neither says anything.
+func retryAfter(got answer, details map[string]any) time.Duration {
+	if got.status != http.StatusTooManyRequests {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(strings.TrimSpace(got.header.Get("Retry-After"))); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if seconds, ok := details["retryAfterSeconds"].(float64); ok && seconds > 0 {
+		return time.Duration(seconds * float64(time.Second))
+	}
+	return 0
 }
 
 // Health reads GET /healthz. A hub answering 503 still sends the health body,

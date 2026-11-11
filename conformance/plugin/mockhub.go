@@ -188,6 +188,12 @@ type mockHub struct {
 	garbleArmed    bool
 	garbleAckArmed bool
 	garbled        *garbleRecord
+	// rateLimitArmed answers the next poll that carries a fresh envelope
+	// with 429 rate_limited (spec section 2.2.1), applying nothing from it,
+	// and records in rateLimited what it refused and what the plugin's next
+	// poll was (ratelimit.go).
+	rateLimitArmed bool
+	rateLimited    *rateLimitRecord
 
 	// The installation ban list (spec section 13) the bans stage walks the
 	// candidate through; see bans.go.
@@ -1030,6 +1036,7 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saysMore := h.gradeMoreLocked(request, arrival)
+	h.noteAfterRateLimitLocked(request.Envelopes)
 
 	// The provocations of the error stages, applied before anything in the
 	// request takes effect: a refused batch changes nothing, including its
@@ -1122,6 +1129,10 @@ func (h *mockHub) handlePoll(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "<html><body>this is not the hub you are looking for</body></html>")
+			return
+		}
+		if h.rateLimitArmed && firstFresh >= 0 {
+			h.refuseRateLimitedLocked(w, inline, ids[firstFresh:])
 			return
 		}
 		if h.garbleAckArmed && inline && firstFresh >= 0 && h.garbled != nil && carriesAny(ids, h.garbled.IDs) {

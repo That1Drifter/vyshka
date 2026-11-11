@@ -17,13 +17,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,6 +48,7 @@ func main() {
 		"PEM file of roots to trust for an https hub, on top of the system's (a hub with a private or test CA)")
 	connectTo := flag.String("connect-to", "",
 		"host:port to dial for the hub instead of the URL's host; TLS still verifies the URL's name (a name with no DNS record here)")
+	only := flag.String("run", "", "run only the checks whose id matches this regular expression")
 	flag.Parse()
 
 	// Refusing to start beats skipping checks. A suite that runs green while
@@ -75,6 +79,7 @@ func main() {
 		WebhookListen:     *webhookListen,
 		WebhookAdvertise:  *webhookAdvertise,
 		StateHistoryDepth: *stateHistoryDepth,
+		Slept:             new(atomic.Int64),
 	}
 
 	ctx := context.Background()
@@ -85,21 +90,41 @@ func main() {
 		}
 	}
 
-	results := runChecks(ctx, env, *checkTimeout)
+	selected := checks
+	if *only != "" {
+		pattern, err := regexp.Compile(*only)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "conformance: -run:", err)
+			os.Exit(2)
+		}
+		selected = nil
+		for _, check := range checks {
+			if pattern.MatchString(check.ID) {
+				selected = append(selected, check)
+			}
+		}
+	}
+	results := runChecks(ctx, env, selected, *checkTimeout)
 
-	failed := 0
+	failed, unexercised := 0, 0
 	for _, result := range results {
 		if !result.Passed {
 			failed++
+		}
+		if result.Exercised != nil && !*result.Exercised {
+			unexercised++
 		}
 	}
 
 	if *asJSON {
 		report := map[string]any{
-			"target":  baseURL,
-			"total":   len(results),
-			"failed":  failed,
-			"results": results,
+			"target": baseURL,
+			"total":  len(results),
+			"failed": failed,
+			// Checks of optional behavior the hub did not show: passed,
+			// because the behavior is optional, but graded on nothing.
+			"notExercised": unexercised,
+			"results":      results,
 		}
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
@@ -108,15 +133,21 @@ func main() {
 		fmt.Printf("conformance: hub suite against %s\n\n", baseURL)
 		for _, result := range results {
 			status := "PASS"
-			if !result.Passed {
+			switch {
+			case !result.Passed:
 				status = "FAIL"
+			case result.Exercised != nil && !*result.Exercised:
+				status = "N/A "
 			}
 			fmt.Printf("%s  %-30s %s\n", status, result.ID, result.Title)
 			if !result.Passed {
 				fmt.Printf("      %s\n", result.Error)
 			}
+			if result.Note != "" {
+				fmt.Printf("      not exercised: %s\n", result.Note)
+			}
 		}
-		fmt.Printf("\n%d checks, %d failed\n", len(results), failed)
+		fmt.Printf("\n%d checks, %d failed, %d not exercised\n", len(results), failed, unexercised)
 	}
 
 	if failed > 0 {
@@ -175,15 +206,20 @@ func hubTransport(baseURL, caFile, connectTo string) (*x509.CertPool, http.Round
 
 // Result is one graded check.
 type Result struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Section    string `json:"section"`
-	Passed     bool   `json:"passed"`
-	Error      string `json:"error,omitempty"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Section string `json:"section"`
+	Passed  bool   `json:"passed"`
+	Error   string `json:"error,omitempty"`
+	// Exercised is set only on checks of optional behavior (rate limits,
+	// spec section 2.2.1): false means the hub never showed the behavior, so
+	// the check passed without grading anything, and Note says why.
+	Exercised  *bool  `json:"exercised,omitempty"`
+	Note       string `json:"note,omitempty"`
 	DurationMs int64  `json:"durationMs"`
 }
 
-func runChecks(ctx context.Context, env Env, budget time.Duration) []Result {
+func runChecks(ctx context.Context, env Env, checks []Check, budget time.Duration) []Result {
 	results := make([]Result, 0, len(checks))
 	for _, check := range checks {
 		start := time.Now()
@@ -197,6 +233,12 @@ func runChecks(ctx context.Context, env Env, budget time.Duration) []Result {
 			Section:    check.Section,
 			Passed:     err == nil,
 			DurationMs: time.Since(start).Milliseconds(),
+		}
+		var skipped notExercised
+		if errors.As(err, &skipped) {
+			exercised := false
+			result.Passed, result.Exercised, result.Note = true, &exercised, skipped.reason
+			err = nil
 		}
 		if err != nil {
 			result.Error = err.Error()

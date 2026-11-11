@@ -189,11 +189,24 @@ export async function api(method, path, body, bearerOverride) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  // A rate-limited read (spec section 2.2.1) is waited out and sent again,
+  // a few times at most; nothing was applied, and the views re-read on a
+  // timer anyway. A write is not resent behind the operator's back: it fails
+  // with a plain message saying when to try again.
   let response;
-  try {
-    response = await fetch(API + path, init);
-  } catch (err) {
-    throw new ApiError(0, 'unreachable', 'the hub could not be reached: ' + err.message);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(API + path, init);
+    } catch (err) {
+      throw new ApiError(0, 'unreachable', 'the hub could not be reached: ' + err.message);
+    }
+    if (response.status !== 429) break;
+    const wait = Math.max(1, parseInt(response.headers.get('Retry-After'), 10) || 1);
+    if (method !== 'GET' || attempt >= 3) {
+      throw new ApiError(429, 'rate_limited',
+        'rate limited: this token is sending faster than the hub allows; try again in ' + wait + ' s');
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(wait, 10) * 1000));
   }
   const text = await response.text();
   let parsed = null;
