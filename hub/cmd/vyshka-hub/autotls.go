@@ -27,10 +27,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/netutil"
 
 	"github.com/That1Drifter/vyshka/hub"
 	"github.com/That1Drifter/vyshka/hub/store"
@@ -227,7 +229,17 @@ type autoTLS struct {
 	plan    *autoTLSPlan
 	manager *autocert.Manager
 	log     *slog.Logger
+	allowed map[string]bool
+	// certs holds each configured name's current certificate, as the
+	// watcher last fetched it. Handshakes answer from it alone.
+	certs sync.Map // string -> *tls.Certificate
 }
+
+// plainListenerMaxConns caps the plain listener's open connections. It
+// serves challenge tokens and redirects, so a handful is plenty; the cap
+// keeps idle connections there from eating the file descriptors and memory
+// the TLS listener needs.
+const plainListenerMaxConns = 64
 
 // prepareAutoTLS readies the cache directory and the ACME client, failing
 // the boot on anything an operator must fix (an unwritable cache, an
@@ -276,8 +288,12 @@ func prepareAutoTLS(plan *autoTLSPlan, logger *slog.Logger) (*autoTLS, *tls.Conf
 			HTTPClient:   &http.Client{Transport: transport},
 		},
 	}
+	a := &autoTLS{plan: plan, manager: manager, log: logger, allowed: make(map[string]bool, len(plan.hosts))}
+	for _, host := range plan.hosts {
+		a.allowed[host] = true
+	}
 	tlsConfig := &tls.Config{
-		GetCertificate: manager.GetCertificate,
+		GetCertificate: a.getCertificate,
 		// h2 is left out on purpose; hub.Serve strips it in any case.
 		NextProtos: []string{"http/1.1", acme.ALPNProto},
 		MinVersion: tls.VersionTLS12,
@@ -288,7 +304,29 @@ func prepareAutoTLS(plan *autoTLSPlan, logger *slog.Logger) (*autoTLS, *tls.Conf
 	}
 	logger.Info("auto-tls enabled", "hosts", plan.hosts, "directory", plan.directory,
 		"cache", plan.cacheDir, "http_addr", httpAddr)
-	return &autoTLS{plan: plan, manager: manager, log: logger}, tlsConfig, nil
+	return a, tlsConfig, nil
+}
+
+// getCertificate answers a handshake without ever ordering or waiting on an
+// order. A TLS-ALPN-01 validation hello (acme-tls/1 alone) goes to the
+// manager, which answers it from its challenge tokens and never orders;
+// every other hello gets the configured name's certificate from memory, so
+// it is the same ECDSA certificate whatever the client offers, and a
+// handshake cannot park a connection behind a slow CA. Ordering is the
+// watcher's alone (at boot, and on its backoff after a failure).
+func (a *autoTLS) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == acme.ALPNProto {
+		return a.manager.GetCertificate(hello)
+	}
+	name := strings.TrimSuffix(strings.ToLower(hello.ServerName), ".")
+	if !a.allowed[name] {
+		return nil, fmt.Errorf("auto-tls: host %q is not in -auto-tls-hosts", hello.ServerName)
+	}
+	cert, ok := a.certs.Load(name)
+	if !ok {
+		return nil, fmt.Errorf("auto-tls: no certificate for %q yet", name)
+	}
+	return cert.(*tls.Certificate), nil
 }
 
 // start opens the plain listener, if any, and the certificate watch. The
@@ -304,8 +342,19 @@ func (a *autoTLS) start(ctx context.Context) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("auto-tls plain listener on %s: %w", a.plan.httpAddr, err)
 	}
+	listener = netutil.LimitListener(listener, plainListenerMaxConns)
+	challenge := a.manager.HTTPHandler(redirectToTLS(a.plan.hosts, a.plan.tlsPort))
 	server := &http.Server{
-		Handler:           a.manager.HTTPHandler(redirectToTLS(a.plan.hosts, a.plan.tlsPort)),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// An ACME token is a short base64url string. Anything else never
+			// reaches the cache, whose file errors would name its path.
+			if token, ok := strings.CutPrefix(r.URL.Path, "/.well-known/acme-challenge/"); ok &&
+				(token == "" || len(token) > 128 || strings.Trim(token, base64URLAlphabet) != "") {
+				http.NotFound(w, r)
+				return
+			}
+			challenge.ServeHTTP(w, r)
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -328,11 +377,15 @@ func (a *autoTLS) start(ctx context.Context) (func(), error) {
 	return func() { server.Close() }, nil
 }
 
+const base64URLAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
 // redirectToTLS answers everything on the plain listener that is not an
-// ACME challenge: a GET or HEAD for a configured name is sent to https on
-// the TLS port, anything else is refused. The Host header picks the
-// redirect's name only from the configured list, so the listener cannot be
-// used to bounce a client to an arbitrary site.
+// ACME challenge: a GET or HEAD with an origin-form target (a path from /)
+// for a configured name is sent to https on the TLS port, anything else is
+// refused. The Host header picks the redirect's name only from the
+// configured list, and a target that is not a path (opaque, or not starting
+// with /) is refused rather than appended, so the listener cannot be used
+// to bounce a client to an arbitrary site.
 func redirectToTLS(hosts []string, tlsPort string) http.Handler {
 	allowed := make(map[string]bool, len(hosts))
 	for _, host := range hosts {
@@ -352,6 +405,10 @@ func redirectToTLS(hosts []string, tlsPort string) http.Handler {
 			http.Error(w, "this hub serves its APIs over https only", http.StatusBadRequest)
 			return
 		}
+		if r.URL.Opaque != "" || !strings.HasPrefix(r.URL.Path, "/") {
+			http.Error(w, "the request target must be a path", http.StatusBadRequest)
+			return
+		}
 		target := "https://" + host
 		if tlsPort != "443" {
 			target += ":" + tlsPort
@@ -360,35 +417,49 @@ func redirectToTLS(hosts []string, tlsPort string) http.Handler {
 	})
 }
 
-// watch obtains each configured name's certificate at boot rather than at
-// the first handshake, and then keeps an eye on it, so the log says when a
-// certificate is ready, renewed, overdue for renewal, or unobtainable. The
-// manager renews on its own (from two thirds of the lifetime on) and keeps
-// serving the cached certificate while renewal fails; this only reports.
+// watch obtains each configured name's certificate at boot and then keeps
+// an eye on it, so the log says when a certificate is ready, renewed,
+// overdue for renewal, or unobtainable. Apart from the manager's own
+// renewal timer it is the only place an order starts: handshakes answer
+// from what it stores. The manager renews on its own (from two thirds of
+// the lifetime on) and keeps the cached certificate while renewal fails; a
+// renewed one reaches handshakes at the watcher's next check, at most an
+// hour later and long before the old one expires.
 func (a *autoTLS) watch(ctx context.Context) {
 	for _, host := range a.plan.hosts {
 		go a.watchHost(ctx, host)
 	}
 }
 
+// After a failure the watcher waits certRetryFirst, doubling up to
+// certRetryMax, and starts over on success: each attempt can be a real
+// order, and a CA counts failed validations (and, when the clock is wrong,
+// issued certificates) against per-name limits.
 const (
-	certRetryAfterFailure = 5 * time.Minute
-	certCheckMin          = 10 * time.Second
-	certCheckMax          = time.Hour
+	certRetryFirst = 5 * time.Minute
+	certRetryMax   = time.Hour
+	certCheckMin   = 10 * time.Second
+	certCheckMax   = time.Hour
 )
 
 func (a *autoTLS) watchHost(ctx context.Context, host string) {
 	var current *x509.Certificate
+	failWait := certRetryFirst
 	for {
-		wait := certRetryAfterFailure
+		var wait time.Duration
 		cert, err := a.manager.GetCertificate(ecdsaHello(host))
+		if err == nil && cert.Leaf == nil {
+			err = errors.New("the certificate has no parsed leaf")
+		}
 		switch {
 		case err != nil:
+			wait = failWait
+			failWait = min(failWait*2, certRetryMax)
 			a.log.Error("tls certificate unavailable; handshakes for this name fail until one is obtained",
 				"host", host, "error", err.Error(), "retry_in", wait.String())
-		case cert.Leaf == nil:
-			a.log.Error("tls certificate has no parsed leaf", "host", host)
 		default:
+			failWait = certRetryFirst
+			a.certs.Store(host, cert)
 			leaf := cert.Leaf
 			if current == nil || leaf.SerialNumber.Cmp(current.SerialNumber) != 0 {
 				msg := "tls certificate ready"

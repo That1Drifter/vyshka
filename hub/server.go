@@ -888,8 +888,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	if s.cfg.TLSConfig != nil {
 		// TLS wraps the capped listener, so a slot is held from accept to
-		// close whatever the handshake does, and net/http bounds the
-		// handshake by the smallest of its read and write timeouts.
+		// close whatever the handshake does. net/http puts the smallest of
+		// its read and write timeouts on the socket during the handshake,
+		// which bounds reading and writing but not a GetCertificate that
+		// blocks: that callback must answer promptly, and the reference
+		// binary's answers from memory and never waits on a CA.
 		listener = tls.NewListener(listener, http1Only(s.cfg.TLSConfig))
 		// HTTP/2 stays off. Every bound above is per connection, and over h2
 		// one connection carries up to 250 concurrent streams: MaxConns

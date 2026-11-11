@@ -6,18 +6,23 @@
 #
 # It shows: issuance for the configured name; a handshake and /healthz from a
 # client that trusts the test root; HTTP/1.1 even when h2 is offered; the
-# plain listener answering only the ACME path and a redirect; a restart that
+# plain listener answering only the ACME path and a redirect; both listeners
+# capped; one ECDSA certificate whatever the client offers; a restart that
 # reuses the cached certificate without a new order; a name outside the host
 # policy getting no certificate and causing no order; and the failure modes
 # (unwritable cache, CA unreachable at boot, validation failing, renewal
 # failing near expiry while the cached certificate keeps being served).
 #
 # It boots its own hubs, so it ignores the e2e hub. Pebble is fetched at a
-# pinned version with `go install`; when that fails (offline, no module
-# proxy) the demo prints SKIP and exits 0 rather than flake a CI run on the
-# network. Set AUTO_TLS_DEMO_KEEP=1 to keep the run directory for its logs.
+# pinned version with `go install`. When that fails (offline, no module
+# proxy) the demo prints SKIP and exits 0 on a developer's machine, and FAIL
+# with exit 1 under CI (the CI variable set), so a broken fetch cannot turn
+# the only end-to-end TLS coverage off behind a green summary. Pebble's own
+# TLS certificate is generated here with openssl for each run rather than
+# taken from the pinned module, whose bundled one expires.
+# Set AUTO_TLS_DEMO_KEEP=1 to keep the run directory for its logs.
 #
-# Needs Go, curl, and openssl.
+# Needs Go, curl, openssl, and python3.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -65,12 +70,29 @@ if ! GOBIN="$(native "$run_dir/bin")" GOFLAGS=-mod=mod go install \
     "github.com/letsencrypt/pebble/v2/cmd/pebble@$PEBBLE_VERSION" \
     "github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@$PEBBLE_VERSION" > "$run_dir/install.log" 2>&1; then
   cat "$run_dir/install.log"
-  echo "SKIP: could not fetch Pebble $PEBBLE_VERSION (offline or no module proxy); the auto-TLS demo needs it"
+  if [ -n "${CI:-}" ]; then
+    echo "FAIL (CI is set): could not fetch Pebble $PEBBLE_VERSION; the auto-TLS demo needs it"
+    exit 1
+  fi
+  echo "SKIP (CI is not set): could not fetch Pebble $PEBBLE_VERSION (offline or no module proxy); the auto-TLS demo needs it"
   exit 0
 fi
-pebble_src="$(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@$PEBBLE_VERSION"
-minica="$pebble_src/test/certs/pebble.minica.pem"
 echo "ok: $(ls "$run_dir/bin" | tr '\n' ' ')"
+
+# Pebble's directory and management API serve TLS with this throwaway CA and
+# leaf, made fresh each run. The hub trusts it through -auto-tls-ca-roots.
+# MSYS2_ARG_CONV_EXCL keeps Git Bash from rewriting -subj as a Windows path.
+minica="$run_dir/directory-ca.pem"
+gen() { MSYS2_ARG_CONV_EXCL='/CN=' openssl "$@" >> "$run_dir/openssl.log" 2>&1 || { cat "$run_dir/openssl.log"; fail "openssl $1"; }; }
+gen req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=vyshka demo directory CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -keyout "$(native "$run_dir/directory-ca.key")" -out "$(native "$minica")"
+gen req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
+  -keyout "$(native "$run_dir/directory.key")" -out "$(native "$run_dir/directory.csr")"
+printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > "$run_dir/directory.ext"
+gen x509 -req -days 2 -in "$(native "$run_dir/directory.csr")" -CA "$(native "$minica")" -CAkey "$(native "$run_dir/directory-ca.key")" \
+  -set_serial "0x$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" -extfile "$(native "$run_dir/directory.ext")" -out "$(native "$run_dir/directory.pem")"
+echo "Pebble's TLS certificate, made for this run: $(openssl x509 -in "$(native "$run_dir/directory.pem")" -noout -enddate)"
 
 base=$((21000 + (RANDOM % 800) * 10))
 acme_port=$base; mgmt_port=$((base + 1)); dns_port=$((base + 2)); dns_mgmt=$((base + 3))
@@ -84,8 +106,8 @@ write_config() {
 {"pebble": {
   "listenAddress": "127.0.0.1:$acme_port",
   "managementListenAddress": "127.0.0.1:$mgmt_port",
-  "certificate": "$(native "$pebble_src/test/certs/localhost/cert.pem")",
-  "privateKey": "$(native "$pebble_src/test/certs/localhost/key.pem")",
+  "certificate": "$(native "$run_dir/directory.pem")",
+  "privateKey": "$(native "$run_dir/directory.key")",
   "httpPort": $http_port, "tlsPort": $tls_port,
   "ocspResponderURL": "", "externalAccountBindingRequired": false,
   "profiles": {"default": {"description": "demo", "validityPeriod": $2}}
@@ -155,6 +177,40 @@ echo "POST /plugin/v1/poll:      $(curl -s -w ' (%{http_code})' -X POST -H "Host
 echo "GET  /api/v1/servers:      $(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' -H "Host: $HOST" "http://127.0.0.1:$http_port/api/v1/servers")"
 echo "GET  Host $OTHER:  $(curl -s -w ' (%{http_code})' -H "Host: $OTHER" "http://127.0.0.1:$http_port/healthz")"
 echo "GET  unknown challenge:    $(curl -s -w ' (%{http_code})' -H "Host: $HOST" "http://127.0.0.1:$http_port/.well-known/acme-challenge/nope")"
+echo "GET  300-char challenge:   $(curl -s -w ' (%{http_code})' -H "Host: $HOST" "http://127.0.0.1:$http_port/.well-known/acme-challenge/$(printf 'A%.0s' $(seq 1 300))")"
+code="$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --request-target 'x:@evil.example/p' -H "Host: $HOST" "http://127.0.0.1:$http_port/")"
+echo "GET  x:@evil.example/p:    $code"
+case "$code" in 400*) ;; *) fail "a non-path request target was answered with $code" ;; esac
+
+step "Both listeners are capped: 80 idle connections on the plain listener (cap 64), and TLS still answers"
+python3 - "$http_port" 80 15 > "$run_dir/idle.log" 2>&1 <<'PY' &
+import socket, sys, time
+port, count, hold = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
+socks = [socket.create_connection(("127.0.0.1", port)) for _ in range(count)]
+print("opened", len(socks), flush=True)
+time.sleep(hold)
+PY
+idle_pid=$!; pids+=("$idle_pid")
+wait_log "$run_dir/idle.log" "opened" 20
+echo "  $(cat "$run_dir/idle.log")"
+plain="$(curl -s -o /dev/null --max-time 3 -w '%{http_code}' -H "Host: $HOST" "http://127.0.0.1:$http_port/healthz" || true)"
+echo "  plain listener meanwhile: ${plain} (000 = not accepted within 3 s: the cap is full)"
+echo "  TLS listener meanwhile:   $(tls_curl --fail -o /dev/null -w '%{http_code}' "https://$HOST:$tls_port/healthz")"
+[ "$plain" = 000 ] || fail "the plain listener accepted a connection past its cap"
+stop "$idle_pid"
+echo "  plain listener after the idle connections close: $(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Host: $HOST" "http://127.0.0.1:$http_port/healthz" || true)"
+
+step "One certificate per name, whatever the client offers"
+before=$(orders)
+for flag in -tls1_3 -tls1_2; do
+  key="$(echo | openssl s_client -connect "127.0.0.1:$tls_port" -servername "$HOST" "$flag" 2>/dev/null | openssl x509 -noout -text 2>/dev/null \
+    | grep -m 1 "Public Key Algorithm" | sed 's/^ *//')"
+  echo "  openssl s_client $flag: $key"
+  case "$key" in *id-ecPublicKey*) ;; *) fail "$flag got $key" ;; esac
+done
+sleep 1
+echo "  orders before $before, after $(orders); cache: $(ls "$run_dir/acme-cache" | tr '\n' ' ')"
+[ "$(orders)" = "$before" ] || fail "a client's hello caused an order"
 
 step "A name outside the host policy: no certificate, no order"
 before=$(orders)

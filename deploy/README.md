@@ -535,17 +535,34 @@ accepts the CA's subscriber agreement.
 | `-auto-tls-http-addr` | `VYSHKA_AUTO_TLS_HTTP_ADDR` | The plain listener, default `:80`; `off` drops it |
 
 The CA validates over TLS-ALPN-01 on the TLS listener, which is enough on its own when the
-CA can reach port 443. The plain listener adds HTTP-01, so issuance still works when only
-port 80 is reachable from the CA, and it redirects a browser that typed `http://` to the
-panel over https. It answers the ACME challenge path and that redirect (GET and HEAD for a
-configured name) and nothing else: the Plugin and Admin APIs exist only on the TLS
-listener, so a plugin misconfigured with `http://` gets an error instead of a hub that
-answers in clear. Set it `off` when port 80 belongs to something else.
+CA can reach port 443. The plain listener adds HTTP-01, so issuance should still work when
+only port 80 is reachable from the CA, and it redirects a browser that typed `http://` to
+the panel over https. It answers the ACME challenge path and that redirect (GET and HEAD
+for a configured name, with a path as the target) and nothing else: the Plugin and Admin
+APIs exist only on the TLS listener, so a plugin misconfigured with `http://` gets an error
+instead of a hub that answers in clear. Set it `off` when port 80 belongs to something
+else.
+
+Issuance through HTTP-01 is traced from the ACME library's source, not demonstrated:
+`scripts/demo-auto-tls.sh` issues over TLS-ALPN-01 every time, because the library tries
+that first and the test CA can reach the TLS port. The test rig cannot show HTTP-01 as it
+stands: the test CA puts the port in the Host header of its validation request
+(`name:<port>`, since its HTTP-01 port is not 80 there), and the library matches the Host
+against the configured names exactly, so it would refuse. A real CA validates on port 80
+and sends the bare name, which the library accepts.
 
 The TLS listener is the same server as the plain one: the same handler, timeouts,
-connection cap, and drain on shutdown, TLS 1.2 or later. It speaks HTTP/1.1 only, also to
-clients that offer HTTP/2: the hub's bounds are per connection, and over HTTP/2 one
-connection carries many requests, so they would stop bounding what they bound.
+connection cap (256 connections), and drain on shutdown, TLS 1.2 or later. The plain
+listener has a cap of its own, 64 connections, so idle connections there cannot use up
+the memory or file descriptors the TLS listener needs. The TLS listener speaks HTTP/1.1
+only, also to clients that offer HTTP/2: the hub's bounds are per connection, and over
+HTTP/2 one connection carries many requests, so they would stop bounding what they bound.
+
+Each configured name gets one ECDSA certificate, served to every client whatever it
+offers. A client that cannot verify ECDSA at all gets no certificate; every current
+browser and TLS library can. A handshake never orders a certificate or waits on the CA: it
+is answered from the certificate already in memory, and ordering happens only at boot and
+on the retry schedule below (plus the library's own renewal timer).
 
 What the hub does when things go wrong:
 
@@ -554,10 +571,17 @@ What the hub does when things go wrong:
   says which.
 - **Cache directory not creatable or not writable:** `serve` refuses to start.
 - **CA unreachable at boot, or validation failing:** the hub starts and serves, logs
-  `tls certificate unavailable` with the CA's error, and handshakes fail until a certificate
-  is obtained. It retries every five minutes, and each handshake for a configured name tries
-  too, so rehearse against Let's Encrypt staging rather than spend production's rate limits
-  while debugging.
+  `tls certificate unavailable` with the CA's error and the time to the next attempt, and
+  handshakes fail until a certificate is obtained. It retries after 5 minutes, then 10, 20,
+  40, and every hour from then on, starting over at 5 once it succeeds; handshakes do not
+  retry. Each attempt with DNS or a port wrong is a failed validation, and Let's Encrypt
+  allows only five of those per name per hour, so rehearse against its staging directory
+  rather than spend production's limits while debugging.
+- **The host's clock behind:** if the clock is more than a little behind, the hub rejects a
+  certificate the CA did issue, because it is not valid yet by the hub's clock, and logs
+  `tls certificate unavailable`. Every retry is then a real issuance counted against the
+  CA's duplicate-certificate limit (five a week for the same names at Let's Encrypt), which
+  the schedule above spends in a few hours. Keep the host on NTP.
 - **Renewal failing:** renewal starts when a third of the certificate's lifetime is left
   (about 30 days for Let's Encrypt's 90-day certificates). While it fails the hub keeps
   serving the cached certificate and logs `tls certificate renewal overdue` with the expiry;
