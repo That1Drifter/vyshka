@@ -1,0 +1,22 @@
+FAIL 1cpu-realistic-100p-250s-r3 servers=250 players=100 profile=realistic offered=302.1 ev/s 4.17 act/s
+  FAIL action queue-to-delivery p99                           114263.4 ms over 319 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                   501.9 ms over 1648 (limit 1000)
+  ok   admin read p99: servers list                              824.8 ms over 179 (limit 1000)
+  ok   admin read p99: events page                               436.3 ms over 179 (limit 1000)
+  ok   admin read p99: state players                             131.0 ms over 179 (limit 1000)
+  ok   admin read p99: state vehicles                            146.4 ms over 178 (limit 1000)
+  ok   admin read p99: state world                                29.0 ms over 179 (limit 1000)
+  FAIL non-2xx or transport error rate                            22.5 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          1.5 x (limit 2)
+  ok   webhook poll-to-receipt p99                               719.9 ms over 1855 (limit 10000)
+  ok   hub peak anon memory / limit                                2.2 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 14% p90 24%  anon peak 45 MiB (cgroup 204 MiB)  db +2258.3 MiB/h (wal peak 4 MiB)  reqs 4079 fails 917
+  plugin req/s per credential mean 0.043 peak1s 2 peak10s 0.50 | admin mean 0.471 peak1s 8 peak10s 2.40
+  read servers list: scheduled 900 started 239 completed 179
+  dispatch: scheduled 705 started 705 completed 158
+  poll: scheduled 0 started 1957 completed 1707
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"action read timeout":4,"dispatch timeout":552,"read events page timeout":80,"read servers list timeout":80,"read state players timeout":80,"read state vehicles timeout":61,"read state world timeout":60}
+  latency p50/p99 ms: delivery 27346.8/114263.4  completedSeen 1005/12007  webhook(poll->sink) 13/720  dispatch 3.3/97.5  earlyPoll 9191/24968
+  hub in window: 233 x request failed

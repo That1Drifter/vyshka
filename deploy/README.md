@@ -765,8 +765,9 @@ What counts, and what does not:
 Where the defaults come from: the capacity spike of issue #87
 (`spikes/hub-capacity/README.md`, "Request rates per credential") measured a legitimate
 DayZ-shaped plugin at 0.8 requests/s per server over its busiest 10 s and 4 requests in its
-busiest second (3 for the realistic profile), and a panel-like admin client at 5.6 requests/s per token over its busiest
-10 s and 14 in its busiest second. The plugin default is about six times that busiest 10 s,
+busiest second (3 for the realistic profile), and a panel-like admin client at 6.9 requests/s per token over its busiest
+10 s and 15 in its busiest second in passing runs (24 in a run that failed its bounds, on a
+hub without limits). With these defaults on, the spike's final runs had no request refused inside a measured window. The plugin default is about six times that busiest 10 s,
 and its burst of 60 covers a backlog drain of a full 5000-envelope queue (25 polls of 200);
 it is wider than the spike's recommended 2/s and 30 because a plugin's key/value traffic was
 not measured and the mod surface hands the store to third-party mods. Session start was
@@ -774,8 +775,8 @@ outside the spike's window; measured on its own, the reference driver's is four 
 (enrollment, which is never charged, a session, one page of the ban list, a poll), and a
 plugin walking the ban list spends one request per 100 entries, so the burst covers a list
 of a few thousand entries read back to back. The admin default is
-the spike's recommendation, 1.8 times the busiest panel client's 10 s and four times its
-busiest second. A panel with more views open than the spike modeled, several people sharing
+the spike's recommendation, about 1.4 times the busiest panel client's 10 s and four times
+its busiest second in a passing run. A panel with more views open than the spike modeled, several people sharing
 one token, or a script paging through a long event feed can need more: give each admin and
 each script its own token, which is also what keeps one runaway from throttling the others,
 or raise the flags. Every default is in `hub/ratelimit.go`, which cites the same source.
@@ -793,8 +794,9 @@ more cannot finish walking at the default plugin limit; for such a hub raise
 
 What the limit does not bound is how much a request carries. A poll may carry 200 envelopes
 and 1000 events, so a credential within 5 polls a second can still send far more events than
-the hub ingested at its measured ceiling (921 events/s in total, across 75 servers on one
-SQLite connection). The request limit bounds how often a credential can make the hub do
+the hub was measured to ingest: about 920 events/s in total, across 75 servers on one
+SQLite connection, with every ingest bound held. The largest step where every bound held
+was lower, 614 events/s at 50 busy servers, because the admin server list fell behind first. The request limit bounds how often a credential can make the hub do
 work, not how much work each request is; an event or byte budget per credential is a
 separate, later change, and until then a leaked server credential can still load the hub's
 ingest path. Revoke it (`DELETE /api/v1/servers/{id}/credentials`); that ends its session at
@@ -923,6 +925,54 @@ programs cannot both bind them), when the hub shares a name or certificate with 
 when you want per-client connection limits or access logs at the edge (the hub's connection
 cap is global), or when the certificate cannot come from an ACME CA that reaches this host
 over HTTP-01 or TLS-ALPN-01: a wildcard or DNS-01 setup, or an internal PKI.
+
+## Sizing
+
+Measured in `spikes/hub-capacity` (issue #87). The figures hold for these conditions:
+- this hub (`main` at `0e3a163`, rate limits on) on SQLite, confined to 1 vCPU and 2 GB;
+- the database on an ext4 disk backed by an NVMe SSD;
+- loopback with no TLS, inside a WSL VM on a desktop with nothing else running;
+- an empty database at the start of every run.
+
+The load was one of two assumed mixes, per 100-player server:
+
+| Profile (assumed) | Events/s | Actions/min | Largest step where every run passed |
+|---|---|---|---|
+| Realistic | 1.2 | 1 | **200 servers**: 3 of 3 runs at 150 and at 200 |
+| Busy | 12.3 | 6 | **50 servers**: 3 of 3 runs at 25 and at 50; 0 of 3 at 75 |
+
+"Passed" means every latency, error, and backlog bound the spike set held, with no
+request refused by the rate limits inside the measured window. CPU averaged at most a fifth of the quota and the hub
+used about 50 MiB of its own memory.
+
+**What fails first** is the admin server list, `GET /api/v1/servers`. It reads the database
+three times per server on SQLite's single connection, and every busy 75-server run failed
+on it alone. On a busier or slower disk the failure comes sooner: every commit waits for a
+synced write (`synchronous=FULL`). To compare a box with the disk measured, run
+`dd if=/dev/zero of=probe bs=4k count=500 oflag=dsync` in the data directory; with the
+host idle it took 1.2 to 1.4 ms a write.
+
+**The connection cap.** The hub accepts at most 256 connections at once. That is shared
+with every other open connection: each connected plugin keeps one, each admin client or
+browser holds a few, and a reverse proxy's upstream connections and a plugin that opens a
+second HTTP context hold more. In the spike, 200 servers and 20 admin clients used about
+230. At that share the cap is reached near 225 servers, and the spike's 250-server runs
+failed on it. Neither `serve` nor the config file has a setting for the cap.
+
+**Size the disk first.** At the default retention (events 30 days, `core.player.chat` 90,
+audit records 365, action rows never deleted), measured composition gives:
+
+| Per 100-player server | Realistic | Busy |
+|---|---|---|
+| Growth per day, days 1 to 30 | about 127 MiB | about 1.19 GiB |
+| Database after 90 days | about 4.7 GiB | about 39 GiB |
+| Database after a year | about 5.5 GiB, still growing | about 44 GiB, still growing |
+
+A 40 GB disk therefore holds about 7.8 realistic 100-player servers at 90 days and 6.8
+after a year, and an 80 GB disk 15.7 and 13.6. That is well below what the hub's latency
+allows. Retention has no flag and no config-file key today, so it cannot be shortened to
+trade history for servers. Size the disk to it, and leave room for the OS and for
+backups; `vyshka-hub storage` (above) shows what a running database holds.
 
 ## A branch hub beside a live one
 

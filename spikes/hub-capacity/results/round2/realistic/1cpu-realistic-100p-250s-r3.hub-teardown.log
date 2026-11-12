@@ -1,0 +1,21 @@
+# 0 non-INFO lines before the window (setup, warm-up), 222 after it (teardown); the first 20 after:
+{"time":"2026-11-11T17:23:17.418834397-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419061779-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419095719-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419127229-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419158839-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.41923757-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.41926856-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419298701-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419329331-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419435572-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419466072-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419535952-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419566293-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419598183-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419627253-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419659723-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419688853-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419757484-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419823804-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T17:23:17.419891205-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}

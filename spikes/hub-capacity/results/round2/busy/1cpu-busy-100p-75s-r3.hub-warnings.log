@@ -1,0 +1,95 @@
+{"time":"2026-11-11T15:25:43.401354142-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z93EGZC5BEFZP4BN41A9/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:43.498132184-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8TE3YC2EZ1SSSHDFDRY/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:45.092253466-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9ADGF3C7X8NSE5VY3Q6/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:45.154298667-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680RCPXX67K4YSW39WB1HS","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:45.217974549-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8ZKTMZ33CAN6XE2QHQD/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:45.263688328-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z92NE2RTYJFSKJD42NBC/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:45.462721756-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z93JY6XQB51RYM5BT0ZY/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:45.553862875-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680R39NK6CJYRAVN7W5YBA","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:45.587329824-06:00","level":"ERROR","msg":"audit record could not be written","method":"POST","path":"/api/v1/servers/01M767Z985T83F751D80E2H60E/actions","tokenId":"01M767Z9G8XCH2KCSP8NK4HTFE","error":"begin audit record: context deadline exceeded"}
+{"time":"2026-11-11T15:25:45.631698114-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8ZC05CWEN6DS0Q2HQ86/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:45.855348433-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8ZKVSYQ0FNQ7YM9KE8Q/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:45.960315852-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680X604VVSWWRES9MPBJBY","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:46.121438339-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680W3V13SPR1N6DHYA8C1E","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:46.144045261-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680S297S17B4B8S6V1GRK9","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:46.193210419-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z96VHW5JKHGHCDKZ0RDQ/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:46.356596139-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8PF3R7G6Z3W720FDXGP/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:46.421607116-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M767Z96VHW5JKHGHCDKZ0RDQ/state/players","error":"scan snapshot: context canceled"}
+{"time":"2026-11-11T15:25:46.451254588-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M767Z951JPN3MMKDNXSQ3QWN/state/players","error":"scan snapshot: context canceled"}
+{"time":"2026-11-11T15:25:46.558723888-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680X603JCVV22MXFXJJ8XC","error":"read admin token: context canceled"}
+{"time":"2026-11-11T15:25:46.713162793-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8ZKVSYQ0FNQ7YM9KE8Q/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:46.739912137-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z99MJDZQSPQHQTN7ZSMH/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:46.833471421-06:00","level":"ERROR","msg":"audit record could not be written","method":"POST","path":"/api/v1/servers/01M767Z98KPYES309FBYTB0XHA/actions","tokenId":"01M767Z9FKP98DYTGSS2S1REQ8","error":"begin audit record: context deadline exceeded"}
+{"time":"2026-11-11T15:25:46.845474464-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680XYPZ346GM4HFE07C5RD","error":"read action owner: context canceled"}
+{"time":"2026-11-11T15:25:46.877381446-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680WF9XSBNY4Q7G2C8P0D1","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:46.954748721-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M767Z8TE3YC2EZ1SSSHDFDRY/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T15:25:47.161781388-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680YA9WHNJ5R6D66DTK3ED","error":"read action owner: context canceled"}
+{"time":"2026-11-11T15:25:47.347141147-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680YCM1QJ183FAA6X2BZCP","error":"read action owner: context canceled"}
+{"time":"2026-11-11T15:25:47.52301465-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8N8507NKW1Q4CZF5EF2/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:47.547553918-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8N8507NKW1Q4CZF5EF2/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:47.67354725-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680T4HJAR02H5273F9ST0Y","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:47.768117017-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8Z99EPD069Q28DDP3ZX/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:47.775576331-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z92HGTHXXEAHJW40HRY1/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.042857121-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z844J4MDENYXYG97K885/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.26623045-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680ZNWDQDV083MEXCVW4QY","error":"read action owner: context canceled"}
+{"time":"2026-11-11T15:25:48.279878188-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680XEH8DXPJB9DRDC5BFA0","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:48.33548926-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8SB21XYBDTQ6T4XS6W5/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.359097328-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z93JY6XQB51RYM5BT0ZY/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:48.376654722-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680ZNWVBGAS0Y6143Q8NHG","error":"read action owner: context canceled"}
+{"time":"2026-11-11T15:25:48.393753051-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9BQW1Q6JZCND4GQY9Y1/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:48.480112942-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8Z7ZQ8RJA40007ZESF0/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:48.770506676-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z93E2NWQQRZTQ2498648/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:48.821048852-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M767Z8TE3YC2EZ1SSSHDFDRY/state/world","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.844595419-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z844H63YGWZ8GWEK882K/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:48.909444151-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9C2J8Z7NB4ZM2N5RXHC/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:48.936002687-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9AQFTS81G9J3NE8JM3B/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.969536443-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8ZC05CWEN6DS0Q2HQ86/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:48.999019471-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M76810K9TE5AX89C1N1B59ZG","error":"read admin token: context canceled"}
+{"time":"2026-11-11T15:25:49.113672698-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9C2J8Z7NB4ZM2N5RXHC/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:49.209745359-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680YDBE54B284W3GPFR2VD","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:49.225600571-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8WDSNDRJKQRR07XXAYG/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:49.314147299-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z99MZZFZP43WV7VD01KM/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:49.426042626-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8TE3YC2EZ1SSSHDFDRY/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:49.63949821-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z9AQFTS81G9J3NE8JM3B/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:49.642016943-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8Z99EPD069Q28DDP3ZX/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:49.8538391-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8WDSNDRJKQRR07XXAYG/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:50.302593213-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8QRV2GDCPST1P9VZCNQ/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:50.581943673-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8SB21XYBDTQ6T4XS6W5/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:50.618890551-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z95X2D3B13CW857KBHMV/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:50.666155761-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z95X2D3B13CW857KBHMV/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:50.933907824-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680ZQBMNT53QQTCM1P90DP","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:51.06194886-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8Z7ZQ8RJA40007ZESF0/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:51.210317418-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z99MZZFZP43WV7VD01KM/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:51.254096676-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M7680WN3Z3KVG5ABHARNGXD6","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:51.438226771-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z96XMPJ2NJWDJX1470B4/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:51.535935283-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8PF3R7G6Z3W720FDXGP/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:25:51.632673876-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8XFKVAQHSYKE2466C74/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:51.969262801-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z95QRGDP4KJKTGJM3HJ0/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:52.068827243-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8WDSNDRJKQRR07XXAYG/actions","error":"begin dispatch action: context canceled"}
+{"time":"2026-11-11T15:25:52.215442186-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z99MJDZQSPQHQTN7ZSMH/actions","error":"expire action on read: context canceled"}
+{"time":"2026-11-11T15:25:52.860302799-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z8RGZZGDXJKG9QQ7A5QZ/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:25:53.352578225-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767Z96XMPJ2NJWDJX1470B4/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:25:58.82216108-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:26:01.540362769-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:28:36.532873204-06:00","level":"ERROR","msg":"action expiry sweep failed","error":"begin expire actions: context deadline exceeded"}
+{"time":"2026-11-11T15:28:38.849756667-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:28:39.75242984-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:28:39.972752384-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:28:40.672245002-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:28:41.192585849-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:28:42.703334476-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:28:42.715928668-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:33:57.703900857-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:33:57.715388288-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:33:58.861435404-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:33:59.751772666-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:33:59.971953704-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:34:00.671392233-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:34:01.187932594-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:34:27.702623915-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:34:27.715510885-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:34:28.848634547-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:34:29.789994796-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:34:29.982149566-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:34:30.675248126-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:34:31.188937838-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}

@@ -1,0 +1,41 @@
+{"time":"2026-11-11T15:15:41.708826367-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:15:42.62594991-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:15:43.143771977-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:15:54.289217598-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:15:54.681279299-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:15:57.671794907-06:00","level":"ERROR","msg":"audit record could not be written","method":"POST","path":"/api/v1/servers/01M767AV022RXWT1NJPVVRHBTY/actions","tokenId":"01M767B1WWJ0ERJSC0T7XJ6MBT","error":"begin audit record: context deadline exceeded"}
+{"time":"2026-11-11T15:15:58.495060125-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:15:58.911046731-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:16:02.629360039-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:22:44.659880739-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:22:45.830419466-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:22:46.71344845-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:22:47.627311373-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:22:48.152948092-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:00.803627413-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:01.137010235-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:01.250775859-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:01.25419575-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:01.330659673-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:23:16.857664404-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:23:17.011095341-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:17.657353523-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:18.583123116-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:20.416845465-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:37.627429654-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:23:38.143710106-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:39.674458673-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:23:40.805648119-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:41.405957318-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767AV012BTCTEM8QJEP6Y9J/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:23:41.708509752-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:55.806134276-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:56.737238829-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:23:57.626599786-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:23:58.144254034-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:23:59.659819227-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:24:14.65906567-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:24:15.805641034-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:24:16.707865876-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:24:17.626896687-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:24:17.754250993-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767AXF3R0966JNWPGPFW4QS/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:24:18.150503003-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}

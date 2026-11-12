@@ -1,0 +1,5 @@
+{"time":"2026-11-11T13:17:42.751021668-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read server: context canceled"}
+{"time":"2026-11-11T13:17:42.751901797-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:17:42.752071279-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:17:42.752095139-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:17:42.756855219-06:00","level":"WARN","msg":"webhook delivery failed, retry scheduled","webhookId":"01M760FFTNN4VNVG542H8XXJX2","deliveryId":"01M760PTNZFSG0Z5VFYZE3PEXF","type":"core.player.death","attempt":1,"lastError":"delivery failed: Post \"http://127.0.0.1:18799/hook\": dial tcp 127.0.0.1:18799: connect: connection refused","nextAttemptAt":"2026-11-11T19:17:52.755Z"}

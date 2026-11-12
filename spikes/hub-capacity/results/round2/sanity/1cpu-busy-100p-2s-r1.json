@@ -1,0 +1,357 @@
+{
+  "label": "1cpu-busy-100p-2s-r1",
+  "servers": 2,
+  "players": 100,
+  "profile": "busy",
+  "offeredEventsPerSecond": 24.555555555555557,
+  "offeredActionsPerSecond": 0.2,
+  "panels": 2,
+  "windowStart": "2026-11-11T14:05:05.234868042-06:00",
+  "windowEnd": "2026-11-11T14:06:05.235414446-06:00",
+  "pass": true,
+  "criteria": [
+    {
+      "name": "action queue-to-delivery p99",
+      "value": 5.7,
+      "limit": 2000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 11
+    },
+    {
+      "name": "held poll overhead p99 (RTT minus hold)",
+      "value": 5.3,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 2
+    },
+    {
+      "name": "admin read p99: servers list",
+      "value": 1.2,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 24
+    },
+    {
+      "name": "admin read p99: events page",
+      "value": 3.8,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 24
+    },
+    {
+      "name": "admin read p99: state players",
+      "value": 1.3,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 24
+    },
+    {
+      "name": "admin read p99: state vehicles",
+      "value": 4.8,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 24
+    },
+    {
+      "name": "admin read p99: state world",
+      "value": 0.6,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 24
+    },
+    {
+      "name": "non-2xx or transport error rate",
+      "value": 0,
+      "limit": 0.1,
+      "unit": "%",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "ingest backlog at window end / one cycle of events",
+      "value": 0.6,
+      "limit": 2,
+      "unit": "x",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "webhook poll-to-receipt p99",
+      "value": 31.9,
+      "limit": 10000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true,
+      "samples": 21
+    },
+    {
+      "name": "hub peak anon memory / limit",
+      "value": 0.7,
+      "limit": 80,
+      "unit": "%",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "OOM kills",
+      "value": 0,
+      "limit": 0,
+      "unit": "",
+      "failed": false,
+      "measured": true
+    }
+  ],
+  "latency": {
+    "actionDispatchToCompletedSeen": {
+      "n": 10,
+      "p50Ms": 1004.563,
+      "p90Ms": 1005.063,
+      "p99Ms": 1005.975,
+      "maxMs": 1005.975,
+      "meanMs": 1004.683
+    },
+    "actionQueueToDelivery": {
+      "n": 11,
+      "p50Ms": 4.601,
+      "p90Ms": 5.554,
+      "p99Ms": 5.716,
+      "maxMs": 5.716,
+      "meanMs": 4.720090909090909
+    },
+    "actionReadRtt": {
+      "n": 10,
+      "p50Ms": 0.687,
+      "p90Ms": 0.741,
+      "p99Ms": 0.884,
+      "maxMs": 0.884,
+      "meanMs": 0.7001000000000001
+    },
+    "adminReadRtt": {
+      "n": 120,
+      "p50Ms": 0.606,
+      "p90Ms": 0.936,
+      "p99Ms": 3.783,
+      "maxMs": 4.833,
+      "meanMs": 0.7201666666666668
+    },
+    "dispatchRtt": {
+      "n": 11,
+      "p50Ms": 3.017,
+      "p90Ms": 4.046,
+      "p99Ms": 4.092,
+      "maxMs": 4.092,
+      "meanMs": 3.197545454545455
+    },
+    "eventEmitToAck": {
+      "n": 57,
+      "p50Ms": 16575.857,
+      "p90Ms": 27551.375,
+      "p99Ms": 33753.297,
+      "maxMs": 33753.297,
+      "meanMs": 17403.113789473675
+    },
+    "pollEarlyRtt": {
+      "n": 10,
+      "p50Ms": 6910.683,
+      "p90Ms": 14421.924,
+      "p99Ms": 18272.628,
+      "maxMs": 18272.628,
+      "meanMs": 8430.3102
+    },
+    "pollIngestMore": {
+      "n": 0,
+      "p50Ms": 0,
+      "p90Ms": 0,
+      "p99Ms": 0,
+      "maxMs": 0,
+      "meanMs": 0
+    },
+    "pollOverhead": {
+      "n": 2,
+      "p50Ms": 1.566,
+      "p90Ms": 5.344,
+      "p99Ms": 5.344,
+      "maxMs": 5.344,
+      "meanMs": 3.455
+    },
+    "readEventsPage": {
+      "n": 24,
+      "p50Ms": 0.883,
+      "p90Ms": 1.167,
+      "p99Ms": 3.783,
+      "maxMs": 3.783,
+      "meanMs": 1.0560416666666668
+    },
+    "readServersList": {
+      "n": 24,
+      "p50Ms": 0.806,
+      "p90Ms": 0.98,
+      "p99Ms": 1.214,
+      "maxMs": 1.214,
+      "meanMs": 0.8350416666666667
+    },
+    "readStatePlayers": {
+      "n": 24,
+      "p50Ms": 0.556,
+      "p90Ms": 0.847,
+      "p99Ms": 1.275,
+      "maxMs": 1.275,
+      "meanMs": 0.6413333333333334
+    },
+    "readStateVehicles": {
+      "n": 24,
+      "p50Ms": 0.523,
+      "p90Ms": 0.637,
+      "p99Ms": 4.833,
+      "maxMs": 4.833,
+      "meanMs": 0.7143750000000001
+    },
+    "readStateWorld": {
+      "n": 24,
+      "p50Ms": 0.328,
+      "p90Ms": 0.438,
+      "p99Ms": 0.598,
+      "maxMs": 0.598,
+      "meanMs": 0.3540416666666666
+    },
+    "webhookEmitToReceipt": {
+      "n": 21,
+      "p50Ms": 7668.96,
+      "p90Ms": 24177.178,
+      "p99Ms": 26269.047,
+      "maxMs": 26269.047,
+      "meanMs": 11154.107571428573
+    },
+    "webhookPollToReceipt": {
+      "n": 21,
+      "p50Ms": 26.274,
+      "p90Ms": 31.76,
+      "p99Ms": 31.863,
+      "maxMs": 31.863,
+      "meanMs": 23.412000000000003
+    }
+  },
+  "counts": {
+    "deathsAcked": 21,
+    "delivered": 11,
+    "dispatched": 11,
+    "eventsAcked": 1476,
+    "eventsSent": 1476,
+    "failures": 0,
+    "requestBytesSent": 709038,
+    "requests": 153,
+    "resultsAcked": 11,
+    "snapshots": 21,
+    "webhookDeliveries": 21
+  },
+  "failures": {},
+  "pluginRates": {
+    "credentials": 2,
+    "meanRps": 0.09166666666666667,
+    "maxMeanRps": 0.1,
+    "peak1sMax": 2,
+    "peak10sMax": 0.2,
+    "peak60sMax": 0.1,
+    "peak1sP99": 2,
+    "totalRps": 0.18333333333333332,
+    "windowSeconds": 60
+  },
+  "adminRates": {
+    "credentials": 2,
+    "meanRps": 1.1666666666666665,
+    "maxMeanRps": 1.2,
+    "peak1sMax": 6,
+    "peak10sMax": 1.4,
+    "peak60sMax": 1.2,
+    "peak1sP99": 6,
+    "totalRps": 2.3333333333333335,
+    "windowSeconds": 60
+  },
+  "resources": {
+    "peakAnonBytes": 15745024,
+    "peakCgroupBytes": 23724032,
+    "meanMemBytes": 12190320,
+    "cpuPercentMean": 0.5610125888779417,
+    "cpuPercentP90": 1.4385272425910496,
+    "dbStartBytes": 4096,
+    "dbEndBytes": 2596864,
+    "dbBytesPerHour": 160931068.67454165,
+    "walEndBytes": 4441392,
+    "walPeakBytes": 4441392,
+    "oomKills": 0,
+    "throttledPeriodsPct": 0,
+    "throttledTimePct": 0,
+    "memPeakCgroup": 23859200
+  },
+  "backlog": {
+    "end": 405,
+    "maxPerServer": 312,
+    "start": 405
+  },
+  "requests": {
+    "action read": {
+      "started": 10,
+      "completed": 10
+    },
+    "dispatch": {
+      "scheduled": 11,
+      "started": 11,
+      "completed": 11
+    },
+    "poll": {
+      "started": 12,
+      "completed": 10
+    },
+    "read events page": {
+      "scheduled": 24,
+      "started": 24,
+      "completed": 24
+    },
+    "read servers list": {
+      "scheduled": 24,
+      "started": 24,
+      "completed": 24
+    },
+    "read state players": {
+      "scheduled": 24,
+      "started": 24,
+      "completed": 24
+    },
+    "read state vehicles": {
+      "scheduled": 24,
+      "started": 24,
+      "completed": 24
+    },
+    "read state world": {
+      "scheduled": 24,
+      "started": 24,
+      "completed": 24
+    }
+  },
+  "verify": {
+    "actionsCompletedAtHub": 16,
+    "actionsDispatchedAccepted": 16,
+    "deathsEmittedByPlugins": 31,
+    "deathsStoredAtHub": 31,
+    "eventsEmittedByPlugins": 2212,
+    "eventsStoredAtHub": 2212,
+    "outboxLeftAfterDrain": 0,
+    "sinkReceiptsTotal": 31,
+    "webhookDeliveredAtHub": 31,
+    "webhookDeliveryRecords": 31
+  }
+}

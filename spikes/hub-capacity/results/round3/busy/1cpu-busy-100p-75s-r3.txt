@@ -1,0 +1,26 @@
+FAIL 1cpu-busy-100p-75s-r3 servers=75 players=100 profile=busy offered=920.8 ev/s 7.50 act/s
+  ok   action queue-to-delivery p99                              265.8 ms over 4479 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                   184.3 ms over 389 (limit 1000)
+  FAIL admin read p99: servers list                             1475.0 ms over 840 (limit 1000)
+  ok   admin read p99: events page                                61.1 ms over 840 (limit 1000)
+  ok   admin read p99: state players                              49.0 ms over 840 (limit 1000)
+  ok   admin read p99: state vehicles                             59.7 ms over 840 (limit 1000)
+  ok   admin read p99: state world                                47.0 ms over 840 (limit 1000)
+  ok   non-2xx (429 included), transport error or timeout rate        0.0 % (limit 0.1)
+  ok   scheduled admin requests not completed                      0.0  (limit 0)
+  ok   ingest backlog at window end / one cycle of events          0.6 x (limit 2)
+  ok   webhook poll-to-receipt p99                               388.5 ms over 7596 (limit 10000)
+  ok   hub peak anon memory / limit                                1.4 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 14% p90 19%  anon peak 28 MiB (cgroup 834 MiB)  db +4280.8 MiB/h (wal peak 5 MiB)  reqs 18026 fails 0
+  plugin req/s per credential mean 0.108 peak1s 3 peak10s 0.70 | admin mean 3.128 peak1s 14 peak10s 5.80
+  dispatch: scheduled 4479 started 4479 completed 4479 cut off 0 missing 0 timeouts 0
+  action read: scheduled 0 started 4481 completed 4481 cut off 0 missing 0 timeouts 0
+  poll: scheduled 0 started 4866 completed 4791 cut off 75 missing 0 timeouts 0
+  read servers list: scheduled 840 started 840 completed 840 cut off 0 missing 0 timeouts 0
+  read events page: scheduled 840 started 840 completed 840 cut off 0 missing 0 timeouts 0
+  read state players: scheduled 840 started 840 completed 840 cut off 0 missing 0 timeouts 0
+  read state vehicles: scheduled 840 started 840 completed 840 cut off 0 missing 0 timeouts 0
+  read state world: scheduled 840 started 840 completed 840 cut off 0 missing 0 timeouts 0
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  latency p50/p99 ms: delivery 4.7/265.8  completedSeen 1006/1305  webhook(poll->sink) 32/389  dispatch 3.5/224.2  earlyPoll 6214/24193

@@ -1,0 +1,22 @@
+FAIL 1cpu-realistic-100p-250s-r4 servers=250 players=100 profile=realistic offered=302.1 ev/s 4.17 act/s
+  FAIL action queue-to-delivery p99                           113678.6 ms over 406 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                   702.3 ms over 1614 (limit 1000)
+  ok   admin read p99: servers list                              262.5 ms over 201 (limit 1000)
+  ok   admin read p99: events page                                23.9 ms over 203 (limit 1000)
+  ok   admin read p99: state players                              10.4 ms over 202 (limit 1000)
+  ok   admin read p99: state vehicles                             20.2 ms over 203 (limit 1000)
+  ok   admin read p99: state world                                13.6 ms over 203 (limit 1000)
+  FAIL non-2xx or transport error rate                            21.0 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          1.5 x (limit 2)
+  ok   webhook poll-to-receipt p99                               987.4 ms over 1859 (limit 10000)
+  ok   hub peak anon memory / limit                                2.4 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 14% p90 23%  anon peak 48 MiB (cgroup 202 MiB)  db +2259.0 MiB/h (wal peak 4 MiB)  reqs 4250 fails 894
+  plugin req/s per credential mean 0.045 peak1s 3 peak10s 0.50 | admin mean 0.497 peak1s 10 peak10s 2.30
+  read servers list: scheduled 900 started 260 completed 201
+  dispatch: scheduled 705 started 705 completed 170
+  poll: scheduled 0 started 2011 completed 1761
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"action read timeout":3,"dispatch timeout":541,"read events page timeout":77,"read servers list timeout":79,"read state players timeout":78,"read state vehicles timeout":58,"read state world timeout":58}
+  latency p50/p99 ms: delivery 25982.2/113678.6  completedSeen 1005/12006  webhook(poll->sink) 13/987  dispatch 3.4/225.7  earlyPoll 8534/24963
+  hub in window: 194 x request failed

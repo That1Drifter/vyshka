@@ -1,0 +1,21 @@
+# 0 non-INFO lines before the window (setup, warm-up), 37 after it (teardown); the first 20 after:
+{"time":"2026-11-11T15:24:37.03594292-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767AV028AQH1X7TRNRPSB33/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:24:37.03617762-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T15:24:37.036337219-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read server: context canceled"}
+{"time":"2026-11-11T15:24:37.036567799-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T15:24:37.036678839-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T15:24:37.036741679-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T15:24:37.036807629-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read server: context canceled"}
+{"time":"2026-11-11T15:24:37.036891419-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767B108GH1C50Y2Q91YQ9VF/actions","error":"read action: context canceled"}
+{"time":"2026-11-11T15:24:37.036920949-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M767Z437QF47PGZ95C46HA2W","error":"read action: context canceled"}
+{"time":"2026-11-11T15:24:37.037099498-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767B1073RBMYAEK9KXZ907D/actions","error":"read manifest: context canceled"}
+{"time":"2026-11-11T15:24:37.037140958-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T15:24:37.037228528-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read live session: context canceled"}
+{"time":"2026-11-11T15:24:37.037273528-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"list servers: context canceled"}
+{"time":"2026-11-11T15:24:37.037313478-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T15:24:37.037357738-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T15:24:37.037465658-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"count pending envelopes: context canceled"}
+{"time":"2026-11-11T15:24:37.037640728-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M767AWZKS5N34HSX0GYGPPBX/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T15:24:37.037802938-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read manifest capabilities: context canceled"}
+{"time":"2026-11-11T15:24:37.037851668-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T15:24:37.037909017-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}

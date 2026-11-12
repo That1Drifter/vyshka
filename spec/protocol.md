@@ -201,8 +201,8 @@ breaking a working one.
 > make the hub do work, not how much work each request is. A poll may carry a whole batch
 > (at least 200 envelopes, section 3.1.2, and a plugin's own event budget per poll), so a
 > credential well within a few requests a second can still deliver more events than a hub
-> ingests: the reference hub's measured ceiling on one SQLite connection was 921 events/s
-> across all of its servers together. This section is not an ingest cap and nothing in it
+> ingests: on one SQLite connection the reference hub was measured to meet its ingest bounds
+> at about 920 events/s across all servers together. This section is not an ingest cap and nothing in it
 > limits events or bytes per credential. It also runs only once a connection is accepted
 > and a request on it authenticated, so it does nothing against a flood of connections;
 > a hub's connection cap, and the proxy in front of it, bound those. And it bounds a

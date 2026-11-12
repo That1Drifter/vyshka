@@ -20,21 +20,23 @@ import (
 // 10 s was 0.8 requests/s per server and its busiest second 4 requests (3
 // for the realistic profile); session start was outside its window, and
 // the reference driver's measures four requests on its own; a
-// panel-like admin client's busiest 10 s was 5.6 requests/s per token and its
-// busiest second 14.
+// panel-like admin client's busiest 10 s was 6.9 requests/s per token and its
+// busiest second 15, in runs that met every bound.
 //
 //   - Plugin: 5/s, burst 60. The spike recommended 2/s, burst 30; the figure
 //     was widened because a plugin's key/value traffic was not measured and
 //     the mod surface hands the KV store to third-party mods. That is about
 //     six times the busiest legitimate 10 s, and the burst covers a backlog
 //     drain of a full 5000-envelope queue (25 polls of 200).
-//   - Admin: 10/s, burst 60, as the spike recommends: 1.8 times the busiest
-//     panel client's 10 s, and four times its busiest second.
+//   - Admin: 10/s, burst 60, as the spike recommends: about 1.4 times the
+//     busiest panel client's 10 s, and four times its busiest second.
 //
 // What these do not bound is ingest volume: a request may carry up to 200
 // envelopes and 1000 events, so 5 polls/s is far more events than the hub
-// ingested at its measured ceiling (921 events/s across 75 servers on one
-// SQLite connection). An event budget is a slice of its own.
+// was measured to ingest (about 920 events/s in all across 75 servers on one
+// SQLite connection with every ingest bound held; every bound, the admin
+// server list included, held up to 614 events/s across 50). An event budget
+// is a slice of its own.
 const (
 	DefaultPluginRateLimit = 5.0 // requests per second, per server
 	DefaultPluginRateBurst = 60

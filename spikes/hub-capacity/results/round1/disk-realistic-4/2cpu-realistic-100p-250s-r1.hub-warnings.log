@@ -1,0 +1,44 @@
+{"time":"2026-11-11T13:35:12.825841157-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZ6TVKP92E8B89EMRE43"}
+{"time":"2026-11-11T13:35:12.826593784-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZ975HGY5KG054RAX5T7"}
+{"time":"2026-11-11T13:35:12.827402206-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZA06XB20XX3BR6ASP50"}
+{"time":"2026-11-11T13:35:12.828732058-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZDY5XFC1VWJCTKFXKSV"}
+{"time":"2026-11-11T13:35:12.829514911-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZEK326VMTV6JY0M9AXT"}
+{"time":"2026-11-11T13:35:12.830334708-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZFPYN3JMD1JTJWT3RE2"}
+{"time":"2026-11-11T13:35:12.8311228-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZFT7AV9RYFDXWZGN9F7"}
+{"time":"2026-11-11T13:35:12.832665024-06:00","level":"WARN","msg":"server link lost","serverId":"01M761MZHF6CC7DKWDT6JK9VEY"}
+{"time":"2026-11-11T13:35:12.833428067-06:00","level":"WARN","msg":"server link lost","serverId":"01M761N03YTHZ6WVTHEZ9H0C6K"}
+{"time":"2026-11-11T13:35:12.834150373-06:00","level":"WARN","msg":"server link lost","serverId":"01M761N04PDJT27X4EHADSDW2K"}
+{"time":"2026-11-11T13:35:12.83487197-06:00","level":"WARN","msg":"server link lost","serverId":"01M761N05KPD446H0JARXEMHGV"}
+{"time":"2026-11-11T13:35:12.835647927-06:00","level":"WARN","msg":"server link lost","serverId":"01M761N06AAKXF5MMGME4HFC7V"}
+{"time":"2026-11-11T13:35:12.836955079-06:00","level":"WARN","msg":"server link lost","serverId":"01M761N09F6B4ADREAXRDWC7VH"}
+{"time":"2026-11-11T13:37:00.590757494-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.605008487-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761NP2HC2ZYVATYMW36MCNA","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605409731-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605622582-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605705843-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761NRB9HGFM5WKCM5REW0WF","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605792894-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605825854-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605856894-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605888095-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761NV3P53KT5WTVNBG1JBQY","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605919865-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761NV3RP537KBHN7PHW7PGF","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605953995-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.605987416-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.606028796-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761NXDFX4X1MZHD40RFKH70","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.606050596-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZGX8MZF36HHFMWRK31P/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.606108366-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZ4RRY3E8PJGHPFG54PH/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.606236095-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761TY1MQA6JKMQVX3WPGXGR","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:38:11.607661461-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZJW20KC9HZN32CWS02N/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.608334953-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:38:11.608989522-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.60911417-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T13:38:11.611721836-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZSKXBTDDCZ7XBJK1MB8/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.61321356-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761N03DX78DJGFQ6EE405G1/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.61322633-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.613335141-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZFXFE8YQ4PAQEA249MM/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.614842895-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.61651444-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.616625071-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.616650521-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZR6G09SPZ876JX4RV3Q/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.616941924-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/api/v1/servers/01M761MZWNGMCXH5K28W8RR8XZ/actions","error":"read server: context canceled"}
+{"time":"2026-11-11T13:38:11.619061543-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}
+{"time":"2026-11-11T13:38:11.619108883-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read ingested event batches: context canceled"}

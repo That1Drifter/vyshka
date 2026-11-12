@@ -1,0 +1,7 @@
+{"time":"2026-11-11T11:29:55.922531706-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T11:29:55.923132996-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T11:29:55.923217537-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"begin next outbound: context canceled"}
+{"time":"2026-11-11T11:29:55.923723466-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:29:55.923841682-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:29:55.923984943-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read server: context canceled"}
+{"time":"2026-11-11T11:29:55.925660797-06:00","level":"WARN","msg":"webhook delivery failed, retry scheduled","webhookId":"01M75TA4GDHFXQA1NA64PBVM1T","deliveryId":"01M75THFE2EF1VTQG1XMEKZ9WC","type":"core.player.death","attempt":1,"lastError":"delivery failed: Post \"http://127.0.0.1:18799/hook\": read tcp 127.0.0.1:34542->127.0.0.1:18799: read: connection reset by peer","nextAttemptAt":"2026-11-11T17:30:05.925Z"}

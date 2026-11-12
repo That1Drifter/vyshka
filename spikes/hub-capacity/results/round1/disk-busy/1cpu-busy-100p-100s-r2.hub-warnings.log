@@ -1,0 +1,2 @@
+{"time":"2026-11-11T11:13:51.954631193-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:13:51.956225177-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"touch server: context canceled"}

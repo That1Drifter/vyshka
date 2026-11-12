@@ -1,0 +1,24 @@
+FAIL 1cpu-busy-100p-75s-r3 servers=75 players=100 profile=busy offered=920.8 ev/s 7.50 act/s
+  FAIL action queue-to-delivery p99                             8836.4 ms over 4496 (limit 2000)
+  FAIL held poll overhead p99 (RTT minus hold)                  6198.5 ms over 409 (limit 1000)
+  FAIL admin read p99: servers list                             8279.6 ms over 770 (limit 1000)
+  FAIL admin read p99: events page                              2286.0 ms over 795 (limit 1000)
+  FAIL admin read p99: state players                            1303.7 ms over 795 (limit 1000)
+  FAIL admin read p99: state vehicles                           2382.0 ms over 799 (limit 1000)
+  ok   admin read p99: state world                               634.8 ms over 799 (limit 1000)
+  FAIL non-2xx or transport error rate                             0.6 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          0.6 x (limit 2)
+  FAIL webhook poll-to-receipt p99                             27190.9 ms over 7709 (limit 10000)
+  ok   hub peak anon memory / limit                                1.6 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 19% p90 30%  anon peak 33 MiB (cgroup 834 MiB)  db +4340.0 MiB/h (wal peak 5 MiB)  reqs 17807 fails 102
+  plugin req/s per credential mean 0.106 peak1s 3 peak10s 0.70 | admin mean 3.107 peak1s 18 peak10s 6.50
+  read servers list: scheduled 840 started 793 completed 770
+  dispatch: scheduled 4479 started 4479 completed 4464
+  poll: scheduled 0 started 4757 completed 4682
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"action read timeout":18,"dispatch timeout":57,"read servers list timeout":23,"read state players timeout":3,"read state world timeout":1}
+  latency p50/p99 ms: delivery 16.8/8836.4  completedSeen 1028/15762  webhook(poll->sink) 64/27191  dispatch 13.4/8202.9  earlyPoll 6404/24248
+  hub in window: 92 x request failed
+  hub in window: 2 x audit record could not be written
+  hub in window: 1 x action expiry sweep failed

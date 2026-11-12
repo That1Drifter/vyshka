@@ -1,0 +1,16 @@
+/var/tmp/hubcap-keep3/2cpu-busy-100p-400s-r1/vyshka.db
+table (with its indexes)             rows        MiB   share
+events                             494828      401.7   63.8%
+event_identities                   501082      146.0   23.2%
+state_snapshots                      6309       58.5    9.3%
+webhook_deliveries                   6768        8.8    1.4%
+audit_records                        5309        3.8    0.6%
+event_batches                       19055        3.6    0.6%
+manifests                             262        2.1    0.3%
+outbound_envelopes                   2835        1.6    0.3%
+actions                              2835        1.6    0.2%
+state_snapshot_dedup                 6309        1.2    0.2%
+servers                               400        0.2    0.0%
+sessions                              400        0.2    0.0%
+enrollment_tokens                     400        0.1    0.0%
+total                                          629.5

@@ -1,0 +1,21 @@
+# 0 non-INFO lines before the window (setup, warm-up), 223 after it (teardown); the first 20 after:
+{"time":"2026-11-11T18:55:26.824918776-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWPQCN4FDEY0R78YBHGW/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825011876-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSW4MSJAZ236CT7RRSQSJ/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825047227-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSW5Y6KQDPHYE8MZPCP9S/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825093427-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWS8RP9N6QJ59YADTTYW/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825134187-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSXB1NWQBKKAAZC7S22BD/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825168697-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWT8CRMYWBMPQ81P6ZCT/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825238908-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSX0BC7JNR5KZ4WR71AY7/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825308058-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWD33GT37GEA5Q42A84F/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825339439-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSX4HMYVEK0Z87RXAXJZX/events","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.825407719-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M76KXCZR6KJX8EMZM79D653Z","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826445946-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826563726-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWC8W3AF205AJG36C7QB/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826660487-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M76KXJMYMQT36WG8MVDT4VPM","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826721537-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWH03WZNS0WA92C58ATZ/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826757318-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWH2BNPGVYCPTSKQ2F7W/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826869838-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSX7JY7H2884R8JS9Y3A0/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826901789-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWHN016RTM1V36PEN7QZ/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826932709-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWVRX7C127SSHG0SJC9P/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.826964339-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWW1HK2B64NVE8M3KKTS/state/players","error":"read admin token: context canceled"}
+{"time":"2026-11-11T18:55:26.82712837-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers/01M76KSWE0P70BABGX0DPCN867/state/players","error":"read admin token: context canceled"}

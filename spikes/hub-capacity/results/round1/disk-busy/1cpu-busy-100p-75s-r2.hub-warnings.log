@@ -1,0 +1,4 @@
+{"time":"2026-11-11T11:05:49.77930321-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:05:49.77938561-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:05:49.780272298-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T11:05:49.790094238-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"touch server: context canceled"}

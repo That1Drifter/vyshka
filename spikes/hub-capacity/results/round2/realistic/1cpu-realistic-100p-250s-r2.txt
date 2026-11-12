@@ -1,0 +1,22 @@
+FAIL 1cpu-realistic-100p-250s-r2 servers=250 players=100 profile=realistic offered=302.1 ev/s 4.17 act/s
+  FAIL action queue-to-delivery p99                           117720.3 ms over 251 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                   405.6 ms over 1672 (limit 1000)
+  ok   admin read p99: servers list                              669.6 ms over 204 (limit 1000)
+  ok   admin read p99: events page                                21.5 ms over 205 (limit 1000)
+  ok   admin read p99: state players                              18.0 ms over 205 (limit 1000)
+  ok   admin read p99: state vehicles                             38.2 ms over 205 (limit 1000)
+  ok   admin read p99: state world                                21.9 ms over 205 (limit 1000)
+  FAIL non-2xx or transport error rate                            21.5 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          1.4 x (limit 2)
+  ok   webhook poll-to-receipt p99                               397.8 ms over 1868 (limit 10000)
+  ok   hub peak anon memory / limit                                2.3 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 14% p90 22%  anon peak 46 MiB (cgroup 204 MiB)  db +2275.8 MiB/h (wal peak 4 MiB)  reqs 4172 fails 896
+  plugin req/s per credential mean 0.043 peak1s 2 peak10s 0.30 | admin mean 0.500 peak1s 9 peak10s 2.30
+  read servers list: scheduled 900 started 262 completed 204
+  dispatch: scheduled 705 started 705 completed 169
+  poll: scheduled 0 started 1921 completed 1671
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"action read timeout":6,"dispatch timeout":542,"read events page timeout":77,"read servers list timeout":78,"read state players timeout":77,"read state vehicles timeout":58,"read state world timeout":58}
+  latency p50/p99 ms: delivery 5.1/117720.3  completedSeen 1005/12017  webhook(poll->sink) 12/398  dispatch 3.2/25.8  earlyPoll 11022/24930
+  hub in window: 439 x request failed

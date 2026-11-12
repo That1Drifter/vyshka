@@ -1,0 +1,20 @@
+PASS 1cpu-realistic-100p-150s-r2 servers=150 players=100 profile=realistic offered=181.2 ev/s 2.50 act/s
+  ok   action queue-to-delivery p99                               37.1 ms over 426 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                    33.4 ms over 893 (limit 1000)
+  ok   admin read p99: servers list                               30.4 ms over 540 (limit 1000)
+  ok   admin read p99: events page                                14.1 ms over 540 (limit 1000)
+  ok   admin read p99: state players                              15.5 ms over 540 (limit 1000)
+  ok   admin read p99: state vehicles                             14.1 ms over 540 (limit 1000)
+  ok   admin read p99: state world                                10.6 ms over 540 (limit 1000)
+  ok   non-2xx or transport error rate                             0.0 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          1.2 x (limit 2)
+  ok   webhook poll-to-receipt p99                                47.2 ms over 1113 (limit 10000)
+  ok   hub peak anon memory / limit                                1.7 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 13% p90 16%  anon peak 34 MiB (cgroup 132 MiB)  db +1397.5 MiB/h (wal peak 4 MiB)  reqs 4872 fails 0
+  plugin req/s per credential mean 0.049 peak1s 2 peak10s 0.30 | admin mean 1.313 peak1s 9 peak10s 2.10
+  read servers list: scheduled 540 started 540 completed 540
+  dispatch: scheduled 426 started 426 completed 426
+  poll: scheduled 0 started 1319 completed 1169
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  latency p50/p99 ms: delivery 4.6/37.1  completedSeen 1005/1044  webhook(poll->sink) 11/47  dispatch 3.4/30.2  earlyPoll 10203/24521
