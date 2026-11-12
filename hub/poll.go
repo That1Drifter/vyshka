@@ -481,7 +481,8 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 			// draft 0.35) can be too large for a response alone. It is sent
 			// anyway, since holding it back would stall everything behind it;
 			// an engine that cannot receive it will keep failing this poll.
-			if len(queued) == 1 && budget.Size(queued[0]) > budget.Bytes {
+			// Size charges a separating comma, which a lone envelope does not have.
+			if len(queued) == 1 && budget.Size(queued[0])-1 > budget.Bytes {
 				s.log.Warn("poll sent one envelope larger than a Plugin API response may be; it was queued before the body bound",
 					"serverId", session.ServerID, "sessionId", session.ID, "envelopeId", queued[0].ID,
 					"bytes", budget.Size(queued[0]), "bound", maxPluginResponse)
