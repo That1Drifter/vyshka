@@ -1,6 +1,6 @@
 # Roadmap
 
-**As of:** 2026-11-11
+**As of:** 2026-11-12
 
 Last full review 2026-09-14, at which every proposed item was settled. This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
@@ -51,7 +51,9 @@ on 2026-09-17 (issue #69). The second followed on 2026-09-23: hub 0.2.0 (`hub-v0
 DayZ plugin 0.8.0 (`dayz-plugin-v0.8.0`), carrying every Horizon 1 slice that landed after
 the first tag. Hub 0.3.0 (`hub-v0.3.0`) and DayZ plugin 0.9.0
 (`dayz-plugin-v0.9.0`) followed on 2026-10-03 with the command-line client, the client
-libraries, and the poll `more` signal. Releases are described in `RELEASING.md`.
+libraries, and the poll `more` signal. Hub 0.4.0 (`hub-v0.4.0`) and DayZ plugin 0.10.0
+(`dayz-plugin-v0.10.0`) followed on 2026-11-12 with Horizon 2's operations work and DayZ
+1.30 support. Releases are described in `RELEASING.md`.
 
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
 custom contexts moved to Horizon 1 with a DayZ customer, `--auto-tls` to Horizon 2, and the
@@ -102,6 +104,7 @@ One line each, newest last; the changelog and the pull request carry the detail.
   1.2 events/s and 1 action/min each, or 50 at 12.3 events/s and 6/min, on 1 vCPU and 2 GB
   with SQLite (3 of 3 runs each); disk binds first: about 7.8 servers of the first kind on
   40 GB at default retention after 90 days.
+- 2026-11-12: hub 0.4.0 and DayZ plugin 0.10.0 released.
 
 ## Horizon 2: operations, as promised in the design notes
 

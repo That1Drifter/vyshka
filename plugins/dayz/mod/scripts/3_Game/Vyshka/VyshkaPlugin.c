@@ -46,7 +46,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-dayz";
-	static const string PLUGIN_VERSION = "0.9.0";
+	static const string PLUGIN_VERSION = "0.10.0";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;

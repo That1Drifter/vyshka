@@ -1251,7 +1251,7 @@ Session and enrollment refusals are handled as before: credentials rejected, ret
 30 s; token refused, tell the operator, retry every 60 s.
 
 **Rate limits** (`429 rate_limited`, protocol section 2.2.1; a hub from draft 0.34 on may
-refuse a server that sends faster than its limit). Plugin 0.9.0 reads the refusal, keeps its
+refuse a server that sends faster than its limit). Plugin 0.10.0, like 0.9.0, reads the refusal, keeps its
 session and its outbox, and loses nothing, but it treats the code as one it does not know:
 
 - A refused poll (`VyshkaPlugin.c`, `OnPollRefused`, its last branch, and `Backoff`) is

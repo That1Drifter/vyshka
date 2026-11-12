@@ -786,7 +786,7 @@ Who the limit bounds: a leaked server credential, and a leaked or runaway token 
 with an allowance of its own, as it can already do anything else; revoke it, or remove a
 bootstrap token from the hub's configuration.
 
-The DayZ plugin, version 0.9.0, reads the 429 and keeps its session, but it does not yet
+The DayZ plugin (0.9.0 and 0.10.0) reads the 429 and keeps its session, but it does not yet
 read the wait the hub names, fails a mod's key/value call outright, and restarts a ban-list
 walk from its first page on a refusal, so an installation list of roughly 8000 entries or
 more cannot finish walking at the default plugin limit; for such a hub raise

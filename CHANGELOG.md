@@ -19,6 +19,11 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+### [0.4.0] - 2026-11-12
+
+Everything after 0.3.0: Horizon 2's operations work (backup, `/metrics`, `-auto-tls`, the
+config file, rate limits with protocol draft 0.34) and the measured sizing. Tag `hub-v0.4.0`.
+
 - 2026-11-11: one TOML config file (`-config`, `VYSHKA_HUB_CONFIG`) under flags and the environment,
   with `file:` secrets for `db` and `admin-token`, and `vyshka-hub config` to print the
   settings in effect and their sources (issue #84; `deploy/hub.toml.example`, `scripts/demo-config.sh`).
@@ -607,7 +612,16 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 ### [Unreleased]
 
+### [0.10.0] - 2026-11-12
+
+DayZ 1.30 (issue #149): the outbox restores again, missions compile, and motorbikes
+register. Tag `dayz-plugin-v0.10.0`. Pair it with hub 0.4.0; rate-limit handling is
+unchanged from 0.9.0.
+
 #### Added
+
+- 2026-11-12: `PLUGIN_VERSION` moves to 0.10.0 with this release; #150 changed the mod
+  without bumping it.
 
 - 2026-11-11: the README notes what DayZ 1.30's base-building item falling does to what an
   admin spawns onto a base, read from the game source and not measured (issue #149).
