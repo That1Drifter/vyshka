@@ -1,0 +1,61 @@
+08:41:45.064 SCRIPT       : VYSHKA_RF	10037	hook.OnGameStart	ms=0	isServer=1 rplMode=Dedicated	http=0	len=0	
+08:41:45.064 SCRIPT       : VYSHKA_RF	10037	probe.start	ms=0	ok	http=0	len=0	
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	W.token	ms=0	read=1	http=0	len=30	
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	W.setHeaders	ms=0	returned=1	http=0	len=81	Authorization,Bearer <session token>,Content-Type,application/json
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	W.context	ms=0	contexts 0->1 timeout=20	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	r6.tls.upper.fresh.poll.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/poll
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	R6.context	ms=0	contexts 1->2 timeout=30	http=0	len=0	https://VYSHKA-BRANCH.solvaryx.cloud
+08:41:47.873 SCRIPT       : VYSHKA_RF	12846	r6.tls.upper.fresh.healthz.issued	ms=0	GET rc=1	http=0	len=0	/healthz
+08:41:48.090 SCRIPT       : VYSHKA_RF	13063	r6.tls.upper.fresh.healthz	ms=217	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 37671,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:41:58.156 SCRIPT       : VYSHKA_RF	23130	r6.tls.upper.fresh.poll	ms=10284	success/EREST_SUCCESS	http=200	len=112	{   "envelopes": [],   "ack": 0,   "pollTimeoutSeconds": 10,   "sessionExpiresAt": "2026-11-12T15:38:47.993Z" } 
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	W.token	ms=0	read=1	http=0	len=30	
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	W.setHeaders	ms=0	returned=1	http=0	len=81	Authorization,Bearer <session token>,Content-Type,application/json
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	W.context	ms=0	contexts 2->2 timeout=20	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	r6.tls.upper.warm.poll.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/poll
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	R6.context	ms=0	contexts 2->2 timeout=30	http=0	len=0	https://VYSHKA-BRANCH.solvaryx.cloud
+08:41:58.656 SCRIPT       : VYSHKA_RF	23630	r6.tls.upper.warm.healthz.issued	ms=0	GET rc=1	http=0	len=0	/healthz
+08:41:58.890 SCRIPT       : VYSHKA_RF	23864	r6.tls.upper.warm.healthz	ms=234	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 37682,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:42:08.823 SCRIPT       : VYSHKA_RF	33797	r6.tls.upper.warm.poll	ms=10167	success/EREST_SUCCESS	http=200	len=112	{   "envelopes": [],   "ack": 0,   "pollTimeoutSeconds": 10,   "sessionExpiresAt": "2026-11-12T15:38:47.993Z" } 
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	W.token	ms=0	read=1	http=0	len=30	
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	W.setHeaders	ms=0	returned=1	http=0	len=81	Authorization,Bearer <session token>,Content-Type,application/json
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	W.context	ms=0	contexts 2->2 timeout=20	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	r6.tls.port.fresh.poll.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/poll
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	R6.context	ms=0	contexts 2->3 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud:443
+08:42:09.323 SCRIPT       : VYSHKA_RF	34296	r6.tls.port.fresh.healthz.issued	ms=0	GET rc=1	http=0	len=0	/healthz
+08:42:09.540 SCRIPT       : VYSHKA_RF	34514	r6.tls.port.fresh.healthz	ms=218	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 37692,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:42:19.473 SCRIPT       : VYSHKA_RF	44447	r6.tls.port.fresh.poll	ms=10151	success/EREST_SUCCESS	http=200	len=112	{   "envelopes": [],   "ack": 0,   "pollTimeoutSeconds": 10,   "sessionExpiresAt": "2026-11-12T15:38:47.993Z" } 
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	W.token	ms=0	read=1	http=0	len=30	
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	W.setHeaders	ms=0	returned=1	http=0	len=81	Authorization,Bearer <session token>,Content-Type,application/json
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	W.context	ms=0	contexts 3->3 timeout=20	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	r6.tls.port.warm.poll.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/poll
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	R6.context	ms=0	contexts 3->3 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud:443
+08:42:19.973 SCRIPT       : VYSHKA_RF	44947	r6.tls.port.warm.healthz.issued	ms=0	GET rc=1	http=0	len=0	/healthz
+08:42:20.190 SCRIPT       : VYSHKA_RF	45164	r6.tls.port.warm.healthz	ms=217	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 37703,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:42:30.140 SCRIPT       : VYSHKA_RF	55114	r6.tls.port.warm.poll	ms=10167	success/EREST_SUCCESS	http=200	len=112	{   "envelopes": [],   "ack": 0,   "pollTimeoutSeconds": 10,   "sessionExpiresAt": "2026-11-12T15:38:47.993Z" } 
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	W.token	ms=0	read=1	http=0	len=30	
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	W.setHeaders	ms=0	returned=1	http=0	len=81	Authorization,Bearer <session token>,Content-Type,application/json
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	W.context	ms=0	contexts 3->3 timeout=20	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	r6.tls.port.warm2.poll.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/poll
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	R6.context	ms=0	contexts 3->3 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud:443
+08:42:30.640 SCRIPT       : VYSHKA_RF	55614	r6.tls.port.warm2.healthz.issued	ms=0	GET rc=1	http=0	len=0	/healthz
+08:42:30.856 SCRIPT       : VYSHKA_RF	55830	r6.tls.port.warm2.healthz	ms=216	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 37714,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:42:40.790 SCRIPT       : VYSHKA_RF	65764	r6.tls.port.warm2.poll	ms=10150	success/EREST_SUCCESS	http=200	len=112	{   "envelopes": [],   "ack": 0,   "pollTimeoutSeconds": 10,   "sessionExpiresAt": "2026-11-12T15:38:47.993Z" } 
+08:42:41.289 SCRIPT       : VYSHKA_RF	66264	R6.context	ms=0	contexts 3->4 timeout=30	http=0	len=0	http://127.0.0.1:8099/c70/
+08:42:41.289 SCRIPT       : VYSHKA_RF	66264	r6.local.fresh.hold10.issued	ms=0	GET rc=1	http=0	len=0	hold?s=10
+08:42:41.289 SCRIPT       : VYSHKA_RF	66264	R6.context	ms=0	contexts 4->5 timeout=30	http=0	len=0	http://127.0.0.1:8099/c71/
+08:42:41.289 SCRIPT       : VYSHKA_RF	66264	r6.local.fresh.echo.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:42:51.323 SCRIPT       : VYSHKA_RF	76298	r6.local.fresh.hold10	ms=10034	success/EREST_SUCCESS	http=200	len=11	{"held":10}
+08:42:51.323 SCRIPT       : VYSHKA_RF	76298	r6.local.fresh.echo	ms=10034	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:42:51.823 SCRIPT       : VYSHKA_RF	76797	R6.context	ms=0	contexts 5->5 timeout=30	http=0	len=0	http://127.0.0.1:8099/c70/
+08:42:51.823 SCRIPT       : VYSHKA_RF	76797	r6.local.warm.hold10.issued	ms=0	GET rc=1	http=0	len=0	hold?s=10
+08:42:51.823 SCRIPT       : VYSHKA_RF	76797	R6.context	ms=0	contexts 5->5 timeout=30	http=0	len=0	http://127.0.0.1:8099/c71/
+08:42:51.823 SCRIPT       : VYSHKA_RF	76797	r6.local.warm.echo.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:43:01.873 SCRIPT       : VYSHKA_RF	86848	r6.local.warm.hold10	ms=10051	success/EREST_SUCCESS	http=200	len=11	{"held":10}
+08:43:01.873 SCRIPT       : VYSHKA_RF	86848	r6.local.warm.echo	ms=10051	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:43:02.389 SCRIPT       : VYSHKA_RF	87364	R6.context	ms=0	contexts 5->5 timeout=30	http=0	len=0	http://127.0.0.1:8099/c70/
+08:43:02.389 SCRIPT       : VYSHKA_RF	87364	r6.local.same.hold10.issued	ms=0	GET rc=1	http=0	len=0	hold?s=10
+08:43:02.389 SCRIPT       : VYSHKA_RF	87364	R6.context	ms=0	contexts 5->5 timeout=30	http=0	len=0	http://127.0.0.1:8099/c70/
+08:43:02.389 SCRIPT       : VYSHKA_RF	87364	r6.local.same.echo.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:43:12.423 SCRIPT       : VYSHKA_RF	97398	r6.local.same.hold10	ms=10034	success/EREST_SUCCESS	http=200	len=11	{"held":10}
+08:43:12.423 SCRIPT       : VYSHKA_RF	97398	r6.local.same.echo	ms=10034	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:43:12.922 SCRIPT       : VYSHKA_RF	97897	probe.done	ms=0	ok	http=0	len=8	

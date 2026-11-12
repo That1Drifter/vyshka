@@ -1,0 +1,10 @@
+STUB	listen	127.0.0.1:8099
+STUB	14:42:41.292	GET	/hold?s=10	body=0	hold-begin s=10	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:42:51.292	hold-answered	s=10	after=10.000s
+STUB	14:42:51.292	GET	/echo	body=0	ok sha256=e3b0c44298fc1c14	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:42:51.845	GET	/hold?s=10	body=0	hold-begin s=10	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:43:01.845	hold-answered	s=10	after=10.000s
+STUB	14:43:01.845	GET	/echo	body=0	ok sha256=e3b0c44298fc1c14	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:43:02.392	GET	/hold?s=10	body=0	hold-begin s=10	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:43:12.393	hold-answered	s=10	after=10.001s
+STUB	14:43:12.393	GET	/echo	body=0	ok sha256=e3b0c44298fc1c14	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)

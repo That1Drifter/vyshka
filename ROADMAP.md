@@ -112,6 +112,9 @@ One line each, newest last; the changelog and the pull request carry the detail.
   with SQLite (3 of 3 runs each); disk binds first: about 7.8 servers of the first kind on
   40 GB at default retention after 90 days.
 - 2026-11-12: hub 0.4.0 and DayZ plugin 0.10.0 released.
+- 2026-11-12: Reforger server script measured (#159, spike, partial): poll timeouts of 3 s
+  and up, readable error bodies, real `Authorization` headers, responses under 1 MiB, no
+  guaranteed second request while a poll is held; player identity still open.
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -137,12 +140,15 @@ spec reader is not surprised.
 
 ## Horizon 4: the ecosystem and the second game
 
-- **Arma Reforger plugin**: tabled 2026-09-14, reopened and committed 2026-11-12. First
-  comes a spike (#159) that measures the server script's HTTP, file, and identity limits
-  on a real Reforger dedicated server, as `spikes/dayz-restapi-poll-timeout` did for DayZ.
-  After it, the tracer bullet (#15): enrollment, sessions, the poll loop, one action, the
-  plugin conformance suite, and Reforger's entry in the platform registry (section 8.2,
-  additive). Protocol 1.0 still gates only on a third-party plugin; a second reference
+- **Arma Reforger plugin**: tabled 2026-09-14, reopened and committed 2026-11-12. The
+  spike (#159) measured the server script on Reforger 1.9
+  (`spikes/reforger-server-script-limits`): the poll transport works as specified. One
+  item is still open: the player identifier, which reads empty unless the server is
+  registered with Bohemia's backend, and such a server loads its mods only from the
+  Workshop. Next is the tracer bullet (#15): enrollment, sessions, the poll loop, one
+  action, and the plugin conformance suite. A protocol change comes first: a byte bound on
+  the poll response, because Reforger cannot receive 1 MiB. Reforger's entry in the
+  platform registry (section 8.2, additive) waits on the identity measurement. Protocol 1.0 still gates only on a third-party plugin; a second reference
   plugin tests the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked
   2026-10-03 (see the parked table). Anyone can `go run` the suites from this module today.

@@ -1,0 +1,19 @@
+STUB	listen	127.0.0.1:8099
+STUB	14:39:39.492	GET	/hold?s=10	body=0	hold-begin s=10	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:49.492	hold-answered	s=10	after=10.000s
+STUB	14:39:50.036	GET	/big?chunked=1&n=1048575	body=0	big n=1048575 chunked=true	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:50.039	big-written	n=1048575	written=1048575	err=<nil>
+STUB	14:39:50.581	GET	/big?chunked=1&n=1048576	body=0	big n=1048576 chunked=true	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:50.584	big-written	n=1048576	written=1048576	err=<nil>
+STUB	14:39:51.129	GET	/big?chunked=1&n=2097152	body=0	big n=2097152 chunked=true	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:51.133	big-written	n=2097152	written=1097734	err=write tcp 127.0.0.1:8099->127.0.0.1:60173: wsasend: An existing connection was forcibly closed by the remote host.
+STUB	14:39:51.675	PUT	/echo	body=7	ok sha256=4835f96cb95414c1	proto=HTTP/1.1 cl=7 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Length=7; Content-Type=application/json; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:52.217	DELETE	/echo	body=7	ok sha256=99e6326a5a58748f	proto=HTTP/1.1 cl=7 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Length=7; Content-Type=application/json; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:52.764	POST	/echo	body=7	ok sha256=6e532bcb31b949b6	proto=HTTP/1.1 cl=-1 te=chunked	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Type=application/json; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:39:53.312	GET	/echo	body=0	ok sha256=e3b0c44298fc1c14	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows); X-Second=b
+STUB	14:39:53.856	GET	/hold?s=20	body=0	hold-begin s=20	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:40:08.882	hold-client-gone	s=20	after=15.026s
+STUB	14:40:09.423	GET	/hold?s=20	body=0	hold-begin s=20	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:40:24.453	hold-client-gone	s=20	after=15.031s
+STUB	14:40:24.997	GET	/hold?s=10	body=0	hold-begin s=10	proto=HTTP/1.1 cl=0 te=	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:40:30.016	hold-client-gone	s=10	after=5.019s

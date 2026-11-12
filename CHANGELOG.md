@@ -19,6 +19,11 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+#### Added
+
+- 2026-11-12: `spikes/reforger-server-script-limits` measures what a Reforger 1.9 dedicated
+  server's script can do over HTTP, with files and JSON, and at its player hooks (#159).
+
 #### Changed
 
 - 2026-11-12: roadmap review: the Arma Reforger plugin is reopened as the next horizon (spike
