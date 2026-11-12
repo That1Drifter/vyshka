@@ -192,10 +192,11 @@ class VyshkaRfProbe
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Run 6 separates the two run 5 outcomes for a request sent while a poll is held: it pairs
-	//! the poll with a request on a context that has never sent anything (fresh) and then on
-	//! the same context again (warm), over TLS and in cleartext. Spellings of the same host
-	//! (upper case, an explicit :443) give distinct contexts.
+	//! Run 6 tries to explain the two run 5 outcomes for a request sent while a poll is held:
+	//! it pairs the poll with a request on a context that has never sent anything (fresh) and
+	//! then on the same context again (warm), over TLS and in cleartext. Spellings of the same
+	//! host (upper case, an explicit :443) give distinct contexts. It did not explain them: see
+	//! results/findings.md.
 	protected void NextRun6()
 	{
 		switch (m_Step)
