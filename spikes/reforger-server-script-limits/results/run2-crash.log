@@ -1,0 +1,22 @@
+---------------------------------------------
+Log C:\WorkDrive\reforger-server\runs\profile2\logs\logs_2026-11-12_08-21-57\crash.log started at 2026-11-12 08:23:29 (2026-11-12 14:23:29 UTC)
+
+
+
+------------------------------------
+12.11 2026 08:23:29
+Unhandled exception
+
+Program: C:\WorkDrive\reforger-server\server\ArmaReforgerServer.exe
+Reason: Access violation. Illegal write by 0x7ff643023f31 at 0x1dde054c037
+
+
+Class:      'VyshkaRfProbe'
+Function: 'Issue'
+Stack trace:
+scripts/Game/VyshkaRfProbe.c:89 Function Issue
+scripts/Game/VyshkaRfProbe.c:156 Function One
+scripts/Game/VyshkaRfProbe.c:198 Function NextRun2
+scripts/Game/VyshkaRfProbe.c:167 Function Next
+scripts/Game/game.c:875 Function OnUpdate
+

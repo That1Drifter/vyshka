@@ -1,0 +1,51 @@
+08:26:46.939 SCRIPT       : VYSHKA_RF	10687	hook.OnGameStart	ms=0	isServer=1 rplMode=Dedicated	http=0	len=0	
+08:26:46.939 SCRIPT       : VYSHKA_RF	10687	probe.start	ms=0	ok	http=0	len=0	
+08:26:49.747 SCRIPT       : VYSHKA_RF	13496	string.length.e4096	ms=0	Length() of 4096 two-byte characters	http=0	len=8192	
+08:26:49.747 SCRIPT       : VYSHKA_RF	13496	U.context	ms=0	contexts 0->1 timeout=60	http=0	len=0	http://127.0.0.1:8099/c40/
+08:26:49.753 SCRIPT       : VYSHKA_RF	13501	req.utf8.5000x2.issued	ms=0	POST rc=1	http=0	len=10000	echo
+08:26:49.778 SCRIPT       : VYSHKA_RF	13526	req.utf8.5000x2	ms=25	success/EREST_SUCCESS	http=200	len=394	{"bodyLen":10000,"head":"éééééééééééééééééééééééééééééééé","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],
+08:26:50.282 SCRIPT       : VYSHKA_RF	14031	U.context	ms=0	contexts 1->1 timeout=60	http=0	len=0	http://127.0.0.1:8099/c40/
+08:26:50.282 SCRIPT       : VYSHKA_RF	14031	req.mixed.8000a+500e.issued	ms=0	POST rc=1	http=0	len=9000	echo
+08:26:50.328 SCRIPT       : VYSHKA_RF	14076	req.mixed.8000a+500e	ms=45	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":9000,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:26:50.832 SCRIPT       : VYSHKA_RF	14581	Q.context	ms=0	contexts 1->2 timeout=30	http=0	len=0	http://127.0.0.1:8099/c41/
+08:26:50.833 SCRIPT       : VYSHKA_RF	14581	q.hold4.local.issued	ms=0	GET rc=1	http=0	len=0	hold?s=4
+08:26:50.833 SCRIPT       : VYSHKA_RF	14581	Q.context	ms=0	contexts 2->3 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:26:50.833 SCRIPT       : VYSHKA_RF	14581	q.tls.healthz.issued	ms=0	GET rc=1	http=0	len=0	healthz
+08:26:51.094 SCRIPT       : VYSHKA_RF	14843	q.tls.healthz	ms=262	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 36774,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:26:54.877 SCRIPT       : VYSHKA_RF	18626	q.hold4.local	ms=4045	success/EREST_SUCCESS	http=200	len=10	{"held":4}
+08:26:55.389 SCRIPT       : VYSHKA_RF	19137	file.line.8191	ms=0	readLine=8191 fileLen=8193	http=0	len=8191	
+08:26:55.393 SCRIPT       : VYSHKA_RF	19142	file.line.8192	ms=0	readLine=8191 fileLen=8193	http=0	len=8191	
+08:26:55.397 SCRIPT       : VYSHKA_RF	19146	file.line.65536	ms=0	readLine=8191 fileLen=8193	http=0	len=8191	
+08:26:55.403 SCRIPT       : VYSHKA_RF	19153	file.line.1048576	ms=0	readLine=8191 fileLen=8193	http=0	len=8191	
+08:26:55.403 SCRIPT       : VYSHKA_RF	19153	json.save.write20000	ms=0	scriptLen=8191	http=0	len=8199	
+08:26:55.404 SCRIPT       : VYSHKA_RF	19153	string.concat.16000	ms=0	ok	http=0	len=16000	
+08:26:55.404 SCRIPT       : VYSHKA_RF	19153	string.substring.12000	ms=0	ok	http=0	len=8191	
+08:26:55.883 SCRIPT       : VYSHKA_RF	19631	probe.await-player	ms=0	waiting up to 600 s for a client	http=0	len=0	
+08:27:30.244   SCRIPT       : VYSHKA_RF	53993	hook.OnPlayerConnected	ms=0	player=1 identityNow=	http=0	len=0	<player>
+08:27:30.246   SCRIPT       : VYSHKA_RF	53995	hook.OnPlayerAuditSuccess	ms=0	player=1 identity= legacy= kind=NONE platformId=	http=0	len=0	<player>
+08:27:30.246   SCRIPT       : VYSHKA_RF	53995	hook.OnPlayerRegistered	ms=0	player=1	http=0	len=0	<player>
+08:27:31.910 SCRIPT       : VYSHKA_RF	55659	probe.player-seen	ms=36028	players=1	http=0	len=0	
+08:27:32.414 SCRIPT       : VYSHKA_RF	56163	P.context	ms=0	contexts 3->4 timeout=30	http=0	len=0	http://127.0.0.1:8099/c42/
+08:27:32.414 SCRIPT       : VYSHKA_RF	56164	req.query.1024.issued	ms=0	GET rc=1	http=0	len=0	echo?q=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+08:27:32.444 SCRIPT       : VYSHKA_RF	56193	req.query.1024	ms=30	success/EREST_SUCCESS	http=200	len=1298	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:27:32.964 SCRIPT       : VYSHKA_RF	56713	P.context	ms=0	contexts 4->4 timeout=30	http=0	len=0	http://127.0.0.1:8099/c42/
+08:27:32.964 SCRIPT       : VYSHKA_RF	56713	req.query.2048.issued	ms=0	GET rc=1	http=0	len=0	echo?q=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+08:27:32.993 SCRIPT       : VYSHKA_RF	56743	req.query.2048	ms=30	success/EREST_SUCCESS	http=200	len=2322	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:27:33.497 SCRIPT       : VYSHKA_RF	57246	probe.done	ms=0	ok	http=0	len=7	
+08:27:59.093 SCRIPT       : VYSHKA_RF	82843	hook.OnPlayerDisconnected	ms=0	player=1 timeout=0	http=0	len=0	
+08:27:24.210 RPL          : Server L2 authenticating connection (identity=0x00000000, endpoint=127.0.0.1:57828, slots=1/256)
+08:27:24.210 RPL          : Server L2 connection authentication passed (identity=0x00000000)
+08:27:24.744  RPL          : Server event Connected (identity=0x00000000)
+08:27:30.060 NETWORK      : Player connected: connectionID=0
+08:27:30.060 NETWORK      : ### Connecting player: connectionID=0, Name=
+08:27:30.110  RPL          : rpl::Pip::ProcessNetToGame
+08:27:30.110   NETWORK      : ### Creating player: PlayerId=1, Name=<player>
+08:27:30.113  RPL          : rpl::Pip::ProcessNetToGame
+08:27:30.244  RPL          : rpl::Pip::ProcessNetToGame
+08:27:30.246   NETWORK      : ### Updating player: PlayerId=1, Name=<player>, rplIdentity=0x00000000, IdentityId=00000000-0000-0000-0000-000000000000
+08:27:30.246   NETWORK      : Players connecting: 0
+08:27:30.246   NETWORK      : Players connected: 1 / 1
+08:27:59.064 RPL          : Server L2 live connection timeout (identity=0x00000000)
+08:27:59.077  RPL          : Server event Disconnected (identity=0x00000000, group=1, reason=4)
+08:27:59.079 RPL          : Server L2 connection slot free (identity=0x00000000, slots=0/256)
+08:27:59.093 NETWORK      : Player disconnected: connectionID=0

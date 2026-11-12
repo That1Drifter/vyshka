@@ -1,0 +1,27 @@
+STUB	listen	127.0.0.1:8099
+STUB	14:22:08.758	GET	/hold?s=3	body=0	hold-begin s=3	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:22:11.758	hold-answered	s=3	after=3.000s
+STUB	14:22:12.298	GET	/hold?s=4	body=0	hold-begin s=4	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:22:16.298	hold-answered	s=4	after=4.001s
+STUB	14:22:16.840	GET	/hold?s=5	body=0	hold-begin s=5	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:22:19.891	hold-client-gone	s=5	after=3.051s
+STUB	14:22:20.436	GET	/hold?s=20	body=0	hold-begin s=20	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:22:35.467	hold-client-gone	s=20	after=15.031s
+STUB	14:22:36.011	GET	/hold?s=14	body=0	hold-begin s=14	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:22:50.011	hold-answered	s=14	after=14.000s
+STUB	14:22:50.561	GET	/hold?s=16	body=0	hold-begin s=16	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:05.594	hold-client-gone	s=16	after=15.034s
+STUB	14:23:06.139	GET	/drip?s=12&every=1	body=0	drip-begin s=12 every=1	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:18.143	drip-done	s=12	after=12.005s
+STUB	14:23:18.695	GET	/drip?s=21&every=7	body=0	drip-begin s=21 every=7	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:23.714	drip-client-gone	after=5.020s
+STUB	14:23:24.260	GET	/big?n=393216	body=0	big n=393216	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:24.802	GET	/big?n=524288	body=0	big n=524288	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:25.346	GET	/big?n=524289	body=0	big n=524289	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:25.997	GET	/big?n=786432	body=0	big n=786432	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:26.541	GET	/big?n=1048575	body=0	big n=1048575	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:27.088	POST	/echo	body=8191	ok sha256=d691798dcd3bab90	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Type=application/x-www-form-urlencoded; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:27.630	POST	/echo	body=8191	ok sha256=d691798dcd3bab90	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Type=application/x-www-form-urlencoded; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:28.176	PUT	/echo	body=8191	ok sha256=d691798dcd3bab90	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Length=8191; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:28.723	POST	/echo	body=8192	ok sha256=9a74b60bb3129364	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Type=application/x-www-form-urlencoded; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)
+STUB	14:23:29.267	POST	/echo	body=6000	ok sha256=557bf944b8c2f7b5	headers: Accept=*/*; Connection=Upgrade, HTTP2-Settings; Content-Type=application/x-www-form-urlencoded; Http2-Settings=AAMAAABkAAQAAQAAAAIAAAAA; Upgrade=h2c; User-Agent=Arma Reforger/1.9.0.37 (Headless; Windows)

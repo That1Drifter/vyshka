@@ -1,0 +1,171 @@
+08:09:19.499 SCRIPT       : VYSHKA_RF	13628	hook.OnGameStart	ms=0	isServer=1 rplMode=Dedicated	http=0	len=0	
+08:09:19.499 SCRIPT       : VYSHKA_RF	13628	probe.start	ms=0	ok	http=0	len=0	
+08:09:22.310 SCRIPT       : VYSHKA_RF	16438	A.context	ms=0	contexts 0->1 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c1/
+08:09:22.310 SCRIPT       : VYSHKA_RF	16438	get.echo.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:09:22.343 SCRIPT       : VYSHKA_RF	16472	get.echo	ms=34	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:09:22.843 SCRIPT       : VYSHKA_RF	16971	A.context	ms=0	contexts 1->1 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c1/
+08:09:22.843 SCRIPT       : VYSHKA_RF	16971	post.echo.issued	ms=0	POST rc=1	http=0	len=7	echo
+08:09:22.876 SCRIPT       : VYSHKA_RF	17005	post.echo	ms=34	success/EREST_SUCCESS	http=200	len=335	{"bodyLen":7,"head":"{\"a\":1}","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Type":["application/x-www-form-urlencoded"],"Http2
+08:09:23.376 SCRIPT       : VYSHKA_RF	17505	A.context	ms=0	contexts 1->1 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c1/
+08:09:23.376 SCRIPT       : VYSHKA_RF	17505	put.echo.issued	ms=0	PUT rc=1	http=0	len=7	echo
+08:09:23.426 SCRIPT       : VYSHKA_RF	17555	put.echo	ms=50	success/EREST_SUCCESS	http=200	len=304	{"bodyLen":7,"head":"{\"a\":2}","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Length":["7"],"Http2-Settings":["AAMAAABkAAQAAQAAA
+08:09:23.926 SCRIPT       : VYSHKA_RF	18054	A.context	ms=0	contexts 1->1 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c1/
+08:09:23.926 SCRIPT       : VYSHKA_RF	18054	delete.echo.issued	ms=0	DELETE rc=1	http=0	len=7	echo
+08:09:23.960 SCRIPT       : VYSHKA_RF	18088	delete.echo	ms=34	success/EREST_SUCCESS	http=200	len=360	{"bodyLen":7,"head":"{\"a\":3}","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Length":["7"],"Content-Type":["application/x-www-f
+08:09:24.459 SCRIPT       : VYSHKA_RF	18588	A.context	ms=0	contexts 1->1 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c1/
+08:09:24.459 SCRIPT       : VYSHKA_RF	18588	get.query.issued	ms=0	GET rc=1	http=0	len=0	echo?errors=inline&x=1
+08:09:24.510 SCRIPT       : VYSHKA_RF	18638	get.query	ms=50	success/EREST_SUCCESS	http=200	len=294	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:09:25.026 SCRIPT       : VYSHKA_RF	19154	B1.setHeaders	ms=0	returned=0	http=0	len=24	Authorization: Bearer t1
+08:09:25.026 SCRIPT       : VYSHKA_RF	19154	B1.context	ms=0	contexts 1->2 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c2/
+08:09:25.026 SCRIPT       : VYSHKA_RF	19154	hdr.colon.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:09:25.060 SCRIPT       : VYSHKA_RF	19188	hdr.colon	ms=34	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:09:25.560 SCRIPT       : VYSHKA_RF	19688	B2.setHeaders	ms=0	returned=1	http=0	len=23	Authorization,Bearer t2
+08:09:25.560 SCRIPT       : VYSHKA_RF	19688	B2.context	ms=0	contexts 2->3 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c3/
+08:09:25.560 SCRIPT       : VYSHKA_RF	19688	hdr.comma.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:09:25.610 SCRIPT       : VYSHKA_RF	19738	hdr.comma	ms=50	success/EREST_SUCCESS	http=200	len=302	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Authorization":["Bearer t2"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAI
+08:09:26.110 SCRIPT       : VYSHKA_RF	20238	B3.setHeaders	ms=0	returned=1	http=0	len=53	Content-Type,application/json,Authorization,Bearer t3
+08:09:26.110 SCRIPT       : VYSHKA_RF	20238	B3.context	ms=0	contexts 3->4 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c4/
+08:09:26.110 SCRIPT       : VYSHKA_RF	20238	hdr.comma2.issued	ms=0	POST rc=1	http=0	len=2	echo
+08:09:26.143 SCRIPT       : VYSHKA_RF	20272	hdr.comma2	ms=34	success/EREST_SUCCESS	http=200	len=341	{"bodyLen":2,"head":"{}","headers":{"Accept":["*/*"],"Authorization":["Bearer t3"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Type":["application/json"],
+08:09:26.643 SCRIPT       : VYSHKA_RF	20771	B4.setHeaders	ms=0	returned=0	http=0	len=55	Content-Type: application/json Authorization: Bearer t4
+08:09:26.643 SCRIPT       : VYSHKA_RF	20771	B4.context	ms=0	contexts 4->5 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c5/
+08:09:26.643 SCRIPT       : VYSHKA_RF	20771	hdr.newline.issued	ms=0	GET rc=1	http=0	len=0	echo
+08:09:26.693 SCRIPT       : VYSHKA_RF	20822	hdr.newline	ms=51	success/EREST_SUCCESS	http=200	len=272	{"bodyLen":0,"head":"","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Http2-Settings":["AAMAAABkAAQAAQAAAAIAAAAA"],"Upgrade":["h2c"],"Use
+08:09:27.193 SCRIPT       : VYSHKA_RF	21322	B5.context	ms=0	contexts 5->5 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c4/
+08:09:27.193 SCRIPT       : VYSHKA_RF	21322	hdr.persist.post.issued	ms=0	POST rc=1	http=0	len=2	echo
+08:09:27.227 SCRIPT       : VYSHKA_RF	21355	hdr.persist.post	ms=33	success/EREST_SUCCESS	http=200	len=341	{"bodyLen":2,"head":"{}","headers":{"Accept":["*/*"],"Authorization":["Bearer t3"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Type":["application/json"],
+08:09:27.726 SCRIPT       : VYSHKA_RF	21855	C.context	ms=0	contexts 5->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:27.726 SCRIPT       : VYSHKA_RF	21855	status.204.issued	ms=0	GET rc=1	http=0	len=0	nocontent
+08:09:27.777 SCRIPT       : VYSHKA_RF	21905	status.204	ms=50	success/EREST_SUCCESS	http=204	len=0	
+08:09:28.276 SCRIPT       : VYSHKA_RF	22405	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:28.276 SCRIPT       : VYSHKA_RF	22405	status.302.issued	ms=0	GET rc=1	http=0	len=0	redirect
+08:09:28.327 SCRIPT       : VYSHKA_RF	22455	status.302	ms=50	error/EREST_ERROR_UNKNOWN	http=302	len=41	<a href="/echo?redirected=1">Found</a>.  
+08:09:28.826 SCRIPT       : VYSHKA_RF	22954	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:28.826 SCRIPT       : VYSHKA_RF	22954	status.400.issued	ms=0	GET rc=1	http=0	len=0	status?code=400
+08:09:28.860 SCRIPT       : VYSHKA_RF	22988	status.400	ms=34	error/EREST_ERROR_UNKNOWN	http=400	len=56	{"error":{"code":"probe_400","message":"body of a 400"}}
+08:09:29.360 SCRIPT       : VYSHKA_RF	23488	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:29.360 SCRIPT       : VYSHKA_RF	23488	status.401.issued	ms=0	POST rc=1	http=0	len=2	status?code=401
+08:09:29.410 SCRIPT       : VYSHKA_RF	23538	status.401	ms=50	error/EREST_ERROR_UNKNOWN	http=401	len=56	{"error":{"code":"probe_401","message":"body of a 401"}}
+08:09:29.926 SCRIPT       : VYSHKA_RF	24054	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:29.926 SCRIPT       : VYSHKA_RF	24054	status.404.issued	ms=0	GET rc=1	http=0	len=0	status?code=404
+08:09:29.960 SCRIPT       : VYSHKA_RF	24088	status.404	ms=34	error/EREST_ERROR_UNKNOWN	http=404	len=56	{"error":{"code":"probe_404","message":"body of a 404"}}
+08:09:30.460 SCRIPT       : VYSHKA_RF	24588	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:30.460 SCRIPT       : VYSHKA_RF	24588	status.409.issued	ms=0	POST rc=1	http=0	len=2	status?code=409
+08:09:30.510 SCRIPT       : VYSHKA_RF	24639	status.409	ms=51	error/EREST_ERROR_UNKNOWN	http=409	len=56	{"error":{"code":"probe_409","message":"body of a 409"}}
+08:09:31.009 SCRIPT       : VYSHKA_RF	25138	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:31.009 SCRIPT       : VYSHKA_RF	25138	status.429.issued	ms=0	POST rc=1	http=0	len=2	status?code=429
+08:09:31.043 SCRIPT       : VYSHKA_RF	25171	status.429	ms=33	error/EREST_ERROR_UNKNOWN	http=429	len=56	{"error":{"code":"probe_429","message":"body of a 429"}}
+08:09:31.543 SCRIPT       : VYSHKA_RF	25671	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:31.543 SCRIPT       : VYSHKA_RF	25671	status.500.issued	ms=0	GET rc=1	http=0	len=0	status?code=500
+08:09:31.593 SCRIPT       : VYSHKA_RF	25722	status.500	ms=51	error/EREST_ERROR_UNKNOWN	http=500	len=56	{"error":{"code":"probe_500","message":"body of a 500"}}
+08:09:32.093 SCRIPT       : VYSHKA_RF	26221	C.context	ms=0	contexts 6->6 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c6/
+08:09:32.093 SCRIPT       : VYSHKA_RF	26221	status.503.issued	ms=0	GET rc=1	http=0	len=0	status?code=503
+08:09:32.144 SCRIPT       : VYSHKA_RF	26272	status.503	ms=51	error/EREST_ERROR_UNKNOWN	http=503	len=56	{"error":{"code":"probe_503","message":"body of a 503"}}
+08:09:32.643 SCRIPT       : VYSHKA_RF	26771	D.context	ms=0	contexts 6->7 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c7/
+08:09:32.643 SCRIPT       : VYSHKA_RF	26772	hold.default.5.issued	ms=0	GET rc=1	http=0	len=0	hold?s=5
+08:09:37.693 SCRIPT       : VYSHKA_RF	31822	hold.default.5	ms=5050	success/EREST_SUCCESS	http=200	len=10	{"held":5}
+08:09:38.193 SCRIPT       : VYSHKA_RF	32321	D.context	ms=0	contexts 7->7 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c7/
+08:09:38.193 SCRIPT       : VYSHKA_RF	32321	hold.default.12.issued	ms=0	GET rc=1	http=0	len=0	hold?s=12
+08:09:50.243 SCRIPT       : VYSHKA_RF	44372	hold.default.12	ms=12051	success/EREST_SUCCESS	http=200	len=11	{"held":12}
+08:09:50.743 SCRIPT       : VYSHKA_RF	44871	D.context	ms=0	contexts 7->7 timeout=-1	http=0	len=0	http://127.0.0.1:8099/c7/
+08:09:50.743 SCRIPT       : VYSHKA_RF	44871	hold.default.25.issued	ms=0	GET rc=1	http=0	len=0	hold?s=25
+08:10:05.810 SCRIPT       : VYSHKA_RF	59939	hold.default.25	ms=15068	error/EREST_ERROR_TIMEOUT	http=0	len=0	
+08:10:06.309 SCRIPT       : VYSHKA_RF	60438	D.context	ms=0	contexts 7->8 timeout=5	http=0	len=0	http://127.0.0.1:8099/c8/
+08:10:06.309 SCRIPT       : VYSHKA_RF	60438	hold.t5.8.issued	ms=0	GET rc=1	http=0	len=0	hold?s=8
+08:10:11.377 SCRIPT       : VYSHKA_RF	65506	hold.t5.8	ms=5068	error/EREST_ERROR_TIMEOUT	http=0	len=0	
+08:10:11.876 SCRIPT       : VYSHKA_RF	66005	D.context	ms=0	contexts 8->8 timeout=40	http=0	len=0	http://127.0.0.1:8099/c8/
+08:10:11.876 SCRIPT       : VYSHKA_RF	66005	hold.t40.30.issued	ms=0	GET rc=1	http=0	len=0	hold?s=30
+08:10:41.926 SCRIPT       : VYSHKA_RF	96056	hold.t40.30	ms=30051	success/EREST_SUCCESS	http=200	len=11	{"held":30}
+08:10:42.426 SCRIPT       : VYSHKA_RF	96555	D.context	ms=0	contexts 8->8 timeout=40	http=0	len=0	http://127.0.0.1:8099/c8/
+08:10:42.426 SCRIPT       : VYSHKA_RF	96555	hold.t40.50.issued	ms=0	GET rc=1	http=0	len=0	hold?s=50
+08:11:22.526 SCRIPT       : VYSHKA_RF	136657	hold.t40.50	ms=40102	error/EREST_ERROR_TIMEOUT	http=0	len=0	
+08:11:23.026 SCRIPT       : VYSHKA_RF	137156	D.context	ms=0	contexts 8->8 timeout=300	http=0	len=0	http://127.0.0.1:8099/c8/
+08:11:23.026 SCRIPT       : VYSHKA_RF	137156	hold.t300.150.issued	ms=0	GET rc=1	http=0	len=0	hold?s=150
+08:13:53.076 SCRIPT       : VYSHKA_RF	287209	hold.t300.150	ms=150053	success/EREST_SUCCESS	http=200	len=12	{"held":150}
+08:13:53.575 SCRIPT       : VYSHKA_RF	287709	D.context	ms=0	contexts 8->8 timeout=10	http=0	len=0	http://127.0.0.1:8099/c8/
+08:13:53.575 SCRIPT       : VYSHKA_RF	287709	drip.t10.20.issued	ms=0	GET rc=1	http=0	len=0	drip?s=20
+08:14:13.626 SCRIPT       : VYSHKA_RF	307759	drip.t10.20	ms=20050	success/EREST_SUCCESS	http=200	len=20	xxxxxxxxxxxxxxxxxxxx
+08:14:14.125 SCRIPT       : VYSHKA_RF	308258	D.context	ms=0	contexts 8->8 timeout=1	http=0	len=0	http://127.0.0.1:8099/c8/
+08:14:14.125 SCRIPT       : VYSHKA_RF	308259	hold.t1.3.issued	ms=0	GET rc=1	http=0	len=0	hold?s=3
+08:14:17.175 SCRIPT       : VYSHKA_RF	311309	hold.t1.3	ms=3050	success/EREST_SUCCESS	http=200	len=10	{"held":3}
+08:14:17.692 SCRIPT       : VYSHKA_RF	311826	D.context	ms=0	contexts 8->8 timeout=0	http=0	len=0	http://127.0.0.1:8099/c8/
+08:14:17.692 SCRIPT       : VYSHKA_RF	311826	hold.t0.3.issued	ms=0	GET rc=1	http=0	len=0	hold?s=3
+08:14:20.825 SCRIPT       : VYSHKA_RF	314959	hold.t0.3	ms=3133	success/EREST_SUCCESS	http=200	len=10	{"held":3}
+08:14:21.342 SCRIPT       : VYSHKA_RF	315475	E.context	ms=0	contexts 8->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:21.342 SCRIPT       : VYSHKA_RF	315475	resp.64k.issued	ms=0	GET rc=1	http=0	len=0	big?n=65536
+08:14:21.375 SCRIPT       : VYSHKA_RF	315510	resp.64k	ms=34	success/EREST_SUCCESS	http=200	len=65536	{"d":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+08:14:21.875 SCRIPT       : VYSHKA_RF	316009	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:21.875 SCRIPT       : VYSHKA_RF	316009	resp.256k.issued	ms=0	GET rc=1	http=0	len=0	big?n=262144
+08:14:21.910 SCRIPT       : VYSHKA_RF	316044	resp.256k	ms=34	success/EREST_SUCCESS	http=200	len=262144	{"d":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+08:14:22.408 SCRIPT       : VYSHKA_RF	316542	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:22.408 SCRIPT       : VYSHKA_RF	316542	resp.1m.issued	ms=0	GET rc=1	http=0	len=0	big?n=1048576
+08:14:22.459 SCRIPT       : VYSHKA_RF	316593	resp.1m	ms=51	error/EREST_ERROR_STORE	http=0	len=0	
+08:14:22.958 SCRIPT       : VYSHKA_RF	317092	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:22.958 SCRIPT       : VYSHKA_RF	317092	resp.4m.issued	ms=0	GET rc=1	http=0	len=0	big?n=4194304
+08:14:23.009 SCRIPT       : VYSHKA_RF	317142	resp.4m	ms=50	error/EREST_ERROR_STORE	http=0	len=0	
+08:14:23.508 SCRIPT       : VYSHKA_RF	317642	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:23.508 SCRIPT       : VYSHKA_RF	317642	resp.16m.issued	ms=0	GET rc=1	http=0	len=0	big?n=16777216
+08:14:23.542 SCRIPT       : VYSHKA_RF	317676	resp.16m	ms=34	error/EREST_ERROR_STORE	http=0	len=0	
+08:14:24.042 SCRIPT       : VYSHKA_RF	318175	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:24.042 SCRIPT       : VYSHKA_RF	318175	req.64k.issued	ms=0	POST rc=1	http=0	len=8191	echo
+08:14:24.092 SCRIPT       : VYSHKA_RF	318226	req.64k	ms=51	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":8191,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:14:24.592 SCRIPT       : VYSHKA_RF	318725	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:24.592 SCRIPT       : VYSHKA_RF	318726	req.256k.issued	ms=0	POST rc=1	http=0	len=8191	echo
+08:14:24.626 SCRIPT       : VYSHKA_RF	318759	req.256k	ms=33	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":8191,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:14:25.142 SCRIPT       : VYSHKA_RF	319276	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:25.143 SCRIPT       : VYSHKA_RF	319277	req.1m.issued	ms=0	POST rc=1	http=0	len=8191	echo
+08:14:25.175 SCRIPT       : VYSHKA_RF	319309	req.1m	ms=32	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":8191,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:14:25.675 SCRIPT       : VYSHKA_RF	319809	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:25.680 SCRIPT       : VYSHKA_RF	319814	req.4m.issued	ms=0	POST rc=1	http=0	len=8191	echo
+08:14:25.725 SCRIPT       : VYSHKA_RF	319859	req.4m	ms=45	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":8191,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:14:26.225 SCRIPT       : VYSHKA_RF	320359	E.context	ms=0	contexts 9->9 timeout=60	http=0	len=0	http://127.0.0.1:8099/c9/
+08:14:26.247 SCRIPT       : VYSHKA_RF	320381	req.16m.issued	ms=0	POST rc=1	http=0	len=8191	echo
+08:14:26.375 SCRIPT       : VYSHKA_RF	320509	req.16m	ms=128	success/EREST_SUCCESS	http=200	len=393	{"bodyLen":8191,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"
+08:14:26.875 SCRIPT       : VYSHKA_RF	321009	F1.context	ms=0	contexts 9->10 timeout=30	http=0	len=0	http://127.0.0.1:8099/c10/
+08:14:26.875 SCRIPT       : VYSHKA_RF	321009	conc.same.hold6.issued	ms=0	GET rc=1	http=0	len=0	hold?s=6
+08:14:26.875 SCRIPT       : VYSHKA_RF	321009	conc.same.post.issued	ms=0	POST rc=1	http=0	len=2	echo
+08:14:32.909 SCRIPT       : VYSHKA_RF	327043	conc.same.hold6	ms=6034	success/EREST_SUCCESS	http=200	len=10	{"held":6}
+08:14:32.909 SCRIPT       : VYSHKA_RF	327043	conc.same.post	ms=6034	success/EREST_SUCCESS	http=200	len=328	{"bodyLen":2,"head":"{}","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Type":["application/x-www-form-urlencoded"],"Http2-Settin
+08:14:33.408 SCRIPT       : VYSHKA_RF	327542	F2.context	ms=0	contexts 10->11 timeout=30	http=0	len=0	http://127.0.0.1:8099/c11/
+08:14:33.408 SCRIPT       : VYSHKA_RF	327542	conc.two.hold6.issued	ms=0	GET rc=1	http=0	len=0	hold?s=6
+08:14:33.408 SCRIPT       : VYSHKA_RF	327542	F2.context	ms=0	contexts 11->12 timeout=30	http=0	len=0	http://127.0.0.1:8099/c12/
+08:14:33.408 SCRIPT       : VYSHKA_RF	327542	conc.two.post.issued	ms=0	POST rc=1	http=0	len=2	echo
+08:14:39.458 SCRIPT       : VYSHKA_RF	333593	conc.two.hold6	ms=6051	success/EREST_SUCCESS	http=200	len=10	{"held":6}
+08:14:39.458 SCRIPT       : VYSHKA_RF	333593	conc.two.post	ms=6051	success/EREST_SUCCESS	http=200	len=328	{"bodyLen":2,"head":"{}","headers":{"Accept":["*/*"],"Connection":["Upgrade, HTTP2-Settings"],"Content-Type":["application/x-www-form-urlencoded"],"Http2-Settin
+08:14:39.958 SCRIPT       : VYSHKA_RF	334092	G.context	ms=0	contexts 12->13 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:14:39.958 SCRIPT       : VYSHKA_RF	334092	tls.healthz.issued	ms=0	GET rc=1	http=0	len=0	healthz
+08:14:40.209 SCRIPT       : VYSHKA_RF	334343	tls.healthz	ms=251	success/EREST_SUCCESS	http=200	len=161	{   "status": "ok",   "version": "main-f384602",   "uptimeSeconds": 36043,   "database": {     "driver": "sqlite",     "ok": true,     "schemaVersion": 21   } }
+08:14:40.709 SCRIPT       : VYSHKA_RF	334843	G.context	ms=0	contexts 13->13 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:14:40.709 SCRIPT       : VYSHKA_RF	334843	tls.session.401.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/session
+08:14:40.875 SCRIPT       : VYSHKA_RF	335009	tls.session.401	ms=166	error/EREST_ERROR_UNKNOWN	http=415	len=114	{   "error": {     "code": "unsupported_media_type",     "message": "request body must be application/json"   } } 
+08:14:41.375 SCRIPT       : VYSHKA_RF	335509	G.context	ms=0	contexts 13->13 timeout=30	http=0	len=0	https://vyshka-branch.solvaryx.cloud/
+08:14:41.375 SCRIPT       : VYSHKA_RF	335509	tls.session.inline.issued	ms=0	POST rc=1	http=0	len=2	plugin/v1/session?errors=inline
+08:14:41.542 SCRIPT       : VYSHKA_RF	335676	tls.session.inline	ms=167	success/EREST_SUCCESS	http=200	len=133	{   "error": {     "code": "unsupported_media_type",     "status": 415,     "message": "request body must be application/json"   } } 
+08:14:42.042 SCRIPT       : VYSHKA_RF	336176	H.context	ms=0	contexts 13->14 timeout=10	http=0	len=0	http://127.0.0.1:1/
+08:14:42.042 SCRIPT       : VYSHKA_RF	336176	fail.refused.issued	ms=0	GET rc=1	http=0	len=0	x
+08:14:44.109 SCRIPT       : VYSHKA_RF	338243	fail.refused	ms=2067	error/EREST_ERROR_UNKNOWN	http=0	len=0	
+08:14:44.608 SCRIPT       : VYSHKA_RF	338742	H.context	ms=0	contexts 14->15 timeout=10	http=0	len=0	http://vyshka-probe.invalid/
+08:14:44.608 SCRIPT       : VYSHKA_RF	338742	fail.dns.issued	ms=0	GET rc=1	http=0	len=0	x
+08:14:44.659 SCRIPT       : VYSHKA_RF	338793	fail.dns	ms=51	error/EREST_ERROR_SEND	http=0	len=0	
+08:14:45.158 SCRIPT       : VYSHKA_RF	339292	I.context	ms=0	contexts 15->16 timeout=10	http=0	len=0	http://127.0.0.1:8099/c13/
+08:14:45.158 SCRIPT       : VYSHKA_RF	339292	now.get.hold2	ms=0	returned	http=0	len=0	
+08:14:45.158 SCRIPT       : VYSHKA_RF	339292	now.get.404	ms=0	returned	http=0	len=0	
+08:14:45.158 SCRIPT       : VYSHKA_RF	339292	now.post.echo	ms=0	returned	http=0	len=9	{"now":1}
+08:14:45.659 SCRIPT       : VYSHKA_RF	339793	json.parse.blob.262144	ms=0	load=1 read=1	http=0	len=8191	
+08:14:45.659 SCRIPT       : VYSHKA_RF	339793	json.save.blob.262144	ms=0	ok	http=0	len=8199	{"d":"aaaaaa
+08:14:45.660 SCRIPT       : VYSHKA_RF	339795	json.parse.blob.1048576	ms=0	load=1 read=1	http=0	len=8191	
+08:14:45.660 SCRIPT       : VYSHKA_RF	339795	json.save.blob.1048576	ms=0	ok	http=0	len=8199	{"d":"aaaaaa
+08:14:45.665 SCRIPT       : VYSHKA_RF	339800	json.parse.blob.4194304	ms=0	load=1 read=1	http=0	len=8191	
+08:14:45.665 SCRIPT       : VYSHKA_RF	339800	json.save.blob.4194304	ms=0	ok	http=0	len=8199	{"d":"aaaaaa
+08:14:45.716 SCRIPT       : VYSHKA_RF	339851	json.parse.ints.10000	ms=0	load=1 read=1 last=9999	http=0	len=48897	
+08:14:51.705 SCRIPT       : VYSHKA_RF	345840	json.parse.ints.100000	ms=4	load=1 read=1 last=99999	http=0	len=588897	
+08:14:52.025 SCRIPT       : VYSHKA_RF	346160	file.mkdir	ms=0	1	http=0	len=0	$profile:vyshka-probe
+08:14:52.025 SCRIPT       : VYSHKA_RF	346160	file.open	ms=0	failed OPENW	http=0	len=0	$profile:vyshka-probe/line64k.txt
+08:14:52.026 SCRIPT       : VYSHKA_RF	346160	file.line	ms=0	open-read-failed	http=0	len=65536	$profile:vyshka-probe/line64k.txt
+08:14:52.027 SCRIPT       : VYSHKA_RF	346161	file.open	ms=0	failed OPENW	http=0	len=0	$profile:vyshka-probe/line1m.txt
+08:14:52.027 SCRIPT       : VYSHKA_RF	346161	file.line	ms=0	open-read-failed	http=0	len=1048576	$profile:vyshka-probe/line1m.txt
+08:14:52.031 SCRIPT       : VYSHKA_RF	346166	file.write.mode.WRITE	ms=0	rewritten with 5 bytes	http=0	len=7	
+08:14:52.038 SCRIPT       : VYSHKA_RF	346172	file.write.mode.OPENW	ms=0	rewritten with 5 bytes	http=0	len=42	
+08:14:52.039 SCRIPT       : VYSHKA_RF	346173	file.copy-delete	ms=0	copy=1 delete=1 srcExists=0 dstExists=1	http=0	len=42	
+08:14:52.039 SCRIPT       : VYSHKA_RF	346173	file.outside-sandbox	ms=0	opened=0	http=0	len=0	
+08:14:52.525 SCRIPT       : VYSHKA_RF	346659	probe.done	ms=0	ok	http=0	len=49	
