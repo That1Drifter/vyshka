@@ -198,9 +198,9 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 	}
 	defer tx.Rollback()
 
-	var outboundSeq, inboundAck int64
-	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, inbound_ack",
-		&outboundSeq, &inboundAck); err != nil {
+	var outboundSeq, outboundAck, inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, outbound_ack, inbound_ack",
+		&outboundSeq, &outboundAck, &inboundAck); err != nil {
 		return nil, 0, 0, err
 	}
 
@@ -220,7 +220,9 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 	// below everything sent after it, and the same cut on every later poll
 	// would stall the session. Two reads rather than one ordered by both, so
 	// each walks an index in order instead of sorting the server's whole
-	// backlog, bodies and all, on every poll.
+	// backlog, bodies and all, on every poll. The first starts above the
+	// session's ack: acked rows are kept, and everything at or below the ack
+	// is acked, so starting at seq 1 would walk the session's whole history.
 	const columns = `SELECT id, type, body, created_at, session_id, seq, sent_at
 		   FROM outbound_envelopes
 		  WHERE server_id = ? AND acked_at IS NULL AND `
@@ -228,9 +230,9 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 		query string
 		args  []any
 	}{
-		{columns + `session_id = ? AND seq IS NOT NULL
+		{columns + `session_id = ? AND seq > ?
 		  ORDER BY seq
-		  LIMIT ?` + tx.forUpdate(), []any{serverID, sessionID}},
+		  LIMIT ?` + tx.forUpdate(), []any{serverID, sessionID, outboundAck}},
 		{columns + `(session_id IS NULL OR session_id <> ? OR seq IS NULL)
 		  ORDER BY created_at, id
 		  LIMIT ?` + tx.forUpdate(), []any{serverID, sessionID}},
