@@ -113,8 +113,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
   40 GB at default retention after 90 days.
 - 2026-11-12: hub 0.4.0 and DayZ plugin 0.10.0 released.
 - 2026-11-12: Reforger server script measured (#159, spike, partial): poll timeouts of 3 s
-  and up, readable error bodies, real `Authorization` headers, responses under 1 MiB, one
-  request in flight per host; player identity still open.
+  and up, readable error bodies, real `Authorization` headers, responses under 1 MiB, no
+  guaranteed second request while a poll is held; player identity still open.
 
 ## Horizon 2: operations, as promised in the design notes
 

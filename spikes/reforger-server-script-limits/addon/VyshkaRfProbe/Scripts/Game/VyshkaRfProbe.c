@@ -14,7 +14,7 @@ class VyshkaRfProbe
 	static const string TLS = "https://vyshka-branch.solvaryx.cloud/";
 	static const int WATCHDOG_MS = 200000;
 	//! Which step list to run; results/runN-* were taken with RUN = N.
-	static const int RUN = 4;
+	static const int RUN = 6;
 
 	protected ref array<ref RestCallback> m_Cbs = {};
 	protected ref array<string> m_Names = {};
@@ -183,8 +183,127 @@ class VyshkaRfProbe
 			NextRun2();
 		else if (RUN == 3)
 			NextRun3();
-		else
+		else if (RUN == 4)
 			NextRun4();
+		else if (RUN == 5)
+			NextRun5();
+		else
+			NextRun6();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Run 6 separates the two run 5 outcomes for a request sent while a poll is held: it pairs
+	//! the poll with a request on a context that has never sent anything (fresh) and then on
+	//! the same context again (warm), over TLS and in cleartext. Spellings of the same host
+	//! (upper case, an explicit :443) give distinct contexts.
+	protected void NextRun6()
+	{
+		switch (m_Step)
+		{
+			case 1: PollPlus("r6.tls.upper.fresh", "https://VYSHKA-BRANCH.solvaryx.cloud"); return;
+			case 2: PollPlus("r6.tls.upper.warm", "https://VYSHKA-BRANCH.solvaryx.cloud"); return;
+			case 3: PollPlus("r6.tls.port.fresh", "https://vyshka-branch.solvaryx.cloud:443"); return;
+			case 4: PollPlus("r6.tls.port.warm", "https://vyshka-branch.solvaryx.cloud:443"); return;
+			case 5: PollPlus("r6.tls.port.warm2", "https://vyshka-branch.solvaryx.cloud:443"); return;
+			case 6: HoldPlus("r6.local.fresh", BASE + "c71/"); return;
+			case 7: HoldPlus("r6.local.warm", BASE + "c71/"); return;
+			case 8: HoldPlus("r6.local.same", BASE + "c70/"); return;
+		}
+		Out("probe.done", 0, "ok", 0, m_Step - 1, "");
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void PollPlus(string name, string otherBase)
+	{
+		Issue(name + ".poll", "POST", PollCtx(), "plugin/v1/poll", "{}");
+		Issue(name + ".healthz", "GET", Ctx(otherBase, 30, "", "R6"), "/healthz", "");
+		Arm();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void HoldPlus(string name, string otherBase)
+	{
+		Issue(name + ".hold10", "GET", Ctx(BASE + "c70/", 30, "", "R6"), "hold?s=10", "");
+		Issue(name + ".echo", "GET", Ctx(otherBase, 30, "", "R6"), "echo", "");
+		Arm();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Run 5 answers the review of runs 1 to 4: whether one-in-flight-per-host holds over TLS
+	//! through the hub's proxy with a real held poll, when a queued request's timeout starts,
+	//! the response cap for a chunked body, PUT and DELETE headers, SetHeaders twice, and
+	//! SetTimeout below 3 and of 0 on long holds. The session token is minted outside the
+	//! game (README) and read from $profile:vyshka-probe/session.txt.
+	protected void NextRun5()
+	{
+		RestContext p;
+		RestContext h;
+		switch (m_Step)
+		{
+			case 1:
+				p = PollCtx();
+				h = Ctx(TLS_NOSLASH, 30, "", "W1");
+				Issue("tls.poll.held", "POST", p, "plugin/v1/poll", "{}");
+				Issue("tls.other-ctx.healthz", "GET", h, "/healthz", "");
+				Arm();
+				return;
+			case 2:
+				p = PollCtx();
+				Issue("tls.poll.held", "POST", p, "plugin/v1/poll", "{}");
+				Issue("tls.same-ctx.healthz", "GET", p, "healthz", "");
+				Arm();
+				return;
+			case 3:
+				p = PollCtx();
+				h = Ctx(TLS_NOSLASH, 5, "", "W3");
+				Issue("tls.poll.held", "POST", p, "plugin/v1/poll", "{}");
+				Issue("tls.queued.t5.healthz", "GET", h, "/healthz", "");
+				Arm();
+				return;
+			case 4:
+				Issue("local.hold10", "GET", Ctx(BASE + "c60/", 30, "", "W4"), "hold?s=10", "");
+				Issue("local.queued.t5.echo", "GET", Ctx(BASE + "c61/", 5, "", "W4"), "echo", "");
+				Arm();
+				return;
+
+			case 5: One("chunked.1m-1", "GET", Ctx(BASE + "c62/", 60, "", "X"), "big?chunked=1&n=1048575", ""); return;
+			case 6: One("chunked.1m", "GET", Ctx(BASE + "c62/", 60, "", "X"), "big?chunked=1&n=1048576", ""); return;
+			case 7: One("chunked.2m", "GET", Ctx(BASE + "c62/", 60, "", "X"), "big?chunked=1&n=2097152", ""); return;
+
+			case 8: One("ct.put", "PUT", Ctx(BASE + "c63/", 30, "Content-Type,application/json", "Y"), "echo", "{\"p\":1}"); return;
+			case 9: One("ct.delete", "DELETE", Ctx(BASE + "c63/", 30, "", "Y"), "echo", "{\"d\":1}"); return;
+			case 10: One("ct.post", "POST", Ctx(BASE + "c63/", 30, "", "Y"), "echo", "{\"o\":1}"); return;
+			case 11:
+				h = Ctx(BASE + "c64/", 30, "Authorization,Bearer first", "Z");
+				Out("Z.setHeaders.second", 0, string.Format("returned=%1", h.SetHeaders("X-Second,b")), 0, 0, "X-Second,b");
+				One("hdr.twice", "GET", h, "echo", "");
+				return;
+
+			case 12: One("t.fresh.1.hold20", "GET", Ctx(BASE + "c65/", 1, "", "V"), "hold?s=20", ""); return;
+			case 13: One("t.fresh.2.hold20", "GET", Ctx(BASE + "c66/", 2, "", "V"), "hold?s=20", ""); return;
+			case 14:
+				Ctx(BASE + "c67/", 5, "", "V");
+				One("t.5-then-0.hold10", "GET", Ctx(BASE + "c67/", 0, "", "V"), "hold?s=10", "");
+				return;
+		}
+		Out("probe.done", 0, "ok", 0, m_Step - 1, "");
+	}
+
+	static const string TLS_NOSLASH = "https://vyshka-branch.solvaryx.cloud";
+
+	//------------------------------------------------------------------------------------------------
+	protected RestContext PollCtx()
+	{
+		string token;
+		FileHandle fh = FileIO.OpenFile("$profile:vyshka-probe/session.txt", FileMode.READ);
+		if (fh)
+		{
+			fh.ReadLine(token);
+			fh.Close();
+		}
+		token.TrimInPlace();
+		Out("W.token", 0, string.Format("read=%1", fh != null), 0, token.Length(), "");
+		return Ctx(TLS, 20, "Authorization,Bearer " + token + ",Content-Type,application/json", "W");
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -232,8 +351,9 @@ class VyshkaRfProbe
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Run 3 finishes what run 2's crash cut short (step 19, a 10000-character request path,
-	//! took the server down), then waits for a game client so the identity hooks can print,
+	//! Run 3 finishes what run 2's crash cut short (step 19, a request path of 8198
+	//! characters, the Substring cap, took the server down), then waits for a game client so
+	//! the identity hooks can print,
 	//! then measures request paths only as far as 2048 characters, so as not to crash it again.
 	protected void NextRun3()
 	{

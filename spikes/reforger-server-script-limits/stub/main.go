@@ -77,7 +77,9 @@ func headerLine(r *http.Request) string {
 }
 
 func logReq(r *http.Request, bodyLen int, note string) {
-	log.Printf("STUB\t%s\t%s\t%s\tbody=%d\t%s\theaders: %s", ts(), r.Method, r.URL.RequestURI(), bodyLen, note, headerLine(r))
+	// Go moves Content-Length and Transfer-Encoding out of r.Header, so they are logged
+	// apart (from run 5 on): a chunked request shows te=chunked and cl=-1.
+	log.Printf("STUB\t%s\t%s\t%s\tbody=%d\t%s\tproto=%s cl=%d te=%s\theaders: %s", ts(), r.Method, r.URL.RequestURI(), bodyLen, note, r.Proto, r.ContentLength, strings.Join(r.TransferEncoding, ","), headerLine(r))
 }
 
 // echo answers with what arrived: method, query, every header, the body's length and
@@ -163,16 +165,36 @@ func status(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"error":{"code":"probe_%d","message":"body of a %d"}}`, code, code)
 }
 
-// big answers with a JSON document of exactly n bytes: {"d":"aaa...a"}.
+// big answers with a JSON document of exactly n bytes: {"d":"aaa...a"}, with a
+// Content-Length unless chunked=1, which streams it in 64 KiB pieces the way a hub's
+// JSON encoder does, and logs whether the whole body was written.
 func big(w http.ResponseWriter, r *http.Request) {
 	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
 	if n < 8 {
 		n = 8
 	}
-	logReq(r, 0, fmt.Sprintf("big n=%d", n))
+	chunked := r.URL.Query().Get("chunked") == "1"
+	logReq(r, 0, fmt.Sprintf("big n=%d chunked=%t", n, chunked))
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(n))
-	io.WriteString(w, `{"d":"`)
-	io.WriteString(w, strings.Repeat("a", n-8))
-	io.WriteString(w, `"}`)
+	if !chunked {
+		w.Header().Set("Content-Length", strconv.Itoa(n))
+	}
+	fl, _ := w.(http.Flusher)
+	written, err := io.WriteString(w, `{"d":"`)
+	for left := n - 8; left > 0 && err == nil; {
+		k := min(left, 65536)
+		var m int
+		m, err = io.WriteString(w, strings.Repeat("a", k))
+		written += m
+		left -= k
+		if chunked && fl != nil {
+			fl.Flush()
+		}
+	}
+	if err == nil {
+		var m int
+		m, err = io.WriteString(w, `"}`)
+		written += m
+	}
+	log.Printf("STUB\t%s\tbig-written\tn=%d\twritten=%d\terr=%v", ts(), n, written, err)
 }
