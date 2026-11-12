@@ -1761,6 +1761,19 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /**
+             * @description The body would take more than 262144 bytes as the hub writes it
+             *     (spec section 4), or the request exceeded the hub's body limit
+             *     (`payload_too_large`). Nothing was queued.
+             */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             429: components["responses"]["RateLimited"];
         };
     };
@@ -1947,6 +1960,19 @@ export interface operations {
              *     (`outbound_queue_full`).
              */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description The `action.dispatch` body would take more than 262144 bytes as
+             *     the hub writes it (spec section 4), or the request exceeded the
+             *     hub's body limit (`payload_too_large`). Nothing was queued.
+             */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
