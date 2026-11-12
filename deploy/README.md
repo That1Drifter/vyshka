@@ -767,7 +767,7 @@ Where the defaults come from: the capacity spike of issue #87
 DayZ-shaped plugin at 0.8 requests/s per server over its busiest 10 s and 4 requests in its
 busiest second (3 for the realistic profile), and a panel-like admin client at 6.9 requests/s per token over its busiest
 10 s and 15 in its busiest second in passing runs (24 in a run that failed its bounds, on a
-hub without limits). With these defaults on, the spike's final runs had no request refused. The plugin default is about six times that busiest 10 s,
+hub without limits). With these defaults on, the spike's final runs had no request refused inside a measured window. The plugin default is about six times that busiest 10 s,
 and its burst of 60 covers a backlog drain of a full 5000-envelope queue (25 polls of 200);
 it is wider than the spike's recommended 2/s and 30 because a plugin's key/value traffic was
 not measured and the mod surface hands the store to third-party mods. Session start was
@@ -794,9 +794,9 @@ more cannot finish walking at the default plugin limit; for such a hub raise
 
 What the limit does not bound is how much a request carries. A poll may carry 200 envelopes
 and 1000 events, so a credential within 5 polls a second can still send far more events than
-the hub was measured to ingest within its bounds: about 1230 events/s in total, across 100
-servers on one SQLite connection. The largest step where every bound held was lower, 614
-events/s at 50 busy servers, because the admin server list fell behind first. The request limit bounds how often a credential can make the hub do
+the hub was measured to ingest: about 920 events/s in total, across 75 servers on one
+SQLite connection, with every ingest bound held. The largest step where every bound held
+was lower, 614 events/s at 50 busy servers, because the admin server list fell behind first. The request limit bounds how often a credential can make the hub do
 work, not how much work each request is; an event or byte budget per credential is a
 separate, later change, and until then a leaked server credential can still load the hub's
 ingest path. Revoke it (`DELETE /api/v1/servers/{id}/credentials`); that ends its session at
@@ -942,7 +942,7 @@ The load was one of two assumed mixes, per 100-player server:
 | Busy | 12.3 | 6 | **50 servers**: 3 of 3 runs at 25 and at 50; 0 of 3 at 75 |
 
 "Passed" means every latency, error, and backlog bound the spike set held, with no
-request refused by the rate limits. CPU averaged at most a fifth of the quota and the hub
+request refused by the rate limits inside the measured window. CPU averaged at most a fifth of the quota and the hub
 used about 50 MiB of its own memory.
 
 **What fails first** is the admin server list, `GET /api/v1/servers`. It reads the database

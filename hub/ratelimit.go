@@ -33,8 +33,10 @@ import (
 //
 // What these do not bound is ingest volume: a request may carry up to 200
 // envelopes and 1000 events, so 5 polls/s is far more events than the hub
-// was measured to ingest within its bounds (about 1230 events/s across 100
-// servers on one SQLite connection). An event budget is a slice of its own.
+// was measured to ingest (about 920 events/s in all across 75 servers on one
+// SQLite connection with every ingest bound held; every bound, the admin
+// server list included, held up to 614 events/s across 50). An event budget
+// is a slice of its own.
 const (
 	DefaultPluginRateLimit = 5.0 // requests per second, per server
 	DefaultPluginRateBurst = 60

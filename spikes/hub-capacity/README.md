@@ -26,7 +26,8 @@ quiet-disk rule that step is undetermined. The list costs three database reads p
 all on SQLite's single connection.
 
 CPU averaged at most 19 % of the quota and was never throttled, and the hub's own memory
-peaked at 51 MiB of the 2 GB. No request was refused by the rate limits.
+peaked at 51 MiB of the 2 GB. No request was refused by the rate limits inside a measured
+window (setup, before the window, was refused and waited in 9 of the 16 runs).
 
 **The disk is the first thing to size.** At the default retention a realistic 100-player
 server holds about 4.7 GiB of database after 90 days and 5.5 GiB after a year, and keeps
@@ -232,7 +233,11 @@ Round three: `main` at `0e3a163`, rate limits on, 1 vCPU, the database on the ex
 | realistic | **200** | **3 of 3** | 1.6, 7.9, 8.1 ms | 1.3, 1.4, 1.5 ms | |
 
 At the headline steps, 50 busy servers offer 614 events/s and 5 dispatches/s in all; 200
-realistic servers offer 242 events/s and 3.3 dispatches/s.
+realistic servers offer 242 events/s and 3.3 dispatches/s. The most this hub was measured
+to ingest on `main` is the 75-server busy step: about 920 events/s in all, with every
+ingest bound held in 3 of 3 runs (delivery p99 at most 266 ms, held-poll overhead at most
+245 ms) while the admin server list alone failed. That is the figure the rate-limit notes
+in `deploy/README.md`, `spec/protocol.md` section 2.2.1, and `hub/ratelimit.go` quote.
 
 **Busy 50.** All three runs passed: two with a quiet in-run reading (2.4 and 2.7 ms), one
 at 3.2 ms, just over the rule. Round two's two 50-server failures had in-run p90s of 12.1
@@ -525,7 +530,8 @@ per admin token.
 server make its plugin poll. `main` refunds a poll answered with the first send of work an
 admin queued (`hub/poll.go`, `adminCaused` in `hub/ratelimit.go`), so the poll that
 delivers a dispatch is not charged to the server. The poll that follows, carrying the
-action's ack and result, is charged as the plugin's own. The generator spreads dispatches
+action's ack and result, is charged as the plugin's own unless it is itself answered with
+newly queued work, which is what happens under sustained dispatching. The generator spreads dispatches
 over all servers (0.1 a second per server at most), and no plugin was refused.
 
 This spike's own recommendation was 2 requests/s with a burst of 30 per server, plus a

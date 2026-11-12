@@ -100,8 +100,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-11-11: rate limits per server and per admin token (#86, draft 0.34).
 - 2026-11-11: hub capacity measured (#87, spike): 200 servers of 100 players at an assumed
   1.2 events/s and 1 action/min each, or 50 at 12.3 events/s and 6/min, on 1 vCPU and 2 GB
-  with SQLite (3 of 3 runs each); disk binds first: about 7.8 such servers on 40 GB at
-  default retention after 90 days.
+  with SQLite (3 of 3 runs each); disk binds first: about 7.8 servers of the first kind on
+  40 GB at default retention after 90 days.
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -123,7 +123,7 @@ spec reader is not surprised.
 | A poll that says "more queued" is answered at once | 3.1.2 | Shipped 2026-09-23 (#91, draft 0.33): a plugin that cut its batch short sets `more`, and a hub answers that poll as soon as it is applied when its ack covers something the poll carried, so a backlog drains a batch per round trip instead of a batch per `pollTimeout` (40 events/s at 25 s, measured in `spikes/dayz-outbox-crash`). Graded by `plugin.poll.more` in the hub suite and `poll.more` in the plugin suite; DayZ plugin 0.9.0 sets it |
 | Snapshot diffs after the first full snapshot per session | 8.3 | Parked. Trigger: a real plugin hits the 256 KiB body cap. Unknown-type tolerance makes a diff form a backward-safe addition |
 | Platform registry (player identity) | 8.2 | Shape frozen at draft 0.22; the registry stays open and a new game adds its platform identifier additively |
-| Multi-instance hub (claims or leases for sweeps and the webhook dispatcher) | design notes 12 | Parked. Trigger: a single installation exceeds the capacity measured in #87: 200 game servers of 100 players at an assumed 1.2 events/s and 1 action/min each (3 of 3 runs passed), or 50 at an assumed 12.3 events/s and 6/min (3 of 3), on 1 vCPU and 2 GB with SQLite and the rate limits on, measured on loopback without TLS in a WSL VM from an empty database (`spikes/hub-capacity`). The hub's 256-connection cap is shared with every other open connection (admin clients, a proxy's upstream connections, a plugin's second context): with the spike's admin share it is reached near 225 servers. At default retention the disk binds first: about 4.7 GiB per such server after 90 days. One hub per database is the supported deployment on both engines until then; the hub is one process however many boxes the game servers occupy |
+| Multi-instance hub (claims or leases for sweeps and the webhook dispatcher) | design notes 12 | Parked. Trigger: a single installation exceeds the capacity measured in #87: 200 game servers of 100 players at an assumed 1.2 events/s and 1 action/min each (3 of 3 runs passed), or 50 at an assumed 12.3 events/s and 6/min (3 of 3), on 1 vCPU and 2 GB with SQLite and the rate limits on, measured on loopback without TLS in a WSL VM from an empty database (`spikes/hub-capacity`). The hub's 256-connection cap is shared with every other open connection (admin clients, a proxy's upstream connections, a plugin's second context): with the spike's admin share it is reached near 225 servers. At default retention the disk binds first: about 4.7 GiB per server of the first kind after 90 days (about 39 GiB for the second). One hub per database is the supported deployment on both engines until then; the hub is one process however many boxes the game servers occupy |
 
 ## Horizon 4: the ecosystem and the second game
 
@@ -150,7 +150,7 @@ Collected here so no trigger is lost in a horizon:
 | Position telemetry cadence | The WebSocket transport lands |
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |
-| Multi-instance hub | A single installation exceeds the capacity measured in #87: 200 servers of 100 players at an assumed 1.2 events/s and 1 action/min, or 50 at 12.3 events/s and 6/min, on SQLite; near 225 at the connection cap with the spike's admin share; about 7.8 such servers on a 40 GB disk at default retention after 90 days |
+| Multi-instance hub | A single installation exceeds the capacity measured in #87: 200 servers of 100 players at an assumed 1.2 events/s and 1 action/min, or 50 at 12.3 events/s and 6/min, on SQLite; near 225 at the connection cap with the spike's admin share; about 7.8 servers of the first kind on a 40 GB disk at default retention after 90 days |
 | Conformance suites as a published tool (#97): versioned suite binaries on the release and a policy for what "conformant" may claim | A third-party implementer asks for them |
 
 ## Not on the roadmap
