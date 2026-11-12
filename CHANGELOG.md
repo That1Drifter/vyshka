@@ -19,6 +19,12 @@ before that date stay as they were written.
 
 ### [Unreleased]
 
+#### Changed
+
+- 2026-11-12: roadmap review: the Arma Reforger plugin is reopened as the next horizon (spike
+  #159, then #15), WebSocket is parked until a plugin can use it, and M3's staging repeat is
+  dropped.
+
 ### [0.4.0] - 2026-11-12
 
 Everything after 0.3.0: Horizon 2's operations work (backup, `/metrics`, `-auto-tls`, the
