@@ -30,6 +30,8 @@ before that date stay as they were written.
   off by default; issue #82); every metric is documented in `deploy/README.md`.
 - 2026-11-11: `-auto-tls` gets a certificate over ACME and serves TLS without a proxy, with
   `scripts/demo-auto-tls.sh` against Pebble and a no-proxy layout in `deploy/README.md` (issue #85).
+- 2026-11-11: `spikes/hub-capacity` measures the hub on 1 and 2 vCPU with 2 GB and replaces
+  the unmeasured sizing estimate; `deploy/README.md` gains a "Sizing" section (issue #87).
 
 ### [0.3.0] - 2026-10-03
 

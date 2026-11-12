@@ -1,0 +1,26 @@
+PASS 1cpu-realistic-100p-200s-r2 servers=200 players=100 profile=realistic offered=241.7 ev/s 3.33 act/s
+  ok   action queue-to-delivery p99                              124.8 ms over 579 (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                    91.0 ms over 1167 (limit 1000)
+  ok   admin read p99: servers list                              176.2 ms over 720 (limit 1000)
+  ok   admin read p99: events page                                18.0 ms over 720 (limit 1000)
+  ok   admin read p99: state players                              17.0 ms over 721 (limit 1000)
+  ok   admin read p99: state vehicles                             22.4 ms over 721 (limit 1000)
+  ok   admin read p99: state world                                21.9 ms over 721 (limit 1000)
+  ok   non-2xx (429 included), transport error or timeout rate        0.0 % (limit 0.1)
+  ok   scheduled admin requests not completed                      0.0  (limit 0)
+  ok   ingest backlog at window end / one cycle of events          1.2 x (limit 2)
+  ok   webhook poll-to-receipt p99                               185.4 ms over 1568 (limit 10000)
+  ok   hub peak anon memory / limit                                2.5 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 18% p90 21%  anon peak 50 MiB (cgroup 208 MiB)  db +1878.3 MiB/h (wal peak 4 MiB)  reqs 6505 fails 0
+  plugin req/s per credential mean 0.048 peak1s 3 peak10s 0.50 | admin mean 1.320 peak1s 8 peak10s 2.30
+  dispatch: scheduled 578 started 578 completed 578 cut off 0 missing 0 timeouts 0
+  action read: scheduled 0 started 580 completed 580 cut off 0 missing 0 timeouts 0
+  poll: scheduled 0 started 1745 completed 1545 cut off 200 missing 0 timeouts 0
+  read servers list: scheduled 720 started 720 completed 720 cut off 0 missing 0 timeouts 0
+  read events page: scheduled 720 started 720 completed 720 cut off 0 missing 0 timeouts 0
+  read state players: scheduled 720 started 720 completed 720 cut off 0 missing 0 timeouts 0
+  read state vehicles: scheduled 720 started 721 completed 721 cut off 0 missing 0 timeouts 0
+  read state world: scheduled 720 started 721 completed 721 cut off 0 missing 0 timeouts 0
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  latency p50/p99 ms: delivery 4.7/124.8  completedSeen 1005/1131  webhook(poll->sink) 12/185  dispatch 3.4/110.4  earlyPoll 11407/24616

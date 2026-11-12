@@ -1,0 +1,263 @@
+{
+  "label": "2cpu-realistic-100p-200s-r1",
+  "servers": 200,
+  "players": 100,
+  "profile": "realistic",
+  "offeredEventsPerSecond": 241.66666666666666,
+  "offeredActionsPerSecond": 3.3333333333333335,
+  "panels": 20,
+  "windowStart": "2026-11-11T13:10:41.762797112-06:00",
+  "windowEnd": "2026-11-11T13:13:41.76329583-06:00",
+  "pass": true,
+  "criteria": [
+    {
+      "name": "action queue-to-delivery p99",
+      "value": 154,
+      "limit": 2000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "held poll overhead p99 (RTT minus hold)",
+      "value": 124.4,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "admin read p99",
+      "value": 214.7,
+      "limit": 1000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "non-2xx or transport error rate",
+      "value": 0,
+      "limit": 0.1,
+      "unit": "%",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "ingest backlog at window end / one cycle of events",
+      "value": 0.8,
+      "limit": 2,
+      "unit": "x",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "webhook poll-to-receipt p99",
+      "value": 192.9,
+      "limit": 10000,
+      "unit": "ms",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "hub peak anon memory / limit",
+      "value": 1.4,
+      "limit": 80,
+      "unit": "%",
+      "failed": false,
+      "measured": true
+    },
+    {
+      "name": "OOM kills",
+      "value": 0,
+      "limit": 0,
+      "unit": "",
+      "failed": false,
+      "measured": true
+    }
+  ],
+  "latency": {
+    "actionDispatchToCompletedSeen": {
+      "n": 580,
+      "p50Ms": 1005.775,
+      "p90Ms": 1053.246,
+      "p99Ms": 1158.795,
+      "maxMs": 1213.417,
+      "meanMs": 1019.2969637931029
+    },
+    "actionQueueToDelivery": {
+      "n": 578,
+      "p50Ms": 5.338,
+      "p90Ms": 52.8,
+      "p99Ms": 153.985,
+      "maxMs": 226.289,
+      "meanMs": 18.018787197231852
+    },
+    "actionReadRtt": {
+      "n": 580,
+      "p50Ms": 0.598,
+      "p90Ms": 9.262,
+      "p99Ms": 57.4,
+      "maxMs": 92.885,
+      "meanMs": 4.245089655172414
+    },
+    "adminReadRtt": {
+      "n": 3600,
+      "p50Ms": 0.743,
+      "p90Ms": 24.15,
+      "p99Ms": 214.667,
+      "maxMs": 1193.616,
+      "meanMs": 12.877784999999994
+    },
+    "dispatchRtt": {
+      "n": 578,
+      "p50Ms": 3.944,
+      "p90Ms": 41.835,
+      "p99Ms": 133.501,
+      "maxMs": 208.52,
+      "meanMs": 14.442425605536334
+    },
+    "eventEmitToAck": {
+      "n": 14599,
+      "p50Ms": 34768.492,
+      "p90Ms": 47691.514,
+      "p99Ms": 51439.073,
+      "maxMs": 52177.16,
+      "meanMs": 34337.025481403005
+    },
+    "pollEarlyRtt": {
+      "n": 578,
+      "p50Ms": 11577.164,
+      "p90Ms": 22061.458,
+      "p99Ms": 24666.774,
+      "maxMs": 24896.798,
+      "meanMs": 11791.19603460206
+    },
+    "pollIngestMore": {
+      "n": 0,
+      "p50Ms": 0,
+      "p90Ms": 0,
+      "p99Ms": 0,
+      "maxMs": 0,
+      "meanMs": 0
+    },
+    "pollOverhead": {
+      "n": 1164,
+      "p50Ms": 9.189,
+      "p90Ms": 44.405,
+      "p99Ms": 124.352,
+      "maxMs": 451.086,
+      "meanMs": 19.847366838487986
+    },
+    "readEventsPage": {
+      "n": 720,
+      "p50Ms": 1.017,
+      "p90Ms": 1.631,
+      "p99Ms": 6.551,
+      "maxMs": 36.094,
+      "meanMs": 1.326659722222223
+    },
+    "readServersList": {
+      "n": 720,
+      "p50Ms": 24.079,
+      "p90Ms": 84.331,
+      "p99Ms": 884.504,
+      "maxMs": 1193.616,
+      "meanMs": 60.66050138888889
+    },
+    "readStatePlayers": {
+      "n": 720,
+      "p50Ms": 0.628,
+      "p90Ms": 1.067,
+      "p99Ms": 6.632,
+      "maxMs": 37.047,
+      "meanMs": 0.9319680555555561
+    },
+    "readStateVehicles": {
+      "n": 720,
+      "p50Ms": 0.543,
+      "p90Ms": 1.008,
+      "p99Ms": 6.784,
+      "maxMs": 18.176,
+      "meanMs": 0.8142249999999994
+    },
+    "readStateWorld": {
+      "n": 720,
+      "p50Ms": 0.395,
+      "p90Ms": 0.694,
+      "p99Ms": 6.49,
+      "maxMs": 25.173,
+      "meanMs": 0.6555708333333335
+    },
+    "webhookEmitToReceipt": {
+      "n": 1567,
+      "p50Ms": 12539.761,
+      "p90Ms": 23107.016,
+      "p99Ms": 25947.741,
+      "maxMs": 26901.603,
+      "meanMs": 12918.958440331855
+    },
+    "webhookPollToReceipt": {
+      "n": 1567,
+      "p50Ms": 13.473,
+      "p90Ms": 69.002,
+      "p99Ms": 192.858,
+      "maxMs": 343.166,
+      "meanMs": 28.6390472239949
+    }
+  },
+  "counts": {
+    "deathsAcked": 1549,
+    "delivered": 578,
+    "dispatched": 578,
+    "eventsAcked": 44277,
+    "eventsSent": 43981,
+    "failures": 0,
+    "requestBytesSent": 55501981,
+    "requests": 6500,
+    "resultsAcked": 557,
+    "snapshots": 4533,
+    "webhookDeliveries": 1567
+  },
+  "failures": {},
+  "pluginRates": {
+    "credentials": 200,
+    "meanRps": 0.0481944444444444,
+    "maxMeanRps": 0.07222222222222222,
+    "peak1sMax": 2,
+    "peak10sMax": 0.5,
+    "peak60sMax": 0.13333333333333333,
+    "peak1sP99": 2,
+    "totalRps": 9.63888888888889,
+    "windowSeconds": 180
+  },
+  "adminRates": {
+    "credentials": 20,
+    "meanRps": 1.3147222222222223,
+    "maxMeanRps": 1.4333333333333333,
+    "peak1sMax": 8,
+    "peak10sMax": 2.4,
+    "peak60sMax": 1.5666666666666667,
+    "peak1sP99": 8,
+    "totalRps": 26.294444444444444,
+    "windowSeconds": 180
+  },
+  "resources": {
+    "peakAnonBytes": 30380032,
+    "peakCgroupBytes": 170762240,
+    "meanMemBytes": 26857769,
+    "cpuPercentMean": 26.16716995016768,
+    "cpuPercentP90": 29.857571671466253,
+    "dbStartBytes": 30457856,
+    "dbEndBytes": 127991808,
+    "dbBytesPerHour": 1972599639.776331,
+    "walEndBytes": 4453752,
+    "walPeakBytes": 4453752,
+    "oomKills": 0,
+    "memPeakCgroup": 172601344
+  },
+  "backlog": {
+    "end": 5059,
+    "maxPerServer": 33,
+    "start": 5307
+  }
+}

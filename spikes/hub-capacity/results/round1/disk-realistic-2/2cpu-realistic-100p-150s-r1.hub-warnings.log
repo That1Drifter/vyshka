@@ -1,0 +1,1 @@
+{"time":"2026-11-11T12:37:12.32413286-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"trim snapshot history: context canceled"}

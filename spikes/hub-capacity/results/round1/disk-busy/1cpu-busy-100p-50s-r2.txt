@@ -1,0 +1,12 @@
+PASS 1cpu-busy-100p-50s-r2 servers=50 players=100 profile=busy offered=613.9 ev/s 5.00 act/s
+  ok   action queue-to-delivery p99                               43.6 ms (limit 2000)
+  ok   held poll overhead p99 (RTT minus hold)                   209.2 ms (limit 1000)
+  ok   admin read p99                                             25.8 ms (limit 1000)
+  ok   non-2xx or transport error rate                             0.0 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          0.4 x (limit 2)
+  ok   webhook poll-to-receipt p99                                97.4 ms (limit 10000)
+  ok   hub peak anon memory / limit                                0.9 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 9% p90 12%  anon peak 18 MiB (cgroup 166 MiB)  db +2810.3 MiB/h (wal peak 4 MiB)  reqs 3538 fails 0
+  plugin req/s per credential mean 0.103 peak1s 4 peak10s 0.70 | admin mean 2.884 peak1s 10 peak10s 4.50
+  latency p50/p99 ms: delivery 4.5/43.6  completedSeen 1005/1046  webhook(poll->sink) 27/97  dispatch 3.4/40.3  earlyPoll 6323/24339

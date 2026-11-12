@@ -1,0 +1,13 @@
+/var/tmp/hubcap-keep/1cpu-realistic-100p-100s-r1/vyshka.db
+table (with its indexes)             rows        MiB   share
+state_snapshots                     15756      146.1   43.9%
+events                             152513      117.2   35.2%
+event_identities                   155628       45.5   13.7%
+event_batches                       50252        9.6    2.9%
+webhook_deliveries                   5115        6.6    2.0%
+state_snapshot_dedup                15756        3.0    0.9%
+audit_records                        2153        1.6    0.5%
+outbound_envelopes                   2024        1.1    0.3%
+actions                              2024        1.1    0.3%
+manifests                             100        0.8    0.2%
+total                                          332.9

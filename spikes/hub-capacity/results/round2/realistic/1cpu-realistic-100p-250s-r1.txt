@@ -1,0 +1,22 @@
+FAIL 1cpu-realistic-100p-250s-r1 servers=250 players=100 profile=realistic offered=302.1 ev/s 4.17 act/s
+  FAIL action queue-to-delivery p99                           113138.4 ms over 349 (limit 2000)
+  FAIL held poll overhead p99 (RTT minus hold)                  4723.3 ms over 1628 (limit 1000)
+  FAIL admin read p99: servers list                             7966.7 ms over 196 (limit 1000)
+  ok   admin read p99: events page                                41.7 ms over 201 (limit 1000)
+  ok   admin read p99: state players                              56.9 ms over 200 (limit 1000)
+  ok   admin read p99: state vehicles                             54.7 ms over 201 (limit 1000)
+  ok   admin read p99: state world                                51.3 ms over 201 (limit 1000)
+  FAIL non-2xx or transport error rate                            21.7 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          1.4 x (limit 2)
+  ok   webhook poll-to-receipt p99                              6040.7 ms over 1896 (limit 10000)
+  ok   hub peak anon memory / limit                                2.4 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 16% p90 25%  anon peak 49 MiB (cgroup 205 MiB)  db +2276.4 MiB/h (wal peak 4 MiB)  reqs 4194 fails 912
+  plugin req/s per credential mean 0.044 peak1s 2 peak10s 0.40 | admin mean 0.494 peak1s 13 peak10s 2.60
+  read servers list: scheduled 900 started 258 completed 196
+  dispatch: scheduled 705 started 705 completed 160
+  poll: scheduled 0 started 1969 completed 1719
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"action read timeout":9,"dispatch timeout":550,"read events page timeout":77,"read servers list timeout":82,"read state players timeout":78,"read state vehicles timeout":58,"read state world timeout":58}
+  latency p50/p99 ms: delivery 22061.3/113138.4  completedSeen 1005/12469  webhook(poll->sink) 16/6041  dispatch 3.4/790.5  earlyPoll 9176/24912
+  hub in window: 259 x request failed

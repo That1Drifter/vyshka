@@ -1,0 +1,4 @@
+fsync probe: 500 synced 4 KiB writes on /var/tmp (ext4, /dev/sde), three times
+2048000 bytes (2.0 MB, 2.0 MiB) copied, 0.54554 s, 3.8 MB/s
+2048000 bytes (2.0 MB, 2.0 MiB) copied, 0.569122 s, 3.6 MB/s
+2048000 bytes (2.0 MB, 2.0 MiB) copied, 0.52264 s, 3.9 MB/s

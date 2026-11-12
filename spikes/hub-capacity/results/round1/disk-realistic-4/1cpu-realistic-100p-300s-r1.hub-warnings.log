@@ -1,0 +1,50 @@
+{"time":"2026-11-11T13:31:09.287456823-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJS38D37NGNN9HAFS1YS"}
+{"time":"2026-11-11T13:31:09.289034108-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJTGSZDDYHY6X90V27VE"}
+{"time":"2026-11-11T13:31:09.289790535-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJTSN90DR6D26S4331KZ"}
+{"time":"2026-11-11T13:31:09.290525632-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJW6A554ME92DDKW2V2T"}
+{"time":"2026-11-11T13:31:09.2913494-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJWKK29NZXZ5ATYX8GXK"}
+{"time":"2026-11-11T13:31:09.29275607-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJWR6MAND9B1F3SXRDJA"}
+{"time":"2026-11-11T13:31:24.614055479-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJ6GEA2N9EYS978F89RM"}
+{"time":"2026-11-11T13:32:20.50264063-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJ31DYCVQB29ZDJG42DZ"}
+{"time":"2026-11-11T13:32:45.815375945-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DHG5N3WGPNDXBFC187J9"}
+{"time":"2026-11-11T13:33:16.066222128-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJQQRDP2FTA4E4SKTVD3"}
+{"time":"2026-11-11T13:33:36.49096784-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DJQYN81G4DRTS1S4JZ92"}
+{"time":"2026-11-11T13:34:06.809087609-06:00","level":"WARN","msg":"server link lost","serverId":"01M761DHMAB63D392HBRS2G451"}
+{"time":"2026-11-11T13:34:08.533837831-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E5ZB2DS27K092BQF9TPR","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.533902692-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.533949173-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E6D8Z3XE3ZM0AA6CJ3EP","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.533991933-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534033233-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534137764-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534365987-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E6WCF87E7WC94X49HZV8","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534453607-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53468794-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E6ZBNFWG0AATX1FZB4KZ","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534846731-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E72251CJPPPVECQFQ5JZ","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.534991153-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.535028803-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/actions/01M761E73SG04JQWDH7H5VW6ZM","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.535117974-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.535668689-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.536008542-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.536498167-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53676475-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53680321-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.536887241-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.536972282-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:34:08.537412316-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.537502287-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.537722519-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53778245-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}
+{"time":"2026-11-11T13:34:08.537951141-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.537986032-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.538184764-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.538362055-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.538631568-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.538691568-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53885069-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53888662-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.539492846-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.539804469-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53988189-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.53991664-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.539948821-06:00","level":"ERROR","msg":"request failed","method":"GET","path":"/api/v1/servers","error":"read admin token: context canceled"}
+{"time":"2026-11-11T13:34:08.540107392-06:00","level":"ERROR","msg":"request failed","method":"POST","path":"/plugin/v1/poll","error":"read session: context canceled"}

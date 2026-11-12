@@ -1,0 +1,23 @@
+FAIL 1cpu-busy-100p-75s-r2 servers=75 players=100 profile=busy offered=920.8 ev/s 7.50 act/s
+  FAIL action queue-to-delivery p99                             7361.0 ms over 4438 (limit 2000)
+  FAIL held poll overhead p99 (RTT minus hold)                  3780.5 ms over 386 (limit 1000)
+  FAIL admin read p99: servers list                             7854.3 ms over 791 (limit 1000)
+  FAIL admin read p99: events page                              2274.7 ms over 805 (limit 1000)
+  ok   admin read p99: state players                             235.9 ms over 805 (limit 1000)
+  ok   admin read p99: state vehicles                            160.2 ms over 805 (limit 1000)
+  ok   admin read p99: state world                                98.8 ms over 805 (limit 1000)
+  FAIL non-2xx or transport error rate                             0.1 % (limit 0.1)
+  ok   ingest backlog at window end / one cycle of events          0.8 x (limit 2)
+  FAIL webhook poll-to-receipt p99                             13284.8 ms over 7542 (limit 10000)
+  ok   hub peak anon memory / limit                                1.6 % (limit 80)
+  ok   OOM kills                                                   0.0  (limit 0)
+  cpu mean 17% p90 29%  anon peak 31 MiB (cgroup 831 MiB)  db +4240.8 MiB/h (wal peak 5 MiB)  reqs 17791 fails 18
+  plugin req/s per credential mean 0.105 peak1s 3 peak10s 0.80 | admin mean 3.112 peak1s 21 peak10s 6.40
+  read servers list: scheduled 840 started 812 completed 791
+  dispatch: scheduled 4479 started 4479 completed 4431
+  poll: scheduled 0 started 4720 completed 4645
+  cpu throttled in 0.0% of periods, 0.0% of the window
+  failures {"dispatch timeout":4,"read servers list timeout":14}
+  latency p50/p99 ms: delivery 10.3/7361.0  completedSeen 1016/10953  webhook(poll->sink) 46/13285  dispatch 6.7/7222.9  earlyPoll 6446/24115
+  hub in window: 15 x request failed
+  hub in window: 1 x audit record could not be written
