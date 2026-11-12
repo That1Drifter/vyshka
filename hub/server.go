@@ -1059,9 +1059,9 @@ func (s *Server) Close() error {
 // assumes, matching the roughly 50 KiB/s the read side's defaults grant a
 // trickled request body. Each chunk a response writes earns its size at this
 // rate on top of ResponseWriteTimeout, which is what keeps a legal
-// multi-megabyte page (a deep state history, a poll draining raw-queued
-// envelopes) deliverable over a slow link while a stalled reader still costs
-// seconds.
+// multi-megabyte page (a deep state history, a wide event feed) deliverable
+// over a slow link while a stalled reader still costs seconds. Plugin API
+// answers are bounded at 512 KiB since protocol draft 0.35.
 const responseByteRateFloor = 50 << 10
 
 // responseWriteChunk bounds how many bytes ride one armed deadline. Handlers

@@ -462,7 +462,8 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		// select still wakes this poll instead of waiting for the backstop.
 		signal, release := s.waiters.wait(session.ServerID)
 
-		queued, _, committedAck, err := s.store.NextOutboundWithin(r.Context(), session.ID, session.ServerID, maxOutboundBatch, pollBudget(session))
+		budget := pollBudget(session)
+		queued, _, committedAck, err := s.store.NextOutboundWithin(r.Context(), session.ID, session.ServerID, maxOutboundBatch, budget)
 		if err != nil {
 			release()
 			if errors.Is(err, store.ErrNotFound) {
@@ -476,6 +477,15 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		drain := backlogFloor > 0 && inboundAck >= backlogFloor
 		if len(queued) > 0 {
 			release()
+			// Only an envelope queued before the hub bounded bodies (protocol
+			// draft 0.35) can be too large for a response alone. It is sent
+			// anyway, since holding it back would stall everything behind it;
+			// an engine that cannot receive it will keep failing this poll.
+			if len(queued) == 1 && budget.Size(queued[0]) > budget.Bytes {
+				s.log.Warn("poll sent one envelope larger than a Plugin API response may be; it was queued before the body bound",
+					"serverId", session.ServerID, "sessionId", session.ID, "envelopeId", queued[0].ID,
+					"bytes", budget.Size(queued[0]), "bound", maxPluginResponse)
+			}
 			envelopes := make([]envelope, len(queued))
 			refund := false
 			for i, one := range queued {

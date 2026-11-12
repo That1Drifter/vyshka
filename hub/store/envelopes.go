@@ -211,12 +211,22 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 	// longer exists, leaving a gap in the session's sequence space that the
 	// plugin's contiguous ack could never cross. Locked, the delete waits
 	// and then finds the row numbered, which its predicate excludes.
+	//
+	// They come back in the order they will be sent: those already numbered
+	// into this session first, by seq, then the rest by age. Age alone can
+	// disagree with seq (ids minted in one millisecond sort arbitrarily, and a
+	// clock stepped back sorts new work first), and a batch cut short must
+	// only ever lose its highest seqs: dropping a lower one would leave a gap
+	// below everything sent after it, and the same cut on every later poll
+	// would stall the session.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, type, body, created_at, session_id, seq, sent_at
 		   FROM outbound_envelopes
 		  WHERE server_id = ? AND acked_at IS NULL
-		  ORDER BY created_at, id
-		  LIMIT ?`+tx.forUpdate(), serverID, limit)
+		  ORDER BY CASE WHEN session_id = ? AND seq IS NOT NULL THEN 0 ELSE 1 END,
+		           CASE WHEN session_id = ? AND seq IS NOT NULL THEN seq ELSE 0 END,
+		           created_at, id
+		  LIMIT ?`+tx.forUpdate(), serverID, sessionID, sessionID, limit)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
 	}
@@ -226,6 +236,7 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 		numbered bool
 	}
 	var batch []pending
+	nextSeq, used := outboundSeq, 0
 	for rows.Next() {
 		var (
 			row       pending
@@ -251,6 +262,20 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 		if sessionOf.Valid && sessionOf.String == sessionID && seq.Valid {
 			row.envelope.Seq = seq.Int64
 			row.numbered = true
+		} else {
+			row.envelope.Seq = nextSeq + 1
+		}
+		// Measured with the seq it will carry, since the seq's digits are part
+		// of its size, and as it is read, so a cut stops reading bodies too.
+		if budget.Size != nil {
+			size := budget.Size(row.envelope)
+			if len(batch) > 0 && used+size > budget.Bytes {
+				break
+			}
+			used += size
+		}
+		if !row.numbered {
+			nextSeq++
 		}
 		batch = append(batch, row)
 	}
@@ -266,25 +291,7 @@ func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID stri
 		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
 
-	// Number in order, measuring each envelope with the seq it will carry,
-	// since the seq's digits are part of its size.
-	used := 0
-	for i := range batch {
-		if !batch[i].numbered {
-			batch[i].envelope.Seq = outboundSeq + 1
-		}
-		if budget.Size != nil {
-			size := budget.Size(batch[i].envelope)
-			if i > 0 && used+size > budget.Bytes {
-				batch = batch[:i]
-				break
-			}
-			used += size
-		}
-		if !batch[i].numbered {
-			outboundSeq++
-		}
-	}
+	outboundSeq = nextSeq
 
 	sentAt := formatTime(time.Now().UTC())
 	for i := range batch {

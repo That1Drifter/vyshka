@@ -569,7 +569,9 @@ A hub MUST NOT queue an envelope for a plugin whose `body` takes more than **262
 as the hub writes it. A body the hub composes itself it keeps inside that (a rejection
 notice lists fewer faults, for one); a body that arrives through the Admin API (sections
 5.5 and 7) and would cross it is refused with `413 payload_too_large` and nothing is
-queued. The bound is what lets any one envelope fit alone in a poll response (sections 2.1
+queued. The measure is the hub's own serialization of the body, which escaping can make
+longer than the bytes an operator submitted, so two hubs may draw the line at slightly
+different inputs; what the bound guarantees is the size of what reaches the plugin. The bound is what lets any one envelope fit alone in a poll response (sections 2.1
 and 3.1.2), so the queue never holds an envelope it cannot deliver.
 
 `id` is opaque to the receiver: it MUST be unique per message and identical on every
