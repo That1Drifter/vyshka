@@ -825,43 +825,43 @@ func (s *Server) routes() http.Handler {
 
 	// Plugin API: game-server facing, a separate credential realm entirely
 	// (spec sections 5.2 and 5.3).
-	mux.HandleFunc("POST /plugin/v1/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /plugin/v1/enroll", pluginRealm(s.handleEnroll))
 	mux.HandleFunc("/plugin/v1/enroll", methodNotAllowed("POST"))
 
-	mux.HandleFunc("POST /plugin/v1/session", s.handleCreateSession)
-	mux.HandleFunc("GET /plugin/v1/session", s.handleGetSession)
+	mux.HandleFunc("POST /plugin/v1/session", pluginRealm(s.handleCreateSession))
+	mux.HandleFunc("GET /plugin/v1/session", pluginRealm(s.handleGetSession))
 	mux.HandleFunc("/plugin/v1/session", methodNotAllowed("GET", "POST"))
 
 	// The transport heartbeat (spec section 3.1.2).
-	mux.HandleFunc("POST /plugin/v1/poll", s.handlePoll)
+	mux.HandleFunc("POST /plugin/v1/poll", pluginRealm(s.handlePoll))
 	mux.HandleFunc("/plugin/v1/poll", methodNotAllowed("POST"))
 
 	// The plugin side of the key/value store, confined inside pluginKV to the
 	// namespaces the server's stored manifest declares (spec section 12.3).
-	mux.HandleFunc("GET /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvGet))
-	mux.HandleFunc("PUT /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvSet))
-	mux.HandleFunc("DELETE /plugin/v1/kv/{namespace}/{key}", s.pluginKV(kvDelete))
+	mux.HandleFunc("GET /plugin/v1/kv/{namespace}/{key}", pluginRealm(s.pluginKV(kvGet)))
+	mux.HandleFunc("PUT /plugin/v1/kv/{namespace}/{key}", pluginRealm(s.pluginKV(kvSet)))
+	mux.HandleFunc("DELETE /plugin/v1/kv/{namespace}/{key}", pluginRealm(s.pluginKV(kvDelete)))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}", methodNotAllowed("GET", "PUT", "DELETE"))
 
-	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/incr", s.pluginKV(kvIncr))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/incr", pluginRealm(s.pluginKV(kvIncr)))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/incr", methodNotAllowed("POST"))
 
 	// The POST spellings of get, set, and delete (spec section 12.2), for an
 	// engine client that can issue only GET and POST and carries its
 	// credential on a POST alone. The same handlers behind the same gate.
-	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/get", s.pluginKV(kvGet))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/get", pluginRealm(s.pluginKV(kvGet)))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/get", methodNotAllowed("POST"))
-	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/set", s.pluginKV(kvSet))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/set", pluginRealm(s.pluginKV(kvSet)))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/set", methodNotAllowed("POST"))
-	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/delete", s.pluginKV(kvDelete))
+	mux.HandleFunc("POST /plugin/v1/kv/{namespace}/{key}/delete", pluginRealm(s.pluginKV(kvDelete)))
 	mux.HandleFunc("/plugin/v1/kv/{namespace}/{key}/delete", methodNotAllowed("POST"))
 
 	// The installation ban list, read page by page (spec section 13.3), with
 	// the POST spelling an engine that carries its credential on a POST alone
 	// needs.
-	mux.HandleFunc("GET /plugin/v1/bans", s.handlePluginBans)
+	mux.HandleFunc("GET /plugin/v1/bans", pluginRealm(s.handlePluginBans))
 	mux.HandleFunc("/plugin/v1/bans", methodNotAllowed("GET"))
-	mux.HandleFunc("POST /plugin/v1/bans/get", s.handlePluginBans)
+	mux.HandleFunc("POST /plugin/v1/bans/get", pluginRealm(s.handlePluginBans))
 	mux.HandleFunc("/plugin/v1/bans/get", methodNotAllowed("POST"))
 
 	// The panel, when one is mounted. It is a static asset surface and not

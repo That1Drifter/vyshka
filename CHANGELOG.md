@@ -26,6 +26,8 @@ before that date stay as they were written.
 
 #### Changed
 
+- 2026-11-12: draft 0.35 bounds Plugin API responses at 512 KiB and envelope bodies at 256 KiB:
+  polls and ban pages are cut to fit, a larger body is refused 413, and JSON goes compact (#15).
 - 2026-11-12: roadmap review: the Arma Reforger plugin is reopened as the next horizon (spike
   #159, then #15), WebSocket is parked until a plugin can use it, and M3's staging repeat is
   dropped.
@@ -1074,7 +1076,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.34 (2026-11-11). The document's header carries the draft number and date; each
+Draft 0.35 (2026-11-12). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

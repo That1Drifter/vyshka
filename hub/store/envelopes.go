@@ -173,6 +173,25 @@ func (s *Store) PendingEnvelopeCount(ctx context.Context, serverID string) (int,
 // between, and an ack the hub has already reported must never be lowered
 // (section 9.1).
 func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, int64, error) {
+	return s.NextOutboundWithin(ctx, sessionID, serverID, limit, OutboundBudget{})
+}
+
+// OutboundBudget bounds one batch in bytes (spec section 3.1.2). Size reports
+// what one envelope, numbered as it would be sent, adds to the response; Bytes
+// is what the batch may add in all. The zero value bounds nothing.
+type OutboundBudget struct {
+	Bytes int
+	Size  func(OutboundEnvelope) int
+}
+
+// NextOutboundWithin is NextOutbound with the batch cut where the next
+// envelope would carry it past the budget. The cut is made before numbering,
+// so an envelope left behind is neither numbered nor marked sent: it goes out
+// on a later poll as though this one had never seen it. The oldest envelope
+// is always taken, whatever its size, because leaving it would stall every
+// envelope behind it; the hub's bound on a queued body (spec section 4) is
+// what keeps that one inside the response.
+func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID string, limit int, budget OutboundBudget) ([]OutboundEnvelope, int64, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("begin next outbound: %w", err)
@@ -247,12 +266,28 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
 
-	sentAt := formatTime(time.Now().UTC())
+	// Number in order, measuring each envelope with the seq it will carry,
+	// since the seq's digits are part of its size.
+	used := 0
 	for i := range batch {
 		if !batch[i].numbered {
-			outboundSeq++
-			batch[i].envelope.Seq = outboundSeq
+			batch[i].envelope.Seq = outboundSeq + 1
 		}
+		if budget.Size != nil {
+			size := budget.Size(batch[i].envelope)
+			if i > 0 && used+size > budget.Bytes {
+				batch = batch[:i]
+				break
+			}
+			used += size
+		}
+		if !batch[i].numbered {
+			outboundSeq++
+		}
+	}
+
+	sentAt := formatTime(time.Now().UTC())
+	for i := range batch {
 		result, err := tx.ExecContext(ctx,
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,

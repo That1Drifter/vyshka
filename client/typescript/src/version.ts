@@ -2,7 +2,7 @@
 // change the document and run `npm run generate`.
 
 /** The draft of spec/protocol.md this package was generated against. */
-export const PROTOCOL_DRAFT = "0.34";
+export const PROTOCOL_DRAFT = "0.35";
 
 /** The info.version of spec/openapi-admin.yaml this package was generated from. */
 export const OPENAPI_VERSION = "0.15.0";

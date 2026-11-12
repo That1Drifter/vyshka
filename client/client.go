@@ -44,7 +44,7 @@ var Version = "dev"
 // against. A newer hub stays usable, because every record here tolerates
 // fields and values it does not know, but anything a later draft added is
 // invisible to this client.
-const ProtocolDraft = "0.34"
+const ProtocolDraft = "0.35"
 
 // defaultTimeout bounds one request when the caller supplies no HTTP client.
 // The longest Admin API answer is a context enumeration, which the hub holds

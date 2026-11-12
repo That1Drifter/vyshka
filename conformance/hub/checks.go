@@ -189,9 +189,22 @@ func (e Env) send(client *http.Client, ctx context.Context, method, path, bearer
 	}
 	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Every Plugin API answer is graded against the response bound of
+	// section 2.1 here, so each check that talks to the Plugin API grades it
+	// for free; the checks in bounds.go are the ones that push an answer
+	// toward it.
+	readLimit := int64(1 << 20)
+	pluginAPI := strings.HasPrefix(path, "/plugin/v1/")
+	if pluginAPI {
+		readLimit = pluginResponseBound + 1
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read body: %w", err)
+	}
+	if pluginAPI && len(responseBody) > pluginResponseBound {
+		return resp, nil, fmt.Errorf("the response body ran past %d bytes; a Plugin API response MUST NOT exceed that (section 2.1)",
+			pluginResponseBound)
 	}
 	return resp, responseBody, nil
 }

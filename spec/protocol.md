@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.34 (2026-11-11)
+**Status:** draft 0.35 (2026-11-12)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -81,6 +81,17 @@ Both realms are JSON over HTTP:
 - Identifiers assigned by the hub (`serverId`, `sessionId`, `actionId`) are opaque strings,
   stable for the lifetime of the object they name.
 - Timestamps are RFC 3339 with a UTC offset.
+- A Plugin API response body MUST NOT exceed **524288 bytes** (512 KiB), counted as sent.
+  A poll stays inside it by cutting its batch (section 3.1.2) and a ban-list page by ending
+  early (section 13.3); the bounds on an envelope body (section 4) and on a key/value value
+  (section 12.1) keep every other answer far below it. A hub SHOULD write Plugin API
+  bodies without insignificant whitespace: indentation grows with nesting depth, and a
+  2000-byte value nested 1000 deep takes about 2 MB once indented two spaces a level.
+
+> **Measured basis:** the Arma Reforger 1.9 server script's HTTP client fails any response
+> of 1 048 576 bytes or more, counting the bytes it receives whether or not the response
+> declares a length (`spikes/reforger-server-script-limits/results/findings.md`). The
+> bound is half that, so no answer comes near the edge.
 
 ### 2.2 Error model
 
@@ -449,6 +460,13 @@ Rules:
   nothing queued. An empty batch is a normal answer, not an error.
 - A hub MUST answer immediately, without holding, whenever any unacked envelope is already
   queued for the session.
+- A hub MUST keep each poll response inside the bound of section 2.1. When the unacked
+  envelopes would carry the response past it, the hub sends the oldest ones that fit, in
+  `seq` order, and leaves the rest queued for the next poll, which it answers at once under
+  the rule above. Because no envelope body exceeds 262144 bytes (section 4), the oldest
+  unacked envelope always fits alone, so a cut slows a large backlog by one round trip
+  per response and never stalls it. A plugin needs nothing new for this: a short batch
+  is an ordinary batch.
 - A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it
   begins to hold, so that a poll which only acks takes effect at once rather than at the
   end of the hold. It MUST apply the `ack` first: the ack frees queued work, and applying
@@ -546,6 +564,13 @@ Every plugin<->hub message, in both directions and over both transports, is an e
 `id`, `type`, `seq` and `ts` are REQUIRED on every envelope a sender emits. `v` is REQUIRED
 from the hub and OPTIONAL from a plugin, where its absence means the version the session
 negotiated as `envelopeVersion`.
+
+A hub MUST NOT queue an envelope for a plugin whose `body` takes more than **262144 bytes**
+as the hub writes it. A body the hub composes itself it keeps inside that (a rejection
+notice lists fewer faults, for one); a body that arrives through the Admin API (sections
+5.5 and 7) and would cross it is refused with `413 payload_too_large` and nothing is
+queued. The bound is what lets any one envelope fit alone in a poll response (sections 2.1
+and 3.1.2), so the queue never holds an envelope it cannot deliver.
 
 `id` is opaque to the receiver: it MUST be unique per message and identical on every
 retransmission of that message, and a receiver MUST NOT parse it or require any particular
@@ -839,6 +864,7 @@ of the same queue, with its own endpoint and its own validation.
 | `code` | HTTP | Raised when |
 |---|---|---|
 | `bad_request` | 400 | `type` is missing, empty, or too long |
+| `payload_too_large` | 413 | `body` would exceed the envelope body bound (section 4), or the request exceeded the hub's body limit |
 | `conflict` | 409 | `type` is reserved for an endpoint that validates it |
 | `not_found` | 404 | No such server |
 | `outbound_queue_full` | 409 | The server's queue is at its bound (section 9.2) |
@@ -1239,6 +1265,7 @@ POST /api/v1/servers/{serverId}/actions
 | `bad_request` | 400 | `code` missing or too long, `params` not a JSON object, body malformed |
 | `unknown_action` | 409 | The server's manifest does not declare `code`, or no manifest was ever accepted |
 | `params_invalid` | 400 | `params` fail the declared schema; `details.errors` lists `{ path, message }` faults |
+| `payload_too_large` | 413 | The `action.dispatch` body would exceed the envelope body bound (section 4), or the request exceeded the hub's body limit |
 | `not_found` | 404 | No such server |
 | `outbound_queue_full` | 409 | The server's queue is at its bound (section 9.2) |
 
@@ -3158,6 +3185,9 @@ Authorization: Bearer <sessionToken>
   in section 8.5. A page is bounded so that no single answer is a large piece of work
   for a constrained engine (Appendix A); a plugin MAY fetch the pages of a walk back to
   back or spread over time, since the walk's revision does not move under it.
+- A page also ends early when one more entry would carry its body past the bound of
+  section 2.1: the hub returns fewer than `limit` entries, with a `nextCursor`. Only an
+  absent `nextCursor` ends a walk; a plugin MUST NOT read a short page as the last one.
 - `nextCursor` is absent on the last page. A cursor is opaque (section 2.1), but a hub
   MUST draw it from letters, digits, `-`, and `_` alone, so a plugin on an engine with no
   URL-encoding library can put it in the query string as it came.

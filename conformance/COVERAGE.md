@@ -23,12 +23,12 @@ prove the suite registers and runs it.
 
 | Status | Clauses |
 |---|---|
-| graded | 108 |
-| partial | 99 |
-| ungraded | 61 |
+| graded | 110 |
+| partial | 100 |
+| ungraded | 62 |
 | n/a | 16 |
 
-284 clauses in all.
+288 clauses in all.
 
 ## How to read a row
 
@@ -67,6 +67,7 @@ exercises an area without failing on the violation is not cited.
 | 2.1 | "a hub MUST reject anything else with `415`." | hub | - | ungraded | |
 | 2.1 | "Receivers MUST ignore unknown fields in any request or response body." | either | hub:compat.unknownFields, hub:state.latestReplaces | partial | Hub: two request endpoints and one snapshot body. Plugin: never graded (a plugin that fails an action over an unknown params member still passes dispatch.largeParams) |
 | 2.1 | "clients MUST NOT parse them or depend on their length, alphabet, or any prefix." | plugin | plugin:enroll.exchange, plugin:session.start | partial | Mock tokens carry a non-reference prefix, so prefix parsing fails; length and alphabet are never varied |
+| 2.1 | "A Plugin API response body MUST NOT exceed **524288 bytes** (512 KiB), counted as sent." | hub | hub:plugin.poll.byteBound, hub:plugin.kv.byteBound, hub:plugin.bans.byteBound | graded | Every Plugin API answer in the suite is measured against it; these three push one toward it |
 
 ### 2.2 Error model
 
@@ -122,6 +123,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 3.1.2 | "A hub MUST answer with `200` and an empty `envelopes` array when the hold expires with nothing queued." | hub | hub:plugin.poll.idleHold | graded | |
 | 3.1.2 | "A hub MUST answer immediately, without holding, whenever any unacked envelope is already queued for the session." | hub | hub:plugin.poll.deliver | partial | Immediately is approximated by 2 s; timed only for a never-delivered envelope, a delivered but unacked one is not timed |
+| 3.1.2 | "A hub MUST keep each poll response inside the bound of section 2.1." | hub | hub:plugin.poll.byteBound | graded | |
 | 3.1.2 | "A hub MUST apply the request's `ack` and ingest the request's `envelopes` before it begins to hold" | hub | hub:plugin.poll.retransmit, hub:plugin.poll.ackContiguous, hub:plugin.poll.more | partial | Request-ack effects are observed through what the answer carries, and inbound progress on a more: true poll; applying the ack or ingesting before an actual hold is not observed |
 | 3.1.2 | "It MUST apply the `ack` first: the ack frees queued work" | hub | - | ungraded | The ack-bearing polls in retransmit and ackContiguous carry no envelopes, so the order of ack and ingest is never observable |
 | 3.1.2 | "A hub MUST validate the whole inbound batch before applying any of it." | hub | hub:plugin.poll.envelopeInvalid | graded | |
@@ -152,6 +154,7 @@ exercises an area without failing on the violation is not cited.
 |---|---|---|---|---|---|
 | 4 | "`id`, `type`, `seq` and `ts` are REQUIRED on every envelope a sender emits." | sender | hub:plugin.poll.deliver, plugin:manifest.publish | graded | The hub suite's poll helper and the mock hub's ingest check every envelope |
 | 4 | "`v` is REQUIRED from the hub and OPTIONAL from a plugin" | hub | hub:plugin.poll.deliver | graded | |
+| 4 | "A hub MUST NOT queue an envelope for a plugin whose `body` takes more than **262144 bytes** as the hub writes it." | hub | hub:admin.envelopes.bodyBound | partial | Probed with an ASCII body over the bound on the queue and dispatch routes; a body the hub composes itself is not pushed there |
 | 4 | "`id` is opaque to the receiver: it MUST be unique per message and identical on every retransmission of that message" | sender | hub:plugin.poll.retransmit, plugin:outage.bufferAndFlush, plugin:session.renumber | partial | Plugin ids are checked for reuse; hub ids only for identity across a retransmission, not uniqueness |
 | 4 | "a receiver MUST NOT parse it or require any particular format." | either | hub:plugin.poll.inbound, plugin:action.roundTrip | partial | Both suites send non-ULID ids; parsing that tolerates failure is invisible |
 | 4 | "so a sender MUST NOT reuse an `id` for a different message on the same server, in any session." | sender | plugin:session.renumber | partial | The mock faults plugin id reuse in and across sessions; hub-minted ids are never compared |
@@ -579,6 +582,7 @@ exercises an area without failing on the violation is not cited.
 | 13.3 | "A hub MUST also queue one, carrying the current revision, when it accepts a manifest that declares the capability" | hub | - | ungraded | |
 | 13.3 | "the acceptance and any change of the list MUST be ordered" | hub | - | ungraded | |
 | 13.3 | "a hub MUST draw it from letters, digits, `-`, and `_` alone" | hub | hub:plugin.bans.pull | graded | |
+| 13.3 | "a plugin MUST NOT read a short page as the last one." | plugin | - | ungraded | The mock hub never serves a short page with a cursor |
 | 13.3 | "A hub MUST serve both spellings." | hub | hub:plugin.bans.pull | graded | |
 
 ### 13.4 Enforcing the list (plugin)

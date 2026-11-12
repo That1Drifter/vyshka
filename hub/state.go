@@ -338,7 +338,9 @@ func newStateReject(envelopeID string, faults []schema.Fault) store.Notice {
 		faults = faults[:maxStateFaults]
 	}
 	encoded, err := json.Marshal(stateRejectBody{EnvelopeID: envelopeID, Errors: faults})
-	if err != nil {
+	// A fault echoing a long path or value can carry the notice past the
+	// envelope body bound (spec section 4); the degraded form stays inside.
+	if err != nil || len(encoded) > maxEnvelopeBody {
 		degraded, _ := json.Marshal(stateRejectBody{
 			EnvelopeID: envelopeID,
 			Errors:     []schema.Fault{{Path: "", Message: "the snapshot was rejected"}},

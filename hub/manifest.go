@@ -445,9 +445,11 @@ func newManifestReject(envelopeID string, body json.RawMessage, faults []schema.
 		ManifestRevision: revision.ManifestRevision,
 		Errors:           faults,
 	})
-	if err != nil {
-		// Faults are strings all the way down; this cannot happen, and a
-		// degraded notice beats a dropped one if it somehow does.
+	if err != nil || len(encoded) > maxEnvelopeBody {
+		// Faults are strings all the way down, so a marshal error cannot
+		// happen; a fault echoing a long path or value can carry the notice
+		// past the envelope body bound (spec section 4). Either way a
+		// degraded notice beats a dropped one.
 		degraded, _ := json.Marshal(manifestRejectBody{
 			EnvelopeID: envelopeID,
 			Errors:     []schema.Fault{{Path: "", Message: "the manifest was rejected"}},

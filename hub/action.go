@@ -164,6 +164,9 @@ func (s *Server) handleDispatchAction(w http.ResponseWriter, r *http.Request) {
 			s.writeInternalError(w, r, err)
 			return
 		}
+		if !refuseOversizedBody(w, envelopeBody) {
+			return
+		}
 
 		action, created, err := s.store.DispatchAction(r.Context(), store.NewAction{
 			ID:               actionID,
