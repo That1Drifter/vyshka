@@ -68,7 +68,7 @@ player identity shape froze on 2026-09-14
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.34 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.35 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ### Landed slices
 
@@ -115,6 +115,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
 - 2026-11-12: Reforger server script measured (#159, spike, partial): poll timeouts of 3 s
   and up, readable error bodies, real `Authorization` headers, responses under 1 MiB, no
   guaranteed second request while a poll is held; player identity still open.
+- 2026-11-12: Plugin API responses bounded at 512 KiB and envelope bodies at 256 KiB, the
+  protocol change Reforger needed first (part of #15, draft 0.35).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -146,8 +148,9 @@ spec reader is not surprised.
   item is still open: the player identifier, which reads empty unless the server is
   registered with Bohemia's backend, and such a server loads its mods only from the
   Workshop. Next is the tracer bullet (#15): enrollment, sessions, the poll loop, one
-  action, and the plugin conformance suite. A protocol change comes first: a byte bound on
-  the poll response, because Reforger cannot receive 1 MiB. Reforger's entry in the
+  action, and the plugin conformance suite. The protocol change it needed first, a byte
+  bound on every Plugin API response because Reforger cannot receive 1 MiB, landed in
+  draft 0.35. Reforger's entry in the
   platform registry (section 8.2, additive) waits on the identity measurement. Protocol 1.0 still gates only on a third-party plugin; a second reference
   plugin tests the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked

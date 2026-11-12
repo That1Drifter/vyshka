@@ -137,7 +137,9 @@ func (w *inlineErrorWriter) finish() {
 	// The rewritten body is longer than the one a handler may have measured;
 	// a stale length would make the real response writer cut the body short.
 	w.ResponseWriter.Header().Del("Content-Length")
-	writeJSON(w.ResponseWriter, http.StatusOK, failure)
+	// Inline errors exist only on the Plugin API, whose bodies go out compact
+	// (spec section 2.1).
+	writeJSON(compactResponse{w.ResponseWriter}, http.StatusOK, failure)
 }
 
 // codeForStatus is the general code of spec section 2.2 for a status, used only

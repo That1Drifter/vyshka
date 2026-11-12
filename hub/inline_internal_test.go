@@ -50,7 +50,7 @@ func TestInlineErrorWriterKeepsLargeNumbersInDetails(t *testing.T) {
 	_, _ = writer.Write([]byte(`{"error":{"code":"envelope_invalid","message":"no","details":{"index":0,"seq":` + seq + `}}}`))
 	writer.finish()
 
-	if body := recorder.Body.String(); !strings.Contains(body, `"seq": `+seq) {
+	if body := recorder.Body.String(); !strings.Contains(body, `"seq":`+seq) {
 		t.Errorf("details.seq was not preserved exactly: %s", body)
 	}
 }

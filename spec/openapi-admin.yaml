@@ -263,6 +263,14 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "413":
+          description: |
+            The body would take more than 262144 bytes as the hub writes it
+            (spec section 4), or the request exceeded the hub's body limit
+            (`payload_too_large`). Nothing was queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: |
             The type belongs to a dedicated endpoint (`conflict`), or the
@@ -430,6 +438,14 @@ paths:
             Malformed body (`bad_request`), or params failing the declared
             schema (`params_invalid`, with `details.errors` listing
             `{ path, message }` faults).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: |
+            The `action.dispatch` body would take more than 262144 bytes as
+            the hub writes it (spec section 4), or the request exceeded the
+            hub's body limit (`payload_too_large`). Nothing was queued.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

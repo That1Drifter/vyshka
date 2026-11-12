@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -308,5 +309,57 @@ func TestSequenceStateResetsWithTheSession(t *testing.T) {
 	}
 	if inbound.Ack != 0 {
 		t.Errorf("inbound ack = %d in a fresh session, want 0", inbound.Ack)
+	}
+}
+
+// A batch cut to a byte budget must only ever lose its highest seqs. Here an
+// envelope numbered into the session goes unacked (its response was lost)
+// while two newer ones sort ahead of it by age, as they do after the clock
+// steps back. Read by age, the cut kept the two newcomers, numbered them
+// above the lost one, and left it behind on every poll: a gap the plugin's
+// contiguous ack could never cross.
+func TestNextOutboundWithinKeepsRetransmissionsAhead(t *testing.T) {
+	ctx := context.Background()
+	st := migrated(t)
+	serverID := enrolledServer(t, st, "cut order")
+	session := startSession(t, st, serverID, "token-cut-order")
+	twoPerBatch := store.OutboundBudget{Bytes: 250, Size: func(store.OutboundEnvelope) int { return 100 }}
+
+	lost, err := st.QueueEnvelope(ctx, serverID, "test.lost", []byte(`{}`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _, err := st.NextOutboundWithin(ctx, session.ID, serverID, 10, twoPerBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].ID != lost.ID || first[0].Seq != 1 {
+		t.Fatalf("first batch = %+v, want the one envelope as seq 1", first)
+	}
+
+	var newcomers []string
+	for range 2 {
+		queued, err := st.QueueEnvelope(ctx, serverID, "test.newcomer", []byte(`{}`), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newcomers = append(newcomers, queued.ID)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE outbound_envelopes SET created_at = ? WHERE id = ? OR id = ?`,
+		"2000-01-01T00:00:00.000Z", newcomers[0], newcomers[1]); err != nil {
+		t.Fatal(err)
+	}
+
+	again, _, _, err := st.NextOutboundWithin(ctx, session.ID, serverID, 10, twoPerBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].ID != lost.ID || again[0].Seq != 1 || again[1].Seq != 2 {
+		got := make([]string, len(again))
+		for i, envelope := range again {
+			got[i] = fmt.Sprintf("%s@%d", envelope.Type, envelope.Seq)
+		}
+		t.Fatalf("retransmission batch = %v, want test.lost@1 then one newcomer at seq 2", got)
 	}
 }

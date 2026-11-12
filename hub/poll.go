@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -341,6 +342,26 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	s.holdPoll(w, r, session, sessionTokenHash, inboundAck, backlogFloor(more, request.Envelopes), &held)
 }
 
+// pollBudget is what the envelopes of one poll response may take, so that the
+// whole body stays inside maxPluginResponse (spec section 3.1.2). The rest of
+// the response is measured with the widest ack it could carry, since the ack
+// is refreshed after the batch is cut; each envelope is charged one byte more
+// than itself for the comma that separates it from the next.
+func pollBudget(session store.Session) store.OutboundBudget {
+	frame := encodedLen(pollResponse{
+		Envelopes:          []envelope{},
+		Ack:                math.MaxInt64,
+		PollTimeoutSeconds: session.PollTimeoutSeconds,
+		SessionExpiresAt:   envelopeTimestamp(session.ExpiresAt),
+	}) + 1 // the encoder's trailing newline
+	return store.OutboundBudget{
+		Bytes: maxPluginResponse - frame,
+		Size: func(queued store.OutboundEnvelope) int {
+			return encodedLen(newOutboundEnvelope(queued)) + 1
+		},
+	}
+}
+
 // countInbound books what one committed poll did to the inbound envelope
 // counters. It runs after the commit, so a poll that failed or retried counts
 // nothing.
@@ -441,7 +462,8 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		// select still wakes this poll instead of waiting for the backstop.
 		signal, release := s.waiters.wait(session.ServerID)
 
-		queued, _, committedAck, err := s.store.NextOutbound(r.Context(), session.ID, session.ServerID, maxOutboundBatch)
+		budget := pollBudget(session)
+		queued, _, committedAck, err := s.store.NextOutboundWithin(r.Context(), session.ID, session.ServerID, maxOutboundBatch, budget)
 		if err != nil {
 			release()
 			if errors.Is(err, store.ErrNotFound) {
@@ -455,6 +477,16 @@ func (s *Server) holdPoll(w http.ResponseWriter, r *http.Request, session store.
 		drain := backlogFloor > 0 && inboundAck >= backlogFloor
 		if len(queued) > 0 {
 			release()
+			// Only an envelope queued before the hub bounded bodies (protocol
+			// draft 0.35) can be too large for a response alone. It is sent
+			// anyway, since holding it back would stall everything behind it;
+			// an engine that cannot receive it will keep failing this poll.
+			// Size charges a separating comma, which a lone envelope does not have.
+			if len(queued) == 1 && budget.Size(queued[0])-1 > budget.Bytes {
+				s.log.Warn("poll sent one envelope larger than a Plugin API response may be; it was queued before the body bound",
+					"serverId", session.ServerID, "sessionId", session.ID, "envelopeId", queued[0].ID,
+					"bytes", budget.Size(queued[0])-1, "bound", maxPluginResponse)
+			}
 			envelopes := make([]envelope, len(queued))
 			refund := false
 			for i, one := range queued {

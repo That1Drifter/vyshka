@@ -103,5 +103,39 @@ poll "$session_token" "$(jq -nc '
   ]}')" | jq '{ack}'
 echo "still 2: an envelope above a gap is discarded, and retransmission recovers it"
 
+# Bodies this size go through files: a 200 KB argument is past what some
+# platforms pass on a command line.
+big_dir=$(mktemp -d)
+queue_padded() {
+  local bytes="$1" file="$big_dir/request-$1.json"
+  head -c "$bytes" /dev/zero | tr '\0' a > "$big_dir/pad"
+  jq -nc --rawfile pad "$big_dir/pad" '{type:"demo.bulk",body:{pad:$pad}}' > "$file"
+  curl --silent --show-error --fail-with-body -X POST "$HUB_URL/api/v1/servers/$server_id/envelopes" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' -d @"$file"
+}
+
+step "10. An envelope whose body passes 262144 bytes is refused, and nothing is queued"
+expect_failure queue_padded 270000
+echo ""
+api GET "/api/v1/servers/$server_id" "$ADMIN_TOKEN" | jq '{pendingEnvelopeCount}'
+
+step "11. Three 200 KB envelopes are queued: more than one 512 KiB response can carry"
+for _ in 1 2 3; do queue_padded 200000 | jq -c '.envelope | {id, type}'; done
+
+step "12. The hub cuts the batch to fit, and answers the next poll at once with the rest"
+ack=$seq
+while :; do
+  started=$(date +%s%N)
+  poll "$session_token" "$(jq -nc --argjson ack "$ack" '{ack:$ack}')" > "$poll_output"
+  elapsed_ms=$(( ($(date +%s%N) - started) / 1000000 ))
+  count=$(jq '.envelopes | length' < "$poll_output")
+  [ "$count" -eq 0 ] && break
+  printf '%7d bytes, %s envelopes, seqs %s, answered in %s ms\n' \
+    "$(wc -c < "$poll_output")" "$count" "$(jq -c '[.envelopes[].seq]' < "$poll_output")" "$elapsed_ms"
+  ack=$(jq '.envelopes[-1].seq' < "$poll_output")
+done
+echo "queue drained through seq $ack; every response stayed under 524288 bytes (that last poll held 25 s on an empty queue)"
+
+rm -rf "$big_dir"
 rm -f "$poll_output"
 printf '\n\033[1mdone\033[0m: server %s round-tripped envelopes in both directions\n' "$server_id"

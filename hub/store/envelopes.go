@@ -173,15 +173,34 @@ func (s *Store) PendingEnvelopeCount(ctx context.Context, serverID string) (int,
 // between, and an ack the hub has already reported must never be lowered
 // (section 9.1).
 func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, limit int) ([]OutboundEnvelope, int64, int64, error) {
+	return s.NextOutboundWithin(ctx, sessionID, serverID, limit, OutboundBudget{})
+}
+
+// OutboundBudget bounds one batch in bytes (spec section 3.1.2). Size reports
+// what one envelope, numbered as it would be sent, adds to the response; Bytes
+// is what the batch may add in all. The zero value bounds nothing.
+type OutboundBudget struct {
+	Bytes int
+	Size  func(OutboundEnvelope) int
+}
+
+// NextOutboundWithin is NextOutbound with the batch cut where the next
+// envelope would carry it past the budget. The cut is made before numbering,
+// so an envelope left behind is neither numbered nor marked sent: it goes out
+// on a later poll as though this one had never seen it. The oldest envelope
+// is always taken, whatever its size, because leaving it would stall every
+// envelope behind it; the hub's bound on a queued body (spec section 4) is
+// what keeps that one inside the response.
+func (s *Store) NextOutboundWithin(ctx context.Context, sessionID, serverID string, limit int, budget OutboundBudget) ([]OutboundEnvelope, int64, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("begin next outbound: %w", err)
 	}
 	defer tx.Rollback()
 
-	var outboundSeq, inboundAck int64
-	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, inbound_ack",
-		&outboundSeq, &inboundAck); err != nil {
+	var outboundSeq, outboundAck, inboundAck int64
+	if err := liveSessionSeq(ctx, tx, sessionID, "outbound_seq, outbound_ack, inbound_ack",
+		&outboundSeq, &outboundAck, &inboundAck); err != nil {
 		return nil, 0, 0, err
 	}
 
@@ -192,14 +211,31 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 	// longer exists, leaving a gap in the session's sequence space that the
 	// plugin's contiguous ack could never cross. Locked, the delete waits
 	// and then finds the row numbered, which its predicate excludes.
-	rows, err := tx.QueryContext(ctx,
-		`SELECT id, type, body, created_at, session_id, seq, sent_at
+	//
+	// They are read in the order they will be sent: those already numbered
+	// into this session first, by seq, then the rest by age. Age alone can
+	// disagree with seq (ids minted in one millisecond sort arbitrarily, and a
+	// clock stepped back sorts new work first), and a batch cut short must
+	// only ever lose its highest seqs: dropping a lower one would leave a gap
+	// below everything sent after it, and the same cut on every later poll
+	// would stall the session. Two reads rather than one ordered by both, so
+	// each walks an index in order instead of sorting the server's whole
+	// backlog, bodies and all, on every poll. The first starts above the
+	// session's ack: acked rows are kept, and everything at or below the ack
+	// is acked, so starting at seq 1 would walk the session's whole history.
+	const columns = `SELECT id, type, body, created_at, session_id, seq, sent_at
 		   FROM outbound_envelopes
-		  WHERE server_id = ? AND acked_at IS NULL
+		  WHERE server_id = ? AND acked_at IS NULL AND `
+	reads := []struct {
+		query string
+		args  []any
+	}{
+		{columns + `session_id = ? AND seq > ?
+		  ORDER BY seq
+		  LIMIT ?` + tx.forUpdate(), []any{serverID, sessionID, outboundAck}},
+		{columns + `(session_id IS NULL OR session_id <> ? OR seq IS NULL)
 		  ORDER BY created_at, id
-		  LIMIT ?`+tx.forUpdate(), serverID, limit)
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
+		  LIMIT ?` + tx.forUpdate(), []any{serverID, sessionID}},
 	}
 
 	type pending struct {
@@ -207,39 +243,70 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		numbered bool
 	}
 	var batch []pending
-	for rows.Next() {
-		var (
-			row       pending
-			body      string
-			createdAt string
-			sessionOf sql.NullString
-			seq       sql.NullInt64
-			sentAt    sql.NullString
-		)
-		if err := rows.Scan(&row.envelope.ID, &row.envelope.Type, &body, &createdAt,
-			&sessionOf, &seq, &sentAt); err != nil {
-			rows.Close()
-			return nil, 0, 0, fmt.Errorf("scan outbound envelope: %w", err)
+	nextSeq, used, full := outboundSeq, 0, false
+	// read runs one of the reads, appending what fits and reporting whether
+	// the batch is full: cut by the budget, or at the row limit.
+	read := func(query string, args []any) error {
+		rows, err := tx.QueryContext(ctx, query, append(args, limit-len(batch))...)
+		if err != nil {
+			return fmt.Errorf("read outbound envelopes: %w", err)
 		}
-		row.envelope.Body = json.RawMessage(body)
-		if row.envelope.CreatedAt, err = parseTime(createdAt); err != nil {
-			rows.Close()
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				row       pending
+				body      string
+				createdAt string
+				sessionOf sql.NullString
+				seq       sql.NullInt64
+				sentAt    sql.NullString
+			)
+			if err := rows.Scan(&row.envelope.ID, &row.envelope.Type, &body, &createdAt,
+				&sessionOf, &seq, &sentAt); err != nil {
+				return fmt.Errorf("scan outbound envelope: %w", err)
+			}
+			row.envelope.Body = json.RawMessage(body)
+			if row.envelope.CreatedAt, err = parseTime(createdAt); err != nil {
+				return err
+			}
+			row.envelope.FirstSend = !sentAt.Valid
+			// A seq from an earlier session means nothing here: sequence spaces
+			// are per session, so the envelope is renumbered into this one.
+			if sessionOf.Valid && sessionOf.String == sessionID && seq.Valid {
+				row.envelope.Seq = seq.Int64
+				row.numbered = true
+			} else {
+				row.envelope.Seq = nextSeq + 1
+			}
+			// Measured with the seq it will carry, since the seq's digits are
+			// part of its size, and as it is read, so a cut stops reading too.
+			if budget.Size != nil {
+				size := budget.Size(row.envelope)
+				if len(batch) > 0 && used+size > budget.Bytes {
+					full = true
+					break
+				}
+				used += size
+			}
+			if !row.numbered {
+				nextSeq++
+			}
+			batch = append(batch, row)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read outbound envelopes: %w", err)
+		}
+		full = full || len(batch) >= limit
+		return nil
+	}
+	for _, each := range reads {
+		if full {
+			break
+		}
+		if err := read(each.query, each.args); err != nil {
 			return nil, 0, 0, err
 		}
-		row.envelope.FirstSend = !sentAt.Valid
-		// A seq from an earlier session means nothing here: sequence spaces are
-		// per session, so the envelope is renumbered into this one.
-		if sessionOf.Valid && sessionOf.String == sessionID && seq.Valid {
-			row.envelope.Seq = seq.Int64
-			row.numbered = true
-		}
-		batch = append(batch, row)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, 0, 0, fmt.Errorf("read outbound envelopes: %w", err)
-	}
-	rows.Close()
 
 	runHook(testHooks.afterOutboundRead)
 
@@ -247,12 +314,10 @@ func (s *Store) NextOutbound(ctx context.Context, sessionID, serverID string, li
 		return nil, outboundSeq, inboundAck, tx.Commit()
 	}
 
+	outboundSeq = nextSeq
+
 	sentAt := formatTime(time.Now().UTC())
 	for i := range batch {
-		if !batch[i].numbered {
-			outboundSeq++
-			batch[i].envelope.Seq = outboundSeq
-		}
 		result, err := tx.ExecContext(ctx,
 			`UPDATE outbound_envelopes SET session_id = ?, seq = ?, sent_at = ? WHERE id = ?`,
 			sessionID, batch[i].envelope.Seq, sentAt, batch[i].envelope.ID,

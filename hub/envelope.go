@@ -19,6 +19,31 @@ const (
 	maxEnvelopeID       = 128
 )
 
+// Byte bounds on what the hub sends a plugin (spec sections 2.1 and 4). A
+// Plugin API response stays at or under maxPluginResponse, and a queued
+// envelope's body at or under maxEnvelopeBody, both measured as written
+// (see encodedLen). The second is under half the first, so one envelope of
+// any admissible size always fits a poll response alone.
+const (
+	maxPluginResponse = 524288
+	maxEnvelopeBody   = 262144
+)
+
+// encodedLen is how many bytes v takes in a compact Plugin API response:
+// json.Marshal output is exactly what writeJSON's encoder writes for it
+// without indentation, HTML escaping and all, less the final newline.
+// A json.RawMessage is compacted and escaped the same way, so a stored body
+// measures as it will go out rather than as it was stored.
+func encodedLen(v any) int {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		// Only a value the hub could not send at all fails here, and it
+		// fails the response too; reporting it as oversized keeps it out.
+		return maxPluginResponse + 1
+	}
+	return len(encoded)
+}
+
 // The envelope of spec section 4 is split by direction, because its rules are
 // not symmetric: the hub MUST stamp `v` on what it sends, while a plugin MAY
 // omit it, and a receiver must tolerate a `ts` it cannot parse even though a

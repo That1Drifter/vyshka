@@ -449,22 +449,43 @@ func (s *Server) handlePluginBans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := pluginBanPage{Revision: served, Bans: make([]pluginBanEntry, 0, min(len(found), limit))}
-	if len(found) > limit {
-		last := found[limit-1]
-		page.NextCursor = encodeBanWalkCursor(banWalkCursor{
+	cursorAfter := func(ban store.Ban) string {
+		return encodeBanWalkCursor(banWalkCursor{
 			revision: served,
-			position: store.BanListPosition{Platform: last.Platform, PlayerID: last.PlayerID},
+			position: store.BanListPosition{Platform: ban.Platform, PlayerID: ban.PlayerID},
 		})
-		found = found[:limit]
 	}
-	for _, ban := range found {
-		page.Bans = append(page.Bans, pluginBanEntry{
+	// The page ends at limit, or earlier where one more entry would carry the
+	// body past maxPluginResponse (spec section 13.3). Each entry is admitted
+	// only with room left for the cursor that would follow it, so whichever
+	// entry ends the page, its cursor fits. The first entry is always served:
+	// one entry is a few kilobytes at most, and a page of none would never
+	// advance the walk.
+	room := maxPluginResponse - encodedLen(page) - 1 // the encoder's trailing newline
+	cursorFrame := len(`,"nextCursor":""`)
+	more := false
+	for i, ban := range found {
+		if i == limit {
+			more = true
+			break
+		}
+		entry := pluginBanEntry{
 			ID:        ban.ID,
 			Player:    noteIdentity{Platform: ban.Platform, ID: ban.PlayerID},
 			Reason:    ban.Reason,
 			Name:      ban.Name,
 			ExpiresAt: ban.ExpiresAt,
-		})
+		}
+		size := encodedLen(entry) + 1 // and the comma before the next
+		if i > 0 && size+cursorFrame+len(cursorAfter(ban)) > room {
+			more = true
+			break
+		}
+		room -= size
+		page.Bans = append(page.Bans, entry)
+	}
+	if more {
+		page.NextCursor = cursorAfter(found[len(page.Bans)-1])
 	}
 	writeJSON(w, http.StatusOK, page)
 }

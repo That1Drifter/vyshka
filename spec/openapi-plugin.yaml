@@ -220,6 +220,10 @@ paths:
         normal answer to a hold that expired with nothing to send, and the
         plugin re-polls immediately either way.
 
+        A response never exceeds 524288 bytes (spec sections 2.1 and 3.1.2):
+        when the queue holds more than that, the hub sends the oldest
+        envelopes that fit and answers the next poll at once with the rest.
+
         A plugin must set its own HTTP response timeout to the effective
         `pollTimeoutSeconds` plus 5 seconds (spec section 3.1.1). An aborted
         poll loses nothing: sequence numbers and acks make the next one recover
@@ -748,7 +752,9 @@ components:
         nextCursor:
           type: string
           pattern: "^[A-Za-z0-9_-]+$"
-          description: Absent on the last page.
+          description: |
+            Absent on the last page, and only there: a page can carry fewer
+            than `limit` entries to stay under 524288 bytes (spec section 13.3).
 
     KVEntry:
       type: object

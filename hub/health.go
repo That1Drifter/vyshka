@@ -63,6 +63,25 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
+	if _, compact := w.(compactResponse); !compact {
+		encoder.SetIndent("", "  ")
+	}
 	_ = encoder.Encode(body)
+}
+
+// compactResponse marks a Plugin API response: writeJSON sends its body
+// without indentation (spec section 2.1). Indentation grows with nesting, so
+// a small, deeply nested value (a key/value entry, an action's params) would
+// otherwise reach a size a constrained engine refuses to receive, and the
+// byte bounds the hub measures with encodedLen would not be what it sends.
+type compactResponse struct{ http.ResponseWriter }
+
+// Unwrap lets http.ResponseController reach the connection underneath.
+func (c compactResponse) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
+// pluginRealm routes a Plugin API handler's JSON through compactResponse.
+func pluginRealm(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(compactResponse{w}, r)
+	}
 }

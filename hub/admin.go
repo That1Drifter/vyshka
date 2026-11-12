@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -226,6 +227,20 @@ type queueEnvelopeResponse struct {
 	Envelope queuedEnvelopeView `json:"envelope"`
 }
 
+// refuseOversizedBody answers 413 for an envelope body over maxEnvelopeBody as
+// the hub would send it, and reports whether the body may be queued (spec
+// section 4). Measured as sent rather than as received: escaping can grow a
+// body that arrived under the bound past it, and it is the plugin's side of
+// the wire the bound protects.
+func refuseOversizedBody(w http.ResponseWriter, body json.RawMessage) bool {
+	if size := encodedLen(body); size > maxEnvelopeBody {
+		writeError(w, http.StatusRequestEntityTooLarge, codePayloadTooLarge,
+			fmt.Sprintf("the envelope body would take %d bytes on the wire; a plugin is sent at most %d", size, maxEnvelopeBody))
+		return false
+	}
+	return true
+}
+
 // handleQueueEnvelope puts one envelope on a server's queue. It is the
 // transport-level primitive: everything the hub models itself is queued the same
 // way, through an endpoint that validates what it is queueing.
@@ -265,6 +280,9 @@ func (s *Server) handleQueueEnvelope(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body = request.Body
+	}
+	if !refuseOversizedBody(w, body) {
+		return
 	}
 
 	queued, err := s.store.QueueEnvelope(r.Context(), server.ID, envelopeType, body, outboundQueueLimit)
