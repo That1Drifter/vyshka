@@ -2,7 +2,9 @@
 
 **As of:** 2026-11-12
 
-Last full review 2026-09-14, at which every proposed item was settled. This document lists
+Last full review 2026-11-12, which found Horizons 1 and 2 landed and nothing committed that
+could move without a trigger, and reopened the Arma Reforger plugin as the next horizon (the
+2026-09-14 review before it settled every proposed item). This document lists
 where Vyshka stands and what comes next, in order. It is the public companion to the
 milestone table kept with the design notes; the milestone letters (M0 to M4) are the same
 in both places.
@@ -19,7 +21,7 @@ How to read it. The states are defined in `CONTEXT.md`; in brief:
   and nothing else on the roadmap may depend on it.
 - **Dropped** items are listed under "Not on the roadmap" with their reason.
 
-There are no proposed items after the review of 2026-09-14. A new idea enters as proposed
+There are no proposed items after the review of 2026-11-12. A new idea enters as proposed
 and must leave that state at the next review.
 
 Every committed item is delivered as a slice: one issue, one branch, the spec change first
@@ -29,7 +31,11 @@ staging server for a game feature), one adversarial review round, and a one- or 
 `CHANGELOG.md` entry in the landing commit. Engine limits that
 constrain a plugin are measured under `spikes/` before anything is designed around them.
 
-The ordering rule is **DayZ first, to the first tagged release**. The design persona is one
+The ordering rule was **DayZ first, to the first tagged release**, and it is met: four
+releases are out and every DayZ slice committed in 2026-09 has landed. Since the review of
+2026-11-12 it is **Reforger next, measured first**: the spike (#159) comes before the
+tracer bullet (#15), and a DayZ bug or a new DayZ game version still goes ahead of both.
+The design persona is one
 operator or small team running one hub with a handful of game servers enrolled in it, the
 servers usually on other boxes than the hub, and a few admins who do not all hold the same
 trust. A hosting outfit running servers for other people is out of scope until 1.0.
@@ -41,7 +47,7 @@ trust. A hosting outfit running servers for other people is out of scope until 1
 | M0 | Spec, envelope schemas, OpenAPI; conformance suites run against stubs | Shipped |
 | M1 | Hub core: enrollment, sessions, long-poll, manifests, action lifecycle, SQLite | Shipped |
 | M2 | DayZ plugin (clean-room) | Shipped 2026-09-05; readable inline errors landed 2026-09-10; moderation slice landed 2026-09-14 |
-| M3 | Telemetry, state snapshots, webhooks, KV store; Discord kill feed from a live server | Shipped 2026-09-14 (the staging repeat of the Discord demo is the last box) |
+| M3 | Telemetry, state snapshots, webhooks, KV store; Discord kill feed from a live server | Shipped 2026-09-14: the kill feed shown in a Discord channel from a live DayZ server (the staging repeat was dropped in the 2026-11-12 review; the live demo stands) |
 | M4 | Scoped tokens, audit log, panel v1 (servers, actions, event feed, live map) | Shipped 2026-09-15: panel v1 with a live DayZ player plotted on the staging map 2026-09-12 (issue #46), and the management views landed 2026-09-15 (issue #64) |
 | 1.0 | Protocol freeze | After at least one third-party plugin has been written from the spec alone |
 
@@ -57,7 +63,8 @@ libraries, and the poll `more` signal. Hub 0.4.0 (`hub-v0.4.0`) and DayZ plugin 
 
 M5 (custom contexts, Arma Reforger plugin, `--auto-tls`) was dissolved on 2026-09-14:
 custom contexts moved to Horizon 1 with a DayZ customer, `--auto-tls` to Horizon 2, and the
-Reforger plugin was tabled (see Horizon 4). The player identity shape froze the same day
+Reforger plugin was tabled (see Horizon 4) until the review of 2026-11-12 reopened it. The
+player identity shape froze on 2026-09-14
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
@@ -119,7 +126,7 @@ spec reader is not surprised.
 | Item | Section | Status |
 |---|---|---|
 | Custom contexts and `context.enumerate` | 6.2 | Shipped 2026-09-22 (#73, draft 0.27): the hub sends `context.enumerate` behind an Admin API read, caches the answer, and the hub conformance suite grades it (`admin.contexts.enumerate`); the DayZ item catalog is the first customer and the panel's spawn form the first consumer |
-| WebSocket transport at `/plugin/v1/ws` | 3.2 | Committed (SHOULD), no issue yet. Deliberately after a plugin exists that can use it; DayZ cannot. Sidecar plugins are the customer |
+| WebSocket transport at `/plugin/v1/ws` | 3.2 | Parked 2026-11-12 (was committed with no issue). A SHOULD in the spec with no customer: DayZ cannot hold a socket and no sidecar plugin exists. Trigger: a plugin that can hold a WebSocket exists, a sidecar or Reforger if the spike (#159) finds the engine can |
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
 | Server-scoped token dimension | 10.1 | Shipped 2026-09-21 (#81, draft 0.26): a token-level `servers` binding |
 | Cursor over webhook deliveries | 11.3 | Parked. Trigger: a delivery list exceeds the maximum `limit` in practice. Today the remedies are a wider `limit` and shorter retention |
@@ -130,10 +137,13 @@ spec reader is not surprised.
 
 ## Horizon 4: the ecosystem and the second game
 
-- **Arma Reforger plugin**: tabled 2026-09-14; issue #15 closed. Wanted in principle, no
-  trigger, and nothing on this roadmap depends on it: the identity shape froze on DayZ
-  evidence and protocol 1.0 gates on a third-party plugin rather than on this project
-  writing a second one. A roadmap review reopens it.
+- **Arma Reforger plugin**: tabled 2026-09-14, reopened and committed 2026-11-12. First
+  comes a spike (#159) that measures the server script's HTTP, file, and identity limits
+  on a real Reforger dedicated server, as `spikes/dayz-restapi-poll-timeout` did for DayZ.
+  After it, the tracer bullet (#15): enrollment, sessions, the poll loop, one action, the
+  plugin conformance suite, and Reforger's entry in the platform registry (section 8.2,
+  additive). Protocol 1.0 still gates only on a third-party plugin; a second reference
+  plugin tests the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked
   2026-10-03 (see the parked table). Anyone can `go run` the suites from this module today.
 - **Protocol 1.0**: committed, no date. The freeze happens after at least one third-party
@@ -150,6 +160,7 @@ Collected here so no trigger is lost in a horizon:
 | Random infected or animals spawned near a point | An event host asks |
 | Entities and base building (`state.entities`, set position and orientation and health on ids, duplicate, build and dismantle with a no-materials option, `dayz.build.place` and `dismantle` events) | The mod surface has a customer that places map objects. `state.entities` is the likeliest snapshot to hit the 256 KiB cap. The build and dismantle hook spike rides along with any plugin slice |
 | Invisibility and no-collision admin flags | A two-client measurement (the #71 spike had one) shows a server-side `SetInvisible` hides the character from another client, or the client-side simulation can be told to ignore geometry from the server |
+| WebSocket transport at `/plugin/v1/ws` | A plugin that can hold a WebSocket exists (a sidecar, or Reforger if #159 finds the engine can) |
 | Position telemetry cadence | The WebSocket transport lands |
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |
