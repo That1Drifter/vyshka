@@ -374,6 +374,7 @@ type deliverable struct {
 type manifestAction struct {
 	Code    string
 	Context string
+	Danger  string
 	Params  map[string]any
 }
 
@@ -1513,6 +1514,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 			Actions          []struct {
 				Code    string         `json:"code"`
 				Context string         `json:"context"`
+				Danger  string         `json:"danger"`
 				Params  map[string]any `json:"params"`
 			} `json:"actions"`
 			Contexts []struct {
@@ -1540,7 +1542,7 @@ func (h *mockHub) interpretLocked(envelope *inboundEnvelope) {
 			Capabilities: body.Capabilities}
 		for _, action := range body.Actions {
 			info.Actions = append(info.Actions, manifestAction{
-				Code: action.Code, Context: action.Context, Params: action.Params,
+				Code: action.Code, Context: action.Context, Danger: action.Danger, Params: action.Params,
 			})
 		}
 		for _, context := range body.Contexts {

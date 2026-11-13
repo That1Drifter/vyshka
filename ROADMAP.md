@@ -119,6 +119,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
   protocol change Reforger needed first (part of #15, draft 0.35).
 - 2026-11-13: Reforger player identity measured on a backend-registered server (#159, spike):
   a lowercase UUID from the player's audit onward, registered as platform `reforger` (draft 0.36).
+- 2026-11-13: Arma Reforger plugin tracer bullet (#15): the plugin conformance suite passes on
+  a Reforger 1.9 dedicated server, and `vyshka.info` round-trips through the branch hub.
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -149,11 +151,15 @@ spec reader is not surprised.
   (`spikes/reforger-server-script-limits`): the poll transport works as specified. The
   player identifier, which reads empty unless the server is registered with the game's
   backend, was measured on such a server with the probe published unlisted to the Workshop
-  (`spikes/reforger-player-identity`). Next is the tracer bullet (#15): enrollment, sessions, the poll loop, one
-  action, and the plugin conformance suite. The protocol change it needed first, a byte
+  (`spikes/reforger-player-identity`). The protocol change it needed first, a byte
   bound on every Plugin API response because Reforger cannot receive 1 MiB, landed in
-  draft 0.35, and Reforger's platform registry entry, `reforger`, in draft 0.36. Protocol 1.0 still gates only on a third-party plugin; a second reference
-  plugin tests the game-agnostic claim, and nothing else on the roadmap waits on it.
+  draft 0.35, and Reforger's platform registry entry, `reforger`, in draft 0.36. The
+  tracer bullet (#15) landed 2026-11-13 (`plugins/reforger`): the DayZ plugin's protocol
+  core ported, two actions, and the plugin conformance suite passing on a dedicated
+  server, with no protocol change. Next, when picked: the installation ban list, a
+  Workshop release so a `-config` server can load it, and player telemetry shown live.
+  Protocol 1.0 still gates only on a third-party plugin; a second reference plugin tests
+  the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked
   2026-10-03 (see the parked table). Anyone can `go run` the suites from this module today.
 - **Protocol 1.0**: committed, no date. The freeze happens after at least one third-party
