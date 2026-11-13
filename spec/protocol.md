@@ -6,7 +6,7 @@ nav_order: 2
 
 # Vyshka Protocol Specification
 
-**Status:** draft 0.35 (2026-11-12)
+**Status:** draft 0.36 (2026-11-13)
 **Protocol version (`v`):** 1
 **License:** Apache-2.0
 
@@ -1470,10 +1470,37 @@ platform-specific id:
 ```
 
 > **Frozen (draft 0.22, 2026-09-14):** the `{ platform, id }` shape is final. The set of
-> `platform` values is an open registry: `steam` is the only registered value today, and a
-> plugin for another game adds its platform identifier as an additive change to this
-> section, never by altering the shape. A hub MUST accept any `platform` string within the
-> section 8.3 length bounds, since it cannot know which games will be enrolled.
+> `platform` values is an open registry: a plugin for another game adds its platform
+> identifier as an additive change to this section, never by altering the shape. A hub
+> MUST accept any `platform` string within the section 8.3 length bounds, since it cannot
+> know which games will be enrolled. (`steam` was the only value at the freeze; the
+> registry below lists every value since draft 0.36.)
+
+**Registered platforms.** A plugin for a game listed here MUST identify players by the
+platform listed for that game, with the `id` in the form given, because a hub matches
+identities exactly. A player the plugin cannot identify (the game reads an empty id) is
+left out of everything that needs an identity, and the plugin SHOULD log once that it
+cannot identify players.
+
+| `platform` | `id` | Game |
+|---|---|---|
+| `steam` | The SteamID64 in decimal (`76561198000000000`). | DayZ |
+| `reforger` | The player's Arma Reforger backend identity: a UUID in lowercase, hyphenated 8-4-4-4-12 form (`0f6c2a3e-9b1d-4c7a-8e25-3d4b5a6c7e8f`). The plugin lowercases what it reads. | Arma Reforger (draft 0.36) |
+
+On Reforger the identity is what the game's own ban service keys on. A Reforger server
+can also read a Steam player's SteamID64, but that exists only for Steam players, so the
+Reforger plugin does not send `steam`. Two consequences follow. A person who plays DayZ
+and Reforger is two identities in one hub. And a `steam` ban does not reach a Reforger
+server (section 13.4, item 6), so an operator who wants someone off both games bans both
+identities. An Admin API client that writes a `reforger` identity, a ban for instance,
+writes it in lowercase too, or it never matches.
+
+A Reforger server reads the identity only once the server is registered with the game's
+backend, and only from the player's audit (`OnPlayerAuditSuccess`) onward; before the
+audit, and on a server that is not registered, it reads empty. An empty `id` is no
+identity (below), and a snapshot entry carrying one rejects the whole snapshot (section
+8.3). Measured on Reforger 1.9.0.37 with one Steam player
+(`spikes/reforger-player-identity/results/findings.md`); console players are unmeasured.
 
 **Identity references in events.** An event **refers to** an identity when a top-level
 member of its `data` is an identity object: a JSON object whose `platform` and `id`
@@ -3241,9 +3268,14 @@ A plugin that declares the `bans` capability MUST:
    server's game uses is ignored: one list serves an installation that runs several games.
 7. **Enforce the union.** An identity on either the installation list or the server's
    own is refused at connect, and on applying a revision, every player online at that
-   moment whose identity is on it is disconnected. A server-side lift removes the
-   server's own entry only; an installation ban is lifted through section 13.2 and
-   nowhere else, and a plugin SHOULD say so when a server-side lift leaves one standing.
+   moment whose identity is on it is disconnected. Where a game learns a player's
+   identity only after the connection (Reforger: at the audit, section 8.2), the refusal
+   happens at the first moment the identity is known. A player the game gives no
+   identity (section 8.2) cannot be matched, so the report of item 4 covers the players
+   the plugin can identify; a plugin SHOULD log each player it admits unidentified, since
+   no ban can reach them. A server-side lift removes the server's own entry only; an
+   installation ban is lifted through section 13.2 and nowhere else, and a plugin SHOULD
+   say so when a server-side lift leaves one standing.
 
 When a plugin disconnects a player over a ban it SHOULD emit `core.player.kick` (section
 8.1) with `cause: "ban"`, and with `scope` saying whose ban it was: `"installation"`,

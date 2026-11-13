@@ -1,0 +1,27 @@
+# boot logs_2026-11-13_09-21-10
+09:21:10.119 ENGINE       : CLI Params: -config <path> -profile <path> -addonDownloadDir <path> -maxFPS 60 
+09:21:10.120 ENGINE    (E): Game addon '58D0FB3206B6F859' not found
+# boot logs_2026-11-13_09-21-20
+09:21:20.380 ENGINE       : CLI Params: -config <path> -profile <path> -addonDownloadDir <path> -maxFPS 60 
+09:21:24.040 BACKEND      : Addon Download started A8949793F2092C16 - Vyshka Identity Probe
+09:21:24.040 BACKEND      : Downloading A8949793F2092C16 version 1.0.0
+09:21:28.417 BACKEND      : Required addons are ready to use.
+09:21:40.943 BACKEND      : Server registered with address: <public ip>:2001
+09:21:40.943 BACKEND      : Direct Join Code: <code>
+09:21:41.271 SCRIPT       : VYSHKA_RFID	20895	hook.OnGameStart	isServer=1	rplMode=Dedicated
+09:21:54.842 RPL          : Server L2 authenticating connection (identity=0x00000000, endpoint=127.0.0.1:<port>, slots=1/4)
+09:22:24.848 RPL          : Server L2 authentication timeout (identity=0x00000000)
+09:22:24.849 NETWORK   (W): RplAuthBackend::OnFailure called (identity=0x00000000, group=1, reason=3)
+09:22:24.849 RPL          : Server L2 connection authentication failed (identity=0x00000000, group=1, reason=3)
+09:22:24.849 RPL          : Server L2 connection slot free (identity=0x00000000, slots=0/4)
+# boot logs_2026-11-13_09-29-04
+09:29:04.065 ENGINE       : CLI Params: -config <path> -profile <path> -addonDownloadDir <path> -maxFPS 60 
+09:29:07.898 BACKEND      : Required addons are ready to use.
+09:29:17.759 BACKEND      : Server registered with address: <lan ip>:2001
+09:29:17.760 BACKEND      : Direct Join Code: <code>
+09:29:18.088 SCRIPT       : VYSHKA_RFID	14028	hook.OnGameStart	isServer=1	rplMode=Dedicated
+# client of the -client attempt (logs_2026-11-13_09-21-50)
+09:21:50.552 ENGINE       : CLI Params: -client 127.0.0.1:2001 -addonsDir <path> -addons A8949793F2092C16 -window -profile <path> 
+09:21:54.837 RPL          : Starting client
+09:22:24.848 RPL       (E): Client L2 connection attempt could not reach the server (there was no response).
+09:22:24.926 NETWORK   (E): Unable to connect as client to '127.0.0.1:2001'
