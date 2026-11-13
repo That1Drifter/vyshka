@@ -10,7 +10,7 @@
 // contexts the plugin can enumerate (VyshkaContext, section 6.2), the custom
 // event types it declares (section 6.3), and the key/value namespaces it
 // uses (section 6.6). Another mod adds its own through the
-// MissionServer.VyshkaRegister hook, which runs before the plugin starts, so
+// SCR_BaseGameMode.VyshkaRegister hook, which runs before the plugin starts, so
 // everything it registers is in the first manifest.
 
 class VyshkaActionOutcome
@@ -119,11 +119,6 @@ class VyshkaAction
 
 class VyshkaRegistry
 {
-	// The key/value namespace the plugin's own actions use (spec section
-	// 6.6). A mod declares its own with DeclareNamespace; the manifest
-	// carries the union, and the store client confines every call to that
-	// list before the hub does.
-	static const string KV_NAMESPACE = "vyshka";
 
 	// The manifest's length bounds, counted in code points as the companion
 	// schema counts them (spec sections 6.2 and 6.3).
@@ -162,7 +157,8 @@ class VyshkaRegistry
 		m_EventIds = new array<string>;
 		m_Events = new array<ref VyshkaJsonValue>;
 		m_Namespaces = new array<string>;
-		m_Namespaces.Insert(KV_NAMESPACE);
+		// No key/value namespace of the plugin's own: the store is not
+		// ported yet, and a mod declares the ones it uses.
 	}
 
 	void Register(VyshkaAction action)

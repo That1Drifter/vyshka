@@ -15,7 +15,7 @@
 // waiting.
 //
 // A mod subclasses VyshkaContext, registers it with the registry in its
-// MissionServer.VyshkaRegister hook, and fills the list handed to Enumerate.
+// SCR_BaseGameMode.VyshkaRegister hook, and fills the list handed to Enumerate.
 
 // VyshkaGeo renders world positions for the protocol. The world module has
 // its own renderer for the same shape (VyshkaPlayers.Position), which the

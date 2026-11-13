@@ -3,9 +3,9 @@
 All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), kept per
-artifact: the hub (with the panel and the conformance suites) and the DayZ plugin are
-versioned independently, follow SemVer, are released on tags (`hub-v<version>`,
-`dayz-plugin-v<version>`; `RELEASING.md`), and each has its own section below with its
+artifact: the hub (with the panel and the conformance suites), the DayZ plugin, and the
+Arma Reforger plugin are versioned independently, follow SemVer, are released on tags (`hub-v<version>`,
+`dayz-plugin-v<version>`; `RELEASING.md`; the Reforger plugin has no release yet), and each has its own section below with its
 own **Unreleased** heading and one heading per released version. The protocol document
 has a section of its own that only names the current draft: it keeps draft numbering
 until 1.0, its header is its history, and a protocol change is recorded under the hub or
@@ -21,6 +21,8 @@ before that date stay as they were written.
 
 #### Added
 
+- 2026-11-13: the plugin conformance suite's manifest stage refuses a `danger` other than `none`,
+  `warning`, or `destructive`, as a hub does (#15).
 - 2026-11-13: `spikes/reforger-player-identity` reads a Reforger player's identity on a
   backend-registered server, with the probe published unlisted to the Workshop (closes #159).
 - 2026-11-12: `spikes/reforger-server-script-limits` measures what a Reforger 1.9 dedicated
@@ -624,6 +626,15 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
   token as a systemd credential, confinement) and `hub.env.example`, with the install steps
   in `deploy/README.md`. `RELEASING.md` holds the tag scheme and the steps. The README
   gained an "Install" section.
+
+## Reforger plugin
+
+### [Unreleased]
+
+#### Added
+
+- 2026-11-13: tracer bullet (`plugins/reforger`, 0.1.0): the DayZ plugin's protocol core on
+  Reforger 1.9, `vyshka.info` and `vyshka.kick`, and a conformance harness for a dedicated server (#15).
 
 ## DayZ plugin
 

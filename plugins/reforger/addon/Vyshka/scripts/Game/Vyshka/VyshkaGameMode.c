@@ -16,7 +16,20 @@
 class VyshkaPlayers
 {
 	static ref map<int, string> s_Identities = new map<int, string>;
+	// The name each identified player joined under, for the disconnect
+	// event: whether the engine still answers GetPlayerName inside
+	// OnPlayerDisconnected is unmeasured.
+	static ref map<int, string> s_Names = new map<int, string>;
 	static bool s_WarnedUnidentified;
+
+	// Reset forgets every player, at the start and end of a game: a world
+	// torn down without a disconnect per player must not leave identities
+	// that vyshka.info counts and vyshka.kick finds.
+	static void Reset()
+	{
+		s_Identities.Clear();
+		s_Names.Clear();
+	}
 
 	// Identity reads a player's backend identity, lowercased as the
 	// registry asks, or "" when the game gives none.
@@ -55,6 +68,7 @@ class VyshkaPlayers
 			return;
 		}
 		s_Identities.Set(playerId, id);
+		s_Names.Set(playerId, name);
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("player", IdentityJson(id));
 		data.Set("name", VyshkaJsonValue.NewString(name));
@@ -66,10 +80,12 @@ class VyshkaPlayers
 		string id;
 		if (!s_Identities.Find(playerId, id))
 			return;
+		string name = s_Names.Get(playerId);
 		s_Identities.Remove(playerId);
+		s_Names.Remove(playerId);
 		VyshkaJsonValue data = VyshkaJsonValue.NewObject();
 		data.Set("player", IdentityJson(id));
-		data.Set("name", VyshkaJsonValue.NewString(GetGame().GetPlayerManager().GetPlayerName(playerId)));
+		data.Set("name", VyshkaJsonValue.NewString(name));
 		VyshkaPlugin.Emit("core.player.disconnect", data);
 	}
 
@@ -88,13 +104,14 @@ class VyshkaPlayers
 	}
 }
 
-// VyshkaStatusAction reports what the server is running. It changes nothing,
-// which makes it the action the plugin conformance suite dispatches (the
-// first one declared).
-class VyshkaStatusAction : VyshkaAction
+// VyshkaInfoAction reports what the server is running. It changes nothing,
+// which makes it the right action for the plugin conformance suite to
+// dispatch: the suite takes the first action of the manifest, which the
+// registry sorts by code, and vyshka.info sorts ahead of vyshka.kick.
+class VyshkaInfoAction : VyshkaAction
 {
-	override string Code()      { return "vyshka.status"; }
-	override string Name()      { return "Server status"; }
+	override string Code()      { return "vyshka.info"; }
+	override string Name()      { return "Server info"; }
 	override string Context()   { return "world"; }
 	override string Namespace() { return "vyshka"; }
 	override string Danger()    { return "none"; }
@@ -120,7 +137,7 @@ class VyshkaKickAction : VyshkaAction
 	override string Name()      { return "Kick player"; }
 	override string Context()   { return "player"; }
 	override string Namespace() { return "vyshka"; }
-	override string Danger()    { return "medium"; }
+	override string Danger()    { return "warning"; }
 
 	override VyshkaActionOutcome Execute(string actionId, string context, string referenceKey, VyshkaJsonValue params)
 	{
@@ -144,6 +161,7 @@ modded class SCR_BaseGameMode
 		super.OnGameStart();
 		if (!Replication.IsServer())
 			return;
+		VyshkaPlayers.Reset();
 		VyshkaRegistry registry = new VyshkaRegistry();
 		VyshkaRegister(registry);
 		VyshkaPlugin.Start(registry);
@@ -153,7 +171,7 @@ modded class SCR_BaseGameMode
 	// loads after this one overrides it to add its own, calling super first.
 	void VyshkaRegister(VyshkaRegistry registry)
 	{
-		registry.Register(new VyshkaStatusAction());
+		registry.Register(new VyshkaInfoAction());
 		registry.Register(new VyshkaKickAction());
 	}
 
@@ -174,7 +192,10 @@ modded class SCR_BaseGameMode
 	override void OnGameEnd()
 	{
 		if (Replication.IsServer())
+		{
 			VyshkaPlugin.Stop();
+			VyshkaPlayers.Reset();
+		}
 		super.OnGameEnd();
 	}
 }

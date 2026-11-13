@@ -220,23 +220,29 @@ func tailConsoleLog(profile string, since time.Time, stop <-chan struct{}) {
 		case <-time.After(500 * time.Millisecond):
 		}
 		if file == nil {
+			// The newest log directory created since this server started:
+			// an earlier run's log, written up to the moment it was killed,
+			// sits in an older directory.
 			matches, _ := filepath.Glob(filepath.Join(profile, "logs", "*", "console.log"))
+			newest, newestTime := "", time.Time{}
 			for _, m := range matches {
-				info, err := os.Stat(m)
-				if err != nil || info.ModTime().Before(since.Add(-time.Minute)) {
+				info, err := os.Stat(filepath.Dir(m))
+				if err != nil || info.ModTime().Before(since.Add(-2*time.Second)) {
 					continue
 				}
-				f, err := os.Open(m)
-				if err != nil {
-					continue
+				if newest == "" || info.ModTime().After(newestTime) {
+					newest, newestTime = m, info.ModTime()
 				}
-				file, reader = f, bufio.NewReader(f)
-				fmt.Fprintf(os.Stderr, "vyshka-reforger: following %s\n", m)
-				break
 			}
-			if file == nil {
+			if newest == "" {
 				continue
 			}
+			f, err := os.Open(newest)
+			if err != nil {
+				continue
+			}
+			file, reader = f, bufio.NewReader(f)
+			fmt.Fprintf(os.Stderr, "vyshka-reforger: following %s\n", newest)
 		}
 		drain(reader, &partial)
 	}

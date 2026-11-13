@@ -7,7 +7,7 @@ executes dispatched actions, and reports players joining and leaving. Protocol:
 
 This is the tracer bullet of issue #15: the whole link (enrollment, sessions, the long-poll
 loop, the persistent outbox, acks and renumbering, the executed-action log, refusals and
-backoff) with two actions, `vyshka.status` and `vyshka.kick`. The protocol code is the DayZ
+backoff) with two actions, `vyshka.info` and `vyshka.kick`. The protocol code is the DayZ
 plugin's, ported: the two games share the Enforce language, so the JSON tree, the outbox,
 the files, and the link logic carry over with their measured limits, and only the engine
 calls differ. What differs, and why, is in the head of each Reforger-specific file
@@ -64,14 +64,14 @@ A player is `{ "platform": "reforger", "id": "<backend identity UUID>" }` (spec 
 The server reads that identity only when it is registered with the game's backend (started
 with `-config`) and only from the player's audit onward. A server started in the
 development form reads none, so its players are not reported: the plugin logs once why, and
-`vyshka.status` counts players online beside the ones identified.
+`vyshka.info` counts players online beside the ones identified.
 
 ## Actions
 
 | Code | Context | What it does |
 |---|---|---|
 | `vyshka.kick` | player | Disconnects the player whose identity is the `referenceKey` |
-| `vyshka.status` | world | Reports the world, the players online and identified, and the uptime |
+| `vyshka.info` | world | Reports the world, the players online and identified, and the uptime |
 
 A mod that loads after this addon adds its own by overriding
 `SCR_BaseGameMode.VyshkaRegister(VyshkaRegistry registry)`, calling `super` first.
@@ -87,6 +87,14 @@ fresh profile under `plugins/reforger/build/`, starts the server on Game Master 
 the addon, mirrors the plugin's log lines to stderr, and stops the server when the suite
 closes its stdin. `VYSHKA_REFORGER_SERVER` can stand in for `-server`. It needs a local
 dedicated server install (Steam app 1874900), so CI does not run it.
+
+## Demo
+
+`plugins/reforger/demo-live.sh <hub-url> <server install>` (with `VYSHKA_ADMIN_TOKEN` set)
+creates a server record, boots a dedicated server with the addon through `harness`, waits
+for the manifest, dispatches `vyshka.info`, prints the result the game returned, and
+revokes the record's credentials. It lives here rather than under `scripts/demo-*`
+because `scripts/e2e.sh` runs those without a game server.
 
 ## Not yet
 

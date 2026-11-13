@@ -1,12 +1,12 @@
 // Vyshka Reforger plugin (protocol code shared with the DayZ plugin): the link to the hub.
 //
-// One object drives the whole lifecycle of spec sections 5, 6, 7, 8, 9 and
-// 13: enroll once, start a session on every boot, long-poll forever, publish
-// the manifest, execute dispatched actions behind an executed-actionId LRU,
-// answer a hub asking what a custom context holds, flush events and
-// snapshots into the outbox, keep unacked envelopes there, renumber them
-// across session changes, and keep the installation ban list current
-// (VyshkaBanSync), reporting each revision it applies.
+// One object drives the lifecycle of spec sections 5, 6, 7, 8 and 9: enroll
+// once, start a session on every boot, long-poll forever, publish the
+// manifest, execute dispatched actions behind an executed-actionId LRU,
+// answer a hub asking what a custom context holds, flush events into the
+// outbox, keep unacked envelopes there, and renumber them across session
+// changes. The DayZ plugin's snapshots, key/value store and installation
+// ban list are not ported yet.
 //
 // Everything runs on the script tick. A repeating call-queue timer wakes the
 // plugin, and the transport's callbacks land on the same thread, so there is
@@ -1110,6 +1110,10 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (refusal.m_Code != "rate_limited")
 			return false;
 		int seconds = refusal.m_RetryAfterSeconds;
+		// A figure past an hour is a hub fault; an hour keeps the
+		// arithmetic below inside the engine's int.
+		if (seconds > 3600)
+			seconds = 3600;
 		if (seconds < 1)
 		{
 			WarnThrottled(what + " rate limited with no retryAfterSeconds; backing off");

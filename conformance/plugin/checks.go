@@ -178,6 +178,11 @@ var stages = []Stage{
 					return fmt.Errorf("manifest action code %q is declared twice; a hub rejects the whole manifest over a duplicated code (section 6.4)", action.Code)
 				}
 				seenCodes[action.Code] = true
+				switch action.Danger {
+				case "", "none", "warning", "destructive":
+				default:
+					return fmt.Errorf("a hub would reject this manifest: actions[%d].danger is %q, and danger is one of none, warning, or destructive (section 6.1)", index, action.Danger)
+				}
 				if action.Params != nil {
 					if err := validateSubset(action.Params, fmt.Sprintf("actions[%d].params", index), declared); err != nil {
 						return fmt.Errorf("a hub would reject this manifest: %w", err)
