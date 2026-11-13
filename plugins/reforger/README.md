@@ -2,8 +2,8 @@
 
 The second reference game plugin: a server-side Enfusion script addon that enrolls an Arma
 Reforger dedicated server with a Vyshka hub, long-polls it for work, publishes a manifest,
-executes dispatched actions, and reports players joining and leaving. Protocol:
-`spec/protocol.md`.
+executes dispatched actions, and reports players: joining and leaving, and the list of
+players online with their positions. Protocol: `spec/protocol.md`.
 
 This is the tracer bullet of issue #15: the whole link (enrollment, sessions, the long-poll
 loop, the persistent outbox, acks and renumbering, the executed-action log, refusals and
@@ -19,6 +19,10 @@ Clean-room: written from the engine's public script API and the measurements und
 
 **Game version.** Reforger 1.9.0.37, Windows dedicated server.
 
+**Workshop.** Published unlisted as "Vyshka", version 0.1.1, Workshop ID
+`8EF1E2D9CB0C677C` (the addon GUID). Unlisted keeps it out of search; a server loads it by
+that ID.
+
 ## Layout
 
 | Path | What it is |
@@ -26,6 +30,7 @@ Clean-room: written from the engine's public script API and the measurements und
 | `addon/Vyshka/Vyshka.gproj` | The addon (GUID `8EF1E2D9CB0C677C`) |
 | `addon/Vyshka/scripts/Game/Vyshka/` | The plugin. `VyshkaGameMode.c` hooks `SCR_BaseGameMode` to start and stop it, reports players, and declares the actions; `VyshkaTransport.c` is the HTTP layer on Reforger's `RestApi`; the rest is the DayZ plugin's protocol code |
 | `cmd/vyshka-reforger/` | Developer tool: `harness` runs a dedicated server as a plugin conformance candidate |
+| `workshop/preview.png` | The Workshop preview image |
 
 ## Installing on a server
 
@@ -43,14 +48,23 @@ Clean-room: written from the engine's public script API and the measurements und
    ```
 
    `pollTimeoutSeconds` is optional (default 25, honored between 5 and 60).
-3. Load the addon. A server started with `-config` loads mods only from the Workshop, and
-   this addon is not published yet, so today it loads through the development form:
+   `snapshotIntervalSeconds` is optional (default 10, honored between 2 and 600; `0` turns
+   the `state.players` snapshot off).
+3. List the addon in the server config's `game.mods`, and start the server with `-config`
+   as usual:
 
-   ```
-   ArmaReforgerServer.exe -server worlds/GameMaster/GM_Arland.ent -addonsDir <dir holding Vyshka> -addons 8EF1E2D9CB0C677C -profile <profile>
+   ```json
+   "mods": [ { "modId": "8EF1E2D9CB0C677C", "name": "Vyshka" } ]
    ```
 
-   Run it from the server's install folder.
+   The server downloads it from the Workshop at boot, and a client downloads it when it
+   joins, as with any server mod. Everything it does is behind `Replication.IsServer()`,
+   so it is idle on a client connected to a server.
+
+   For development, a local copy loads without the Workshop through
+   `ArmaReforgerServer.exe -server worlds/GameMaster/GM_Arland.ent -addonsDir <dir holding Vyshka> -addons 8EF1E2D9CB0C677C -profile <profile>`,
+   run from the server's install folder. A server started that way reads no player
+   identities (below).
 
 On first boot the plugin exchanges the token for permanent credentials and keeps them in
 `$profile:Vyshka/credentials.json`. Everything it says goes to the server's
@@ -64,13 +78,27 @@ A player is `{ "platform": "reforger", "id": "<backend identity UUID>" }` (spec 
 The server reads that identity only when it is registered with the game's backend (started
 with `-config`) and only from the player's audit onward. A server started in the
 development form reads none, so its players are not reported: the plugin logs once why, and
-`vyshka.info` counts players online beside the ones identified.
+`vyshka.info` counts players online beside the ones identified. On such a server
+`state.players` is an empty list, the spec's "nobody is online", whoever is connected.
+
+- `core.player.connect` and `core.player.disconnect` carry `player` and `name`. The connect
+  is sent at the audit; the disconnect only for a player whose connect was sent.
+- `state.players` lists every identified player online, captured as each poll is built and
+  at least `snapshotIntervalSeconds` apart. An entry carries `name` (at most 200
+  characters), `data.spawned` (whether the player controls something; false in the
+  deployment menu), and, when spawned, `position`, the controlled entity's origin as the
+  engine's `[x, y, z]` with y up. `data.alive` comes with it when that entity is a
+  character. Measured: a spawned, living character's position matched its map grid. Not
+  measured: `alive: false`, and a character riding in a vehicle.
+- The plugin records a player at the audit and forgets every record when a game ends. A
+  player carried into a new game without a fresh audit would go unlisted until they
+  reconnect; whether the engine ever does that is unmeasured.
 
 ## Actions
 
 | Code | Context | What it does |
 |---|---|---|
-| `vyshka.kick` | player | Disconnects the player whose identity is the `referenceKey` |
+| `vyshka.kick` | player | Disconnects the player whose identity is the `referenceKey`. The game shows the player "Voted out of the game" (the engine's wording for a `KICK`) |
 | `vyshka.info` | world | Reports the world, the players online and identified, and the uptime |
 
 A mod that loads after this addon adds its own by overriding
@@ -99,4 +127,4 @@ because `scripts/e2e.sh` runs those without a game server.
 ## Not yet
 
 The installation ban list (section 13, so the manifest does not declare `bans`), the
-key/value store, state snapshots, custom contexts, and a Workshop release.
+key/value store, the vehicle, entity and world snapshots, and custom contexts.

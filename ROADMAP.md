@@ -121,6 +121,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
   a lowercase UUID from the player's audit onward, registered as platform `reforger` (draft 0.36).
 - 2026-11-13: Arma Reforger plugin tracer bullet (#15): the plugin conformance suite passes on
   a Reforger 1.9 dedicated server, and `vyshka.info` round-trips through the branch hub.
+- 2026-11-13: Reforger player list and the unlisted Workshop release, shown live with a real
+  player: join, the list with a position, kick, leave (#167).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -156,8 +158,10 @@ spec reader is not surprised.
   draft 0.35, and Reforger's platform registry entry, `reforger`, in draft 0.36. The
   tracer bullet (#15) landed 2026-11-13 (`plugins/reforger`): the DayZ plugin's protocol
   core ported, two actions, and the plugin conformance suite passing on a dedicated
-  server, with no protocol change. Next, when picked: the installation ban list, a
-  Workshop release so a `-config` server can load it, and player telemetry shown live.
+  server, with no protocol change. Since then: the player list with positions, and 0.1.1
+  published unlisted to the Workshop and run with a real player on a backend-registered
+  server. Next: the installation ban list (with #165), then a first set of
+  Reforger-specific actions, each measured first.
   Protocol 1.0 still gates only on a third-party plugin; a second reference plugin tests
   the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked

@@ -51,9 +51,31 @@ class VyshkaPlayers
 		return identity;
 	}
 
+	// NAME_MAX bounds a player's name as the hub bounds it (section 8.3): a
+	// longer one would reject the whole snapshot on every poll.
+	static const int NAME_MAX = 200;
+
+	static string Name(int playerId)
+	{
+		return VyshkaAction.Bound(GetGame().GetPlayerManager().GetPlayerName(playerId), NAME_MAX);
+	}
+
+	// Known returns the identity recorded for a player at the audit, or ""
+	// when there is none. The record is the only source: an identity read
+	// live could re-record a player in the moment after OnLeft dropped them.
+	// A player carried over a world change without a fresh audit is
+	// therefore not listed (whether that happens is unmeasured).
+	static string Known(int playerId)
+	{
+		string id;
+		if (s_Identities.Find(playerId, id))
+			return id;
+		return "";
+	}
+
 	static void OnAudited(int playerId)
 	{
-		string name = GetGame().GetPlayerManager().GetPlayerName(playerId);
+		string name = Name(playerId);
 		string id = ReadIdentity(playerId);
 		if (id == "")
 		{
@@ -89,15 +111,71 @@ class VyshkaPlayers
 		VyshkaPlugin.Emit("core.player.disconnect", data);
 	}
 
+	// Capture is the state.players body (spec section 8.3): every identified
+	// player online, with the position of the character they control when
+	// they control one (none in the deployment menu, say), and whether it
+	// is alive. An unidentified player is left out (section 8.2), which a
+	// whole snapshot reads as not online.
+	static VyshkaJsonValue Capture()
+	{
+		array<int> online = new array<int>;
+		GetGame().GetPlayerManager().GetPlayers(online);
+		VyshkaJsonValue players = VyshkaJsonValue.NewArray();
+		foreach (int playerId : online)
+		{
+			string id = Known(playerId);
+			if (id == "")
+				continue;
+			VyshkaJsonValue entry = VyshkaJsonValue.NewObject();
+			entry.Set("player", IdentityJson(id));
+			entry.Set("name", VyshkaJsonValue.NewString(Name(playerId)));
+			IEntity controlled = GetGame().GetPlayerManager().GetPlayerControlledEntity(playerId);
+			VyshkaJsonValue data = VyshkaJsonValue.NewObject();
+			if (controlled)
+			{
+				VyshkaJsonValue position = Position(controlled.GetOrigin());
+				if (position)
+					entry.Set("position", position);
+				ChimeraCharacter character = ChimeraCharacter.Cast(controlled);
+				if (character && character.GetCharacterController())
+					data.Set("alive", VyshkaJsonValue.NewBool(!character.GetCharacterController().IsDead()));
+			}
+			data.Set("spawned", VyshkaJsonValue.NewBool(controlled != null));
+			entry.Set("data", data);
+			players.Add(entry);
+		}
+		VyshkaJsonValue body = VyshkaJsonValue.NewObject();
+		body.Set("capturedAt", VyshkaJsonValue.NewString(VyshkaClock.NowRfc3339()));
+		body.Set("players", players);
+		return body;
+	}
+
+	// Position is the engine's [x, y, z], y up, as section 8.3 takes it in
+	// the game's own coordinates; null when a component is not finite.
+	static VyshkaJsonValue Position(vector pos)
+	{
+		VyshkaJsonValue position = VyshkaJsonValue.NewArray();
+		for (int axis = 0; axis < 3; axis++)
+		{
+			VyshkaJsonValue component = VyshkaJsonValue.NewFloat(pos[axis]);
+			if (!component)
+				return null;
+			position.Add(component);
+		}
+		return position;
+	}
+
 	// FindPlayer returns the player id online under the given identity, or
 	// 0 when none is.
 	static int FindPlayer(string identity)
 	{
 		string wanted = identity;
 		wanted.ToLower();
-		foreach (int playerId, string id : s_Identities)
+		array<int> online = new array<int>;
+		GetGame().GetPlayerManager().GetPlayers(online);
+		foreach (int playerId : online)
 		{
-			if (id == wanted)
+			if (Known(playerId) == wanted)
 				return playerId;
 		}
 		return 0;
@@ -146,7 +224,7 @@ class VyshkaKickAction : VyshkaAction
 		int playerId = VyshkaPlayers.FindPlayer(referenceKey);
 		if (playerId == 0)
 			return VyshkaActionOutcome.Failure("player " + referenceKey + " is not online");
-		string name = GetGame().GetPlayerManager().GetPlayerName(playerId);
+		string name = Name(playerId);
 		GetGame().GetPlayerManager().KickPlayer(playerId, PlayerManagerKickReason.KICK, 0);
 		VyshkaJsonValue result = VyshkaJsonValue.NewObject();
 		result.Set("name", VyshkaJsonValue.NewString(name));
