@@ -97,5 +97,7 @@ the artifact.
 - **The platform registry entry waits.** The identifier a Reforger server sees is still
   unmeasured, so the entry in section 8.2 cannot be chosen from evidence yet. It needs one run
   on a backend-registered server with the probe published as an unlisted Workshop item.
+  (Done 2026-11-13 in `spikes/reforger-player-identity`; registered as `reforger` in
+  draft 0.36.)
 - **WebSocket stays parked.** No socket API was found for Reforger script, so this game does
   not fire its trigger. A sidecar remains the only customer.

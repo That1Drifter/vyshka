@@ -21,11 +21,15 @@ before that date stay as they were written.
 
 #### Added
 
+- 2026-11-13: `spikes/reforger-player-identity` reads a Reforger player's identity on a
+  backend-registered server, with the probe published unlisted to the Workshop (closes #159).
 - 2026-11-12: `spikes/reforger-server-script-limits` measures what a Reforger 1.9 dedicated
   server's script can do over HTTP, with files and JSON, and at its player hooks (#159).
 
 #### Changed
 
+- 2026-11-13: draft 0.36 lists the platform registry of section 8.2, registers `reforger` (the
+  game's backend identity UUID), and lets a ban be refused when the identity arrives (#159).
 - 2026-11-12: draft 0.35 bounds Plugin API responses at 512 KiB and envelope bodies at 256 KiB:
   polls and ban pages are cut to fit, a larger body is refused 413, and JSON goes compact (#15).
 - 2026-11-12: roadmap review: the Arma Reforger plugin is reopened as the next horizon (spike
@@ -1076,7 +1080,7 @@ because the mod is server-side and clients never load it.
 
 ## Protocol
 
-Draft 0.35 (2026-11-12). The document's header carries the draft number and date; each
+Draft 0.36 (2026-11-13). The document's header carries the draft number and date; each
 draft's changes are recorded in the entries under "Before the first release" and, from now
 on, under the hub or plugin entry that carried them, because a protocol change lands with
 the implementation that needs it.

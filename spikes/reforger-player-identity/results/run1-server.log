@@ -1,0 +1,13 @@
+09:30:16.254 ENGINE       : CLI Params: -config <path> -profile <path> -addonDownloadDir <path> -maxFPS 60 
+09:30:19.322 BACKEND      : Required addons are ready to use.
+09:30:30.116 BACKEND      : Server registered with address: <lan ip>:2001
+09:30:30.444 SCRIPT       : VYSHKA_RFID	14195	hook.OnGameStart	isServer=1	rplMode=Dedicated
+09:33:19.643 RPL          : Server L2 authenticating connection (identity=0x00000000, endpoint=<lan ip>:59161, slots=1/4)
+09:33:19.954 RPL          : Server L2 connection authentication passed (identity=0x00000000)
+09:33:20.183  RPL          : Server event Connected (identity=0x00000000)
+09:33:26.316   SCRIPT       : VYSHKA_RFID	190065	hook.OnPlayerConnected	player=1	identity= (0 chars)	legacy= (0 chars)	kind=NONE	platformId=	name=<player>
+09:33:26.319   SCRIPT       : VYSHKA_RFID	190067	hook.OnPlayerRegistered	player=1	identity= (0 chars)	legacy= (0 chars)	kind=NONE	platformId=	name=<player>
+09:33:26.319   SCRIPT       : VYSHKA_RFID	190068	hook.OnPlayerAuditSuccess	player=1	identity=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	legacy=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	kind=STEAM	platformId=<steamid64 A: 17 digits>	name=<player>
+09:33:36.316 SCRIPT       : VYSHKA_RFID	200064	later.10s	player=1	identity=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	legacy=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	kind=STEAM	platformId=<steamid64 A: 17 digits>	name=<player>
+09:33:54.249  RPL          : Server event Disconnected (identity=0x00000000, group=1, reason=4)
+09:33:54.266 SCRIPT       : VYSHKA_RFID	218014	hook.OnPlayerDisconnected	player=1	identity=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	legacy=<uuid A: lowercase hex 8-4-4-4-12, version 4> (36 chars)	kind=STEAM	platformId=<steamid64 A: 17 digits>	name=<player>

@@ -1,0 +1,14 @@
+GameProject {
+ ID "VyshkaRfIdentity"
+ GUID "A8949793F2092C16"
+ TITLE "VyshkaRfIdentity"
+ Dependencies {
+  "58D0FB3206B6F859"
+ }
+ Configurations {
+  GameProjectConfig PC {
+  }
+  GameProjectConfig HEADLESS {
+  }
+ }
+}

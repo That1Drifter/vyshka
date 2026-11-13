@@ -1,6 +1,6 @@
 # Roadmap
 
-**As of:** 2026-11-12
+**As of:** 2026-11-13
 
 Last full review 2026-11-12, which found Horizons 1 and 2 landed and nothing committed that
 could move without a trigger, and reopened the Arma Reforger plugin as the next horizon (the
@@ -68,7 +68,7 @@ player identity shape froze on 2026-09-14
 (protocol draft 0.22, section 8.2) on DayZ evidence, with the platform registry left open.
 
 The hub runs on SQLite by default and on Postgres since 2026-09-13. The protocol document
-is at draft 0.35 and is pre-1.0: it can still change shape where Horizon 3 says so.
+is at draft 0.36 and is pre-1.0: it can still change shape where Horizon 3 says so.
 
 ### Landed slices
 
@@ -117,6 +117,8 @@ One line each, newest last; the changelog and the pull request carry the detail.
   guaranteed second request while a poll is held; player identity still open.
 - 2026-11-12: Plugin API responses bounded at 512 KiB and envelope bodies at 256 KiB, the
   protocol change Reforger needed first (part of #15, draft 0.35).
+- 2026-11-13: Reforger player identity measured on a backend-registered server (#159, spike):
+  a lowercase UUID from the player's audit onward, registered as platform `reforger` (draft 0.36).
 
 ## Horizon 2: operations, as promised in the design notes
 
@@ -131,27 +133,26 @@ spec reader is not surprised.
 | Item | Section | Status |
 |---|---|---|
 | Custom contexts and `context.enumerate` | 6.2 | Shipped 2026-09-22 (#73, draft 0.27): the hub sends `context.enumerate` behind an Admin API read, caches the answer, and the hub conformance suite grades it (`admin.contexts.enumerate`); the DayZ item catalog is the first customer and the panel's spawn form the first consumer |
-| WebSocket transport at `/plugin/v1/ws` | 3.2 | Parked 2026-11-12 (was committed with no issue). A SHOULD in the spec with no customer: DayZ cannot hold a socket and no sidecar plugin exists. Trigger: a plugin that can hold a WebSocket exists, a sidecar or Reforger if the spike (#159) finds the engine can |
+| WebSocket transport at `/plugin/v1/ws` | 3.2 | Parked 2026-11-12 (was committed with no issue). A SHOULD in the spec with no customer: DayZ cannot hold a socket and no sidecar plugin exists. Trigger: a plugin that can hold a WebSocket exists, a sidecar; Reforger's script has no socket API (#159) |
 | Position telemetry cadence | 8.3 | Parked. The plugin captures a snapshot as it builds each poll, so the cadence equals the poll cycle (25 s measured at `pollTimeout` 25; the earlier 50 s figure from #55 was plugin 0.2.0 and is fixed). Only a second channel beats that. Trigger: the WebSocket transport lands. A position-only snapshot at the same cadence would save bytes, not time, and is not planned |
 | Server-scoped token dimension | 10.1 | Shipped 2026-09-21 (#81, draft 0.26): a token-level `servers` binding |
 | Cursor over webhook deliveries | 11.3 | Parked. Trigger: a delivery list exceeds the maximum `limit` in practice. Today the remedies are a wider `limit` and shorter retention |
 | A poll that says "more queued" is answered at once | 3.1.2 | Shipped 2026-09-23 (#91, draft 0.33): a plugin that cut its batch short sets `more`, and a hub answers that poll as soon as it is applied when its ack covers something the poll carried, so a backlog drains a batch per round trip instead of a batch per `pollTimeout` (40 events/s at 25 s, measured in `spikes/dayz-outbox-crash`). Graded by `plugin.poll.more` in the hub suite and `poll.more` in the plugin suite; DayZ plugin 0.9.0 sets it |
 | Snapshot diffs after the first full snapshot per session | 8.3 | Parked. Trigger: a real plugin hits the 256 KiB body cap. Unknown-type tolerance makes a diff form a backward-safe addition |
-| Platform registry (player identity) | 8.2 | Shape frozen at draft 0.22; the registry stays open and a new game adds its platform identifier additively |
+| Platform registry (player identity) | 8.2 | Shape frozen at draft 0.22; the registry stays open and a new game adds its platform identifier additively. `steam` and `reforger` (draft 0.36) are registered |
 | Multi-instance hub (claims or leases for sweeps and the webhook dispatcher) | design notes 12 | Parked. Trigger: a single installation exceeds the capacity measured in #87: 200 game servers of 100 players at an assumed 1.2 events/s and 1 action/min each (3 of 3 runs passed), or 50 at an assumed 12.3 events/s and 6/min (3 of 3), on 1 vCPU and 2 GB with SQLite and the rate limits on, measured on loopback without TLS in a WSL VM from an empty database (`spikes/hub-capacity`). The hub's 256-connection cap is shared with every other open connection (admin clients, a proxy's upstream connections, a plugin's second context): with the spike's admin share it is reached near 225 servers. At default retention the disk binds first: about 4.7 GiB per server of the first kind after 90 days (about 39 GiB for the second). One hub per database is the supported deployment on both engines until then; the hub is one process however many boxes the game servers occupy |
 
 ## Horizon 4: the ecosystem and the second game
 
 - **Arma Reforger plugin**: tabled 2026-09-14, reopened and committed 2026-11-12. The
   spike (#159) measured the server script on Reforger 1.9
-  (`spikes/reforger-server-script-limits`): the poll transport works as specified. One
-  item is still open: the player identifier, which reads empty unless the server is
-  registered with Bohemia's backend, and such a server loads its mods only from the
-  Workshop. Next is the tracer bullet (#15): enrollment, sessions, the poll loop, one
+  (`spikes/reforger-server-script-limits`): the poll transport works as specified. The
+  player identifier, which reads empty unless the server is registered with the game's
+  backend, was measured on such a server with the probe published unlisted to the Workshop
+  (`spikes/reforger-player-identity`). Next is the tracer bullet (#15): enrollment, sessions, the poll loop, one
   action, and the plugin conformance suite. The protocol change it needed first, a byte
   bound on every Plugin API response because Reforger cannot receive 1 MiB, landed in
-  draft 0.35. Reforger's entry in the
-  platform registry (section 8.2, additive) waits on the identity measurement. Protocol 1.0 still gates only on a third-party plugin; a second reference
+  draft 0.35, and Reforger's platform registry entry, `reforger`, in draft 0.36. Protocol 1.0 still gates only on a third-party plugin; a second reference
   plugin tests the game-agnostic claim, and nothing else on the roadmap waits on it.
 - **Conformance suites as a published tool** (#97): committed 2026-09-17, parked
   2026-10-03 (see the parked table). Anyone can `go run` the suites from this module today.
@@ -169,7 +170,7 @@ Collected here so no trigger is lost in a horizon:
 | Random infected or animals spawned near a point | An event host asks |
 | Entities and base building (`state.entities`, set position and orientation and health on ids, duplicate, build and dismantle with a no-materials option, `dayz.build.place` and `dismantle` events) | The mod surface has a customer that places map objects. `state.entities` is the likeliest snapshot to hit the 256 KiB cap. The build and dismantle hook spike rides along with any plugin slice |
 | Invisibility and no-collision admin flags | A two-client measurement (the #71 spike had one) shows a server-side `SetInvisible` hides the character from another client, or the client-side simulation can be told to ignore geometry from the server |
-| WebSocket transport at `/plugin/v1/ws` | A plugin that can hold a WebSocket exists (a sidecar, or Reforger if #159 finds the engine can) |
+| WebSocket transport at `/plugin/v1/ws` | A plugin that can hold a WebSocket exists (a sidecar; Reforger's script has no socket API, #159) |
 | Position telemetry cadence | The WebSocket transport lands |
 | Cursor over webhook deliveries | A delivery list exceeds the maximum `limit` in practice |
 | Snapshot diffs | A real plugin hits the 256 KiB body cap |
