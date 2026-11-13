@@ -1113,10 +1113,12 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (seconds < 1)
 		{
 			WarnThrottled(what + " rate limited with no retryAfterSeconds; backing off");
+			SetLinkState("degraded");
 			Backoff();
 			return true;
 		}
 		WarnThrottled(what + " rate limited; waiting " + seconds.ToString() + " s before sending it again, " + m_Outbox.Count().ToString() + " envelope(s) buffered");
+		SetLinkState("degraded");
 		// The engine's tick and the hub's clock are not in step, so the
 		// wait runs a quarter second past the hub's figure.
 		Delay(seconds * 1000 + 250);
