@@ -633,6 +633,8 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 #### Added
 
+- 2026-11-13: `state.players` with positions; 0.1.1 published unlisted to the Workshop
+  (`8EF1E2D9CB0C677C`), run with a player on a backend-registered server (#167).
 - 2026-11-13: tracer bullet (`plugins/reforger`, 0.1.0): the DayZ plugin's protocol core on
   Reforger 1.9, `vyshka.info` and `vyshka.kick`, and a conformance harness for a dedicated server (#15).
 - 2026-11-13: `spikes/reforger-string-bytes` measures that Reforger's string functions index by

@@ -30,7 +30,7 @@ class VyshkaPlugin : VyshkaResponseSink
 	static ref VyshkaPlugin s_Instance;
 
 	static const string PLUGIN_NAME = "vyshka-reforger";
-	static const string PLUGIN_VERSION = "0.1.0";
+	static const string PLUGIN_VERSION = "0.1.1";
 	static const int PROTOCOL_VERSION = 1;
 
 	static const int TICK_MS = 200;
@@ -116,6 +116,15 @@ class VyshkaPlugin : VyshkaResponseSink
 	int m_BackoffMs;
 	string m_LinkState;        // connected | degraded | buffering (section 9.4)
 	int m_LastWarnMs;
+
+	// The state.players snapshot (spec section 8.3), captured as each poll
+	// is built so it rides that very request (the DayZ plugin's pacing,
+	// issue #55): the configured interval is a floor between captures.
+	static const string SNAPSHOT_PLAYERS = "state.players";
+	static const int SNAPSHOTS_HELD_LOG_AFTER = 6;
+	static const int SNAPSHOTS_HELD_LOG_EVERY = 20;
+	int m_PlayersLastMs;       // monotonic time of the last capture; 0 before the first
+	int m_PlayersHeld;         // consecutive polls sent without one
 
 	static void Start(VyshkaRegistry actions)
 	{
@@ -256,8 +265,15 @@ class VyshkaPlugin : VyshkaResponseSink
 		GetGame().GetCallqueue().CallLater(Tick, TICK_MS, true);
 		int actionCount = m_Actions.Count();
 		int contextCount = m_Actions.ContextCount();
-		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + actionCount.ToString() + " action(s) and " + contextCount.ToString() + " custom context(s) declared at manifest revision " + m_ManifestRevision.ToString());
+		VyshkaLog.Info("started; hub " + m_Config.m_HubUrl + ", " + actionCount.ToString() + " action(s) and " + contextCount.ToString() + " custom context(s) declared at manifest revision " + m_ManifestRevision.ToString() + ", " + PlayersNote());
 		Emit("core.server.start", ServerEventData());
+	}
+
+	string PlayersNote()
+	{
+		if (m_Config.m_SnapshotIntervalSeconds <= 0)
+			return "player snapshots off";
+		return "state.players with each poll, at least " + m_Config.m_SnapshotIntervalSeconds.ToString() + " s apart";
 	}
 
 	void Shutdown()
@@ -695,6 +711,7 @@ class VyshkaPlugin : VyshkaResponseSink
 
 	void Poll()
 	{
+		PublishPlayers();
 		string body = "{\"ack\":" + m_InAck.ToString() + ",\"envelopes\":" + m_Outbox.BatchJson();
 		if (m_Outbox.HasMore())
 			body += ",\"more\":true";
@@ -702,6 +719,34 @@ class VyshkaPlugin : VyshkaResponseSink
 		// The hub answers within pollTimeout; the engine's read timeout is
 		// pollTimeout + 5 s; the watchdog sits behind both.
 		m_Transport.Post(REQUEST_POLL, "poll" + INLINE_ERRORS, m_SessionToken, body, (m_PollTimeoutSeconds + 10) * 1000);
+	}
+
+	// PublishPlayers captures the state.players snapshot for the poll being
+	// built. No capture while the previous one is unacked, or while the
+	// outbox holds more than this poll carries: a snapshot is immutable once
+	// appended (section 9.3), and a queue of stale ones behind an outage
+	// serves no one (section 8.3 keeps the latest). A long run of held
+	// captures, which means an outage or a backlog, is logged.
+	void PublishPlayers()
+	{
+		if (m_Config.m_SnapshotIntervalSeconds <= 0)
+			return;
+		if (m_Outbox.HasUnacked(SNAPSHOT_PLAYERS) || !m_Outbox.RoomInBatch())
+		{
+			m_PlayersHeld++;
+			if (m_PlayersHeld == SNAPSHOTS_HELD_LOG_AFTER || m_PlayersHeld % SNAPSHOTS_HELD_LOG_EVERY == 0)
+				VyshkaLog.Info(SNAPSHOT_PLAYERS + " snapshot held back: the previous one is still unacked or the outbox has a backlog (" + m_PlayersHeld.ToString() + " poll(s) without one)");
+			return;
+		}
+		m_PlayersHeld = 0;
+		int now = VyshkaClock.MonotonicMs();
+		if (m_PlayersLastMs != 0 && now - m_PlayersLastMs < m_Config.m_SnapshotIntervalSeconds * 1000)
+			return;
+		VyshkaJsonValue body = VyshkaPlayers.Capture();
+		if (!body)
+			return;
+		if (m_Outbox.Append(SNAPSHOT_PLAYERS, body))
+			m_PlayersLastMs = now;
 	}
 
 	// ---- responses ----

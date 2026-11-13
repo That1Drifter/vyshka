@@ -31,3 +31,4 @@ vyshka-spec.md
 
 # The Reforger plugin harness profile (plugins/reforger/cmd/vyshka-reforger)
 /plugins/reforger/build/
+/plugins/reforger/addon/Vyshka/resourceDatabase.rdb
