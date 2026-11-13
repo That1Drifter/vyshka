@@ -15,6 +15,7 @@ class VyshkaHubError
 	int m_Seq;     // details.seq of the same, 0 when absent
 	int m_Revision;     // details.revision of a revision_mismatch refusal (section 12.2); 0 when absent, saturated past int range
 	string m_RevisionText;   // the same revision as the hub wrote it, exact whatever its size; "0" when absent
+	int m_RetryAfterSeconds;   // details.retryAfterSeconds of a rate_limited refusal (section 2.2.1); 0 when absent
 	bool m_Malformed;   // the error member was present but unusable: no object, or no code
 
 	// FromBody returns the refusal a response body carries, or null when the
@@ -55,6 +56,7 @@ class VyshkaHubError
 			if (index && index.IsNumber() && index.m_IsInteger)
 				refusal.m_Index = index.m_Int;
 			refusal.m_Seq = details.GetInt("seq", 0);
+			refusal.m_RetryAfterSeconds = details.GetInt("retryAfterSeconds", 0);
 			// The text is kept whatever the size: a revision past int range
 			// parses as a non-integer number (its int reading saturated),
 			// and the text is still exact.

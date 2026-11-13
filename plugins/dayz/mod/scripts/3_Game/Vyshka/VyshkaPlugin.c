@@ -1029,6 +1029,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	// enrollment refusal the plugin could read.
 	void OnEnrollRefused(VyshkaHubError refusal)
 	{
+		if (WaitOutRateLimit(refusal, "enrollment"))
+			return;
 		string code = refusal.m_Code;
 		if (refusal.IsMalformed())
 		{
@@ -1151,6 +1153,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	// refusals that matter need the operator, and the plugin says so.
 	void OnSessionRefused(VyshkaHubError refusal)
 	{
+		if (WaitOutRateLimit(refusal, "session start"))
+			return;
 		string code = refusal.m_Code;
 		SetLinkState("buffering");
 		if (refusal.IsMalformed())
@@ -1291,6 +1295,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	// error is never answered by churning sessions.
 	void OnPollRefused(VyshkaHubError refusal)
 	{
+		if (WaitOutRateLimit(refusal, "poll"))
+			return;
 		string code = refusal.m_Code;
 		if (refusal.IsMalformed())
 		{
@@ -1355,6 +1361,35 @@ class VyshkaPlugin : VyshkaResponseSink
 			SetLinkState("degraded");
 			Backoff();
 		}
+	}
+
+	// WaitOutRateLimit answers a rate_limited refusal (spec section 2.2.1):
+	// nothing was applied, the session and the outbox stand, and the same
+	// request goes again once details.retryAfterSeconds has passed, never
+	// sooner. A refusal that names no wait is backed off like any other.
+	// Returns false when the refusal is not a rate limit.
+	bool WaitOutRateLimit(VyshkaHubError refusal, string what)
+	{
+		if (refusal.m_Code != "rate_limited")
+			return false;
+		int seconds = refusal.m_RetryAfterSeconds;
+		// A figure past an hour is a hub fault; an hour keeps the
+		// arithmetic below inside the engine's int.
+		if (seconds > 3600)
+			seconds = 3600;
+		if (seconds < 1)
+		{
+			WarnThrottled(what + " rate limited with no retryAfterSeconds; backing off");
+			SetLinkState("degraded");
+			Backoff();
+			return true;
+		}
+		WarnThrottled(what + " rate limited; waiting " + seconds.ToString() + " s before sending it again, " + m_Outbox.Count().ToString() + " envelope(s) buffered");
+		SetLinkState("degraded");
+		// The engine's tick and the hub's clock are not in step, so the
+		// wait runs a quarter second past the hub's figure.
+		Delay(seconds * 1000 + 250);
+		return true;
 	}
 
 	// OnPollRefusedOpaque is the fallback for a hub that did not deliver the
