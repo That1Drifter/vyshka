@@ -1251,18 +1251,15 @@ Session and enrollment refusals are handled as before: credentials rejected, ret
 30 s; token refused, tell the operator, retry every 60 s.
 
 **Rate limits** (`429 rate_limited`, protocol section 2.2.1; a hub from draft 0.34 on may
-refuse a server that sends faster than its limit). Plugin 0.10.0, like 0.9.0, reads the refusal, keeps its
-session and its outbox, and loses nothing, but it treats the code as one it does not know:
+refuse a server that sends faster than its limit). The plugin reads the refusal, keeps its
+session and its outbox, and loses nothing:
 
-- A refused poll (`VyshkaPlugin.c`, `OnPollRefused`, its last branch, and `Backoff`) is
-  backed off 1 s doubling to 30 s on the same session and the outbox resent unchanged. It
-  does not read the wait the hub names in `details.retryAfterSeconds`; at the reference
-  hub's defaults that wait is 1 s, which the first backoff meets. On a hub configured below
-  1 request a second the named wait is 2 s or more, so the first retry, at 1 s, comes early
-  (and is refused again), and retries keep coming early until the doubled backoff has
-  caught up with the wait the hub names (at once for a wait of 3 s or less).
-- A refused session request (`VyshkaPlugin.c`, `OnSessionRefused`) is logged as a plugin or
-  hub defect and retried after 60 s. The previous session stays live meanwhile.
+- A refused poll, session request, or enrollment (`VyshkaPlugin.c`, `WaitOutRateLimit`) is
+  sent again once the wait the hub names in `details.retryAfterSeconds` has passed, never
+  sooner, on the same session with the outbox unchanged, and the link reads `degraded`
+  meanwhile. A refusal naming no wait is backed off 1 s doubling to 30 s. Plugin 0.10.0
+  and earlier did not read the wait and retried after 1 s, early on a hub configured below
+  1 request a second.
 - A refused key/value call (`VyshkaStore.c`, `OnRefused`, then `Fail`) fails to the calling
   mod and is not retried.
 - A refused page of the installation ban list (`VyshkaInstallationBans.c`, `OnRefused`, then
@@ -1272,8 +1269,7 @@ session and its outbox, and loses nothing, but it treats the code as one it does
   never finishes. For such a hub, raise `-plugin-rate-burst` or `-plugin-rate-limit`
   (`deploy/README.md`, "Rate limits").
 
-A later plugin release reads the wait, retries key/value calls, and resumes a walk where it
-was refused.
+Retrying key/value calls and resuming a walk where it was refused are issue #165.
 
 The `rejected/` directory is never read by the plugin. Delete its files once you have looked
 at them.

@@ -629,6 +629,11 @@ panel, and the conformance suites, plus the release tooling below. Tag `hub-v0.1
 
 ### [Unreleased]
 
+#### Fixed
+
+- 2026-11-13: a `rate_limited` refusal is waited out for its `retryAfterSeconds` before the poll,
+  session, or enrollment goes again (spec 2.2.1); 0.10.0 retried after 1 s (#166).
+
 ### [0.10.0] - 2026-11-12
 
 DayZ 1.30 (issue #149): the outbox restores again, missions compile, and motorbikes
