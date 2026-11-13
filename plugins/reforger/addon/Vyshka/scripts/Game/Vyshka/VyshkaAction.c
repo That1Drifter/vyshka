@@ -332,8 +332,7 @@ class VyshkaRegistry
 	}
 
 	// Namespaces is the declared key/value namespaces, sorted and without
-	// repeats: what the manifest publishes and what the store client confines
-	// itself to. The order is fixed rather than the order they were declared
+	// repeats: what the manifest publishes. The order is fixed rather than the order they were declared
 	// in, so two boots that register the same mods in a different order
 	// produce the same manifest content and so the same revision.
 	array<string> Namespaces()

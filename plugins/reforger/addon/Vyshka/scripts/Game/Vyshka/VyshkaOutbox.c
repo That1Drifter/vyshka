@@ -21,15 +21,9 @@
 // loss window is documented rather than hidden.
 //
 // The records live in a ring of file names, 1.json to RING.json, and the
-// ordinal is kept inside the record, because a restart has to find them
-// without listing the directory: on DayZ 1.30.164078 FindFile resolves
-// $profile: to the server's working directory, not the -profiles one, so a
-// listing of the outbox finds nothing on a server that keeps its profile
-// elsewhere (spikes/dayz-findfile, issue #149; 1.30.164289 lists again).
-// Load asks for each name in the ring instead. Before the ring a record's
-// file was named by its ordinal, which grows without bound; Load still lists
-// the directory for those, which finds them wherever FindFile works (1.29,
-// 1.30.164289, or a profile that is the working directory).
+// ordinal is kept inside the record, so a restart finds them by asking for
+// each name in the ring rather than listing the directory (the DayZ plugin
+// learned that the hard way: spikes/dayz-findfile, issue #149).
 
 class VyshkaOutboxEntry
 {

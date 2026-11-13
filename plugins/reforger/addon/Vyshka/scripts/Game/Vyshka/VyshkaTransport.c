@@ -69,10 +69,7 @@ class VyshkaRequestCallback
 		else if (http >= 400)
 			code = VyshkaTransport.ERROR_CLIENT;
 		else if (http >= 300)
-			// The engine does not follow redirects (spikes/reforger-server-
-			// script-limits, status.302): an http:// hub URL behind a proxy
-			// that redirects to https:// reads as unreachable, so say why.
-			VyshkaLog.Warn("the hub answered with redirect " + http.ToString() + ", which the engine does not follow; set hubUrl to the address it redirects to");
+			m_Transport.WarnRedirect(http);
 		else if (http >= 200 && http < 300)
 			code = VyshkaTransport.ERROR_UNEXPECTED;
 		m_Transport.Complete(m_Generation, false, code, "");
@@ -192,6 +189,21 @@ class VyshkaTransport
 		m_Callback = null;
 		if (m_Sink)
 			m_Sink.OnResponse(m_Kind, false, ERROR_WATCHDOG, "");
+	}
+
+	// WarnRedirect says, at most once a minute, that the hub URL redirects.
+	// The engine does not follow redirects (spikes/reforger-server-script-
+	// limits, status.302), so an http:// hub URL behind a proxy that
+	// redirects to https:// reads as unreachable without it.
+	int m_LastRedirectWarnMs;
+
+	void WarnRedirect(int http)
+	{
+		int now = VyshkaClock.MonotonicMs();
+		if (m_LastRedirectWarnMs != 0 && now - m_LastRedirectWarnMs < 60000)
+			return;
+		m_LastRedirectWarnMs = now;
+		VyshkaLog.Warn("the hub answered with redirect " + http.ToString() + ", which the engine does not follow; set hubUrl to the address it redirects to");
 	}
 
 	static string DescribeError(int code)

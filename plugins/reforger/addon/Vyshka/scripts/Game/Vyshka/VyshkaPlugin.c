@@ -302,8 +302,7 @@ class VyshkaPlugin : VyshkaResponseSink
 		if (!m_Running)
 			return;
 		// Events go into the outbox whether or not a request is in flight;
-		// whatever is queued rides the next poll. Snapshots are captured by
-		// the poll itself, so they never wait for one.
+		// whatever is queued rides the next poll.
 		// Results held back for room go first: they were owed before any
 		// event, and the events' flush leaves their slots alone.
 		AppendHeldResults();
@@ -628,11 +627,8 @@ class VyshkaPlugin : VyshkaResponseSink
 		m_NextAttemptMs = 0;
 	}
 
-	// ApplyReadTimeout sets the engine's process-wide read timeout for a
-	// pollTimeout (the hold plus 5 s of slack) and keeps the store client's
-	// watchdog above it plus the engine's 10 s connection timeout: a request
-	// the watchdog abandoned while the engine still ran it would share the
-	// context with the next one (VyshkaStore).
+	// ApplyReadTimeout sets the link context's idle timeout for a
+	// pollTimeout: the hold plus 5 s of slack (VyshkaTransport).
 	void ApplyReadTimeout(int pollTimeoutSeconds)
 	{
 		m_Transport.SetReadTimeout(pollTimeoutSeconds + 5);
@@ -1462,9 +1458,8 @@ class VyshkaPlugin : VyshkaResponseSink
 	}
 
 	// ExpirePending fails every dispatch pending past its deadline (its TTL
-	// or PENDING_MAX_MS): a store client that gives up answers its callback
-	// ahead of this, so this is the guard against a callback that never
-	// comes at all.
+	// or PENDING_MAX_MS), the guard against an action that went pending and
+	// never called Complete.
 	void ExpirePending()
 	{
 		if (m_PendingDispatches.Count() == 0)
