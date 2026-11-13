@@ -1,0 +1,583 @@
+// Vyshka Reforger plugin (protocol code shared with the DayZ plugin): the persistent outbound buffer (spec section 9.3).
+//
+// Every envelope the plugin sends is written to its own file before it is
+// ever put on the wire, and the file is deleted only when the hub's ack
+// covers it. Records are keyed by a local ordinal, not by seq: the sequence
+// number is assigned at send time from the current session's counter, so a
+// session change renumbers the whole buffer for free (section 9.1) and a
+// verbatim replay, the bug that strands a buffer forever, cannot happen by
+// construction. The stored record is id, type, ts and body, which are exactly
+// the fields renumbering must keep.
+//
+// Durability is what the engine gives: FPrint then CloseFile, with no fsync
+// exposed to script. Measured across process kills under load
+// (spikes/dayz-outbox-crash): every record that reached CloseFile was intact
+// on the next boot and delivered, none was torn, and the only loss was the
+// event buffer's unflushed tail (VyshkaEventBuffer: up to 2 s or 200 events,
+// plus the tick that notices the flush is due). A kill inside WriteJson
+// itself would leave an unreadable record, which Load discards and counts,
+// and the batch in it is lost. What a power loss or an OS crash takes from
+// the page cache is not measured and cannot be shortened from script; the
+// loss window is documented rather than hidden.
+//
+// The records live in a ring of file names, 1.json to RING.json, and the
+// ordinal is kept inside the record, because a restart has to find them
+// without listing the directory: on DayZ 1.30.164078 FindFile resolves
+// $profile: to the server's working directory, not the -profiles one, so a
+// listing of the outbox finds nothing on a server that keeps its profile
+// elsewhere (spikes/dayz-findfile, issue #149; 1.30.164289 lists again).
+// Load asks for each name in the ring instead. Before the ring a record's
+// file was named by its ordinal, which grows without bound; Load still lists
+// the directory for those, which finds them wherever FindFile works (1.29,
+// 1.30.164289, or a profile that is the working directory).
+
+class VyshkaOutboxEntry
+{
+	int m_Ordinal;   // creation order
+	int m_File;      // the number the record's file is named by: a ring slot, or a pre-ring ordinal
+	string m_Id;
+	string m_Type;
+	string m_Ts;
+	string m_Body;   // serialized JSON object, re-emitted verbatim
+	int m_Seq;       // in the current session's space; 0 until numbered
+	int m_Events;    // events carried, for an event.batch; 0 otherwise
+	int m_ManifestRevision;   // the revision a manifest.publish carries; 0 otherwise
+
+	string Path()
+	{
+		return VyshkaFiles.OUTBOX_DIR + "/" + m_File.ToString() + ".json";
+	}
+
+	// Serialize frames the entry as a wire envelope (spec section 4).
+	string Serialize()
+	{
+		return "{\"v\":1,\"id\":" + VyshkaJson.Quote(m_Id) + ",\"type\":" + VyshkaJson.Quote(m_Type) + ",\"seq\":" + m_Seq.ToString() + ",\"ts\":" + VyshkaJson.Quote(m_Ts) + ",\"body\":" + m_Body + "}";
+	}
+
+	// RecordJson is what goes on disk: everything but seq, with the body as
+	// the tree it was appended from, so the file writer can break it across
+	// lines (VyshkaFiles.WriteJson); a record that stayed one line would
+	// fault the next boot's read once a batch grew past 64 KiB (issue #108).
+	VyshkaJsonValue RecordJson(VyshkaJsonValue body)
+	{
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("ordinal", VyshkaJsonValue.NewInt(m_Ordinal));
+		record.Set("id", VyshkaJsonValue.NewString(m_Id));
+		record.Set("type", VyshkaJsonValue.NewString(m_Type));
+		record.Set("ts", VyshkaJsonValue.NewString(m_Ts));
+		record.Set("body", body);
+		return record;
+	}
+}
+
+class VyshkaOutbox
+{
+	// The reference ring size from spec section 9.3. Beyond it the oldest
+	// unacked envelope is dropped and the drop counted, because a buffer that
+	// grows without bound on a server that has lost its hub for a week is
+	// worse for the operator than an honest counter.
+	static const int CAPACITY = 5000;
+
+	// How many record file names the outbox cycles through. Twice the
+	// capacity, so an append finds the slot its ordinal maps to free unless
+	// an entry a whole ring older is still queued, and then skips ahead to
+	// the next free one (there always is one: the queue never holds more
+	// than CAPACITY entries).
+	static const int RING = 10000;
+
+	// How many envelopes one poll may carry (section 3.1.2 guarantees a hub
+	// accepts at least this many).
+	static const int BATCH_LIMIT = 200;
+
+	// How many events one poll may carry across all of its event.batch
+	// envelopes. Section 8.1 lets a hub refuse the batches past a per-poll
+	// budget (reference cap 1000) while acking them, which would lose the
+	// events of a backlog flushed after an outage; staying under the
+	// reference cap keeps every batch inside what the hub will store.
+	static const int EVENTS_PER_POLL = 1000;
+
+	ref array<ref VyshkaOutboxEntry> m_Entries;
+	ref map<int, bool> m_Files;   // the file numbers the queued entries hold
+	int m_NextOrdinal;
+	int m_NextSeq;
+	int m_Dropped;
+	int m_BatchLimit;   // envelopes per poll; lowered when a hub refuses a batch as too large
+	int m_Rejected;     // envelopes the hub refused as malformed and this outbox set aside
+	int m_SentCount;    // how many leading entries the poll in flight carried (see Quarantine)
+
+	void VyshkaOutbox()
+	{
+		m_Entries = new array<ref VyshkaOutboxEntry>;
+		m_Files = new map<int, bool>;
+		m_NextOrdinal = 1;
+		m_NextSeq = 0;
+		m_Dropped = 0;
+		m_BatchLimit = BATCH_LIMIT;
+		m_Rejected = 0;
+		m_SentCount = 0;
+	}
+
+	int BatchLimit()
+	{
+		return m_BatchLimit;
+	}
+
+	// ShrinkBatch halves the batch size after a hub refused a poll as too
+	// large (bad_request, spec section 2.3); it never drops below one
+	// envelope, and the limit grows back on the next session.
+	void ShrinkBatch()
+	{
+		int shrunk = m_BatchLimit / 2;
+		if (shrunk < 1)
+			shrunk = 1;
+		if (shrunk != m_BatchLimit)
+			VyshkaLog.Warn("outbox: lowering the poll batch from " + m_BatchLimit.ToString() + " to " + shrunk.ToString() + " envelope(s)");
+		m_BatchLimit = shrunk;
+	}
+
+	// Quarantine takes the envelope at a batch index out of the outbox after
+	// the hub refused the batch over it (envelope_invalid, spec section 2.3).
+	// The record is moved, not deleted: it lands under rejected/ with the
+	// hub's reason, where an operator can read what could not be delivered.
+	// The entries behind it move down one seq to close the gap, which is
+	// safe because a refused batch was applied in no part. Returns false when
+	// the index names nothing in the batch as it was sent: telemetry can be
+	// appended while a poll is in flight, so the bound is the count recorded
+	// when the batch was framed, not what a fresh framing would carry now.
+	bool Quarantine(int index, string reason)
+	{
+		if (index < 0 || index >= m_SentCount)
+			return false;
+		m_SentCount = 0;
+
+		VyshkaOutboxEntry entry = m_Entries.Get(index);
+		// Ordinals restart after a reboot (Load derives the next one from the
+		// outbox alone), so the file name carries the time as well; otherwise
+		// a later run's ordinal 1 would overwrite an earlier run's record.
+		string rejectedBase = VyshkaFiles.REJECTED_DIR + "/" + VyshkaClock.EpochSeconds().ToString() + "-" + entry.m_Ordinal.ToString();
+		string rejectedPath = rejectedBase + ".json";
+		// A clock set back can still repeat a name; never overwrite a record.
+		int collision = 0;
+		while (FileIO.FileExists(rejectedPath))
+		{
+			collision++;
+			rejectedPath = rejectedBase + "-" + collision.ToString() + ".json";
+		}
+		// The body is kept serialized; it is read back into a tree here, on
+		// this rare path, so the record can be written across lines. A body
+		// the parser will not read back (nested past its depth) is kept as
+		// the text it went out as, so nothing the hub refused is lost.
+		VyshkaJsonValue body = VyshkaJson.Parse(entry.m_Body);
+		VyshkaJsonValue envelope;
+		if (body)
+			envelope = entry.RecordJson(body);
+		else
+		{
+			envelope = entry.RecordJson(VyshkaJsonValue.NewObject());
+			envelope.Set("bodyText", VyshkaJsonValue.NewString(entry.m_Body));
+		}
+		VyshkaJsonValue record = VyshkaJsonValue.NewObject();
+		record.Set("rejected", VyshkaJsonValue.NewString(reason));
+		record.Set("envelope", envelope);
+		// The original record is deleted only once a copy of it exists
+		// under rejected/: the rejected record with the hub's reason, or,
+		// when that cannot be written (a record at the file writer's depth
+		// bound, whose wrapper takes it past), the record file copied as it
+		// is. With neither, the record stays where it is and the next boot
+		// tries again; a refused envelope is set aside, never dropped
+		// (section 9.3).
+		bool setAside = VyshkaFiles.WriteJson(rejectedPath, record);
+		if (!setAside)
+		{
+			setAside = FileIO.CopyFile(entry.Path(), rejectedPath);
+			if (setAside)
+				VyshkaLog.Warn("outbox: could not write the rejected record for " + entry.m_Id + "; its outbox record was copied to " + rejectedPath + " as it was, without the hub's reason");
+		}
+		if (setAside)
+		{
+			if (!FileIO.DeleteFile(entry.Path()))
+				VyshkaLog.Warn("outbox: could not delete " + entry.Path() + "; a restart would try to send the refused envelope again");
+		}
+		else
+			VyshkaLog.Error("outbox: could not set aside the refused envelope " + entry.m_Id + " under " + VyshkaFiles.REJECTED_DIR + "; its record stays at " + entry.Path() + " and the next boot will try to send it again");
+		m_Entries.RemoveOrdered(index);
+		// A record left in place keeps its name until the next boot reads it
+		// back, so no later append in this run can overwrite it.
+		if (setAside)
+			m_Files.Remove(entry.m_File);
+		m_Rejected++;
+
+		int seq = entry.m_Seq;
+		for (int i = index; i < m_Entries.Count(); i++)
+		{
+			VyshkaOutboxEntry later = m_Entries.Get(i);
+			if (later.m_Seq > 0)
+			{
+				later.m_Seq = seq;
+				seq++;
+			}
+		}
+		if (m_NextSeq > 0)
+			m_NextSeq--;
+		VyshkaLog.Error("outbox: the hub refused envelope " + entry.m_Id + " (" + entry.m_Type + ", seq " + entry.m_Seq.ToString() + ") as malformed: " + reason + "; set aside at " + rejectedPath + ", " + m_Entries.Count().ToString() + " envelope(s) still queued");
+		return true;
+	}
+
+	int Count()
+	{
+		return m_Entries.Count();
+	}
+
+	// Refuse counts an envelope the plugin chose not to append because the
+	// room left is spoken for (results owed for pending dispatches), so the
+	// refusal counter of section 9.4 covers it like one the capacity bound
+	// itself refused.
+	void Refuse(string envelopeType)
+	{
+		m_Dropped++;
+		VyshkaLog.Warn("outbox: the room left is held for owed action results; refused a " + envelopeType + " (total refused " + m_Dropped.ToString() + ")");
+	}
+
+	// HasRoom reports whether n more envelopes fit under the capacity bound.
+	// Inbound processing consults this before taking a dispatch, so an action
+	// is never executed when its ack and result could not both be queued.
+	bool HasRoom(int n)
+	{
+		return m_Entries.Count() + n <= CAPACITY;
+	}
+
+	// HasUnacked reports whether an envelope of the given type is still
+	// waiting for the hub's ack. Snapshot publishing consults this so a
+	// state.* envelope is only queued when the previous one has landed: a
+	// snapshot says what is, so a stale one waiting behind an outage is
+	// worth nothing, and a buffer full of them would crowd out the action
+	// results and events that are worth keeping.
+	bool HasUnacked(string envelopeType)
+	{
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			if (m_Entries.Get(i).m_Type == envelopeType)
+				return true;
+		}
+		return false;
+	}
+
+	// HighestManifestRevision is the largest manifestRevision among the
+	// manifest.publish envelopes still here, 0 when there is none: what an
+	// earlier boot published and the hub has not yet acked, which the hub
+	// will apply before anything appended now (section 9.1), so a revision
+	// minted now has to lie above it.
+	int HighestManifestRevision()
+	{
+		int highest = 0;
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			VyshkaOutboxEntry entry = m_Entries.Get(i);
+			if (entry.m_ManifestRevision > highest)
+				highest = entry.m_ManifestRevision;
+		}
+		return highest;
+	}
+
+	// RoomInBatch reports whether an envelope carrying no events, appended
+	// now, would ride the next poll: every entry already here rides it, one
+	// envelope slot is left, and the events those entries carry are inside
+	// the per-poll budget. That last check matters because BatchCount admits
+	// a first entry above the budget and then nothing behind it, so an entry
+	// appended behind an oversized one would wait for the poll after next.
+	bool RoomInBatch()
+	{
+		int count = m_Entries.Count();
+		if (count >= m_BatchLimit)
+			return false;
+		if (BatchCount() < count)
+			return false;
+		int events = 0;
+		for (int i = 0; i < count; i++)
+			events += m_Entries.Get(i).m_Events;
+		return events <= EVENTS_PER_POLL;
+	}
+
+	// Load reads every record left on disk by a previous run, in ordinal
+	// order, and leaves them unnumbered: the next session start numbers them.
+	// It asks for every name in the ring.
+	void Load()
+	{
+		m_Entries.Clear();
+		m_Files.Clear();
+		for (int slot = 1; slot <= RING; slot++)
+		{
+			string slotName = slot.ToString() + ".json";
+			if (FileIO.FileExists(VyshkaFiles.OUTBOX_DIR + "/" + slotName))
+				LoadRecord(slotName, slot);
+		}
+		SortByOrdinal();
+		int highest = 0;
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			if (m_Entries.Get(i).m_Ordinal > highest)
+				highest = m_Entries.Get(i).m_Ordinal;
+		}
+		m_NextOrdinal = highest + 1;
+		if (m_Entries.Count() > 0)
+			VyshkaLog.Info("outbox: " + m_Entries.Count().ToString() + " unacked envelope(s) restored from disk");
+	}
+
+	// FileNumber is the number a record's file name carries ("12.json" is
+	// 12), or 0 for a name that is not a record's.
+	static int FileNumber(string fileName)
+	{
+		int dot = fileName.IndexOf(".");
+		if (dot <= 0 || fileName.Substring(dot, fileName.Length() - dot) != ".json")
+			return 0;
+		string digits = fileName.Substring(0, dot);
+		for (int i = 0; i < digits.Length(); i++)
+		{
+			if (!VyshkaJson.IsDigit(digits.Get(i)))
+				return 0;
+		}
+		return digits.ToInt();
+	}
+
+	// SlotOf maps an ordinal onto the ring of file names, 1 to RING.
+	static int SlotOf(int ordinal)
+	{
+		return (ordinal - 1) % RING + 1;
+	}
+
+	protected void LoadRecord(string fileName, int number)
+	{
+		if (number <= 0)
+			return;
+
+		string path = VyshkaFiles.OUTBOX_DIR + "/" + fileName;
+		VyshkaJsonValue root = VyshkaFiles.ReadJson(path);
+		if (!root || !root.IsObject())
+		{
+			// An unreadable record is a torn write from a crash. It cannot
+			// be sent, so it is counted as dropped and cleared.
+			VyshkaLog.Warn("outbox: record " + fileName + " is unreadable and was discarded");
+			FileIO.DeleteFile(path);
+			m_Dropped++;
+			return;
+		}
+		VyshkaJsonValue body = root.Get("body");
+		VyshkaOutboxEntry entry = new VyshkaOutboxEntry();
+		// A record written before the ring carries no ordinal: its file name
+		// is the ordinal.
+		entry.m_Ordinal = root.GetInt("ordinal", number);
+		entry.m_File = number;
+		entry.m_Id = root.GetString("id", "");
+		entry.m_Type = root.GetString("type", "");
+		entry.m_Ts = root.GetString("ts", "");
+		if (body && body.IsObject())
+		{
+			entry.m_Body = body.Serialize();
+			VyshkaJsonValue events = body.Get("events");
+			// The revision is read here, from the tree the file gave, so
+			// the outbox never parses a body again with a tighter bound
+			// than the file's (VyshkaJson.MAX_DEPTH against FILE_MAX_DEPTH).
+			if (entry.m_Type == "manifest.publish")
+				entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
+			if (entry.m_Type == "event.batch" && events && events.IsArray())
+				entry.m_Events = events.Count();
+		}
+		else
+			entry.m_Body = "{}";
+		if (entry.m_Id == "" || entry.m_Type == "" || entry.m_Ordinal <= 0)
+		{
+			VyshkaLog.Warn("outbox: record " + fileName + " has no id, type, or ordinal and was discarded");
+			FileIO.DeleteFile(path);
+			m_Dropped++;
+			return;
+		}
+		m_Entries.Insert(entry);
+		m_Files.Set(entry.m_File, true);
+	}
+
+	// SortByOrdinal puts the entries in creation order. Load finds them by
+	// slot, so a queue that crossed the ring's wrap arrives as two sorted
+	// runs, the later one first; an insertion sort would take quadratic time
+	// on that (issue #149), so this is a bottom-up merge sort, stable and
+	// n log n whatever the order.
+	void SortByOrdinal()
+	{
+		int count = m_Entries.Count();
+		if (count < 2)
+			return;
+		array<ref VyshkaOutboxEntry> source = m_Entries;
+		array<ref VyshkaOutboxEntry> target = new array<ref VyshkaOutboxEntry>;
+		target.Resize(count);
+		for (int width = 1; width < count; width *= 2)
+		{
+			for (int start = 0; start < count; start += 2 * width)
+			{
+				int middle = start + width;
+				if (middle > count)
+					middle = count;
+				int end = start + 2 * width;
+				if (end > count)
+					end = count;
+				int left = start;
+				int right = middle;
+				for (int k = start; k < end; k++)
+				{
+					if (left < middle && (right >= end || source.Get(left).m_Ordinal <= source.Get(right).m_Ordinal))
+					{
+						target.Set(k, source.Get(left));
+						left++;
+					}
+					else
+					{
+						target.Set(k, source.Get(right));
+						right++;
+					}
+				}
+			}
+			array<ref VyshkaOutboxEntry> swap = source;
+			source = target;
+			target = swap;
+		}
+		m_Entries = source;
+	}
+
+	// Append persists a new envelope and numbers it into the current session.
+	// The body is the JSON object tree: it is serialized compact once for
+	// the wire and written across lines for the record on disk; events is
+	// how many events an event.batch body carries, for the per-poll budget.
+	VyshkaOutboxEntry Append(string envelopeType, VyshkaJsonValue body, int events = 0)
+	{
+		if (m_Entries.Count() >= CAPACITY)
+		{
+			// Every entry here is unacked, and section 9.3 forbids dropping an
+			// unacked envelope. Evicting the oldest would also strand the
+			// buffer: it opens a gap below the entries that keep their seq, and
+			// the hub's contiguous ack can never cross it. So the new envelope
+			// is refused instead, which keeps the sent sequence contiguous, and
+			// the refusal is counted so the blocked state is visible
+			// (section 9.4). The refused work is recovered by the hub's own
+			// re-delivery: the action stays non-terminal and the hub expires it.
+			m_Dropped++;
+			VyshkaLog.Warn("outbox: full at " + CAPACITY.ToString() + " envelopes; refused a " + envelopeType + " (total refused " + m_Dropped.ToString() + ")");
+			return null;
+		}
+
+		// The slot an ordinal maps to is held only by an entry a whole ring
+		// older; skip past it rather than overwrite a queued record. This
+		// ends, since at most CAPACITY of the RING slots are held.
+		while (m_Files.Contains(SlotOf(m_NextOrdinal)))
+			m_NextOrdinal++;
+		VyshkaOutboxEntry entry = new VyshkaOutboxEntry();
+		entry.m_Ordinal = m_NextOrdinal;
+		entry.m_File = SlotOf(m_NextOrdinal);
+		m_NextOrdinal++;
+		entry.m_Id = VyshkaIds.Next();
+		entry.m_Type = envelopeType;
+		entry.m_Ts = VyshkaClock.NowRfc3339();
+		if (body && body.IsObject())
+			entry.m_Body = body.Serialize();
+		else
+		{
+			body = VyshkaJsonValue.NewObject();
+			entry.m_Body = "{}";
+		}
+		entry.m_Events = events;
+		if (envelopeType == "manifest.publish")
+			entry.m_ManifestRevision = body.GetInt("manifestRevision", 0);
+		m_NextSeq++;
+		entry.m_Seq = m_NextSeq;
+
+		if (!VyshkaFiles.WriteJson(entry.Path(), entry.RecordJson(body)))
+			VyshkaLog.Warn("outbox: could not persist envelope " + entry.m_Id + "; it will be lost if the server restarts before the hub acks it");
+		m_Entries.Insert(entry);
+		m_Files.Set(entry.m_File, true);
+		return entry;
+	}
+
+	// Ack drops every entry the hub has durably processed (seq at or below
+	// ack in the current session's space).
+	void Ack(int ack)
+	{
+		int i = 0;
+		while (i < m_Entries.Count())
+		{
+			VyshkaOutboxEntry entry = m_Entries.Get(i);
+			if (entry.m_Seq > 0 && entry.m_Seq <= ack)
+			{
+				// A failed delete leaves the file on disk; after a restart Load
+				// would treat it as unacked and re-send it. That replay is
+				// benign because the hub deduplicates and treats a repeat of a
+				// terminal action as a no-op (sections 7, 8.1), but it is
+				// surfaced rather than hidden.
+				if (!FileIO.DeleteFile(entry.Path()))
+					VyshkaLog.Warn("outbox: could not delete acked envelope " + entry.Path() + "; the hub will dedup it if a restart re-sends it");
+				m_Entries.RemoveOrdered(i);
+				m_Files.Remove(entry.m_File);
+			}
+			else
+			{
+				i++;
+			}
+		}
+	}
+
+	// Renumber starts a new sequence space: every buffered envelope gets a
+	// fresh seq counting from 1 in creation order, keeping everything else
+	// (spec section 9.1).
+	void Renumber()
+	{
+		m_NextSeq = 0;
+		m_SentCount = 0;
+		for (int i = 0; i < m_Entries.Count(); i++)
+		{
+			m_NextSeq++;
+			m_Entries.Get(i).m_Seq = m_NextSeq;
+		}
+		m_BatchLimit = BATCH_LIMIT;
+	}
+
+	// BatchCount is how many leading entries the next poll carries: at most
+	// m_BatchLimit envelopes, and at most EVENTS_PER_POLL events across them.
+	// The first entry always goes, whatever it carries, so a batch can never
+	// be stuck behind the budget.
+	int BatchCount()
+	{
+		int count = 0;
+		int events = 0;
+		while (count < m_Entries.Count() && count < m_BatchLimit)
+		{
+			int carried = m_Entries.Get(count).m_Events;
+			if (count > 0 && events + carried > EVENTS_PER_POLL)
+				break;
+			events += carried;
+			count++;
+		}
+		return count;
+	}
+
+	// BatchJson frames the leading unacked envelopes, in ascending seq order,
+	// as the poll request's envelopes array, and records how many it framed.
+	string BatchJson()
+	{
+		string result = "[";
+		int count = BatchCount();
+		m_SentCount = count;
+		for (int i = 0; i < count; i++)
+		{
+			if (i > 0)
+				result += ",";
+			result += m_Entries.Get(i).Serialize();
+		}
+		result += "]";
+		return result;
+	}
+
+	// HasMore reports whether the batch BatchJson last framed left envelopes
+	// behind it, which the poll says with more (spec section 3.1.2) so the
+	// hub answers at once instead of holding: a backlog then drains a batch
+	// per round trip rather than a batch per pollTimeout.
+	bool HasMore()
+	{
+		return m_SentCount > 0 && m_SentCount < m_Entries.Count();
+	}
+}

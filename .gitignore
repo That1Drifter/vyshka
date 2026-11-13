@@ -28,3 +28,6 @@ vyshka-spec.md
 
 # Release archives built by scripts/release-hub.sh and the release workflow
 /dist/
+
+# The Reforger plugin harness profile (plugins/reforger/cmd/vyshka-reforger)
+/plugins/reforger/build/
